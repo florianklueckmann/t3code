@@ -1600,6 +1600,8 @@ export default function ChatView(props: ChatViewProps) {
     (store) => store.setStickyModelSelection,
   );
   const timestampFormat = settings.timestampFormat;
+  const userMessageBubbleBackgroundColor = settings.userMessageBubbleBackgroundColor;
+  const userMessageBubbleBorderColor = settings.userMessageBubbleBorderColor;
   const navigate = useNavigate();
   const citationLocation = useLocation({
     select: (location) => ({
@@ -9885,6 +9887,8 @@ export default function ChatView(props: ChatViewProps) {
                     ? (heldPaintContext?.workspaceRoot ?? undefined)
                     : activeWorkspaceRoot
                 }
+                userMessageBubbleBackgroundColor={userMessageBubbleBackgroundColor}
+                userMessageBubbleBorderColor={userMessageBubbleBorderColor}
                 skills={
                   activeProviderStatus
                     ? resolveProviderSkillsForCwd(activeProviderStatus, gitCwd)
