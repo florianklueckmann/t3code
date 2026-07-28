@@ -5579,6 +5579,9 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
               workEntry.questionAnswer ||
               turnItemHasDetail(workEntry.projectedItem.item),
             );
+  const copyText = canExpand
+    ? (expandedBody ?? (plainOutput !== undefined ? plainOutput : buildToolCallExpandedBody(workEntry, workspaceRoot)) ?? previewText)
+    : null;
   // Reserve destructive row styling for severe failures, not routine tool errors.
   const iconWrapperClass = cn(
     "flex size-4 items-center justify-center",
@@ -5720,6 +5723,18 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
             <XIcon aria-hidden className={cn("size-3 shrink-0", failedToolIconClassName)} />
           ) : null}
           <TimelineRowTimestamp createdAt={workEntry.createdAt} timestampFormat={timestampFormat} />
+          {copyText ? (
+            <span onClick={stopRowToggle} onPointerDown={stopRowToggle}>
+              <MessageCopyButton
+                text={copyText}
+                size="icon-xs"
+                variant="ghost"
+                ariaLabel="Copy work log details"
+                tooltipLabel="Copy details"
+                className="size-5"
+              />
+            </span>
+          ) : null}
           <span
             className={cn(
               "flex size-4 shrink-0 items-center justify-center",
