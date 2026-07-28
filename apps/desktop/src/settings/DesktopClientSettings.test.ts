@@ -58,6 +58,8 @@ const clientSettings: ClientSettings = {
   sidebarThreadPreviewCount: 6,
   legacySidebarEnabled: false,
   timestampFormat: "24-hour",
+  userMessageBubbleBackgroundColor: "#262626",
+  userMessageBubbleBorderColor: "#3f3f46",
   wordWrap: true,
 };
 

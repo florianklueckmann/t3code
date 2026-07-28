@@ -6,6 +6,7 @@ import {
   ClientSettingsSchema,
   ClientSettingsPatch,
   ClaudeSettings,
+  DEFAULT_CLIENT_SETTINGS,
   DEFAULT_SERVER_SETTINGS,
   resolveProviderInstanceEnabled,
   ServerSettings,
@@ -132,6 +133,31 @@ describe("ClaudeSettings auto-compaction", () => {
     expect(
       decodeServerSettingsPatch({ providers: { claudeAgent: { autoCompactWindow: "300000" } } }),
     ).toBeDefined();
+  });
+});
+
+describe("ClientSettings user message bubble colors", () => {
+  it("defaults user message bubble colors for legacy client settings", () => {
+    const decoded = decodeClientSettings({});
+
+    expect(DEFAULT_CLIENT_SETTINGS.userMessageBubbleBackgroundColor).toBe("#262626");
+    expect(DEFAULT_CLIENT_SETTINGS.userMessageBubbleBorderColor).toBe("#3f3f46");
+    expect(decoded.userMessageBubbleBackgroundColor).toBe("#262626");
+    expect(decoded.userMessageBubbleBorderColor).toBe("#3f3f46");
+  });
+
+  it("accepts hex colors in client settings patches", () => {
+    const patch = decodeClientSettingsPatch({
+      userMessageBubbleBackgroundColor: "#0f172a",
+      userMessageBubbleBorderColor: "#38bdf8",
+    });
+
+    expect(patch.userMessageBubbleBackgroundColor).toBe("#0f172a");
+    expect(patch.userMessageBubbleBorderColor).toBe("#38bdf8");
+  });
+
+  it("rejects non-hex user message bubble colors", () => {
+    expect(() => decodeClientSettingsPatch({ userMessageBubbleBackgroundColor: "red" })).toThrow();
   });
 });
 

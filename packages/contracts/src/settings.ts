@@ -199,6 +199,13 @@ export const BrowserLinkTarget = Schema.Literals(["system", "app"]);
 export type BrowserLinkTarget = typeof BrowserLinkTarget.Type;
 export const DEFAULT_BROWSER_LINK_TARGET: BrowserLinkTarget = "system";
 
+export const UserMessageBubbleColor = TrimmedNonEmptyString.check(
+  Schema.isPattern(/^#[0-9a-f]{6}$/i),
+);
+export type UserMessageBubbleColor = typeof UserMessageBubbleColor.Type;
+export const DEFAULT_USER_MESSAGE_BUBBLE_BACKGROUND_COLOR = UserMessageBubbleColor.make("#262626");
+export const DEFAULT_USER_MESSAGE_BUBBLE_BORDER_COLOR = UserMessageBubbleColor.make("#3f3f46");
+
 export const ClientSettingsSchema = Schema.Struct({
   appearanceContrast: AppearanceContrast.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_APPEARANCE_CONTRAST)),
@@ -347,6 +354,12 @@ export const ClientSettingsSchema = Schema.Struct({
   ),
   timestampFormat: TimestampFormat.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_TIMESTAMP_FORMAT)),
+  ),
+  userMessageBubbleBackgroundColor: UserMessageBubbleColor.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_USER_MESSAGE_BUBBLE_BACKGROUND_COLOR)),
+  ),
+  userMessageBubbleBorderColor: UserMessageBubbleColor.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_USER_MESSAGE_BUBBLE_BORDER_COLOR)),
   ),
   wordWrap: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
 });
@@ -1233,6 +1246,8 @@ export const ClientSettingsPatch = Schema.Struct({
   sidebarThreadSortOrder: Schema.optionalKey(SidebarThreadSortOrder),
   sidebarThreadPreviewCount: Schema.optionalKey(SidebarThreadPreviewCount),
   timestampFormat: Schema.optionalKey(TimestampFormat),
+  userMessageBubbleBackgroundColor: Schema.optionalKey(UserMessageBubbleColor),
+  userMessageBubbleBorderColor: Schema.optionalKey(UserMessageBubbleColor),
   wordWrap: Schema.optionalKey(Schema.Boolean),
 });
 export type ClientSettingsPatch = typeof ClientSettingsPatch.Type;

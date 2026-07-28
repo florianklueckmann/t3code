@@ -242,6 +242,28 @@ function backgroundActivityProfileSettings(profile: BackgroundActivityProfile) {
   };
 }
 
+function SettingsColorInput({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label className="flex min-w-0 items-center gap-2">
+      <input
+        type="color"
+        value={value}
+        onChange={(event) => onChange(event.currentTarget.value)}
+        aria-label={label}
+        className="h-8 w-10 cursor-pointer rounded border border-input bg-background p-0.5"
+      />
+      <span className="font-mono text-xs text-muted-foreground">{value}</span>
+    </label>
+  );
+}
 function AboutVersionTitle() {
   return (
     <span className="inline-flex items-baseline gap-2">
@@ -2202,6 +2224,58 @@ export function GeneralSettingsPanel() {
             ) : null}
           </>
         ) : null}
+        <SettingsRow
+          title="User message background"
+          description="Set the fill color used for your chat bubbles."
+          resetAction={
+            settings.userMessageBubbleBackgroundColor !==
+            DEFAULT_UNIFIED_SETTINGS.userMessageBubbleBackgroundColor ? (
+              <SettingResetButton
+                label="user message background"
+                onClick={() =>
+                  updateSettings({
+                    userMessageBubbleBackgroundColor:
+                      DEFAULT_UNIFIED_SETTINGS.userMessageBubbleBackgroundColor,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <SettingsColorInput
+              label="User message bubble background color"
+              value={settings.userMessageBubbleBackgroundColor}
+              onChange={(value) => updateSettings({ userMessageBubbleBackgroundColor: value })}
+            />
+          }
+        />
+
+        <SettingsRow
+          title="User message border"
+          description="Set the outline color used for your chat bubbles."
+          resetAction={
+            settings.userMessageBubbleBorderColor !==
+            DEFAULT_UNIFIED_SETTINGS.userMessageBubbleBorderColor ? (
+              <SettingResetButton
+                label="user message border"
+                onClick={() =>
+                  updateSettings({
+                    userMessageBubbleBorderColor:
+                      DEFAULT_UNIFIED_SETTINGS.userMessageBubbleBorderColor,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <SettingsColorInput
+              label="User message bubble border color"
+              value={settings.userMessageBubbleBorderColor}
+              onChange={(value) => updateSettings({ userMessageBubbleBorderColor: value })}
+            />
+          }
+        />
+
       </SettingsSection>
 
       <SettingsSection id="behavior" title="Behavior">

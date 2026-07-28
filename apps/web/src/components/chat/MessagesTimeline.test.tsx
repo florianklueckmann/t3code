@@ -195,6 +195,8 @@ function buildProps() {
     markdownCwd: undefined,
     resolvedTheme: "light" as const,
     timestampFormat: "locale" as const,
+    userMessageBubbleBackgroundColor: "#262626" as const,
+    userMessageBubbleBorderColor: "#3f3f46" as const,
     workspaceRoot: undefined,
     anchorMessageId: null,
     onAnchorReady: () => {},
@@ -852,6 +854,8 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain("Show full message");
     expect(markup).toContain('data-user-message-collapsible="false"');
     expect(markup).toContain("rounded-2xl bg-message p-3");
+    expect(markup).toContain('data-user-message-bubble="true"');
+    expect(markup).toContain("background-color:#262626");
   });
 
   it("preserves arbitrary XML-like tags and comparisons in rendered user messages", async () => {

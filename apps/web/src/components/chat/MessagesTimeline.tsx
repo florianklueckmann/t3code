@@ -165,7 +165,7 @@ import {
 } from "~/lib/previewAnnotation";
 import { cn } from "~/lib/utils";
 import { useUiStateStore } from "~/uiStateStore";
-import { type TimestampFormat } from "@t3tools/contracts/settings";
+import { type TimestampFormat, type UserMessageBubbleColor } from "@t3tools/contracts/settings";
 import { formatChatTimestampTooltip, formatDayAwareTimestamp } from "../../timestampFormat";
 import {
   buildInlineTerminalContextText,
@@ -212,6 +212,8 @@ interface TimelineRowSharedState {
   workGroupViewState: WorkGroupViewState;
   agentPanelModel: AgentPanelModel;
   onOpenAgents: () => void;
+  userMessageBubbleBackgroundColor: UserMessageBubbleColor;
+  userMessageBubbleBorderColor: UserMessageBubbleColor;
 }
 
 interface TimelineRowActivityState {
@@ -322,6 +324,8 @@ interface MessagesTimelineProps {
   markdownCwd: string | undefined;
   resolvedTheme: "light" | "dark";
   timestampFormat: TimestampFormat;
+  userMessageBubbleBackgroundColor: UserMessageBubbleColor;
+  userMessageBubbleBorderColor: UserMessageBubbleColor;
   workspaceRoot: string | undefined;
   skills?: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
   anchorMessageId: MessageId | null;
@@ -375,6 +379,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   markdownCwd,
   resolvedTheme,
   timestampFormat,
+  userMessageBubbleBackgroundColor,
+  userMessageBubbleBorderColor,
   workspaceRoot,
   skills = EMPTY_TIMELINE_SKILLS,
   anchorMessageId,
@@ -687,6 +693,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       workGroupViewState,
       agentPanelModel,
       onOpenAgents,
+      userMessageBubbleBackgroundColor,
+      userMessageBubbleBorderColor,
     }),
     [
       readyCitationRequest,
@@ -711,6 +719,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       workGroupViewState,
       agentPanelModel,
       onOpenAgents,
+      userMessageBubbleBackgroundColor,
+      userMessageBubbleBorderColor,
     ],
   );
   const activityState = useMemo<TimelineRowActivityState>(
@@ -1285,7 +1295,14 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
 
   return (
     <div className="group flex flex-col items-end gap-1">
-      <div className="relative max-w-[80%] rounded-2xl bg-message p-3 text-message-foreground">
+      <div
+        className="relative max-w-[80%] rounded-2xl border bg-message p-3 text-message-foreground"
+        data-user-message-bubble="true"
+        style={{
+          backgroundColor: ctx.userMessageBubbleBackgroundColor,
+          borderColor: ctx.userMessageBubbleBorderColor,
+        }}
+      >
         {(regularImages.length > 0 || userVideos.length > 0) && (
           <div className="mb-2 grid max-w-[420px] grid-cols-2 gap-2">
             {regularImages.map((image) => (
