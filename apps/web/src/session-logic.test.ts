@@ -190,6 +190,41 @@ describe("V2 session presentation", () => {
     ).toMatchObject({ label: "Provider error after 10/10 retries" });
   });
 
+  it("shows a distinct runtime warning message as work log detail", () => {
+    const now = DateTime.makeUnsafe("2026-06-20T00:00:00.000Z");
+    const item = {
+      id: TurnItemId.make("runtime-warning"),
+      threadId: ThreadId.make("thread-runtime-warning"),
+      runId: RunId.make("run-runtime-warning"),
+      nodeId: null,
+      providerThreadId: null,
+      providerTurnId: null,
+      nativeItemRef: null,
+      parentItemId: null,
+      ordinal: 1,
+      status: "completed" as const,
+      title: "Runtime warning",
+      startedAt: now,
+      completedAt: now,
+      updatedAt: now,
+      type: "system_notice" as const,
+      message: "Provider stderr: context window near limit",
+    } satisfies Extract<OrchestrationV2TurnItem, { readonly type: "system_notice" }>;
+    const [entry] = deriveTimelineEntriesFromVisibleTurnItems({
+      visibleTurnItems: [{
+        item,
+        position: 0,
+        visibility: "local",
+        sourceThreadId: item.threadId,
+        sourceItemId: item.id,
+      }],
+      optimisticMessages: [],
+    });
+    if (entry?.kind !== "work") throw new Error("Expected a work log entry");
+    expect(entry.entry.label).toBe("Runtime warning");
+    expect(entry.entry.detail).toBe("Provider stderr: context window near limit");
+  });
+
   it("selects the latest proposed plan for a run", () => {
     const runId = RunId.make("run-1");
     const planId = PlanId.make("plan-1");
