@@ -273,7 +273,7 @@ import type { ChatMarkdownContextReference } from "../ChatMarkdown";
 import { useMediaQuery } from "~/hooks/useMediaQuery";
 import { cn } from "~/lib/utils";
 import { useUiStateStore } from "~/uiStateStore";
-import { type TimestampFormat } from "@t3tools/contracts/settings";
+import { type TimestampFormat, type UserMessageBubbleColor } from "@t3tools/contracts/settings";
 import {
   formatChatTimestampTooltip,
   formatDayAwareTimestamp,
@@ -361,6 +361,8 @@ interface TimelineRowSharedState {
   onWorktreeSetupWorkLocally: (() => void) | null;
   onOpenWorktreeSetupTerminal: ((terminalId: string) => void) | null;
   workGroupViewState: WorkGroupViewState;
+  userMessageBubbleBackgroundColor: UserMessageBubbleColor;
+  userMessageBubbleBorderColor: UserMessageBubbleColor;
 }
 
 interface TimelineRowActivityState {
@@ -506,6 +508,8 @@ interface MessagesTimelineProps {
   markdownCwd: string | undefined;
   resolvedTheme: "light" | "dark";
   timestampFormat: TimestampFormat;
+  userMessageBubbleBackgroundColor: UserMessageBubbleColor;
+  userMessageBubbleBorderColor: UserMessageBubbleColor;
   workspaceRoot: string | undefined;
   skills?: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
   providerStatuses: ReadonlyArray<ServerProvider>;
@@ -611,6 +615,8 @@ const ConversationTimeline = memo(function ConversationTimeline({
   markdownCwd,
   resolvedTheme,
   timestampFormat,
+  userMessageBubbleBackgroundColor,
+  userMessageBubbleBorderColor,
   workspaceRoot,
   skills = EMPTY_TIMELINE_SKILLS,
   providerStatuses,
@@ -1335,6 +1341,8 @@ const ConversationTimeline = memo(function ConversationTimeline({
       onWorktreeSetupWorkLocally: onWorktreeSetupWorkLocally ?? null,
       onOpenWorktreeSetupTerminal: onOpenWorktreeSetupTerminal ?? null,
       workGroupViewState,
+      userMessageBubbleBackgroundColor,
+      userMessageBubbleBorderColor,
     }),
     [
       readyCitationRequest,
@@ -1373,6 +1381,8 @@ const ConversationTimeline = memo(function ConversationTimeline({
       onWorktreeSetupWorkLocally,
       onOpenWorktreeSetupTerminal,
       workGroupViewState,
+      userMessageBubbleBackgroundColor,
+      userMessageBubbleBorderColor,
     ],
   );
   const compactionAwaitingRow =
@@ -2395,7 +2405,14 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
       {row.message.inputIntent && row.message.inputIntent !== "turn_start" ? (
         <UserMessageIntentMarker intent={row.message.inputIntent} />
       ) : null}
-      <div className="relative max-w-[80%] rounded-2xl bg-message p-3 text-message-foreground">
+            <div
+        className="relative max-w-[80%] rounded-2xl border bg-message p-3 text-message-foreground"
+        data-user-message-bubble="true"
+        style={{
+          backgroundColor: ctx.userMessageBubbleBackgroundColor,
+          borderColor: ctx.userMessageBubbleBorderColor,
+        }}
+      >
         <MessageAuthorHeading>You</MessageAuthorHeading>
         {(regularImages.length > 0 || userVideos.length > 0) && (
           <div className="mb-2 grid max-w-[210px] grid-cols-2 gap-2">
