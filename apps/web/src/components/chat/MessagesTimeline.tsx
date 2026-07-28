@@ -248,7 +248,7 @@ import type { ChatMarkdownContextReference } from "../ChatMarkdown";
 import { useMediaQuery } from "~/hooks/useMediaQuery";
 import { cn } from "~/lib/utils";
 import { useUiStateStore } from "~/uiStateStore";
-import { type TimestampFormat } from "@t3tools/contracts/settings";
+import { type TimestampFormat, type UserMessageBubbleColor } from "@t3tools/contracts/settings";
 import { formatChatTimestampTooltip, formatDayAwareTimestamp } from "../../timestampFormat";
 
 import { SkillInlineText } from "./SkillInlineText";
@@ -302,6 +302,8 @@ interface TimelineRowSharedState {
   onSteerQueuedMessage: (id: string) => void;
   steerQueuedMessageShortcutLabel: string | null;
   onRemoveQueuedMessage: (id: string) => void;
+  userMessageBubbleBackgroundColor: UserMessageBubbleColor;
+  userMessageBubbleBorderColor: UserMessageBubbleColor;
 }
 
 interface TimelineRowActivityState {
@@ -437,6 +439,8 @@ interface MessagesTimelineProps {
   markdownCwd: string | undefined;
   resolvedTheme: "light" | "dark";
   timestampFormat: TimestampFormat;
+  userMessageBubbleBackgroundColor: UserMessageBubbleColor;
+  userMessageBubbleBorderColor: UserMessageBubbleColor;
   workspaceRoot: string | undefined;
   skills?: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
   anchorMessageId: MessageId | null;
@@ -506,6 +510,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   markdownCwd,
   resolvedTheme,
   timestampFormat,
+  userMessageBubbleBackgroundColor,
+  userMessageBubbleBorderColor,
   workspaceRoot,
   skills = EMPTY_TIMELINE_SKILLS,
   anchorMessageId,
@@ -1163,6 +1169,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onSteerQueuedMessage,
       steerQueuedMessageShortcutLabel,
       onRemoveQueuedMessage,
+      userMessageBubbleBackgroundColor,
+      userMessageBubbleBorderColor,
     }),
     [
       readyCitationRequest,
@@ -1198,6 +1206,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onSteerQueuedMessage,
       steerQueuedMessageShortcutLabel,
       onRemoveQueuedMessage,
+      userMessageBubbleBackgroundColor,
+      userMessageBubbleBorderColor,
     ],
   );
   const backgroundWorktreeSetup =
@@ -2086,7 +2096,14 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
 
   return (
     <div className="group flex flex-col items-end gap-1">
-      <div className="relative max-w-[80%] rounded-2xl bg-message p-3 text-message-foreground">
+      <div
+        className="relative max-w-[80%] rounded-2xl border bg-message p-3 text-message-foreground"
+        data-user-message-bubble="true"
+        style={{
+          backgroundColor: ctx.userMessageBubbleBackgroundColor,
+          borderColor: ctx.userMessageBubbleBorderColor,
+        }}
+      >
         <MessageAuthorHeading>You</MessageAuthorHeading>
         {(regularImages.length > 0 || userVideos.length > 0) && (
           <div className="mb-2 grid max-w-[210px] grid-cols-2 gap-2">

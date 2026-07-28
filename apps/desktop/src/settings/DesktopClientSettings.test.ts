@@ -69,6 +69,8 @@ const clientSettings: ClientSettings = {
   loadBalancingWeights: { "environment-1": 75, "environment-2": 0 },
   pullRequestMergeMethodOverrides: {},
   timestampFormat: "24-hour",
+  userMessageBubbleBackgroundColor: "#262626",
+  userMessageBubbleBorderColor: "#3f3f46",
   wordWrap: true,
 };
 

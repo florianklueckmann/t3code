@@ -286,6 +286,12 @@ export const LoadBalancingWeights = Schema.Record(
 );
 
 export const DiffColorScheme = Schema.Literals(["red-green", "blue-orange"]);
+export const UserMessageBubbleColor = TrimmedNonEmptyString.check(
+  Schema.isPattern(/^#[0-9a-f]{6}$/i),
+);
+export type UserMessageBubbleColor = typeof UserMessageBubbleColor.Type;
+export const DEFAULT_USER_MESSAGE_BUBBLE_BACKGROUND_COLOR = UserMessageBubbleColor.make("#262626");
+export const DEFAULT_USER_MESSAGE_BUBBLE_BORDER_COLOR = UserMessageBubbleColor.make("#3f3f46");
 
 export const ClientSettingsSchema = Schema.Struct({
   notificationMode: NotificationMode.pipe(
@@ -477,6 +483,12 @@ export const ClientSettingsSchema = Schema.Struct({
   ),
   snapShotFlash: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   snapShotAnimations: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  userMessageBubbleBackgroundColor: UserMessageBubbleColor.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_USER_MESSAGE_BUBBLE_BACKGROUND_COLOR)),
+  ),
+  userMessageBubbleBorderColor: UserMessageBubbleColor.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_USER_MESSAGE_BUBBLE_BORDER_COLOR)),
+  ),
   wordWrap: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
 });
 export type ClientSettings = typeof ClientSettingsSchema.Type;
@@ -1594,6 +1606,8 @@ export const ClientSettingsPatch = Schema.Struct({
   snapShotSound: Schema.optionalKey(SnapShotSound),
   snapShotFlash: Schema.optionalKey(Schema.Boolean),
   snapShotAnimations: Schema.optionalKey(Schema.Boolean),
+  userMessageBubbleBackgroundColor: Schema.optionalKey(UserMessageBubbleColor),
+  userMessageBubbleBorderColor: Schema.optionalKey(UserMessageBubbleColor),
   wordWrap: Schema.optionalKey(Schema.Boolean),
 });
 export type ClientSettingsPatch = typeof ClientSettingsPatch.Type;
