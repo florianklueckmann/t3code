@@ -1141,6 +1141,23 @@ describe("deriveWorkLogEntries", () => {
     expect(entries[0]?.tone).toBe("error");
   });
 
+  it("uses runtime warning messages as work log detail", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "runtime-warning",
+        createdAt: "2026-02-23T00:00:03.000Z",
+        kind: "runtime.warning",
+        summary: "Runtime warning",
+        tone: "info",
+        payload: { message: "Provider stderr: context window near limit" },
+      }),
+    ];
+
+    const [entry] = deriveWorkLogEntries(activities, undefined);
+    expect(entry?.label).toBe("Runtime warning");
+    expect(entry?.detail).toBe("Provider stderr: context window near limit");
+  });
+
   it("keeps tool entries from every turn and tags each with its turn id", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({

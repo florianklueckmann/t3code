@@ -875,7 +875,7 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
       ? payload.detail
       : null;
   const taskLabel = taskSummary || taskDetailAsLabel;
-  const detail = isTaskActivity
+  let detail = isTaskActivity
     ? !taskDetailAsLabel &&
       payload &&
       typeof payload.detail === "string" &&
@@ -883,6 +883,17 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
       ? stripTrailingExitCode(payload.detail).output
       : null
     : extractToolDetail(payload, title ?? activity.summary);
+  if (
+    detail === null &&
+    (activity.kind === "runtime.warning" || activity.kind === "runtime.error")
+  ) {
+    const message = asTrimmedString(payload?.message);
+    const normalizedSummary = normalizePreviewForComparison(activity.summary);
+    const normalizedMessage = normalizePreviewForComparison(message);
+    if (message && normalizedMessage !== normalizedSummary) {
+      detail = message;
+    }
+  }
   const toolCallId = isTaskActivity ? null : extractToolCallId(payload);
   const entry: DerivedWorkLogEntry = {
     id: activity.id,
