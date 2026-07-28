@@ -3191,6 +3191,9 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
         viewedImage ? viewedImagePath : null,
       )
     : null;
+  const copyText = canExpand
+    ? (expandedBody ?? buildToolCallExpandedBody(workEntry, workspaceRoot) ?? previewText)
+    : null;
   // Reserve destructive row styling for severe failures, not routine tool errors.
   const iconWrapperClass = cn(
     "flex size-6 shrink-0 items-center justify-center",
@@ -3275,6 +3278,18 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
           !showDestructiveRowStyle &&
           !toolIconAcceptsTint(entryIconName, entryToolIcon) ? (
             <XIcon aria-hidden className={cn("size-3 shrink-0", failedToolIconClassName)} />
+          ) : null}
+          {copyText ? (
+            <span onClick={stopRowToggle} onPointerDown={stopRowToggle}>
+              <MessageCopyButton
+                text={copyText}
+                size="icon-xs"
+                variant="ghost"
+                ariaLabel="Copy work log details"
+                tooltipLabel="Copy details"
+                className="size-5"
+              />
+            </span>
           ) : null}
           <span
             className={cn(

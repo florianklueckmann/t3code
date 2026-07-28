@@ -1082,6 +1082,30 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("Compacted context 899K → 19K tokens");
   });
 
+  it("renders a copy button for work log details", () => {
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-1",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-1",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "Runtime warning",
+              detail: "Provider stderr: context window near limit",
+              tone: "info",
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain('aria-label="Copy work log details"');
+  });
+
   it("summarizes changed files in one line", () => {
     const markup = renderToStaticMarkup(
       <MessagesTimeline
