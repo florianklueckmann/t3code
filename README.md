@@ -118,4 +118,22 @@ Read [CONTRIBUTING.md](./CONTRIBUTING.md) before reporting a bug or opening a PR
 
 Have a feature request? Start an [Ideas discussion](https://github.com/pingdotgg/t3code/discussions/categories/ideas).
 
+### Working with this fork
+
+This repository is a fork of [pingdotgg/t3code](https://github.com/pingdotgg/t3code). `upstream` is the canonical project; `origin` is the personal fork. Keep `main` as a clean mirror of `upstream/main` and do all work on named feature branches.
+
+Before beginning work, update the baseline and then rebase the feature branch:
+
+```bash
+git fetch upstream --prune
+git switch main
+git merge --ff-only upstream/main
+git push origin main
+
+git switch my-feature
+git rebase main
+```
+
+If local work is not committed, stash it first with `git stash push --include-untracked`, then restore it after rebasing. Resolve conflicts deliberately rather than discarding the upstream or local side. Keep each independent feature in its own commit, and open pull requests from `origin/my-feature` to `upstream/main`.
+
 Need support? Join the [Discord](https://discord.gg/jn4EGJjrvv).
