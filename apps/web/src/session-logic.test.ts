@@ -1153,7 +1153,7 @@ describe("deriveWorkLogEntries", () => {
       }),
     ];
 
-    const [entry] = deriveWorkLogEntries(activities, undefined);
+    const [entry] = deriveWorkLogEntries(activities);
     expect(entry?.label).toBe("Runtime warning");
     expect(entry?.detail).toBe("Provider stderr: context window near limit");
   });
