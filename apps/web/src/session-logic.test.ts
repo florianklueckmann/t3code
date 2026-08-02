@@ -223,6 +223,18 @@ describe("V2 session presentation", () => {
     if (entry?.kind !== "work") throw new Error("Expected a work log entry");
     expect(entry.entry.label).toBe("Runtime warning");
     expect(entry.entry.detail).toBe("Provider stderr: context window near limit");
+    const [sameText] = deriveTimelineEntriesFromVisibleTurnItems({
+      visibleTurnItems: [{
+        item: { ...item, title: item.message },
+        position: 0,
+        visibility: "local",
+        sourceThreadId: item.threadId,
+        sourceItemId: item.id,
+      }],
+      optimisticMessages: [],
+    });
+    if (sameText?.kind !== "work") throw new Error("Expected a work log entry");
+    expect(sameText.entry.detail).toBeUndefined();
   });
 
   it("selects the latest proposed plan for a run", () => {
