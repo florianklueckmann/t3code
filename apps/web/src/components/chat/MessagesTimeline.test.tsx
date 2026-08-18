@@ -853,9 +853,9 @@ describe("MessagesTimeline", () => {
 
     expect(markup).not.toContain("Show full message");
     expect(markup).toContain('data-user-message-collapsible="false"');
-    expect(markup).toContain("rounded-2xl bg-message p-3");
     expect(markup).toContain('data-user-message-bubble="true"');
     expect(markup).toContain("background-color:#262626");
+    expect(markup).toContain("border-color:#3f3f46");
   });
 
   it("preserves arbitrary XML-like tags and comparisons in rendered user messages", async () => {
