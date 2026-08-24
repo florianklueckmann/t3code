@@ -1,4 +1,0 @@
-interface:
-  display_name: "T3 Code Production Build"
-  short_description: "Build and verify T3 Code macOS artifacts"
-  default_prompt: "Use $build-t3code-production to create and verify a usable T3 Code production artifact."
