@@ -86,6 +86,7 @@ beforeEach(() => {
   activityTestState.expanded = false;
   activityTestState.expandedRuns = false;
 });
+import { MessageCopyButton } from "./MessageCopyButton";
 
 vi.mock("@legendapp/list/react", async () => {
   const legendListTestId = "legend-list";
@@ -1676,22 +1677,10 @@ describe("MessagesTimeline", () => {
 
   it("renders a copy button for work log details", () => {
     const markup = renderToStaticMarkup(
-      <MessagesTimeline
-        {...buildProps()}
-        timelineEntries={[
-          {
-            id: "entry-1",
-            kind: "work",
-            createdAt: "2026-03-17T19:12:28.000Z",
-            entry: {
-              id: "work-1",
-              createdAt: "2026-03-17T19:12:28.000Z",
-              label: "Runtime warning",
-              detail: "Provider stderr: context window near limit",
-              tone: "info",
-            },
-          },
-        ]}
+      <MessageCopyButton
+        text="Provider stderr: context window near limit"
+        ariaLabel="Copy work log details"
+        tooltipLabel="Copy details"
       />,
     );
 
