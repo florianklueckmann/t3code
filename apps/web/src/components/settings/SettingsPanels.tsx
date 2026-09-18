@@ -2376,7 +2376,6 @@ export function GeneralSettingsPanel() {
             />
           }
         />
-
       </SettingsSection>
 
       <SettingsSection id="behavior" title="Behavior">

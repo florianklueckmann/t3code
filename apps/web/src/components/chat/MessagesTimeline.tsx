@@ -4863,7 +4863,14 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
       )
     : null;
   const copyText = canExpand
-    ? (expandedBody ?? buildToolCallExpandedBody(workEntry, workspaceRoot) ?? previewText)
+    ? (expandedBody ??
+      buildToolCallExpandedBody(
+        workEntry,
+        workspaceRoot,
+        previewText,
+        viewedImage ? viewedImagePath : null,
+      ) ??
+      previewText)
     : null;
   // Reserve destructive row styling for severe failures, not routine tool errors.
   const iconWrapperClass = cn(
