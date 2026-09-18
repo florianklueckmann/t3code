@@ -5580,7 +5580,16 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
               turnItemHasDetail(workEntry.projectedItem.item),
             );
   const copyText = canExpand
-    ? (expandedBody ?? (plainOutput !== undefined ? plainOutput : buildToolCallExpandedBody(workEntry, workspaceRoot)) ?? previewText)
+    ? (expandedBody ??
+      (plainOutput !== undefined
+        ? plainOutput
+        : buildToolCallExpandedBody(
+            workEntry,
+            workspaceRoot,
+            previewText,
+            viewedImage ? viewedImagePath : null,
+          )) ??
+      previewText)
     : null;
   // Reserve destructive row styling for severe failures, not routine tool errors.
   const iconWrapperClass = cn(
