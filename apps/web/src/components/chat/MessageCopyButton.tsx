@@ -17,8 +17,8 @@ export const MessageCopyButton = memo(function MessageCopyButton({
   size = "xs",
   variant = "outline",
   className,
-  ariaLabel = "Copy link",
-  tooltipLabel = "Copy to clipboard",
+  ariaLabel = "Copy message",
+  tooltipLabel = "Copy message",
 }: {
   text: string;
   /** Additional clipboard types written beside `text/plain` when the platform allows it. */
