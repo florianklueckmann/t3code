@@ -211,26 +211,30 @@ describe("V2 session presentation", () => {
       message: "Provider stderr: context window near limit",
     } satisfies Extract<OrchestrationV2TurnItem, { readonly type: "system_notice" }>;
     const [entry] = deriveTimelineEntriesFromVisibleTurnItems({
-      visibleTurnItems: [{
-        item,
-        position: 0,
-        visibility: "local",
-        sourceThreadId: item.threadId,
-        sourceItemId: item.id,
-      }],
+      visibleTurnItems: [
+        {
+          item,
+          position: 0,
+          visibility: "local",
+          sourceThreadId: item.threadId,
+          sourceItemId: item.id,
+        },
+      ],
       optimisticMessages: [],
     });
     if (entry?.kind !== "work") throw new Error("Expected a work log entry");
     expect(entry.entry.label).toBe("Runtime warning");
     expect(entry.entry.detail).toBe("Provider stderr: context window near limit");
     const [sameText] = deriveTimelineEntriesFromVisibleTurnItems({
-      visibleTurnItems: [{
-        item: { ...item, title: item.message },
-        position: 0,
-        visibility: "local",
-        sourceThreadId: item.threadId,
-        sourceItemId: item.id,
-      }],
+      visibleTurnItems: [
+        {
+          item: { ...item, title: item.message },
+          position: 0,
+          visibility: "local",
+          sourceThreadId: item.threadId,
+          sourceItemId: item.id,
+        },
+      ],
       optimisticMessages: [],
     });
     if (sameText?.kind !== "work") throw new Error("Expected a work log entry");

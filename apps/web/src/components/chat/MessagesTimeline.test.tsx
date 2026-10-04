@@ -9,6 +9,7 @@ import {
   RunId,
   ThreadId,
 } from "@t3tools/contracts";
+import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
 import {
   act,
   createRef,
@@ -389,6 +390,8 @@ describe("timeline tooltip scroll dismissal", () => {
 
 function buildProps() {
   return {
+    userMessageBubbleBackgroundColor: DEFAULT_CLIENT_SETTINGS.userMessageBubbleBackgroundColor,
+    userMessageBubbleBorderColor: DEFAULT_CLIENT_SETTINGS.userMessageBubbleBorderColor,
     isWorking: false,
     activeTurnInProgress: false,
     listRef: createRef<LegendListRef | null>(),
@@ -1354,7 +1357,6 @@ describe("MessagesTimeline", () => {
 
     expect(markup).not.toContain("Show full message");
     expect(markup).toContain('data-user-message-collapsible="false"');
-    expect(markup).toContain("rounded-2xl bg-message p-3");
   });
 
   it("identifies user-role messages sent by another agent", async () => {

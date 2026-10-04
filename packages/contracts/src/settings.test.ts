@@ -370,7 +370,9 @@ describe("ClientSettings user message bubble colors", () => {
 
     expect(patch.userMessageBubbleBackgroundColor).toBe("#0f172a");
     expect(patch.userMessageBubbleBorderColor).toBe("#38bdf8");
-    expect(encodeClientSettings({ ...decodeClientSettings({}), ...patch }).userMessageBubbleBorderColor).toBe("#38bdf8");
+    expect(
+      encodeClientSettings({ ...decodeClientSettings({}), ...patch }).userMessageBubbleBorderColor,
+    ).toBe("#38bdf8");
   });
 
   it("rejects non-hex user message bubble colors", () => {
