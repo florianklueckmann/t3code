@@ -1,4 +1,9 @@
 export const BRAND_ASSET_PATHS = {
+  florkMacIconPng: "assets/flork/flork-macos-1024.png",
+  florkIconIco: "assets/flork/flork.ico",
+  florkWebFavicon16Png: "assets/flork/flork-16.png",
+  florkWebFavicon32Png: "assets/flork/flork-32.png",
+  florkWebAppleTouchIconPng: "assets/flork/flork-180.png",
   developmentIconComposerProject: "assets/dev/app-icon.icon",
   developmentIosIconPng: "assets/dev/blueprint-ios-1024.png",
   developmentUniversalIconPng: "assets/dev/blueprint-universal-1024.png",
@@ -65,16 +70,16 @@ const WEB_ICON_SOURCE_PATHS_BY_BRAND = {
     appleTouchIconPng: BRAND_ASSET_PATHS.developmentWebAppleTouchIconPng,
   },
   nightly: {
-    faviconIco: BRAND_ASSET_PATHS.nightlyWebFaviconIco,
-    favicon16Png: BRAND_ASSET_PATHS.nightlyWebFavicon16Png,
-    favicon32Png: BRAND_ASSET_PATHS.nightlyWebFavicon32Png,
-    appleTouchIconPng: BRAND_ASSET_PATHS.nightlyWebAppleTouchIconPng,
+    faviconIco: BRAND_ASSET_PATHS.florkIconIco,
+    favicon16Png: BRAND_ASSET_PATHS.florkWebFavicon16Png,
+    favicon32Png: BRAND_ASSET_PATHS.florkWebFavicon32Png,
+    appleTouchIconPng: BRAND_ASSET_PATHS.florkWebAppleTouchIconPng,
   },
   production: {
-    faviconIco: BRAND_ASSET_PATHS.productionWebFaviconIco,
-    favicon16Png: BRAND_ASSET_PATHS.productionWebFavicon16Png,
-    favicon32Png: BRAND_ASSET_PATHS.productionWebFavicon32Png,
-    appleTouchIconPng: BRAND_ASSET_PATHS.productionWebAppleTouchIconPng,
+    faviconIco: BRAND_ASSET_PATHS.florkIconIco,
+    favicon16Png: BRAND_ASSET_PATHS.florkWebFavicon16Png,
+    favicon32Png: BRAND_ASSET_PATHS.florkWebFavicon32Png,
+    appleTouchIconPng: BRAND_ASSET_PATHS.florkWebAppleTouchIconPng,
   },
 } as const satisfies Record<WebAssetBrand, Record<keyof typeof WEB_ICON_TARGET_FILENAMES, string>>;
 
