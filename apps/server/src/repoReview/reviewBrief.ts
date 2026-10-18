@@ -5,7 +5,11 @@ import type { RepoReviewConversationEvent } from "./RepoReviewGitHub.ts";
 
 const MAX_BODY_CHARS = 6_000;
 const MAX_EVENT_CHARS = 1_500;
-const MAX_EVENTS = 20;
+/**
+ * Author events one brief carries, oldest first. The controller receipts only these; any newer
+ * ones stay pending and start the next round.
+ */
+export const MAX_BRIEF_EVENTS = 20;
 
 const clip = (text: string, limit: number) =>
   text.length <= limit
@@ -54,7 +58,7 @@ export function buildReviewBrief(input: ReviewBriefInput): string {
             `${finding.url === null ? "" : ` — ${finding.url}`}` +
             `${finding.scenario === null ? "" : `\n  Scenario: ${clip(finding.scenario, 600)}`}`,
         );
-  const events = input.authorEvents.slice(-MAX_EVENTS);
+  const events = input.authorEvents.slice(0, MAX_BRIEF_EVENTS);
   const eventLines =
     events.length === 0
       ? ["None."]

@@ -17,24 +17,35 @@ row that says exactly what may have happened.
 - **Launches are retried, never duplicated.** A job's command id and thread id are derived from the
   job id and bound before the launch. `ThreadLaunchService` replays an accepted command from its
   receipt, so re-launching a `launching` job after a crash or an ambiguous answer reuses the thread.
-- **Ambiguous writes are settled by reading GitHub.** A timeout or 5xx makes a publication
-  `uncertain`. It is confirmed only by finding our own write (the `t3-repo-review:<publication>`
-  marker, or an exact-head approval by the posting account). It is retried only after it stayed
-  absent for ten minutes, and fails after three attempts.
-- **Own comments are recognized by marker or prefix, not login.** On personal repositories the
-  reviewing account is often the author; their replies must still count as author events.
+  The job's run is the thread's first run, never whichever run is latest.
+- **Ambiguous writes are settled by reading GitHub.** A timeout or 5xx, or a write still
+  `attempting` when a pass starts, makes a publication `uncertain`. It is confirmed only by finding
+  our own write (the `t3-repo-review:<publication>` marker from the posting account, or an
+  exact-head approval by it). It is retried only after it stayed absent for ten minutes, and fails
+  after three attempts.
+- **Own comments need the posting account and our marker or prefix.** Login alone is not enough: on
+  personal repositories the posting account is often the author, and their replies must count.
 - **Results bind to one job.** Only the job's thread and run may submit, and the result must carry
-  the job's exact repository, pull request and pins. A result whose head moved before it was
-  applied is `stale` and authorizes nothing.
+  the job's exact repository, pull request and pins. A result whose head or base branch changed
+  before it was applied is `stale` and authorizes nothing.
+- **Only the newest finished round lands.** A later round in flight holds an approval or merge, and
+  a finished one cancels earlier rounds' landing intents. Without this an old clean verdict could
+  merge while an author reply is still being reviewed.
 - **Any base movement before landing means another round.** Disjoint file lists do not prove the
-  base left the pull request's behavior alone. The merge call is guarded by the reviewed head SHA;
-  GitHub's `mergeable_state` must be `clean` or `has_hooks`, so an admin credential never pushes
-  through required checks or reviews.
+  base left the pull request's behavior alone. Requested changes and unresolved threads hold
+  approvals too. The merge call is guarded by the reviewed head SHA; GitHub's `mergeable_state`
+  must be `clean` or `has_hooks`, so an admin credential never pushes through required checks or
+  reviews. The base can still move between that check and the merge; only a "require branches to
+  be up to date" rule closes that window.
 - **Pause is enforced in the claim.** Launch and write claims check the owner's status in the same
   statement, so nothing new starts once a pause commits. `pause_after_round` admits only jobs
   already launched; queued jobs wait.
 - **Failed reviews are not retried on their own.** That would spend model turns in a loop; a new
-  head, a new author event or `requeue` starts the next round.
+  head, a new author event or `requeue` starts the next round. A brief carries at most 20 author
+  events and receipts only those, so the rest start the next round instead of disappearing.
+- **Imports keep unknown history visible, not active.** Author events from before the handover
+  that the old ledger never marked handled start nothing, but show as a pull request blocker
+  until a person requeues it.
 
 One owner per repository is enforced per environment by a partial unique index. Nothing prevents
 two environments, or an old `watch-repo` owner, from monitoring the same repository; the import

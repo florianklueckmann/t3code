@@ -96,8 +96,10 @@ const reviewed: StoredPullRequest = {
   blocker: null,
 };
 
+// The posting account is also the pull request author, as on a personal repository.
 const context = (overrides: Partial<EventContext> = {}): EventContext => ({
   handledKeys: new Set(),
+  account: "octo",
   commentPrefix: policy.commentPrefix,
   baselineAt: null,
   ...overrides,
@@ -152,10 +154,14 @@ describe("reconcilePullRequest", () => {
     });
     expect(own.enqueue).toBeNull();
     expect(own.receipts.map((receipt) => receipt.disposition)).toEqual(["own", "own"]);
-    // The reviewing account replying without our marker is the author speaking.
-    expect(reconcile({ events: [event({ authorLogin: "reviewer" })] }).enqueue).toBe(
-      "author_event",
-    );
+    // The posting account replying without our marker is the author speaking.
+    expect(reconcile({ events: [event()] }).enqueue).toBe("author_event");
+    // Someone else quoting our marker is still someone else.
+    const quoted = event({
+      authorLogin: "contributor",
+      body: `> ${publicationMarker("finding:x")}\n\nStill crashes with this input.`,
+    });
+    expect(reconcile({ events: [quoted] }).enqueue).toBe("author_event");
   });
 
   it("ignores bots and history from before an import baseline", () => {
@@ -215,6 +221,13 @@ describe("reconcilePullRequest", () => {
       reconcile({ stored: null, detail: detail({ draft: true }), reviewDrafts: true }).enqueue,
     ).toBe("new_pull_request");
     expect(reconcile({ detail: detail({ baseRef: "release" }) }).enqueue).toBe("base_retarget");
+    // A review cancelled because of the retarget does not suppress the replacement.
+    const cancelledByRetarget = reconcile({
+      stored: { ...reviewed, lastReviewedHeadSha: null },
+      detail: detail({ baseRef: "release" }),
+      latestJob: { id: "job-1", headSha: HEAD, baseRef: "main", status: "cancelled" },
+    });
+    expect(cancelledByRetarget.enqueue).toBe("base_retarget");
   });
 });
 
@@ -322,7 +335,7 @@ describe("applyResult", () => {
       ownerId: "owner",
       job,
       result: result(),
-      current: { state: "open", headSha: HEAD, draft: false },
+      current: { state: "open", headSha: HEAD, baseRef: "main" },
       findings: [openFinding],
       policy,
       commentPrefix: policy.commentPrefix,
@@ -330,21 +343,35 @@ describe("applyResult", () => {
     });
 
   it("authorizes nothing when the head moved during the review", () => {
-    const stale = apply({ current: { state: "open", headSha: HEAD2, draft: false } });
+    const stale = apply({ current: { state: "open", headSha: HEAD2, baseRef: "main" } });
     expect(stale.jobStatus).toBe("stale");
     expect(stale.publications).toEqual([]);
     expect(stale.dispositionChanges).toEqual([]);
+    const retargeted = apply({ current: { state: "open", headSha: HEAD, baseRef: "release" } });
+    expect(retargeted.jobStatus).toBe("stale");
+    expect(retargeted.publications).toEqual([]);
   });
 
-  it("plans an exact-head approval and merge for a clean result, but no merge for a draft", () => {
+  it("reopens a resolved finding the review reports as still open", () => {
+    const reopened = apply({
+      findings: [{ ...openFinding, disposition: "fixed" }],
+      result: result({
+        verdict: "findings",
+        findings: [{ canonicalId: openFinding.id, status: "still_open" }],
+      }),
+    });
+    expect(reopened.dispositionChanges).toEqual([{ id: "gh:100", disposition: "open" }]);
+    expect(reopened.publications).toEqual([]);
+  });
+
+  it("plans an exact-head approval and merge for a clean result", () => {
     const clean = apply();
     expect(clean.dispositionChanges).toEqual([{ id: "gh:100", disposition: "fixed" }]);
+    // A draft gets the merge intent too; landing holds it until the pull request is ready.
     expect(clean.publications.map((publication) => publication.id)).toEqual([
       `approval:owner:7:${HEAD}`,
       `merge:owner:7:${HEAD}`,
     ]);
-    const draft = apply({ current: { state: "open", headSha: HEAD, draft: true } });
-    expect(draft.publications.map((publication) => publication.kind)).toEqual(["approval"]);
   });
 
   it("posts a genuinely new finding once and folds a re-reported open one into its canonical report", () => {
@@ -440,6 +467,21 @@ describe("assessLanding", () => {
     });
     // An approval of an older head is not equivalent.
     expect(assess("approval", { events: [{ ...existing, commitId: HEAD2 }] }).type).toBe("proceed");
+  });
+
+  it("holds approvals for requested changes and unresolved threads, but not for GitHub's merge state or drafts", () => {
+    const changes = event({
+      kind: "review",
+      authorLogin: "maintainer",
+      reviewState: "CHANGES_REQUESTED",
+    });
+    expect(assess("approval", { events: [changes] }).type).toBe("blocked");
+    expect(
+      assess("approval", { threads: [{ id: "T", isResolved: false, rootCommentId: "9" }] }).type,
+    ).toBe("blocked");
+    expect(
+      assess("approval", { detail: detail({ mergeableState: "blocked", draft: true }) }).type,
+    ).toBe("proceed");
   });
 
   it("holds merges for requested changes, unresolved threads, GitHub blockers, drafts and disallowed methods", () => {

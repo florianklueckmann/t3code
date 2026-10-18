@@ -50,7 +50,7 @@ import {
 import { planLedgerImport } from "./ledgerImport.ts";
 import * as RepoReviewGitHub from "./RepoReviewGitHub.ts";
 import * as RepoReviewStore from "./RepoReviewStore.ts";
-import { buildReviewBrief } from "./reviewBrief.ts";
+import { buildReviewBrief, MAX_BRIEF_EVENTS } from "./reviewBrief.ts";
 
 /** Launch attempts before a job that cannot start is failed instead of retried forever. */
 const MAX_LAUNCH_ATTEMPTS = 5;
@@ -191,6 +191,7 @@ const make = Effect.gen(function* () {
     handledKeys: ReadonlySet<string>,
   ): EventContext => ({
     handledKeys,
+    account: owner.account,
     commentPrefix: owner.policy.commentPrefix,
     baselineAt: owner.eventsBaselineAt,
   });
@@ -244,6 +245,15 @@ const make = Effect.gen(function* () {
         from: ["active", "pausing"],
       });
       yield* Effect.logWarning("Repository review owner paused", { ownerId: owner.id, reason });
+    });
+
+  /** Every write first proves it would go out under the owner's posting account. */
+  const postingAccountMatches = (owner: RepoReviewStore.OwnerRecord) =>
+    Effect.gen(function* () {
+      const viewer = yield* github.getViewerLogin(owner.host);
+      if (viewer.toLowerCase() === owner.account.toLowerCase()) return true;
+      yield* pauseForSafety(owner, `GitHub credential is ${viewer}, not ${owner.account}.`);
+      return false;
     });
 
   // -------------------------------------------------------------------------
@@ -457,7 +467,10 @@ const make = Effect.gen(function* () {
           candidate.id !== job.id &&
           (candidate.status === "completed" || candidate.status === "imported"),
       );
-      const authorEvents = materialEvents(events, eventContext(owner, handled));
+      // Oldest first, and only as many as the brief shows: those are the ones it receipts.
+      const authorEvents = materialEvents(events, eventContext(owner, handled))
+        .toSorted((a, b) => a.createdAt.localeCompare(b.createdAt))
+        .slice(0, MAX_BRIEF_EVENTS);
       const brief = buildReviewBrief({
         job: { ...jobPins(owner, job), round: job.round, trigger: job.trigger },
         host: owner.host,
@@ -505,7 +518,9 @@ const make = Effect.gen(function* () {
         }),
       );
       if (launched._tag === "Success") {
-        const run = launched.value.projection.runs.at(-1);
+        // The controller creates the thread, so the brief's run is its first. A replayed launch
+        // must not adopt a run someone started later in the same thread.
+        const run = launched.value.projection.runs[0];
         yield* store.markRunning({ jobId: job.id, runId: run?.id ?? null });
         return;
       }
@@ -601,9 +616,7 @@ const make = Effect.gen(function* () {
         .getThreadRecords(threadId, ["runs"])
         .pipe(Effect.orElseSucceed(() => null));
       const run =
-        records?.runs.find((candidate) => candidate.id === job.runId) ??
-        records?.runs.at(-1) ??
-        null;
+        records?.runs.find((candidate) => candidate.id === job.runId) ?? records?.runs[0] ?? null;
       if (run !== null && TERMINAL_RUN_STATUSES.has(run.status)) {
         yield* failJob(`The review run ended (${run.status}) without submitting a result.`);
         return;
@@ -677,7 +690,8 @@ const make = Effect.gen(function* () {
         }
         return yield* failure("conflict", "A different result was already accepted for this job.");
       }
-      if (job.status !== "running") {
+      // `launching` too: the agent can start before the launch acknowledgement is recorded.
+      if (job.status !== "running" && job.status !== "launching") {
         return yield* failure(
           "conflict",
           `This job is ${job.status} and no longer accepts results.`,
@@ -688,16 +702,13 @@ const make = Effect.gen(function* () {
         return yield* failure("conflict", "The repository review owner is stopped.");
       }
       // A later message in this thread starts another run; only the job's own run may answer.
-      if (job.runId !== null) {
-        const records = yield* threads
-          .getThreadRecords(callerThreadId, ["runs"])
-          .pipe(
-            Effect.mapError(() => failure("storage_error", "Could not read the review thread.")),
-          );
-        const latest = records.runs.at(-1);
-        if (latest !== undefined && latest.id !== job.runId) {
-          return yield* failure("conflict", "Only the review job's own run can submit its result.");
-        }
+      const records = yield* threads
+        .getThreadRecords(callerThreadId, ["runs"])
+        .pipe(Effect.mapError(() => failure("storage_error", "Could not read the review thread.")));
+      const jobRunId = job.runId ?? records.runs[0]?.id;
+      const latest = records.runs.at(-1);
+      if (jobRunId === undefined || latest === undefined || latest.id !== jobRunId) {
+        return yield* failure("conflict", "Only the review job's own run can submit its result.");
       }
       const findings = yield* store
         .listFindings({ ownerId: owner.id, pullRequest: job.pullRequest })
@@ -754,6 +765,14 @@ const make = Effect.gen(function* () {
             now,
           });
           if (!moved) return;
+          // This round decides the pull request's landing; earlier rounds' intents end here.
+          yield* store.cancelPublicationsForOwner({
+            ownerId: owner.id,
+            statuses: ["planned", "blocked"],
+            detail: `Superseded by review round ${job.round}.`,
+            now,
+            supersededLandings: { pullRequest: job.pullRequest, jobId: job.id },
+          });
           for (const finding of application.newFindings) {
             yield* store.insertFinding({
               ownerId: owner.id,
@@ -949,6 +968,18 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       if (publication.payload.kind !== "finding_comment") return;
       const payload = publication.payload;
+      // A later review may have fixed or withdrawn the finding while this report waited.
+      const finding = (yield* store.listFindings({
+        ownerId: owner.id,
+        pullRequest: publication.pullRequest,
+      })).find((candidate) => candidate.id === publication.findingId);
+      if (finding === undefined || finding.disposition !== "open") {
+        return yield* settle(publication, "cancelled", "The finding is no longer open.", [
+          "planned",
+          "blocked",
+        ]);
+      }
+      if (!(yield* postingAccountMatches(owner))) return;
       const detail = yield* github.getPullRequest({
         ...target(owner),
         number: publication.pullRequest,
@@ -1042,6 +1073,22 @@ const make = Effect.gen(function* () {
   ) =>
     Effect.gen(function* () {
       const kind = publication.kind === "merge" ? "merge" : "approval";
+      // Only the newest finished round may land. A round in flight (an author reply, an
+      // integration review) holds the write; a newer finished round supersedes it.
+      const prJobs = yield* store.listJobs({
+        ownerId: owner.id,
+        pullRequest: publication.pullRequest,
+      });
+      if (prJobs.some((candidate) => isActiveJobStatus(candidate.status))) return;
+      const latest = prJobs.find((candidate) => candidate.status !== "imported");
+      if (latest === undefined || latest.id !== publication.jobId) {
+        return yield* settle(
+          publication,
+          "cancelled",
+          `Superseded by review round ${latest?.round ?? "?"}.`,
+          ["planned", "blocked"],
+        );
+      }
       if (kind === "merge" && owner.policy.approve) {
         const approval = pending.find(
           (candidate) =>
@@ -1052,13 +1099,7 @@ const make = Effect.gen(function* () {
         // The approval lands first; a merge never overtakes its own approval.
         if (approval !== undefined && approval.status !== "confirmed") return;
       }
-      const viewer = yield* github.getViewerLogin(owner.host);
-      if (viewer.toLowerCase() !== owner.account.toLowerCase()) {
-        return yield* pauseForSafety(
-          owner,
-          `GitHub credential is ${viewer}, not ${owner.account}.`,
-        );
-      }
+      if (!(yield* postingAccountMatches(owner))) return;
       const detail = yield* github.getPullRequest({
         ...target(owner),
         number: publication.pullRequest,
@@ -1073,10 +1114,9 @@ const make = Effect.gen(function* () {
         number: publication.pullRequest,
       });
       const threadsOnPr =
-        kind === "merge" && detail.state === "open"
+        detail.state === "open"
           ? yield* github.listReviewThreads({ ...target(owner), number: publication.pullRequest })
           : [];
-      const job = publication.jobId === null ? null : yield* store.getJob(publication.jobId);
       const findings = yield* store.listFindings({
         ownerId: owner.id,
         pullRequest: publication.pullRequest,
@@ -1084,7 +1124,7 @@ const make = Effect.gen(function* () {
       const verdict = assessLanding({
         kind,
         expectedHeadSha: publication.expectedHeadSha,
-        expectedBaseRef: job?.baseRef ?? detail.baseRef,
+        expectedBaseRef: latest.baseRef,
         expectedBaseSha: publication.expectedBaseSha,
         policy: owner.policy,
         snapshot: {
@@ -1093,7 +1133,7 @@ const make = Effect.gen(function* () {
           events,
           threads: threadsOnPr,
           allowedMergeMethods: repo.allowedMergeMethods,
-          viewerLogin: viewer,
+          viewerLogin: owner.account,
         },
         ownFindings: findings,
       });
@@ -1206,8 +1246,32 @@ const make = Effect.gen(function* () {
   const writeGate = (owner: RepoReviewStore.OwnerRecord): RepoReviewStore.PublicationGate =>
     owner.status === "pausing" ? "active_or_pausing" : "active";
 
+  /**
+   * Writes still `attempting` when a pass starts were abandoned: passes never overlap, and each
+   * settles its own writes. A crash or a failed settlement leaves them, and whether they landed is
+   * unknown, so they are confirmed by read-back, never written again blindly.
+   */
+  const releaseAbandonedWrites = (ownerId: string, detail: string) =>
+    Effect.gen(function* () {
+      const now = yield* nowIso;
+      const attempting = yield* store.listPublications({ ownerId, statuses: ["attempting"] });
+      for (const publication of attempting) {
+        yield* store.settlePublication({
+          id: publication.id,
+          from: ["attempting"],
+          to: "uncertain",
+          detail,
+          now,
+        });
+      }
+    });
+
   const publish = (owner: RepoReviewStore.OwnerRecord, includeBlocked: boolean) =>
     Effect.gen(function* () {
+      yield* releaseAbandonedWrites(
+        owner.id,
+        "The write was not settled; confirming by read-back.",
+      );
       const all = yield* store.listPublications({
         ownerId: owner.id,
         statuses: ["planned", "uncertain", "blocked", "confirmed"],
@@ -1263,14 +1327,42 @@ const make = Effect.gen(function* () {
   const finishPausing = (owner: RepoReviewStore.OwnerRecord) =>
     Effect.gen(function* () {
       if (owner.status !== "pausing") return;
-      const inFlight = yield* store.listJobs({
+      const unfinished = yield* store.listJobs({
         ownerId: owner.id,
-        statuses: ["launching", "running", "result_received"],
+        statuses: ["queued", "launching", "running", "result_received"],
       });
-      const pending = yield* store.listPublications({
+      // Queued reviews were not admitted to this round; landings they hold wait with them.
+      const inFlight = unfinished.filter((job) => job.status !== "queued");
+      const queuedPullRequests = new Set(
+        unfinished.filter((job) => job.status === "queued").map((job) => job.pullRequest),
+      );
+      const publications = yield* store.listPublications({
         ownerId: owner.id,
-        statuses: ["planned", "attempting"],
+        statuses: ["planned", "attempting", "uncertain", "blocked", "confirmed"],
       });
+      // A merge waiting on an approval that cannot land this round does not hold the pause.
+      const waitingOnApproval = (merge: RepoReviewStore.PublicationRecord) =>
+        merge.kind === "merge" &&
+        merge.status === "planned" &&
+        publications.some(
+          (approval) =>
+            approval.kind === "approval" &&
+            approval.pullRequest === merge.pullRequest &&
+            approval.expectedHeadSha === merge.expectedHeadSha &&
+            approval.status === "blocked",
+        );
+      // An admitted write whose outcome is still unknown is part of the round until it settles.
+      const pending = publications.filter(
+        (publication) =>
+          (publication.status === "planned" ||
+            publication.status === "attempting" ||
+            publication.status === "uncertain") &&
+          !waitingOnApproval(publication) &&
+          !(
+            publication.kind !== "finding_comment" &&
+            queuedPullRequests.has(publication.pullRequest)
+          ),
+      );
       if (inFlight.length > 0 || pending.length > 0) return;
       const now = yield* nowIso;
       yield* store.setOwnerStatus({
@@ -1830,25 +1922,11 @@ const make = Effect.gen(function* () {
       };
     });
 
-  // A crash between claiming a write and recording its answer leaves it `attempting`. Whether it
-  // landed is unknown, so it is settled by reading GitHub back, never by writing again blindly.
+  // Visible as uncertain from startup on, before the first pass runs.
   yield* Effect.gen(function* () {
     const owners = yield* store.listOwners({ includeStopped: false });
-    const now = yield* nowIso;
     for (const owner of owners) {
-      const attempting = yield* store.listPublications({
-        ownerId: owner.id,
-        statuses: ["attempting"],
-      });
-      for (const publication of attempting) {
-        yield* store.settlePublication({
-          id: publication.id,
-          from: ["attempting"],
-          to: "uncertain",
-          detail: "Interrupted by a restart; confirming by read-back.",
-          now,
-        });
-      }
+      yield* releaseAbandonedWrites(owner.id, "Interrupted by a restart; confirming by read-back.");
     }
   }).pipe(
     Effect.catchCause((cause) =>

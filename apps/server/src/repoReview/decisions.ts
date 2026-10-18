@@ -62,7 +62,9 @@ export interface EventReceipt {
 /** How the controller recognizes its own writes and the history it inherited. */
 export interface EventContext {
   readonly handledKeys: ReadonlySet<string>;
-  /** First line of our public comments. The reviewing account may also be the author. */
+  /** The posting account. Only its comments can be ours; it may also be the author. */
+  readonly account: string;
+  /** First line of our public comments. */
   readonly commentPrefix: string;
   /** Events at or before this instant were handled by an earlier owner (imports). */
   readonly baselineAt: string | null;
@@ -88,9 +90,9 @@ export const isActiveJobStatus = (status: RepoReviewJobStatus) => ACTIVE_JOB_STA
 export const CONTROLLER_MARKER = "t3-repo-review:";
 
 /**
- * What one conversation event means to the controller. Our own writes are recognized by their
- * marker or comment prefix, not by login: on a personal repository the reviewing account is often
- * the pull request author too, and the author's replies must still count.
+ * What one conversation event means to the controller. Our own writes come from the posting
+ * account and carry our marker or comment prefix. Login alone is not enough: on a personal
+ * repository the posting account is often the author too, and the author's replies must count.
  */
 export function classifyEvent(
   event: RepoReviewConversationEvent,
@@ -99,8 +101,9 @@ export function classifyEvent(
   if (event.keys.some((key) => context.handledKeys.has(key))) return "handled";
   const prefix = context.commentPrefix.trim();
   if (
-    event.body.includes(CONTROLLER_MARKER) ||
-    (prefix !== "" && event.body.trimStart().startsWith(prefix))
+    event.authorLogin.toLowerCase() === context.account.toLowerCase() &&
+    (event.body.includes(CONTROLLER_MARKER) ||
+      (prefix !== "" && event.body.trimStart().startsWith(prefix)))
   ) {
     return "own";
   }
@@ -139,15 +142,23 @@ export function reconcilePullRequest(input: {
   const { detail } = observation;
   const receipts: EventReceipt[] = [];
   let material = 0;
+  let inherited = 0;
   for (const event of observation.events) {
     const kind = classifyEvent(event, input.events);
     if (kind === "own" || kind === "bot" || kind === "baseline") {
       receipts.push({ key: event.keys[0]!, kind: event.kind, disposition: kind });
+      if (kind === "baseline") inherited++;
     } else if (kind === "material") {
       // Left unreceipted on purpose: the next brief includes it and records it then.
       material++;
     }
   }
+  // Activity from before an import that the previous owner never marked handled. It may or may
+  // not have been reviewed, so it starts nothing on its own but stays visible until next change.
+  const inheritedNote =
+    inherited === 0
+      ? null
+      : `${inherited} author event(s) from before the handover were never marked handled; requeue to review them.`;
 
   const base: StoredPullRequest = {
     number: detail.number,
@@ -164,7 +175,7 @@ export function reconcilePullRequest(input: {
     lastReviewedHeadSha: stored?.lastReviewedHeadSha ?? null,
     lastReviewedBaseSha: stored?.lastReviewedBaseSha ?? null,
     round: stored?.round ?? 0,
-    blocker: null,
+    blocker: inheritedNote,
   };
 
   if (detail.state !== "open") {
@@ -177,7 +188,11 @@ export function reconcilePullRequest(input: {
     };
   }
 
-  const retargeted = stored !== null && stored.baseRef !== detail.baseRef;
+  const retargeted =
+    (stored !== null && stored.baseRef !== detail.baseRef) ||
+    (latestJob !== null &&
+      latestJob.headSha === detail.headSha &&
+      latestJob.baseRef !== detail.baseRef);
   if (activeJob !== null) {
     if (activeJob.headSha === detail.headSha && activeJob.baseRef === detail.baseRef) {
       return { pullRequest: base, receipts, enqueue: null, cancelJob: null };
@@ -202,6 +217,7 @@ export function reconcilePullRequest(input: {
   if (
     latestJob !== null &&
     latestJob.headSha === detail.headSha &&
+    latestJob.baseRef === detail.baseRef &&
     (latestJob.status === "failed" || latestJob.status === "cancelled")
   ) {
     // A new author reply is a new reason to look. Its events are receipted when that review
@@ -419,7 +435,7 @@ export function applyResult(input: {
   readonly current: {
     readonly state: RepoReviewPullRequestState;
     readonly headSha: string;
-    readonly draft: boolean;
+    readonly baseRef: string;
   };
   readonly findings: ReadonlyArray<CanonicalFinding>;
   readonly policy: RepoReviewPolicy;
@@ -427,11 +443,19 @@ export function applyResult(input: {
 }): ResultApplication {
   const { job, result, current, policy } = input;
   const none = { newFindings: [], dispositionChanges: [], publications: [] };
-  if (current.state !== "open" || current.headSha !== job.headSha) {
+  if (
+    current.state !== "open" ||
+    current.headSha !== job.headSha ||
+    current.baseRef !== job.baseRef
+  ) {
     return {
       jobStatus: "stale",
       error:
-        current.state !== "open" ? `Pull request ${current.state}.` : "Head moved during review.",
+        current.state !== "open"
+          ? `Pull request ${current.state}.`
+          : current.headSha !== job.headSha
+            ? "Head moved during review."
+            : `Retargeted to ${current.baseRef} during review.`,
       reviewedHead: false,
       ...none,
     };
@@ -511,8 +535,12 @@ export function applyResult(input: {
     const id = finding.canonicalId!;
     if (finding.status === "still_open") {
       stillOpen.add(id);
-      // A report whose first publication was cancelled by a new head is posted at this head.
       const existing = prFindings.find((candidate) => candidate.id === id);
+      // A defect found again after it was marked fixed or withdrawn is open again.
+      if (existing !== undefined && existing.disposition !== "open") {
+        dispositionChanges.push({ id, disposition: "open" });
+      }
+      // A report whose first publication was cancelled by a new head is posted at this head.
       if (existing !== undefined && existing.url === null && existing.githubCommentId === null) {
         planFindingComment({
           ...existing,
@@ -551,7 +579,8 @@ export function applyResult(input: {
         },
       });
     }
-    if (policy.merge && !current.draft) {
+    // Planned for drafts too: landing holds it as blocked until the pull request is ready.
+    if (policy.merge) {
       publications.push({
         id: publicationIds.merge(input.ownerId, job.pullRequest, job.headSha),
         kind: "merge",
@@ -654,16 +683,7 @@ export function assessLanding(input: {
       reason: `Base ${detail.baseRef} moved from ${input.expectedBaseSha.slice(0, 7)} to ${snapshot.baseSha.slice(0, 7)} since the review.`,
     };
   }
-  if (kind === "approval") return { type: "proceed" };
-
-  if (detail.draft) return { type: "blocked", reason: "Draft pull requests are not merged." };
-  if (!input.policy.merge) return { type: "cancel", reason: "Merging is not authorized." };
-  if (!snapshot.allowedMergeMethods.includes(input.policy.mergeMethod)) {
-    return {
-      type: "blocked",
-      reason: `The repository does not allow ${input.policy.mergeMethod} merges.`,
-    };
-  }
+  // Blocking reviews and threads hold approvals as well as merges.
   const latestByReviewer = new Map<string, string>();
   for (const event of snapshot.events) {
     if (event.kind !== "review" || event.reviewState === null || event.reviewState === "COMMENTED")
@@ -689,6 +709,18 @@ export function assessLanding(input: {
   );
   if (unresolved.length > 0) {
     return { type: "blocked", reason: `${unresolved.length} unresolved review thread(s).` };
+  }
+  // A missing approval is often what makes GitHub call a pull request blocked, so mergeability
+  // is a merge condition only. Drafts may be approved but are never merged.
+  if (kind === "approval") return { type: "proceed" };
+
+  if (detail.draft) return { type: "blocked", reason: "Draft pull requests are not merged." };
+  if (!input.policy.merge) return { type: "cancel", reason: "Merging is not authorized." };
+  if (!snapshot.allowedMergeMethods.includes(input.policy.mergeMethod)) {
+    return {
+      type: "blocked",
+      reason: `The repository does not allow ${input.policy.mergeMethod} merges.`,
+    };
   }
   if (detail.mergeable !== true || !MERGEABLE_STATES.has(detail.mergeableState)) {
     return {

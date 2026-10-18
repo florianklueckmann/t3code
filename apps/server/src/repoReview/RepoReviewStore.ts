@@ -444,6 +444,8 @@ export class RepoReviewStore extends Context.Service<
       readonly statuses: ReadonlyArray<RepoReviewPublicationStatus>;
       readonly detail: string;
       readonly now: string;
+      /** Narrows to one pull request's approvals and merges planned by other jobs. */
+      readonly supersededLandings?: { readonly pullRequest: number; readonly jobId: string };
     }) => Effect.Effect<void, RepoReviewStoreError>;
 
     readonly findImport: (
@@ -825,7 +827,8 @@ const make = Effect.gen(function* () {
         UPDATE repo_review_pull_requests SET round = ${job.round}
         WHERE owner_id = ${job.ownerId} AND number = ${job.pullRequest}
       `;
-    }).pipe(Effect.mapError(fail("insert-job")));
+      // The job and the round it advances commit together, nested or not.
+    }).pipe(sql.withTransaction, Effect.mapError(fail("insert-job")));
 
   const selectJobs = (
     rows: Effect.Effect<ReadonlyArray<JobRow>, SqlError.SqlError>,
@@ -911,7 +914,8 @@ const make = Effect.gen(function* () {
         UPDATE repo_review_jobs
         SET status = 'result_received', result_json = ${resultJson},
             result_sha256 = ${input.resultSha256}, verdict = ${input.result.verdict}
-        WHERE job_id = ${input.jobId} AND status = 'running' AND result_sha256 IS NULL
+        WHERE job_id = ${input.jobId} AND status IN ('launching', 'running')
+          AND result_sha256 IS NULL
         RETURNING job_id
       `.pipe(Effect.mapError(fail("accept-result")));
       return rows.length > 0;
@@ -1115,6 +1119,13 @@ const make = Effect.gen(function* () {
       UPDATE repo_review_publications
       SET status = 'cancelled', detail = ${input.detail}, updated_at = ${input.now}
       WHERE owner_id = ${input.ownerId} AND status IN ${sql.in(input.statuses)}
+        ${
+          input.supersededLandings === undefined
+            ? sql``
+            : sql`AND pull_request = ${input.supersededLandings.pullRequest}
+                AND kind IN ('approval', 'merge')
+                AND (job_id IS NULL OR job_id <> ${input.supersededLandings.jobId})`
+        }
     `.pipe(Effect.asVoid, Effect.mapError(fail("cancel-publications")));
 
   const findImport: RepoReviewStore["Service"]["findImport"] = (sourceSha256) =>

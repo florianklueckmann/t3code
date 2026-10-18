@@ -1041,6 +1041,232 @@ describe("RepoReviewController", () => {
   );
 });
 
+describe("RepoReviewController landing and recovery edges", () => {
+  const rateLimited = (count: number): Failure[] =>
+    Array.from({ length: count }, () => ({
+      error: new RepoReviewGitHub.RepoReviewGitHubError({
+        operation: "x",
+        outcome: "rate_limited",
+      }),
+      landAnyway: false,
+    }));
+
+  it.effect("never lets an older clean round merge while a newer round is under way", () =>
+    Effect.gen(function* () {
+      const github = makeFakeGitHub();
+      const threads = makeFakeThreads();
+      github.openPullRequest(7, { mergeableState: "blocked" });
+      yield* withController(github, threads, (controller) =>
+        Effect.gen(function* () {
+          const first = yield* launchFirstReview(controller);
+          yield* controller.submitResult(first.threadId!, cleanResult(first));
+          yield* controller.runDueWork;
+          assert.deepStrictEqual(github.writes(), ["approve"]);
+          threads.endRun(first.threadId!);
+
+          // The author replies, and checks turn green while that reply is reviewed.
+          github.authorComment(7, "One more thing: the overflow case is intended.");
+          yield* pollInterval;
+          yield* controller.runDueWork;
+          const second = yield* latestJob(controller);
+          assert.strictEqual(second.trigger, "author_event");
+          github.pr(7).mergeableState = "clean";
+          yield* pollInterval;
+          yield* controller.runDueWork;
+          assert.deepStrictEqual(github.writes(), ["approve"]);
+
+          yield* controller.submitResult(second.threadId!, findingResult(second));
+          yield* controller.runDueWork;
+          const owner = yield* view(controller);
+          assert.strictEqual(
+            owner.publications.find((publication) => publication.kind === "merge")!.status,
+            "cancelled",
+          );
+          assert.deepStrictEqual(github.writes(), ["approve", "createReviewComment"]);
+        }),
+      );
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+  );
+
+  it.effect("does not loop integration reviews after one fails", () =>
+    Effect.gen(function* () {
+      const github = makeFakeGitHub();
+      const threads = makeFakeThreads();
+      github.openPullRequest(7);
+      yield* withController(github, threads, (controller) =>
+        Effect.gen(function* () {
+          const job = yield* launchFirstReview(controller);
+          yield* controller.submitResult(job.threadId!, cleanResult(job));
+          github.state.branches.set("main", BASE_2);
+          yield* controller.runDueWork; // blocked, integration review queued
+          yield* controller.runDueWork; // launched
+          const integration = yield* latestJob(controller);
+          assert.strictEqual(integration.trigger, "integration_change");
+          threads.endRun(integration.threadId!, "failed");
+          for (let tick = 0; tick < 4; tick++) {
+            yield* pollInterval;
+            yield* controller.runDueWork;
+          }
+          assert.strictEqual(threads.state.launchCalls, 2);
+          assert.deepStrictEqual(github.writes(), []);
+          const owner = yield* view(controller);
+          assert.strictEqual(
+            owner.publications.find((publication) => publication.kind === "approval")!.status,
+            "cancelled",
+          );
+        }),
+      );
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+  );
+
+  it.effect(
+    "binds a replayed launch to the brief's run and accepts its result before the ack",
+    () =>
+      Effect.gen(function* () {
+        const github = makeFakeGitHub();
+        const threads = makeFakeThreads();
+        github.openPullRequest(7);
+        threads.state.failAfterCreate = 1;
+        yield* withController(github, threads, (controller) =>
+          Effect.gen(function* () {
+            const job = yield* launchFirstReview(controller);
+            assert.strictEqual(job.status, "launching");
+            // The agent already runs and submits before the launch acknowledgement is recorded.
+            const accepted = yield* controller.submitResult(job.threadId!, cleanResult(job));
+            assert.strictEqual(accepted.jobStatus, "result_received");
+            yield* controller.runDueWork;
+            assert.deepStrictEqual(github.writes(), ["approve", "merge"]);
+          }),
+        );
+      }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+  );
+
+  it.effect("fails a job when its own run ends, even if a later run in its thread is live", () =>
+    Effect.gen(function* () {
+      const github = makeFakeGitHub();
+      const threads = makeFakeThreads();
+      github.openPullRequest(7);
+      threads.state.failAfterCreate = 1;
+      yield* withController(github, threads, (controller) =>
+        Effect.gen(function* () {
+          const job = yield* launchFirstReview(controller);
+          threads.endRun(job.threadId!);
+          threads.addRun(job.threadId!);
+          yield* controller.runDueWork; // replays the launch, binds run 1
+          yield* controller.runDueWork; // run 1 ended without a result
+          assert.strictEqual((yield* latestJob(controller)).status, "failed");
+        }),
+      );
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+  );
+
+  it.effect("drops a waiting report once a later review withdraws it", () =>
+    Effect.gen(function* () {
+      const github = makeFakeGitHub();
+      const threads = makeFakeThreads();
+      github.openPullRequest(7);
+      github.state.failures.set("createReviewComment", rateLimited(20));
+      yield* withController(github, threads, (controller) =>
+        Effect.gen(function* () {
+          const first = yield* launchFirstReview(controller);
+          yield* controller.submitResult(first.threadId!, findingResult(first));
+          yield* controller.runDueWork;
+          threads.endRun(first.threadId!);
+          github.authorComment(7, "That count can never exceed 10, see the schema.");
+          yield* pollInterval;
+          yield* controller.runDueWork;
+          const second = yield* latestJob(controller);
+          const finding = (yield* view(controller)).openFindings[0]!;
+          yield* controller.submitResult(
+            second.threadId!,
+            cleanResult(second, {
+              findings: [
+                { canonicalId: finding.id, status: "withdrawn", evidence: "Schema caps it." },
+              ],
+            }),
+          );
+          github.state.failures.delete("createReviewComment");
+          yield* controller.runDueWork;
+          yield* controller.runDueWork;
+          // Rate-limited attempts were refused; nothing was ever posted.
+          assert.isFalse(github.pr(7).events.some((event) => event.kind === "review_comment"));
+          const owner = yield* view(controller);
+          assert.strictEqual(
+            owner.publications.find((publication) => publication.kind === "finding_comment")!
+              .status,
+            "cancelled",
+          );
+        }),
+      );
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+  );
+
+  it.effect("checks the posting account before a finding is written", () =>
+    Effect.gen(function* () {
+      const github = makeFakeGitHub();
+      const threads = makeFakeThreads();
+      github.openPullRequest(7);
+      yield* withController(github, threads, (controller) =>
+        Effect.gen(function* () {
+          const job = yield* launchFirstReview(controller);
+          github.state.viewer = "someone-else";
+          yield* controller.submitResult(job.threadId!, findingResult(job));
+          yield* controller.runDueWork;
+          assert.deepStrictEqual(github.writes(), []);
+          assert.strictEqual((yield* view(controller)).owner.status, "paused");
+        }),
+      );
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+  );
+
+  it.effect("merges a clean draft once it is marked ready, without another review", () =>
+    Effect.gen(function* () {
+      const github = makeFakeGitHub();
+      const threads = makeFakeThreads();
+      github.openPullRequest(7, { draft: true });
+      yield* withController(github, threads, (controller) =>
+        Effect.gen(function* () {
+          const job = yield* launchFirstReview(controller);
+          yield* controller.submitResult(job.threadId!, cleanResult(job));
+          yield* controller.runDueWork;
+          assert.deepStrictEqual(github.writes(), ["approve"]);
+          threads.endRun(job.threadId!);
+          github.pr(7).draft = false;
+          github.pr(7).updatedAt = "2026-10-18T15:00:00Z";
+          yield* pollInterval;
+          yield* controller.runDueWork;
+          assert.deepStrictEqual(github.writes(), ["approve", "merge"]);
+          assert.strictEqual(threads.state.launchCalls, 1);
+        }),
+      );
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+  );
+
+  it.effect("settles a write left attempting by a failed settlement without a restart", () =>
+    Effect.gen(function* () {
+      const github = makeFakeGitHub();
+      const threads = makeFakeThreads();
+      github.openPullRequest(7);
+      github.state.failures.set("createReviewComment", rateLimited(1));
+      const sql = yield* SqlClient.SqlClient;
+      yield* withController(github, threads, (controller) =>
+        Effect.gen(function* () {
+          const job = yield* launchFirstReview(controller);
+          yield* controller.submitResult(job.threadId!, findingResult(job));
+          yield* controller.runDueWork;
+          const publicationId = (yield* view(controller)).publications[0]!.id;
+          // GitHub accepted the comment, then recording the answer failed.
+          github.authorComment(7, `${PREFIX}\n\n${publicationMarker(publicationId)}`);
+          yield* sql`UPDATE repo_review_publications SET status = 'attempting' WHERE publication_id = ${publicationId}`;
+          yield* controller.runDueWork;
+          assert.strictEqual((yield* view(controller)).publications[0]!.status, "confirmed");
+          assert.deepStrictEqual(github.writes(), ["createReviewComment"]);
+        }),
+      );
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+  );
+});
+
 describe("RepoReviewController import", () => {
   const ledger = (overrides: Record<string, unknown> = {}) => ({
     schema: 1,
