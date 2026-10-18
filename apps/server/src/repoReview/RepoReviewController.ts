@@ -837,15 +837,17 @@ const make = Effect.gen(function* () {
         ...target(owner),
         number: publication.pullRequest,
       });
+      // An approval counts only while it is the account's standing verdict: a re-planned
+      // approval reuses its id, so an older approval's marker proves nothing about the new one.
+      if (publication.kind === "approval") {
+        return effectiveApproval(events, owner.account, publication.expectedHeadSha);
+      }
       const viewer = owner.account.toLowerCase();
       const marker = publicationMarker(publication.id);
       return (
         events.find(
           (event) => event.authorLogin.toLowerCase() === viewer && event.body.includes(marker),
-        ) ??
-        (publication.kind === "approval"
-          ? effectiveApproval(events, owner.account, publication.expectedHeadSha)
-          : null)
+        ) ?? null
       );
     });
 

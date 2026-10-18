@@ -1377,8 +1377,18 @@ describe("RepoReviewController landing and recovery edges", () => {
             const second = yield* latestJob(controller);
             yield* controller.submitResult(second.threadId!, cleanResult(second));
             github.pr(7).mergeableState = "clean";
+            // The replacement approval gets no answer and never lands. The first approval's
+            // marker must not pass for it.
+            github.state.failures.set("approve", [
+              { error: github.unavailable("approve"), landAnyway: false },
+            ]);
             yield* controller.runDueWork;
-            assert.deepStrictEqual(github.writes(), ["approve", "approve", "merge"]);
+            yield* controller.runDueWork;
+            assert.notInclude(github.writes(), "merge");
+            yield* TestClock.adjust("11 minutes");
+            yield* controller.runDueWork;
+            yield* controller.runDueWork;
+            assert.deepStrictEqual(github.writes(), ["approve", "approve", "approve", "merge"]);
           }),
         );
       }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
