@@ -25,12 +25,14 @@ row that says exactly what may have happened.
   after three attempts.
 - **Own comments need the posting account and our marker or prefix.** Login alone is not enough: on
   personal repositories the posting account is often the author, and their replies must count.
+  Reviews by the posting account are always its own, since GitHub refuses self-reviews.
 - **Results bind to one job.** Only the job's thread and run may submit, and the result must carry
   the job's exact repository, pull request and pins. A result whose head or base branch changed
   before it was applied is `stale` and authorizes nothing.
 - **Only the newest finished round lands.** A later round in flight holds an approval or merge, and
-  a finished one cancels earlier rounds' landing intents. Without this an old clean verdict could
-  merge while an author reply is still being reviewed.
+  a finished one cancels earlier rounds' landing intents. An author event no brief has carried also
+  holds it until the round that reviews it finishes. Without this an old clean verdict could merge
+  over an objection. An unconfirmed write with the same id is adopted by the newer round.
 - **Any base movement before landing means another round.** Disjoint file lists do not prove the
   base left the pull request's behavior alone. Requested changes and unresolved threads hold
   approvals too. The merge call is guarded by the reviewed head SHA; GitHub's `mergeable_state`
@@ -44,8 +46,8 @@ row that says exactly what may have happened.
   head, a new author event or `requeue` starts the next round. A brief carries at most 20 author
   events and receipts only those, so the rest start the next round instead of disappearing.
 - **Imports keep unknown history visible, not active.** Author events from before the handover
-  that the old ledger never marked handled start nothing, but show as a pull request blocker
-  until a person requeues it.
+  that the old ledger never marked handled start nothing and stay unreceipted. They show as a pull
+  request blocker, and a `requeue` includes them in its brief.
 
 One owner per repository is enforced per environment by a partial unique index. Nothing prevents
 two environments, or an old `watch-repo` owner, from monitoring the same repository; the import

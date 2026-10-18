@@ -468,7 +468,10 @@ const make = Effect.gen(function* () {
           (candidate.status === "completed" || candidate.status === "imported"),
       );
       // Oldest first, and only as many as the brief shows: those are the ones it receipts.
-      const authorEvents = materialEvents(events, eventContext(owner, handled))
+      // A requeue is how a person asks for activity inherited from an import to be reviewed.
+      const authorEvents = materialEvents(events, eventContext(owner, handled), {
+        includeInherited: job.trigger === "requeue",
+      })
         .toSorted((a, b) => a.createdAt.localeCompare(b.createdAt))
         .slice(0, MAX_BRIEF_EVENTS);
       const brief = buildReviewBrief({
@@ -1097,6 +1100,14 @@ const make = Effect.gen(function* () {
             candidate.expectedHeadSha === publication.expectedHeadSha,
         );
         // The approval lands first; a merge never overtakes its own approval.
+        if (approval?.status === "failed" || approval?.status === "cancelled") {
+          return yield* settle(
+            publication,
+            "cancelled",
+            `The approval did not land (${approval.status}).`,
+            ["planned", "blocked"],
+          );
+        }
         if (approval !== undefined && approval.status !== "confirmed") return;
       }
       if (!(yield* postingAccountMatches(owner))) return;
@@ -1113,6 +1124,22 @@ const make = Effect.gen(function* () {
         ...target(owner),
         number: publication.pullRequest,
       });
+      // An author event no review has seen (it arrived during the review, or did not fit its
+      // brief) holds the landing. The finished job marked the pull request for observation, so
+      // the next poll starts the round that reviews it.
+      const unseen = materialEvents(
+        events,
+        eventContext(owner, yield* store.handledEventKeys(owner.id)),
+      );
+      if (unseen.length > 0) {
+        yield* store.requestPoll(owner.id, yield* nowIso);
+        return yield* settle(
+          publication,
+          "blocked",
+          `${unseen.length} author event(s) not yet reviewed.`,
+          ["planned", "blocked"],
+        );
+      }
       const threadsOnPr =
         detail.state === "open"
           ? yield* github.listReviewThreads({ ...target(owner), number: publication.pullRequest })
@@ -1338,7 +1365,7 @@ const make = Effect.gen(function* () {
       );
       const publications = yield* store.listPublications({
         ownerId: owner.id,
-        statuses: ["planned", "attempting", "uncertain", "blocked", "confirmed"],
+        statuses: ["planned", "attempting", "uncertain", "blocked", "failed"],
       });
       // A merge waiting on an approval that cannot land this round does not hold the pause.
       const waitingOnApproval = (merge: RepoReviewStore.PublicationRecord) =>
@@ -1349,7 +1376,7 @@ const make = Effect.gen(function* () {
             approval.kind === "approval" &&
             approval.pullRequest === merge.pullRequest &&
             approval.expectedHeadSha === merge.expectedHeadSha &&
-            approval.status === "blocked",
+            (approval.status === "blocked" || approval.status === "failed"),
         );
       // An admitted write whose outcome is still unknown is part of the round until it settles.
       const pending = publications.filter(

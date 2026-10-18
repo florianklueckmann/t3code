@@ -388,8 +388,8 @@ export class RepoReviewStore extends Context.Service<
     }) => Effect.Effect<void, RepoReviewStoreError>;
 
     /**
-     * Plans a write. A confirmed, in-flight or unconfirmed write is kept; anything else is
-     * planned again with the newer review's pins.
+     * Plans a write. A confirmed or in-flight write is kept. An unconfirmed one keeps settling but
+     * is adopted by the newer review; anything else is planned again with its pins.
      */
     readonly planPublication: (input: {
       readonly id: string;
@@ -1031,10 +1031,15 @@ const make = Effect.gen(function* () {
         expected_head_sha = excluded.expected_head_sha,
         expected_base_sha = excluded.expected_base_sha,
         payload_json = excluded.payload_json,
-        status = 'planned',
-        detail = NULL,
+        -- An unconfirmed write keeps settling by read-back; the newer round adopts it, since
+        -- the same id means the same write at the same head.
+        status = CASE WHEN repo_review_publications.status = 'uncertain'
+          THEN 'uncertain' ELSE 'planned' END,
+        detail = CASE WHEN repo_review_publications.status = 'uncertain'
+          THEN repo_review_publications.detail ELSE NULL END,
         updated_at = excluded.updated_at
-      WHERE repo_review_publications.status IN ('planned', 'cancelled', 'failed', 'blocked')
+      WHERE repo_review_publications.status
+        IN ('planned', 'uncertain', 'cancelled', 'failed', 'blocked')
     `.pipe(Effect.asVoid, Effect.mapError(fail("plan-publication"))),
     );
 

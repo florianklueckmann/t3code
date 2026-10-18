@@ -100,9 +100,13 @@ export function classifyEvent(
 ): "handled" | "own" | "bot" | "baseline" | "material" {
   if (event.keys.some((key) => context.handledKeys.has(key))) return "handled";
   const prefix = context.commentPrefix.trim();
+  const byAccount = event.authorLogin.toLowerCase() === context.account.toLowerCase();
+  // GitHub refuses reviews of one's own pull request, so a review by the posting account is never
+  // the author speaking. Its inline replies arrive separately as review comments.
   if (
-    event.authorLogin.toLowerCase() === context.account.toLowerCase() &&
-    (event.body.includes(CONTROLLER_MARKER) ||
+    byAccount &&
+    (event.kind === "review" ||
+      event.body.includes(CONTROLLER_MARKER) ||
       (prefix !== "" && event.body.trimStart().startsWith(prefix)))
   ) {
     return "own";
@@ -122,7 +126,12 @@ export function classifyEvent(
 export const materialEvents = (
   events: ReadonlyArray<RepoReviewConversationEvent>,
   context: EventContext,
-) => events.filter((event) => classifyEvent(event, context) === "material");
+  options: { readonly includeInherited?: boolean } = {},
+) =>
+  events.filter((event) => {
+    const kind = classifyEvent(event, context);
+    return kind === "material" || (options.includeInherited === true && kind === "baseline");
+  });
 
 /**
  * Folds one observation of a pull request into its stored state and decides whether it needs a
@@ -145,16 +154,18 @@ export function reconcilePullRequest(input: {
   let inherited = 0;
   for (const event of observation.events) {
     const kind = classifyEvent(event, input.events);
-    if (kind === "own" || kind === "bot" || kind === "baseline") {
+    if (kind === "own" || kind === "bot") {
       receipts.push({ key: event.keys[0]!, kind: event.kind, disposition: kind });
-      if (kind === "baseline") inherited++;
     } else if (kind === "material") {
       // Left unreceipted on purpose: the next brief includes it and records it then.
       material++;
+    } else if (kind === "baseline") {
+      inherited++;
     }
   }
   // Activity from before an import that the previous owner never marked handled. It may or may
-  // not have been reviewed, so it starts nothing on its own but stays visible until next change.
+  // not have been reviewed, so it starts nothing on its own. It stays unreceipted and visible
+  // until a requeued review includes it.
   const inheritedNote =
     inherited === 0
       ? null
@@ -688,6 +699,8 @@ export function assessLanding(input: {
   for (const event of snapshot.events) {
     if (event.kind !== "review" || event.reviewState === null || event.reviewState === "COMMENTED")
       continue;
+    // Our own earlier change request is what a fresh approval replaces.
+    if (kind === "approval" && event.authorLogin.toLowerCase() === viewer) continue;
     latestByReviewer.set(event.authorLogin.toLowerCase(), event.reviewState);
   }
   const requested = [...latestByReviewer].filter(([, state]) => state === "CHANGES_REQUESTED");

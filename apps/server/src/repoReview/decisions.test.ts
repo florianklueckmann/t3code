@@ -173,7 +173,14 @@ describe("reconcilePullRequest", () => {
       context: context({ baselineAt: "2026-10-02T00:00:00Z" }),
     });
     expect(result.enqueue).toBeNull();
-    expect(result.receipts.map((receipt) => receipt.disposition)).toEqual(["bot", "baseline"]);
+    // Inherited activity stays unreceipted, so a requeued review can still include it.
+    expect(result.receipts.map((receipt) => receipt.disposition)).toEqual(["bot"]);
+    expect(result.pullRequest.blocker).toContain("requeue");
+  });
+
+  it("holds our own approvals and change requests apart from author replies", () => {
+    const review = event({ kind: "review", reviewState: "CHANGES_REQUESTED", body: "Please fix." });
+    expect(reconcile({ events: [review] }).enqueue).toBeNull();
   });
 
   it("supersedes an in-flight review when the head moves, and cancels it when the pull request closes", () => {
@@ -482,6 +489,10 @@ describe("assessLanding", () => {
     expect(
       assess("approval", { detail: detail({ mergeableState: "blocked", draft: true }) }).type,
     ).toBe("proceed");
+    // Our own earlier change request is what the fresh approval replaces.
+    expect(assess("approval", { events: [{ ...changes, authorLogin: "reviewer" }] }).type).toBe(
+      "proceed",
+    );
   });
 
   it("holds merges for requested changes, unresolved threads, GitHub blockers, drafts and disallowed methods", () => {

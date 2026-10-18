@@ -1242,6 +1242,108 @@ describe("RepoReviewController landing and recovery edges", () => {
     }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
   );
 
+  it.effect(
+    "holds landing for an author reply that arrived during the review, and reviews it first",
+    () =>
+      Effect.gen(function* () {
+        const github = makeFakeGitHub();
+        const threads = makeFakeThreads();
+        github.openPullRequest(7);
+        yield* withController(github, threads, (controller) =>
+          Effect.gen(function* () {
+            const first = yield* launchFirstReview(controller);
+            github.authorComment(7, "Note: the parser change also affects imports.");
+            yield* controller.submitResult(first.threadId!, cleanResult(first));
+            yield* controller.runDueWork;
+            assert.deepStrictEqual(github.writes(), []);
+            threads.endRun(first.threadId!);
+            yield* controller.runDueWork; // the requested poll starts the follow-up round
+            const second = yield* latestJob(controller);
+            assert.strictEqual(second.trigger, "author_event");
+            assert.include(threads.state.briefs[1]!, "also affects imports");
+            yield* controller.submitResult(second.threadId!, cleanResult(second));
+            yield* controller.runDueWork;
+            assert.deepStrictEqual(github.writes(), ["approve", "merge"]);
+          }),
+        );
+      }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+  );
+
+  it.effect("cancels a merge whose approval GitHub refused, so pause_after_round can finish", () =>
+    Effect.gen(function* () {
+      const github = makeFakeGitHub();
+      const threads = makeFakeThreads();
+      github.openPullRequest(7);
+      github.state.failures.set("approve", [
+        {
+          error: new RepoReviewGitHub.RepoReviewGitHubError({
+            operation: "approve",
+            outcome: "rejected",
+            status: 422,
+          }),
+          landAnyway: false,
+        },
+      ]);
+      yield* withController(github, threads, (controller) =>
+        Effect.gen(function* () {
+          const job = yield* launchFirstReview(controller);
+          const ownerId = (yield* view(controller)).owner.id;
+          yield* controller.control({ ownerId, action: "pause_after_round" }, undefined);
+          yield* controller.submitResult(job.threadId!, cleanResult(job));
+          yield* controller.runDueWork;
+          yield* controller.runDueWork;
+          const owner = yield* view(controller);
+          assert.strictEqual(
+            owner.publications.find((publication) => publication.kind === "approval")!.status,
+            "failed",
+          );
+          assert.strictEqual(
+            owner.publications.find((publication) => publication.kind === "merge")!.status,
+            "cancelled",
+          );
+          assert.strictEqual(owner.owner.status, "paused");
+          assert.notInclude(github.writes(), "merge");
+        }),
+      );
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+  );
+
+  it.effect("lets a newer round adopt an approval whose first attempt is still unconfirmed", () =>
+    Effect.gen(function* () {
+      const github = makeFakeGitHub();
+      const threads = makeFakeThreads();
+      github.openPullRequest(7, { mergeableState: "blocked" });
+      github.state.failures.set("approve", [
+        { error: github.unavailable("approve"), landAnyway: false },
+      ]);
+      yield* withController(github, threads, (controller) =>
+        Effect.gen(function* () {
+          const first = yield* launchFirstReview(controller);
+          yield* controller.submitResult(first.threadId!, cleanResult(first));
+          yield* controller.runDueWork;
+          threads.endRun(first.threadId!);
+          github.authorComment(7, "Also checked the import path.");
+          yield* pollInterval;
+          yield* controller.runDueWork;
+          const second = yield* latestJob(controller);
+          yield* controller.submitResult(second.threadId!, cleanResult(second));
+          yield* controller.runDueWork;
+          github.pr(7).mergeableState = "clean";
+          yield* TestClock.adjust("11 minutes");
+          yield* controller.runDueWork; // absent after grace → planned under round 2
+          yield* controller.runDueWork; // approve, then merge
+          yield* pollInterval;
+          yield* controller.runDueWork;
+          assert.strictEqual(github.pr(7).state, "merged");
+          assert.strictEqual(
+            github.pr(7).events.filter((event) => event.reviewState === "APPROVED").length,
+            1,
+          );
+        }),
+      );
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+  );
+
   it.effect("settles a write left attempting by a failed settlement without a restart", () =>
     Effect.gen(function* () {
       const github = makeFakeGitHub();
@@ -1396,6 +1498,19 @@ describe("RepoReviewController import", () => {
                 reviewState: null,
                 commitId: null,
               },
+              {
+                // Before the handover, but never marked handled by the previous owner.
+                keys: ["gh:IC_unhandled", "gh:4307790000"],
+                kind: "issue_comment",
+                githubId: "4307790000",
+                authorLogin: "reviewer",
+                authorIsBot: false,
+                createdAt: "2026-10-18T16:28:00Z",
+                url: "https://github.com/acme/widgets/pull/7#issuecomment-4307790000",
+                body: "QA: grip still fails on the second display.",
+                reviewState: null,
+                commitId: null,
+              },
             ],
           });
           const path = yield* writeLedger(ledger());
@@ -1477,6 +1592,8 @@ describe("RepoReviewController import", () => {
               assert.deepStrictEqual(github.writes(), []);
               owner = yield* view(controller);
               assert.strictEqual(owner.pullRequests[0]!.lastReviewedHeadSha, HEAD_A);
+              // Inherited activity starts nothing, but stays visible for a person to requeue.
+              assert.include(owner.pullRequests[0]!.blocker ?? "", "before the handover");
 
               // A genuinely new author reply after the handover is material.
               github.authorComment(7, "Pushed a fix for the mouse-up case.");
@@ -1485,6 +1602,17 @@ describe("RepoReviewController import", () => {
               const job = yield* latestJob(controller);
               assert.strictEqual(job.round, 3);
               assert.include(threads.state.briefs[0]!, "gh:4307776791");
+              assert.notInclude(threads.state.briefs[0]!, "grip still fails");
+
+              // Requeue is how the inherited activity gets reviewed.
+              threads.endRun(job.threadId!, "failed");
+              yield* controller.runDueWork;
+              yield* controller.control(
+                { ownerId: owner.owner.id, action: "requeue", pullRequest: 7 },
+                undefined,
+              );
+              yield* controller.runDueWork;
+              assert.include(threads.state.briefs[1]!, "grip still fails");
             }),
           );
         }),
