@@ -1344,6 +1344,46 @@ describe("RepoReviewController landing and recovery edges", () => {
     }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
   );
 
+  it.effect(
+    "approves again when the account's own later change request replaced its approval",
+    () =>
+      Effect.gen(function* () {
+        const github = makeFakeGitHub();
+        const threads = makeFakeThreads();
+        github.openPullRequest(7, { mergeableState: "blocked" });
+        yield* withController(github, threads, (controller) =>
+          Effect.gen(function* () {
+            const first = yield* launchFirstReview(controller);
+            yield* controller.submitResult(first.threadId!, cleanResult(first));
+            yield* controller.runDueWork;
+            assert.deepStrictEqual(github.writes(), ["approve"]);
+            threads.endRun(first.threadId!);
+            // The maintainer withdraws the approval by hand with a change request.
+            github.pr(7).events.push({
+              keys: ["gh:PRR_manual", "gh:900"],
+              kind: "review",
+              githubId: "900",
+              authorLogin: "reviewer",
+              authorIsBot: false,
+              createdAt: "2026-10-19T13:00:00Z",
+              url: "https://github.com/acme/widgets/pull/7#pullrequestreview-900",
+              body: "Hold on.",
+              reviewState: "CHANGES_REQUESTED",
+              commitId: HEAD_A,
+            });
+            const ownerId = (yield* view(controller)).owner.id;
+            yield* controller.control({ ownerId, action: "requeue", pullRequest: 7 }, undefined);
+            yield* controller.runDueWork;
+            const second = yield* latestJob(controller);
+            yield* controller.submitResult(second.threadId!, cleanResult(second));
+            github.pr(7).mergeableState = "clean";
+            yield* controller.runDueWork;
+            assert.deepStrictEqual(github.writes(), ["approve", "approve", "merge"]);
+          }),
+        );
+      }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+  );
+
   it.effect("settles a write left attempting by a failed settlement without a restart", () =>
     Effect.gen(function* () {
       const github = makeFakeGitHub();

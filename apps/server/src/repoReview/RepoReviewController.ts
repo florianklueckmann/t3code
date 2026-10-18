@@ -36,6 +36,7 @@ import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolv
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import {
   applyResult,
+  effectiveApproval,
   assessLanding,
   type CanonicalFinding,
   type EventContext,
@@ -840,14 +841,11 @@ const make = Effect.gen(function* () {
       const marker = publicationMarker(publication.id);
       return (
         events.find(
-          (event) =>
-            event.authorLogin.toLowerCase() === viewer &&
-            (event.body.includes(marker) ||
-              (publication.kind === "approval" &&
-                event.kind === "review" &&
-                event.reviewState === "APPROVED" &&
-                event.commitId === publication.expectedHeadSha)),
-        ) ?? null
+          (event) => event.authorLogin.toLowerCase() === viewer && event.body.includes(marker),
+        ) ??
+        (publication.kind === "approval"
+          ? effectiveApproval(events, owner.account, publication.expectedHeadSha)
+          : null)
       );
     });
 

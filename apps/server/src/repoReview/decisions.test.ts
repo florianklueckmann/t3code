@@ -472,6 +472,9 @@ describe("assessLanding", () => {
       type: "already_done",
       githubId: "55",
     });
+    // A later change request by the same account replaces that approval.
+    const retracted = { ...existing, githubId: "56", reviewState: "CHANGES_REQUESTED" };
+    expect(assess("approval", { events: [existing, retracted] }).type).toBe("proceed");
     // An approval of an older head is not equivalent.
     expect(assess("approval", { events: [{ ...existing, commitId: HEAD2 }] }).type).toBe("proceed");
   });

@@ -87,14 +87,14 @@ const ACTIVE_JOB_STATUSES: ReadonlySet<RepoReviewJobStatus> = new Set([
 
 export const isActiveJobStatus = (status: RepoReviewJobStatus) => ACTIVE_JOB_STATUSES.has(status);
 
-export const CONTROLLER_MARKER = "t3-repo-review:";
+const CONTROLLER_MARKER = "t3-repo-review:";
 
 /**
  * What one conversation event means to the controller. Our own writes come from the posting
  * account and carry our marker or comment prefix. Login alone is not enough: on a personal
  * repository the posting account is often the author too, and the author's replies must count.
  */
-export function classifyEvent(
+function classifyEvent(
   event: RepoReviewConversationEvent,
   context: EventContext,
 ): "handled" | "own" | "bot" | "baseline" | "material" {
@@ -412,7 +412,7 @@ export type PublicationPayload =
 export const publicationMarker = (publicationId: string) =>
   `<!-- t3-repo-review:${publicationId} -->`;
 
-export const publicationIds = {
+const publicationIds = {
   finding: (ownerId: string, findingId: string) => `finding:${ownerId}:${findingId}`,
   approval: (ownerId: string, pullRequest: number, headSha: string) =>
     `approval:${ownerId}:${pullRequest}:${headSha}`,
@@ -637,6 +637,26 @@ export type LandingVerdict =
 const MERGEABLE_STATES = new Set(["clean", "has_hooks"]);
 
 /**
+ * The account's approval of `headSha` if it is still its standing verdict. A later change request
+ * or dismissal by the same account replaces an earlier approval, so only the latest counts.
+ */
+export function effectiveApproval(
+  events: ReadonlyArray<RepoReviewConversationEvent>,
+  account: string,
+  headSha: string,
+): RepoReviewConversationEvent | null {
+  const latest = events.findLast(
+    (event) =>
+      event.kind === "review" &&
+      event.authorLogin.toLowerCase() === account.toLowerCase() &&
+      event.reviewState !== null &&
+      event.reviewState !== "COMMENTED" &&
+      event.reviewState !== "PENDING",
+  );
+  return latest?.reviewState === "APPROVED" && latest.commitId === headSha ? latest : null;
+}
+
+/**
  * Re-checks an approval or merge against a fresh read of GitHub immediately before the write.
  * The reviewed head and base must both still be current: disjoint file lists do not prove a
  * moved base left the behavior alone, so any base movement asks for another round. Merges also
@@ -671,14 +691,8 @@ export function assessLanding(input: {
     return { type: "cancel", reason: "Head changed since the review." };
   }
   if (kind === "approval") {
-    const existing = snapshot.events.find(
-      (event) =>
-        event.kind === "review" &&
-        event.reviewState === "APPROVED" &&
-        event.authorLogin.toLowerCase() === viewer &&
-        event.commitId === input.expectedHeadSha,
-    );
-    if (existing !== undefined) {
+    const existing = effectiveApproval(snapshot.events, viewer, input.expectedHeadSha);
+    if (existing !== null) {
       return { type: "already_done", githubId: existing.githubId, url: existing.url };
     }
   }

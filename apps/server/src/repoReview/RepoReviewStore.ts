@@ -388,8 +388,9 @@ export class RepoReviewStore extends Context.Service<
     }) => Effect.Effect<void, RepoReviewStoreError>;
 
     /**
-     * Plans a write. A confirmed or in-flight write is kept. An unconfirmed one keeps settling but
-     * is adopted by the newer review; anything else is planned again with its pins.
+     * Plans a write. A confirmed or in-flight write is kept, except a confirmed approval, which a
+     * newer review plans again. An unconfirmed one keeps settling but is adopted by the newer
+     * review; anything else is planned again with its pins.
      */
     readonly planPublication: (input: {
       readonly id: string;
@@ -1039,7 +1040,10 @@ const make = Effect.gen(function* () {
           THEN repo_review_publications.detail ELSE NULL END,
         updated_at = excluded.updated_at
       WHERE repo_review_publications.status
-        IN ('planned', 'uncertain', 'cancelled', 'failed', 'blocked')
+          IN ('planned', 'uncertain', 'cancelled', 'failed', 'blocked')
+        -- A later change request can replace a confirmed approval at the same head. Landing
+        -- confirms it again without writing while it is still the account's standing verdict.
+        OR (repo_review_publications.status = 'confirmed' AND repo_review_publications.kind = 'approval')
     `.pipe(Effect.asVoid, Effect.mapError(fail("plan-publication"))),
     );
 
