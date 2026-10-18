@@ -50,6 +50,9 @@ import * as ThreadLifecycleService from "./ThreadLifecycleService.ts";
 import * as ThreadForkService from "./ThreadForkService.ts";
 import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
+import * as RepoReviewController from "../repoReview/RepoReviewController.ts";
+import * as RepoReviewGitHub from "../repoReview/RepoReviewGitHub.ts";
+import * as RepoReviewStore from "../repoReview/RepoReviewStore.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 
 /** The shared application event log and its command receipts. */
@@ -275,6 +278,17 @@ const layerScheduledTaskProvided = ScheduledTaskService.layer.pipe(
     ),
   ),
 );
+const layerRepoReviewProvided = RepoReviewController.layer.pipe(
+  Layer.provide(
+    Layer.mergeAll(
+      RepoReviewStore.layer,
+      RepoReviewGitHub.layer,
+      layerThreadLaunchProvided,
+      layerThreadManagementProvided,
+      layerProjectService,
+    ),
+  ),
+);
 const layerProviderContinuationWorkerProvided = ProviderContinuationService.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
@@ -348,6 +362,7 @@ export const layerProduction = Layer.mergeAll(
   layerThreadLaunchProvided,
   layerThreadLifecycleProvided,
   layerScheduledTaskProvided,
+  layerRepoReviewProvided,
   layerSecretRequestsProvided,
   UsageLimitRecoveryWorker.layer.pipe(
     Layer.provide(Layer.mergeAll(ProjectionStore.layer, layerThreadManagementProvided)),

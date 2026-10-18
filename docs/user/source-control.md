@@ -221,6 +221,27 @@ returns to your inbox.
 Cross-repository links use a project on the same host. Azure DevOps reviews require a project checked
 out from the matching organization and repository.
 
+## Automated repository review
+
+T3 Code can review every pull request in a GitHub repository without keeping an agent conversation
+running. The server polls the repository; an unchanged repository costs no model turns. Each new pull
+request, new revision or author reply starts one review thread in its own worktree, pinned to the
+exact head and base. The review agent submits a structured result, and the server alone posts
+findings, approves and merges, according to the repository's policy.
+
+Ask an agent in a full-access thread to start it with `repo_review_start` (the project must be a
+checkout of the repository, and the server's GitHub account becomes the posting account). New owners
+start paused. Use `repo_review_control` to `resume`, `pause` (stops new reviews and writes now),
+`pause_after_round` (lets reviews already running finish and publish first), `stop`, `poll_now`, or
+`requeue` a pull request whose review failed. `repo_review_status` shows each pull request's blocker,
+recent review threads, open findings and pending writes.
+
+Each finding is posted once, and later reviews update the same report. Approvals and merges use the
+exact reviewed head. If the base branch moves after a clean review, the server reviews the combined
+result again before landing. It never bypasses required checks or reviews, changes a draft, or
+updates a branch. A repository has at most one owner. Monitoring from a `watch-repo` session ledger
+can be carried over with `repo_review_import`, which previews by default and imports as paused.
+
 ## GitHub stacks
 
 The Pull Requests page shows each PR's position in its GitHub stack. Open the stack badge in a
