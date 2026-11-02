@@ -97,6 +97,12 @@ produce catches them.
   provider failure, and process exit.
 - **Usage limits are not generic failures.** Classify quota and rate-limit errors as `usage_limit`
   with a reset time when the provider gives one, so the thread shows Limited and can resume.
+- **Application instructions arrive on every turn.** `applicationInstructions` on the turn input is
+  trusted, user-configured text, such as a Bot's, read fresh for each turn. Deliver it as
+  instructions on that turn, not as quoted context and not only at session start, or edits stop
+  reaching resumed sessions. Bot conversations refuse other drivers at turn start
+  ([`RunExecutionService`](../../apps/server/src/orchestration-v2/RunExecutionService.ts)) until
+  their adapter does this.
 - **Paths and environment.** Test a symlinked workspace, such as macOS `/tmp`; an agent that
   compares canonical paths fails every turn there. Drop inherited credentials the instance did not
   configure. Report unknown sign-in as unknown rather than as signed in.

@@ -58,3 +58,43 @@ export function buildCodexAdditionalContext(
     ...(tools ? { t3_code_tools: { kind: "application", value: tools } } : {}),
   };
 }
+
+const utf8 = new TextEncoder();
+
+/** Splits text into values under the per-entry cap, preferring line breaks over mid-line cuts. */
+export function splitCodexContextValue(
+  text: string,
+  maxBytes = CODEX_ADDITIONAL_CONTEXT_VALUE_MAX_BYTES,
+): ReadonlyArray<string> {
+  const chunks: Array<string> = [];
+  let rest = text;
+  while (utf8.encode(rest).length > maxBytes) {
+    // Iterate code points so a cut never splits a surrogate pair.
+    let end = 0;
+    let bytes = 0;
+    for (const char of rest) {
+      const size = utf8.encode(char).length;
+      if (bytes + size > maxBytes) break;
+      bytes += size;
+      end += char.length;
+    }
+    const lineBreak = rest.lastIndexOf("\n", end - 1);
+    const cut = lineBreak > end / 2 ? lineBreak + 1 : end;
+    chunks.push(rest.slice(0, cut));
+    rest = rest.slice(cut);
+  }
+  if (rest !== "") chunks.push(rest);
+  return chunks;
+}
+
+/** Trusted, user-configured instructions such as a Bot's, as numbered application entries. */
+export function buildCodexApplicationInstructions(
+  instructions: string,
+): Record<string, V2TurnStartParams__AdditionalContextEntry> {
+  return Object.fromEntries(
+    splitCodexContextValue(instructions).map((value, index) => [
+      `t3_bot_${String(index + 1).padStart(2, "0")}`,
+      { kind: "application" as const, value },
+    ]),
+  );
+}
