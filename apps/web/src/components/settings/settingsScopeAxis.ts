@@ -140,6 +140,11 @@ export function settingsScopeCheckoutLabel(
     : name;
 }
 
+/** Project and checkout stay in the URL for other pages but never pick this page's environment. */
+export function environmentOnlyScopeSearch(search: SettingsScopeSearch): SettingsScopeSearch {
+  return search.machine === undefined ? {} : { machine: search.machine };
+}
+
 export function selectSingleEnvironmentScope(
   search: SettingsScopeSearch,
   scope: ResolvedSettingsScope,
