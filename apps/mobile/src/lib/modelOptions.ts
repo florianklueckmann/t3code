@@ -458,6 +458,24 @@ export function buildModelOptions(
   return [...options.values()];
 }
 
+/** Rebuilds a picker's groups with hidden models revealed, still limited to the caller's eligible options. */
+export function buildHiddenModelManagementGroups(input: {
+  readonly config: T3ServerConfig;
+  readonly selectedModel: ModelSelection | null;
+  readonly lockedProviderInstanceId: ModelSelection["instanceId"] | undefined;
+  readonly projectId: ProjectId | null;
+  readonly isEligible: ((option: ModelOption) => boolean) | undefined;
+}): ReadonlyArray<ProviderGroup> {
+  const options = buildModelOptions(
+    input.config,
+    input.selectedModel,
+    input.lockedProviderInstanceId,
+    input.projectId,
+    true,
+  );
+  return groupByProvider(input.isEligible ? options.filter(input.isEligible) : options);
+}
+
 export function groupByProvider(options: ReadonlyArray<ModelOption>): ReadonlyArray<ProviderGroup> {
   const groups = new Map<
     string,
