@@ -71,11 +71,18 @@ const makeThreadWorld = Effect.gen(function* () {
   const launched = yield* Ref.make<Deferred.Deferred<ThreadId> | null>(null);
   /** When set, a launch records its thread and then never returns, as a crash would leave it. */
   const hangLaunches = yield* Ref.make(false);
-  /** When set, a launch signals `entered` and waits for `release` before it creates anything. */
+  /**
+   * When set, a launch signals `entered` and waits for `release`: before it creates the thread,
+   * or after creating it and before its first message starts a run.
+   */
   const launchGate = yield* Ref.make<{
+    readonly stage: "before-thread" | "before-message";
     readonly entered: Deferred.Deferred<void>;
     readonly release: Deferred.Deferred<void>;
   } | null>(null);
+  const receipts = yield* Ref.make(new Set<string>());
+  /** The next command of this type fails before it is recorded. */
+  const failNext = yield* Ref.make<OrchestrationV2ServerCommand["type"] | null>(null);
 
   const update = (threadId: ThreadId, change: Partial<FakeThread>) =>
     Ref.update(threads, (current) => {
@@ -88,6 +95,13 @@ const makeThreadWorld = Effect.gen(function* () {
   const dispatch = Effect.fn("FakeThreads.dispatch")(function* (
     command: OrchestrationV2ServerCommand,
   ) {
+    if ((yield* Ref.get(failNext)) === command.type) {
+      yield* Ref.set(failNext, null);
+      return yield* Effect.die(`injected ${command.type} failure`);
+    }
+    // A repeated command id replays its receipt and changes nothing.
+    if ((yield* Ref.get(receipts)).has(command.commandId)) return { storedEvents: [] } as never;
+    yield* Ref.update(receipts, (current) => new Set(current).add(command.commandId));
     const threadId = "threadId" in command ? command.threadId : "";
     yield* Ref.update(commands, (current) => [
       ...current,
@@ -96,7 +110,11 @@ const makeThreadWorld = Effect.gen(function* () {
     if (command.type === "thread.archive") yield* update(command.threadId, { archived: true });
     if (command.type === "thread.unarchive") yield* update(command.threadId, { archived: false });
     if (command.type === "thread.stop") {
-      yield* update(command.threadId, { status: "interrupted" });
+      const thread = (yield* Ref.get(threads)).get(command.threadId);
+      // Stop ends a run; a thread without one has nothing to stop.
+      if (thread !== undefined && thread.status !== "idle") {
+        yield* update(command.threadId, { status: "interrupted" });
+      }
     }
     return { storedEvents: [] } as never;
   });
@@ -133,12 +151,14 @@ const makeThreadWorld = Effect.gen(function* () {
     input: ThreadLaunchService.ThreadLaunchInput,
   ) {
     const threadId = input.threadId ?? ThreadId.make("unexpected");
-    const gate = yield* Ref.get(launchGate);
-    if (gate !== null && input.initialMessage !== undefined) {
-      yield* Ref.set(launchGate, null);
+    const gate = input.initialMessage === undefined ? null : yield* Ref.get(launchGate);
+    if (gate !== null) yield* Ref.set(launchGate, null);
+    const pause = Effect.gen(function* () {
+      if (gate === null) return;
       yield* Deferred.succeed(gate.entered, undefined);
       yield* Deferred.await(gate.release);
-    }
+    });
+    if (gate?.stage === "before-thread") yield* pause;
     const seen = (yield* Ref.get(launchedCommands)).has(input.commandId);
     if (!seen) {
       yield* Ref.update(launchedCommands, (current) => new Set(current).add(input.commandId));
@@ -147,12 +167,14 @@ const makeThreadWorld = Effect.gen(function* () {
           projectId: input.projectId,
           archived: false,
           runtimeMode: input.runtimeMode,
-          status: input.initialMessage === undefined ? "idle" : "queued",
+          status: "idle",
           blockingRequest: false,
           backgroundTasks: 0,
         }),
       );
       yield* Ref.update(commands, (current) => [...current, `launch ${threadId}`]);
+      if (gate?.stage === "before-message") yield* pause;
+      if (input.initialMessage !== undefined) yield* update(threadId, { status: "queued" });
     }
     const signal = yield* Ref.get(launched);
     if (signal !== null && input.initialMessage !== undefined) {
@@ -184,6 +206,7 @@ const makeThreadWorld = Effect.gen(function* () {
     nextLaunch,
     hangLaunches,
     launchGate,
+    failNext,
     commandsMatching,
   };
 });
@@ -458,7 +481,46 @@ it.effect("starts work a crash left admitted without launching it twice", () =>
   }).pipe(Effect.provide(layerDatabase)),
 );
 
-it.effect("stops a task cancelled while its work thread is still launching", () =>
+it.effect.each(["before-thread", "before-message"] as const)(
+  "stops a task cancelled while its work thread is still launching (%s)",
+  (stage) =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(START);
+      yield* seedProject;
+      const world = yield* makeThreadWorld;
+      yield* withServices(world, (services) =>
+        Effect.gen(function* () {
+          yield* attachBot(services);
+          const gate = {
+            stage,
+            entered: yield* Deferred.make<void>(),
+            release: yield* Deferred.make<void>(),
+          };
+          yield* Ref.set(world.launchGate, gate);
+          const starting = yield* Effect.forkScoped(
+            services.tasks.start({
+              botId,
+              projectId: campaign,
+              prompt: "Summarize the last session.",
+              commandId: CommandId.make("cancel-while-launching"),
+            }),
+          );
+          yield* Deferred.await(gate.entered);
+          // The launch is under way: no thread yet, or a thread whose run has not started.
+          const taskId = BotTaskId.make("bot-task:cancel-while-launching");
+          yield* services.tasks.cancel({ taskId });
+          yield* Deferred.succeed(gate.release, undefined);
+          const task = yield* Fiber.join(starting);
+          const workThreadId = task.workThreadId ?? assert.fail("no work thread");
+          assert.equal((yield* Ref.get(world.threads)).get(workThreadId)?.status, "interrupted");
+          yield* services.tasks.reconcile;
+          assert.equal((yield* services.tasks.get(taskId)).status, "cancelled");
+        }),
+      );
+    }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect("retries a stop that failed until the cancelled task ends", () =>
   Effect.gen(function* () {
     yield* TestClock.setTime(START);
     yield* seedProject;
@@ -466,28 +528,19 @@ it.effect("stops a task cancelled while its work thread is still launching", () 
     yield* withServices(world, (services) =>
       Effect.gen(function* () {
         yield* attachBot(services);
-        const gate = {
-          entered: yield* Deferred.make<void>(),
-          release: yield* Deferred.make<void>(),
-        };
-        yield* Ref.set(world.launchGate, gate);
-        const starting = yield* Effect.forkScoped(
-          services.tasks.start({
-            botId,
-            projectId: campaign,
-            prompt: "Summarize the last session.",
-            commandId: CommandId.make("cancel-while-launching"),
-          }),
-        );
-        yield* Deferred.await(gate.entered);
-        // The launch is under way but its thread does not exist yet.
-        const taskId = BotTaskId.make("bot-task:cancel-while-launching");
-        yield* services.tasks.cancel({ taskId });
-        yield* Deferred.succeed(gate.release, undefined);
-        const task = yield* Fiber.join(starting);
-        assert.lengthOf(yield* world.commandsMatching(`thread.stop ${task.workThreadId}`), 1);
+        const task = yield* services.tasks.start({
+          botId,
+          projectId: campaign,
+          prompt: "Summarize the last session.",
+        });
+        const workThreadId = task.workThreadId ?? assert.fail("no work thread");
+        yield* world.update(workThreadId, { status: "running" });
+        yield* Ref.set(world.failNext, "thread.stop");
+        yield* services.tasks.cancel({ taskId: task.id }).pipe(Effect.exit);
+        assert.equal((yield* Ref.get(world.threads)).get(workThreadId)?.status, "running");
         yield* services.tasks.reconcile;
-        assert.equal((yield* services.tasks.get(taskId)).status, "cancelled");
+        yield* services.tasks.reconcile;
+        assert.equal((yield* services.tasks.get(task.id)).status, "cancelled");
       }),
     );
   }).pipe(Effect.provide(layerDatabase)),
