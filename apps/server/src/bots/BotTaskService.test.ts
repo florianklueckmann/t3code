@@ -2,6 +2,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
   BotId,
+  BotTaskId,
   type BotTaskStatus,
   CommandId,
   type OrchestrationV2ServerCommand,
@@ -18,6 +19,7 @@ import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import type * as Scope from "effect/Scope";
@@ -69,6 +71,11 @@ const makeThreadWorld = Effect.gen(function* () {
   const launched = yield* Ref.make<Deferred.Deferred<ThreadId> | null>(null);
   /** When set, a launch records its thread and then never returns, as a crash would leave it. */
   const hangLaunches = yield* Ref.make(false);
+  /** When set, a launch signals `entered` and waits for `release` before it creates anything. */
+  const launchGate = yield* Ref.make<{
+    readonly entered: Deferred.Deferred<void>;
+    readonly release: Deferred.Deferred<void>;
+  } | null>(null);
 
   const update = (threadId: ThreadId, change: Partial<FakeThread>) =>
     Ref.update(threads, (current) => {
@@ -126,6 +133,12 @@ const makeThreadWorld = Effect.gen(function* () {
     input: ThreadLaunchService.ThreadLaunchInput,
   ) {
     const threadId = input.threadId ?? ThreadId.make("unexpected");
+    const gate = yield* Ref.get(launchGate);
+    if (gate !== null && input.initialMessage !== undefined) {
+      yield* Ref.set(launchGate, null);
+      yield* Deferred.succeed(gate.entered, undefined);
+      yield* Deferred.await(gate.release);
+    }
     const seen = (yield* Ref.get(launchedCommands)).has(input.commandId);
     if (!seen) {
       yield* Ref.update(launchedCommands, (current) => new Set(current).add(input.commandId));
@@ -164,7 +177,15 @@ const makeThreadWorld = Effect.gen(function* () {
   const commandsMatching = (prefix: string) =>
     Ref.get(commands).pipe(Effect.map((all) => all.filter((entry) => entry.startsWith(prefix))));
 
-  return { threads, update, threadLayer, nextLaunch, hangLaunches, commandsMatching };
+  return {
+    threads,
+    update,
+    threadLayer,
+    nextLaunch,
+    hangLaunches,
+    launchGate,
+    commandsMatching,
+  };
 });
 
 type ThreadWorld = Effect.Success<typeof makeThreadWorld>;
@@ -437,9 +458,84 @@ it.effect("starts work a crash left admitted without launching it twice", () =>
   }).pipe(Effect.provide(layerDatabase)),
 );
 
+it.effect("stops a task cancelled while its work thread is still launching", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(START);
+    yield* seedProject;
+    const world = yield* makeThreadWorld;
+    yield* withServices(world, (services) =>
+      Effect.gen(function* () {
+        yield* attachBot(services);
+        const gate = {
+          entered: yield* Deferred.make<void>(),
+          release: yield* Deferred.make<void>(),
+        };
+        yield* Ref.set(world.launchGate, gate);
+        const starting = yield* Effect.forkScoped(
+          services.tasks.start({
+            botId,
+            projectId: campaign,
+            prompt: "Summarize the last session.",
+            commandId: CommandId.make("cancel-while-launching"),
+          }),
+        );
+        yield* Deferred.await(gate.entered);
+        // The launch is under way but its thread does not exist yet.
+        const taskId = BotTaskId.make("bot-task:cancel-while-launching");
+        yield* services.tasks.cancel({ taskId });
+        yield* Deferred.succeed(gate.release, undefined);
+        const task = yield* Fiber.join(starting);
+        assert.lengthOf(yield* world.commandsMatching(`thread.stop ${task.workThreadId}`), 1);
+        yield* services.tasks.reconcile;
+        assert.equal((yield* services.tasks.get(taskId)).status, "cancelled");
+      }),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect("runs a routine occurrence again when a crash came before its task was admitted", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(START);
+    yield* seedProject;
+    const world = yield* makeThreadWorld;
+    const runAt = START + HOUR;
+    const routineId = yield* withServices(world, (services) =>
+      Effect.gen(function* () {
+        yield* attachBot(services);
+        const { task } = yield* services.routines.upsert(
+          routineInput({ type: "once", runAt: iso(runAt) }, iso(START + 3 * HOUR)),
+        );
+        return task.id;
+      }),
+    );
+    // The run was marked running, then the server stopped before the Bot task was written.
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`
+      UPDATE scheduled_tasks SET last_run_status = 'running', last_run_at = ${iso(runAt)}
+      WHERE task_id = ${routineId}
+    `;
+    yield* TestClock.setTime(runAt + 60_000);
+    const activate = yield* Deferred.make<void>();
+    yield* withServices(
+      world,
+      (services) =>
+        Effect.gen(function* () {
+          const launched = yield* world.nextLaunch;
+          yield* Deferred.succeed(activate, undefined);
+          yield* Deferred.await(launched);
+          const [task, ...others] = (yield* services.tasks.list({ botId })).tasks;
+          assert.lengthOf(others, 0);
+          assert.equal(task?.occurrenceDueAt, iso(runAt));
+        }),
+      Deferred.await(activate),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
 it.effect("skips a preparation whose session has started and coalesces missed recurring runs", () =>
   Effect.gen(function* () {
-    vi.stubEnv("TZ", "UTC");
+    // 18:00 here is 17:00Z, so walking the missed days in UTC would pick the wrong instant.
+    vi.stubEnv("TZ", "Europe/Berlin");
     yield* TestClock.setTime(START);
     yield* seedProject;
     const world = yield* makeThreadWorld;
@@ -474,7 +570,7 @@ it.effect("skips a preparation whose session has started and coalesces missed re
           assert.isNull(skipped[0]?.workThreadId ?? null);
           const daily = tasks.filter((task) => task.status !== "skipped");
           assert.lengthOf(daily, 1);
-          assert.equal(daily[0]?.occurrenceDueAt, "2026-11-05T18:00:00.000Z");
+          assert.equal(daily[0]?.occurrenceDueAt, "2026-11-05T17:00:00.000Z");
           assert.lengthOf(
             (yield* world.commandsMatching("thread.mark-unread")).filter((entry) =>
               entry.includes(home),

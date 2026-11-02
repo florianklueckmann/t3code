@@ -228,8 +228,28 @@ const make = Effect.gen(function* () {
     return { modelSelection: detail.modelSelection };
   });
 
-  /** Launches the work thread. The same ids make a retried launch replay instead of duplicating. */
-  const dispatch = Effect.fn("BotTaskService.dispatch")(function* (row: BotTaskRow) {
+  /** The same command id each time, so a repeated stop replays. */
+  const stopWorkThread = (row: BotTaskRow, workThreadId: string) =>
+    threads
+      .dispatch({
+        type: "thread.stop",
+        commandId: CommandId.make(`bot-task-cancel:${row.task_id}`),
+        threadId: ThreadId.make(workThreadId),
+        reason: row.detail ?? "The Bot task was cancelled.",
+      })
+      .pipe(
+        Effect.mapError((cause) =>
+          botError(`Failed to stop the Bot task: ${errorMessage(cause)}`)(cause),
+        ),
+      );
+
+  /**
+   * Launches the work thread. The same ids make a retried launch replay instead of duplicating.
+   * A cancel can land while the launch runs, so the cancel flag is checked again after it.
+   */
+  const dispatch = Effect.fn("BotTaskService.dispatch")(function* (stale: BotTaskRow) {
+    const row = yield* readRow(stale.task_id);
+    if (row === undefined || row.completed_at !== null || row.cancel_requested_at !== null) return;
     const bot = yield* store.getBot(row.bot_id).pipe(Effect.mapError(storageError));
     if (bot === undefined || row.work_thread_id === null) return;
     const detail = yield* BotStore.toDetail(bot, []).pipe(Effect.mapError(storageError));
@@ -258,6 +278,8 @@ const make = Effect.gen(function* () {
         UPDATE bot_tasks SET dispatched_at = ${now}, updated_at = ${now}
         WHERE task_id = ${row.task_id} AND dispatched_at IS NULL
       `.pipe(Effect.mapError(storageError));
+      const after = yield* readRow(row.task_id);
+      if (after?.cancel_requested_at != null) yield* stopWorkThread(after, row.work_thread_id);
     } else {
       // A launch that was refused is not retried: nothing broadens or repeats work on its own.
       yield* sql`
@@ -445,40 +467,39 @@ const make = Effect.gen(function* () {
     );
 
   const requestCancel = Effect.fn("BotTaskService.requestCancel")(function* (
-    row: BotTaskRow,
+    stale: BotTaskRow,
     reason: string | null,
   ) {
     const now = yield* nowIso;
-    if (row.dispatched_at === null) {
-      yield* sql`
-        UPDATE bot_tasks
-        SET status = 'cancelled', detail = COALESCE(${reason}, detail),
-            cancel_requested_at = COALESCE(cancel_requested_at, ${now}),
-            completed_at = ${now}, notified_at = ${now}, updated_at = ${now}
-        WHERE task_id = ${row.task_id} AND completed_at IS NULL
-      `.pipe(Effect.mapError(storageError));
-      yield* publish(row.task_id);
-      return;
-    }
+    // The flag comes first: a launch still under way checks it when it returns.
     yield* sql`
       UPDATE bot_tasks
       SET cancel_requested_at = COALESCE(cancel_requested_at, ${now}),
           detail = COALESCE(${reason}, detail), updated_at = ${now}
-      WHERE task_id = ${row.task_id}
+      WHERE task_id = ${stale.task_id} AND completed_at IS NULL
     `.pipe(Effect.mapError(storageError));
-    if (row.work_thread_id !== null) {
-      yield* threads
-        .dispatch({
-          type: "thread.stop",
-          commandId: CommandId.make(`bot-task-cancel:${row.task_id}`),
-          threadId: ThreadId.make(row.work_thread_id),
-          reason: reason ?? "The Bot task was cancelled.",
-        })
-        .pipe(
-          Effect.mapError((cause) =>
-            botError(`Failed to stop the Bot task: ${errorMessage(cause)}`)(cause),
-          ),
-        );
+    const row = yield* readRow(stale.task_id);
+    if (row === undefined || row.completed_at !== null) return;
+    // A launch that went through before a restart has a thread but no dispatched_at.
+    const workThreadId = row.work_thread_id;
+    const launched =
+      workThreadId !== null &&
+      (row.dispatched_at !== null ||
+        (yield* threads
+          .getThreadShell(ThreadId.make(workThreadId))
+          .pipe(Effect.mapError(botError("Failed to read the Bot task's work thread.")))) !== null);
+    if (launched) {
+      yield* sql`
+        UPDATE bot_tasks SET dispatched_at = COALESCE(dispatched_at, ${now})
+        WHERE task_id = ${row.task_id}
+      `.pipe(Effect.mapError(storageError));
+      yield* stopWorkThread(row, workThreadId);
+    } else {
+      yield* sql`
+        UPDATE bot_tasks
+        SET status = 'cancelled', completed_at = ${now}, notified_at = ${now}, updated_at = ${now}
+        WHERE task_id = ${row.task_id} AND completed_at IS NULL
+      `.pipe(Effect.mapError(storageError));
     }
     yield* publish(row.task_id);
   });
@@ -516,7 +537,8 @@ const make = Effect.gen(function* () {
         return yield* requestCancel(row, `Stopped because ${context.reason}`);
       }
       if (row.dispatched_at === null) {
-        if (row.cancel_requested_at === null) yield* dispatch(row);
+        // A cancel cut short by a restart finishes here, stopping a thread the launch made.
+        yield* row.cancel_requested_at === null ? dispatch(row) : requestCancel(row, null);
         return;
       }
       if (row.work_thread_id === null) return;
