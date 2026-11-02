@@ -1,9 +1,10 @@
+import { resolveBotAppearance } from "@t3tools/client-runtime/bot-appearance";
 import { activeBotConversations } from "@t3tools/client-runtime/bots";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
-import { BotMessageSquareIcon } from "lucide-react";
 
+import { BotAvatar } from "./BotAvatar";
 import { useProjects } from "../state/entities";
 import { useEnvironmentQuery } from "../state/query";
 import { serverEnvironment } from "../state/server";
@@ -33,7 +34,9 @@ export function useCommandPaletteBotItems(
       value: `action:bot-conversation:${environmentId}:${context.homeThreadId}`,
       searchTerms: ["bot", bot.name, projectTitle],
       title: `Open ${bot.name} in ${projectTitle}`,
-      icon: <BotMessageSquareIcon className={ITEM_ICON_CLASS} />,
+      icon: (
+        <BotAvatar appearance={resolveBotAppearance(bot)} size={16} className={ITEM_ICON_CLASS} />
+      ),
       run: async () => {
         await navigate({
           to: "/$environmentId/$threadId",

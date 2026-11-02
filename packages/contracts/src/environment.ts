@@ -180,6 +180,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   cloudVoiceTranscription: Schema.optionalKey(Schema.Boolean),
   /** Server answers the `bots.*` RPCs. Older servers have no Bots. */
   bots: Schema.optionalKey(Schema.Boolean),
+  /** Server stores Bot appearance; clients send it only when this is set. */
+  botAppearance: Schema.optionalKey(Schema.Boolean),
 });
 export type ExecutionEnvironmentCapabilities = typeof ExecutionEnvironmentCapabilities.Type;
 

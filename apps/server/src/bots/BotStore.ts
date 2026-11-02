@@ -1,10 +1,12 @@
 import {
+  BotAppearance,
   BotDetail,
   type BotId,
   type BotLearningPolicy,
   BotSourcePreference,
   type ModelSelection,
   type ProjectId,
+  ReceivedBotAppearance,
   type ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -22,6 +24,8 @@ export interface BotRow {
   readonly instructions: string;
   readonly model_selection_json: string;
   readonly learning_policy: string;
+  /** Null keeps the Bot on the default look derived from its id. */
+  readonly appearance_json: string | null;
   readonly created_at: string;
   readonly updated_at: string;
   readonly archived_at: string | null;
@@ -47,11 +51,16 @@ export class BotStoreError extends Schema.TaggedError<BotStoreError>()("BotStore
 
 const ModelSelectionJson = Schema.fromJsonString(BotDetail.fields.modelSelection);
 const SourcesJson = Schema.fromJsonString(Schema.Array(BotSourcePreference));
+const AppearanceJson = Schema.fromJsonString(ReceivedBotAppearance);
 export const encodeModelSelection = Schema.encodeSync(ModelSelectionJson);
 export const encodeSources = Schema.encodeSync(SourcesJson);
+const encodeAppearanceJson = Schema.encodeSync(Schema.fromJsonString(BotAppearance));
+export const encodeAppearance = (appearance: BotAppearance | null): string | null =>
+  appearance === null ? null : encodeAppearanceJson(appearance);
 const decodeDetail = Schema.decodeUnknownEffect(BotDetail);
 const decodeModelSelection = Schema.decodeUnknownEffect(ModelSelectionJson);
 const decodeSources = Schema.decodeUnknownEffect(SourcesJson);
+const decodeAppearance = Schema.decodeUnknownEffect(AppearanceJson);
 
 export class BotStore extends Context.Service<
   BotStore,
@@ -108,6 +117,7 @@ export const toDetail = Effect.fn("BotStore.toDetail")(function* (
     instructions: bot.instructions,
     modelSelection: yield* decodeModelSelection(bot.model_selection_json),
     learningPolicy: bot.learning_policy,
+    appearance: bot.appearance_json === null ? null : yield* decodeAppearance(bot.appearance_json),
     createdAt: bot.created_at,
     updatedAt: bot.updated_at,
     archivedAt: bot.archived_at,
@@ -121,6 +131,7 @@ export function botRow(input: {
   readonly instructions: string;
   readonly modelSelection: ModelSelection;
   readonly learningPolicy: BotLearningPolicy;
+  readonly appearanceJson: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly archivedAt: string | null;
@@ -131,6 +142,7 @@ export function botRow(input: {
     instructions: input.instructions,
     model_selection_json: encodeModelSelection(input.modelSelection),
     learning_policy: input.learningPolicy,
+    appearance_json: input.appearanceJson,
     created_at: input.createdAt,
     updated_at: input.updatedAt,
     archived_at: input.archivedAt,
@@ -189,11 +201,12 @@ export const layer = Layer.effect(
       function* (row: BotRow) {
         yield* sql`
         INSERT INTO bots (
-          bot_id, name, instructions, model_selection_json, learning_policy,
+          bot_id, name, instructions, model_selection_json, learning_policy, appearance_json,
           created_at, updated_at, archived_at
         ) VALUES (
           ${row.bot_id}, ${row.name}, ${row.instructions}, ${row.model_selection_json},
-          ${row.learning_policy}, ${row.created_at}, ${row.updated_at}, ${row.archived_at}
+          ${row.learning_policy}, ${row.appearance_json}, ${row.created_at}, ${row.updated_at},
+          ${row.archived_at}
         )
       `;
       },
@@ -208,6 +221,7 @@ export const layer = Layer.effect(
           instructions = ${row.instructions},
           model_selection_json = ${row.model_selection_json},
           learning_policy = ${row.learning_policy},
+          appearance_json = ${row.appearance_json},
           updated_at = ${row.updated_at},
           archived_at = ${row.archived_at}
         WHERE bot_id = ${row.bot_id}
