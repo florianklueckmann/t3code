@@ -8,7 +8,12 @@ import {
   type EnvironmentThreadSearchMatch,
   type ShownOrder,
 } from "@t3tools/client-runtime/state/thread-search";
-import { isListedThreadLineage, THREAD_JUMP_KEYBINDING_COMMANDS } from "@t3tools/contracts";
+import {
+  isListedThreadLineage,
+  THREAD_JUMP_KEYBINDING_COMMANDS,
+  type EnvironmentId,
+} from "@t3tools/contracts";
+import { AsyncResult, Atom } from "effect/reactivity";
 import {
   foldSearchQuery,
   PALETTE_MESSAGE_LIMIT,
@@ -94,11 +99,26 @@ const ACTION_ICONS: Record<string, AppSymbolName> = {
   environments: "desktopcomputer",
   usage: "chart.bar.xaxis",
   archive: "archivebox",
+  bots: "brain",
   files: "doc.text",
   terminal: "terminal",
   review: PullRequestGlyph.pullRequest,
   copyThreadReference: "link",
 };
+
+/** Bot summaries of the environments in the JSON key, subscribed only while the palette is open. */
+const paletteBotsAtom = Atom.family((environmentIdsJson: string) =>
+  Atom.make((get) =>
+    (JSON.parse(environmentIdsJson) as EnvironmentId[]).flatMap((environmentId) =>
+      (
+        AsyncResult.getOrElse(
+          get(serverEnvironment.botsLive({ environmentId, input: {} })),
+          () => null,
+        )?.bots ?? []
+      ).map((bot) => ({ environmentId, bot })),
+    ),
+  ),
+);
 
 function itemIcon(item: CommandPaletteItem): AppSymbolName {
   if (item.kind === "thread") return "text.bubble";
@@ -283,6 +303,16 @@ export function CommandPalette(props: {
     useAtomValue(serverEnvironment.prepareTriage.permissionAtom(triageEnvironmentId)) &&
     triageEnvironmentId !== null &&
     serverConfigs.get(triageEnvironmentId)?.environment.capabilities.triage === true;
+  const bots = useAtomValue(
+    paletteBotsAtom(
+      JSON.stringify(
+        searchEnvironmentIds.filter(
+          (environmentId) =>
+            serverConfigs.get(environmentId)?.environment.capabilities.bots === true,
+        ),
+      ),
+    ),
+  );
   const contentMatchByKey = new Map(
     search.matches
       .filter((match) => match.source === "user" || match.source === "assistant")
@@ -331,6 +361,13 @@ export function CommandPalette(props: {
         title: "Scheduled tasks",
         searchTerms: ["schedule", "automations", "recurring"],
         run: () => openSettings(navigation, "SettingsScheduledTasks"),
+      },
+      {
+        key: "bots",
+        kind: "action",
+        title: "Bots",
+        searchTerms: ["bot", "assistant", "instructions"],
+        run: () => openSettings(navigation, "SettingsBots"),
       },
       {
         key: "usage",
@@ -425,6 +462,34 @@ export function CommandPalette(props: {
           },
         }),
     }));
+    // Listed with projects, so they show once a query matches instead of crowding the open palette.
+    const botItems: CommandPaletteItem[] = bots.flatMap(({ environmentId, bot }) =>
+      bot.archivedAt !== null
+        ? []
+        : bot.projects.flatMap((context) => {
+            if (context.detachedAt !== null) return [];
+            const project = projectByKey.get(scopedProjectKey(environmentId, context.projectId));
+            const projectTitle = project?.title ?? "project";
+            return [
+              {
+                key: `bot:${scopedThreadKey(environmentId, context.homeThreadId)}`,
+                kind: "project" as const,
+                ...(project ? { project } : {}),
+                title: `Open ${bot.name} in ${projectTitle}`,
+                detail: `Bot · ${savedConnectionsById[environmentId]?.environmentLabel ?? environmentId}`,
+                searchTerms: ["bot", bot.name, projectTitle],
+                run: () =>
+                  selectDetail({
+                    name: "Thread",
+                    params: {
+                      environmentId: String(environmentId),
+                      threadId: String(context.homeThreadId),
+                    },
+                  }),
+              },
+            ];
+          }),
+    );
     const threadItems: CommandPaletteItem[] = threads
       .filter((thread) => thread.archivedAt === null && isListedThreadLineage(thread.lineage))
       .map((thread) => {
@@ -459,11 +524,12 @@ export function CommandPalette(props: {
         (right.threadSearch ? threadRecentUse(right.threadSearch) : 0) -
         (left.threadSearch ? threadRecentUse(left.threadSearch) : 0),
     );
-    return [...actions, ...projectItems, ...threadItems];
+    return [...actions, ...botItems, ...projectItems, ...threadItems];
   }, [
     selectTab,
     activeThread,
     activeThreadRef,
+    bots,
     environments.length,
     canTriage,
     navigation,

@@ -18,7 +18,6 @@ import {
   MAX_WEBHOOK_FILTERS,
   resolveEnvironmentMachineKind,
 } from "@t3tools/contracts";
-import type { MenuAction } from "@react-native-menu/menu";
 import { DateTimePicker } from "@expo/ui/community/datetime-picker";
 import {
   isAtomCommandInterrupted,
@@ -38,7 +37,7 @@ import {
 import { useRef, useState, type ReactNode } from "react";
 import { useFocusEffect, useNavigation, usePreventRemove } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
-import { AppState, Platform, Pressable, TextInput as RNTextInput, View } from "react-native";
+import { AppState, Platform, Pressable, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { Button } from "../../components/ui/Button";
@@ -66,6 +65,7 @@ import { withNativeGlassHeaderItem } from "../layout/native-glass-header-items";
 import { resolveNewTaskBranchLabel } from "../threads/new-task-context-presentation";
 import { useVoiceInputController } from "../voice-input/useVoiceInputController";
 import { ScheduledTaskPromptField } from "./components/ScheduledTaskPromptField";
+import { FormField, PickerRow, SelectRow } from "./components/SettingsFormRows";
 import {
   AndroidSettingsEnvironmentFilter,
   SettingsEnvironmentFilterHeader,
@@ -160,102 +160,6 @@ function repeatLabel(weekdays: ReadonlyArray<number>): string {
   );
 }
 
-function FormField(props: {
-  readonly label: string;
-  readonly value: string;
-  readonly onChange: (value: string) => void;
-  readonly keyboardType?: "decimal-pad" | "number-pad";
-  readonly disabled?: boolean;
-  readonly placeholder?: string;
-  readonly borderTop?: boolean;
-}) {
-  return (
-    <View
-      className={
-        props.borderTop ? "gap-2 border-t border-border-subtle px-4 py-3" : "gap-2 px-4 py-3"
-      }
-    >
-      <Text className="text-sm text-foreground-muted">{props.label}</Text>
-      <RNTextInput
-        accessibilityLabel={props.label}
-        value={props.value}
-        readOnly={props.disabled}
-        onChangeText={props.onChange}
-        textAlignVertical="center"
-        keyboardType={props.keyboardType}
-        placeholder={props.placeholder}
-        placeholderTextColorClassName="accent-foreground-muted"
-        className="min-h-8 font-sans text-base text-foreground"
-      />
-    </View>
-  );
-}
-
-function SelectRow(props: {
-  readonly label: string;
-  readonly value: string;
-  readonly valueIcon?: ReactNode;
-  readonly actions: MenuAction[];
-  readonly onSelect: (id: string) => void;
-  readonly borderTop?: boolean;
-}) {
-  const value = (
-    <View className="min-w-0 flex-1 flex-row items-center justify-end gap-2">
-      {props.valueIcon}
-      <Text
-        textRole="footnote"
-        className="shrink text-right text-foreground-muted"
-        numberOfLines={1}
-      >
-        {props.value}
-      </Text>
-    </View>
-  );
-  if (props.actions.length === 0) {
-    return (
-      <View
-        className={
-          props.borderTop
-            ? "min-h-14 flex-row items-center gap-3 border-t border-border-subtle px-4 py-3"
-            : "min-h-14 flex-row items-center gap-3 px-4 py-3"
-        }
-      >
-        <Text textRole="body" className="text-foreground">
-          {props.label}
-        </Text>
-        {value}
-      </View>
-    );
-  }
-  return (
-    <Menu
-      actions={props.actions}
-      onPressAction={({ nativeEvent }) => props.onSelect(nativeEvent.event)}
-    >
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel={`${props.label}, ${props.value}`}
-        className={
-          props.borderTop
-            ? "min-h-14 flex-row items-center gap-3 border-t border-border-subtle px-4 py-3 active:opacity-70"
-            : "min-h-14 flex-row items-center gap-3 px-4 py-3 active:opacity-70"
-        }
-      >
-        <Text textRole="body" className="text-foreground">
-          {props.label}
-        </Text>
-        {value}
-        <SymbolView
-          name="chevron.down"
-          size={14}
-          tintColorClassName="accent-chevron"
-          type="monochrome"
-        />
-      </Pressable>
-    </Menu>
-  );
-}
-
 function WebhookFilterRows(props: {
   readonly filters: ReadonlyArray<WebhookFilterDraft>;
   readonly disabled: boolean;
@@ -333,46 +237,6 @@ function WebhookFilterRows(props: {
         </Text>
       ) : null}
     </>
-  );
-}
-
-function PickerRow(props: {
-  readonly label: string;
-  readonly value: string;
-  readonly onPress: () => void;
-  readonly disabled?: boolean;
-  readonly borderTop?: boolean;
-}) {
-  return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={`${props.label}, ${props.value}`}
-      accessibilityState={{ disabled: props.disabled }}
-      disabled={props.disabled}
-      onPress={props.onPress}
-      className={
-        props.borderTop
-          ? "min-h-14 flex-row items-center gap-3 border-t border-border-subtle px-4 py-3 active:opacity-70 disabled:opacity-50"
-          : "min-h-14 flex-row items-center gap-3 px-4 py-3 active:opacity-70 disabled:opacity-50"
-      }
-    >
-      <Text textRole="body" className="text-foreground">
-        {props.label}
-      </Text>
-      <Text
-        textRole="footnote"
-        className="min-w-0 flex-1 text-right text-foreground-muted"
-        numberOfLines={1}
-      >
-        {props.value}
-      </Text>
-      <SymbolView
-        name="chevron.right"
-        size={14}
-        tintColorClassName="accent-chevron"
-        type="monochrome"
-      />
-    </Pressable>
   );
 }
 
