@@ -16,6 +16,16 @@ export const BotId = TrimmedNonEmptyString.check(
 ).pipe(Schema.brand("BotId"));
 export type BotId = typeof BotId.Type;
 
+export const BOT_HOME_THREAD_ID_PREFIX = "bot-home:";
+
+/**
+ * A cheap check before loading Bot data for a thread. It is not membership:
+ * only a matching Bot project context proves the thread is a home conversation.
+ */
+export function mayBeBotHomeThreadId(threadId: string): boolean {
+  return threadId.startsWith(BOT_HOME_THREAD_ID_PREFIX);
+}
+
 const BOT_NAME_MAX_CHARS = 80;
 const BOT_INSTRUCTIONS_MAX_CHARS = 16_000;
 const BOT_SOURCE_PREFERENCES_MAX = 50;
