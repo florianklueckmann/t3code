@@ -232,7 +232,8 @@ Windows investigation while that suite is not a required gate.
 ### Fork CI
 
 [CI](../../.github/workflows/ci.yml) uses Blacksmith in `pingdotgg/t3code` and
-standard GitHub-hosted Ubuntu 24.04 and macOS 26 runners in forks. Fork jobs allow
+standard GitHub-hosted Ubuntu 24.04 and macOS 26 Intel runners in forks.
+The Intel label avoids the ARM64 capacity queue; native analysis still runs. Fork jobs allow
 45 minutes for cold installs and smaller runners; no private task-cache credential
 is needed. The mobile fingerprint PR check also uses GitHub-hosted Ubuntu in forks.
 
