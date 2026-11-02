@@ -1,5 +1,6 @@
 import {
   AuthOrchestrationOperateScope,
+  mayBeBotHomeThreadId,
   type EnvironmentId,
   type ScopedThreadRef,
   type ThreadId,
@@ -41,6 +42,7 @@ import { observeResize } from "~/lib/observeResize";
 import { cn } from "~/lib/utils";
 import { textDirection } from "~/textDirection";
 import { useClientSettings } from "../../hooks/useSettings";
+import { BotIdentityBadge } from "./BotIdentityBadge";
 import { GuestShareIndicator } from "./GuestShareControls";
 
 interface ChatHeaderProps {
@@ -418,6 +420,16 @@ export const ChatHeader = memo(function ChatHeader({
               <TooltipPopup side="top">{activeThreadTitle}</TooltipPopup>
             </Tooltip>
           )}
+          {renamingTitle === null &&
+          isServerThread &&
+          activeProject !== null &&
+          mayBeBotHomeThreadId(activeThreadId) ? (
+            <BotIdentityBadge
+              environmentId={activeThreadEnvironmentId}
+              threadId={activeThreadId}
+              projectId={activeProject.id}
+            />
+          ) : null}
           {renamingTitle === null && activeThreadLinkOrigin ? (
             <Tooltip>
               <TooltipTrigger render={<Badge variant="info" size="sm" />}>
