@@ -107,6 +107,7 @@ import { isSnoozed } from "../orchestration-v2/ThreadSettlementService.ts";
 import { userFacingDispatchErrorMessage } from "../orchestration-v2/UserFacingErrors.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
+import { BOT_ROUTINE_RUNTIME_MODE } from "../scheduledTasks/BotRoutineTarget.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import {
@@ -268,6 +269,7 @@ function scheduledTaskSummary(task: ScheduledTask, mayRun: boolean): Orchestrato
     projectId: task.projectId,
     boundThreadId: task.threadId,
     freshSession: scheduledTaskThreadMode(task) === "fresh_session",
+    ...(task.bot === undefined ? {} : { botId: task.bot.botId }),
     schedule: task.schedule,
     nextRunAt: task.nextRunAt,
     lastRunStatus: task.lastRunStatus,
@@ -1993,9 +1995,23 @@ const make = Effect.gen(function* () {
       const projectId = yield* resolveProjectTarget(parent, input.projectId);
       yield* assertLiveCallerForOtherProject(scope, parent, projectId);
       const project = yield* requireProject(projectId);
+      if (input.sessionAt !== undefined && input.botId === undefined) {
+        return yield* failure("invalid_request", "sessionAt needs botId.");
+      }
+      // A routine runs in full access, so only a caller with full access may set one up.
+      if (
+        input.botId !== undefined &&
+        runtimeModeRank(BOT_ROUTINE_RUNTIME_MODE) > runtimeModeRank(limits.runtimeMode)
+      ) {
+        return yield* failure(
+          "invalid_request",
+          "Bot routines run in full access, which is above this thread's mode.",
+        );
+      }
       const bindToCurrentThread =
-        input.bindToCurrentThread ??
-        (parent !== undefined && parent.thread.projectId === projectId);
+        input.botId === undefined &&
+        (input.bindToCurrentThread ??
+          (parent !== undefined && parent.thread.projectId === projectId));
       if (bindToCurrentThread && (parent === undefined || parent.thread.projectId !== projectId)) {
         return yield* failure(
           "invalid_request",
@@ -2027,6 +2043,9 @@ const make = Effect.gen(function* () {
         interactionMode: limits.interactionMode,
         createdBy: "agent",
         creationSource: "mcp",
+        ...(input.botId === undefined
+          ? {}
+          : { bot: { botId: input.botId, sessionAt: input.sessionAt ?? null } }),
         // Scope the idempotency key by provider session so two callers
         // reusing the same clientRequestId cannot collide on one task row.
         ...(input.clientRequestId === undefined

@@ -127,6 +127,7 @@ import * as DocumentText from "./provider/DocumentText.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
 import * as BotService from "./bots/BotService.ts";
+import * as BotTaskService from "./bots/BotTaskService.ts";
 import * as SecretRequests from "./secrets/SecretRequests.ts";
 import * as GuestShareService from "./guest/GuestShareService.ts";
 import {
@@ -1448,6 +1449,7 @@ export const layerWsRpc = (
       const providerSessionManager = yield* ProviderSessionManager.ProviderSessionManagerV2;
       const scheduledTasks = yield* ScheduledTasks.ScheduledTaskService;
       const bots = yield* BotService.BotService;
+      const botTasks = yield* BotTaskService.BotTaskService;
       const secretRequests = yield* SecretRequests.SecretRequests;
       const guestShares = yield* GuestShareService.GuestShareService;
       const pullRequests = yield* PullRequestService.PullRequestService;
@@ -2377,6 +2379,9 @@ export const layerWsRpc = (
         [WS_METHODS.botsAttachProject]: (input) => bots.attachProject(input),
         [WS_METHODS.botsUpdateProjectContext]: (input) => bots.updateProjectContext(input),
         [WS_METHODS.botsDetachProject]: (input) => bots.detachProject(input),
+        [WS_METHODS.botsSubscribeTasks]: (input) => botTasks.subscribeList(input),
+        [WS_METHODS.botsStartTask]: (input) => botTasks.start(input),
+        [WS_METHODS.botsCancelTask]: (input) => botTasks.cancel(input),
         [WS_METHODS.guestShareCreate]: (input) =>
           Effect.annotateCurrentSpan({ "orchestration_v2.thread_id": input.threadId }).pipe(
             Effect.andThen(guestShares.create(input)),
