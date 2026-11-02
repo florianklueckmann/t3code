@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "bot-sources": "node bot-sources/run.ts",
+    "bot-preparation": "node bot-preparation/run.ts",
     "mcp-tool-use": "node --env-file-if-exists=../.env mcp-tool-use/run.ts",
     "mcp-tool-use:trim-capture": "node mcp-tool-use/trim-capture.ts",
     "mcp-tool-use:regrade": "node mcp-tool-use/regrade.ts",

@@ -708,6 +708,7 @@ export const OrchestratorMcpScheduledTask = Schema.Struct({
   boundThreadId: Schema.NullOr(ThreadId),
   freshSession: Schema.Boolean,
   botId: Schema.optional(BotId),
+  sessionAt: Schema.optional(IsoDateTime),
   schedule: ScheduledTaskSchedule,
   nextRunAt: Schema.NullOr(IsoDateTime),
   lastRunStatus: ScheduledTaskRunStatus,
