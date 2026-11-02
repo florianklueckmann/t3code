@@ -133,8 +133,9 @@ const layerDatabase = SqlitePersistence.layerMemory.pipe(
 const seedProjects = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   for (const [projectId, title] of [
-    [campaignA, "Campaign A"],
-    [campaignB, "Campaign B"],
+    // Equal titles: only the ids in the Bot context tell the campaigns apart.
+    [campaignA, "Faerun"],
+    [campaignB, "Faerun"],
   ] as const) {
     yield* sql`
       INSERT INTO projection_projects (
@@ -179,9 +180,9 @@ const instructionsFor = Effect.fn("BotServiceTest.instructionsFor")(function* (
   return result._tag === "active" ? result.instructions : result._tag;
 });
 
-const createCampaignBot = (bots: BotService.BotService["Service"]) =>
+const createCampaignBot = (bots: BotService.BotService["Service"], id = botId) =>
   bots.create({
-    botId,
+    botId: id,
     name: "Faerun Companion",
     instructions: "Answer as the campaign companion.",
     modelSelection: codex,
@@ -194,6 +195,8 @@ it.effect(
     Effect.gen(function* () {
       yield* seedProjects;
       const world = yield* makeThreadWorld;
+      const twinId = BotId.make("faerun-companion-twin");
+      const vault = { label: "Campaign A vault", location: "/vaults/a" };
       const homes = yield* withServices(world.threadLayer, ({ bots }) =>
         Effect.gen(function* () {
           yield* createCampaignBot(bots);
@@ -201,7 +204,7 @@ it.effect(
             botId,
             projectId: campaignA,
             guidance: "Strahd is alive in this campaign.",
-            sources: [{ label: "Campaign A vault", location: "/vaults/a" }],
+            sources: [vault],
           });
           const detail = yield* bots.attachProject({
             botId,
@@ -210,7 +213,14 @@ it.effect(
           });
           const [a, b] = detail.projects;
           assert.notEqual(a?.homeThreadId, b?.homeThreadId);
-          return { a: a?.homeThreadId ?? assert.fail(), b: b?.homeThreadId ?? assert.fail() };
+          // Same name as the first Bot, attached to the same project.
+          yield* createCampaignBot(bots, twinId);
+          const twin = yield* bots.attachProject({ botId: twinId, projectId: campaignA });
+          return {
+            a: a?.homeThreadId ?? assert.fail(),
+            b: b?.homeThreadId ?? assert.fail(),
+            twin: twin.projects[0]?.homeThreadId ?? assert.fail(),
+          };
         }),
       );
 
@@ -218,28 +228,44 @@ it.effect(
         Effect.gen(function* () {
           const a = yield* instructionsFor(turnContext, homes.a);
           assert.include(a, "Strahd is alive");
-          assert.include(a, 'project "Campaign A"');
+          assert.include(a, `botId "${botId}"`);
+          assert.include(a, `projectId "${campaignA}"`);
           assert.include(a, "- Campaign A vault: /vaults/a");
           assert.notInclude(a, "Strahd was defeated");
           const b = yield* instructionsFor(turnContext, homes.b);
           assert.include(b, "Strahd was defeated");
+          assert.include(b, `projectId "${campaignB}"`);
           assert.notInclude(b, "Strahd is alive");
+          const twin = yield* instructionsFor(turnContext, homes.twin);
+          assert.include(twin, `botId "${twinId}"`);
+          assert.notInclude(twin, `botId "${botId}"`);
           assert.equal(yield* instructionsFor(turnContext, ThreadId.make("plain")), "none");
 
-          // Edits reach the next turn without touching the provider session.
+          // A standing change through the ids, as the t3_bot tool makes it.
           yield* bots.updateProjectContext({
             botId,
             projectId: campaignA,
             guidance: "Strahd fled to the Amber Temple.",
+            sources: [vault, { label: "Sword Coast guide", location: "/books/scag.pdf" }],
           });
-          assert.include(yield* instructionsFor(turnContext, homes.a), "Amber Temple");
 
           // A repeated attach keeps the existing conversation.
           yield* bots.attachProject({ botId, projectId: campaignA });
         }),
       );
+
+      yield* withServices(world.threadLayer, ({ turnContext }) =>
+        Effect.gen(function* () {
+          const a = yield* instructionsFor(turnContext, homes.a);
+          assert.include(a, "Amber Temple");
+          assert.include(a, "- Campaign A vault: /vaults/a");
+          assert.include(a, "- Sword Coast guide: /books/scag.pdf");
+          assert.notInclude(yield* instructionsFor(turnContext, homes.b), "Sword Coast guide");
+          assert.notInclude(yield* instructionsFor(turnContext, homes.twin), "Sword Coast guide");
+        }),
+      );
       const created = (yield* Ref.get(world.commands)).filter((type) => type === "thread.create");
-      assert.lengthOf(created, 2);
+      assert.lengthOf(created, 3);
       const threads = yield* Ref.get(world.threads);
       assert.equal(threads.get(homes.a)?.projectId, campaignA);
       assert.equal(threads.get(homes.b)?.projectId, campaignB);
