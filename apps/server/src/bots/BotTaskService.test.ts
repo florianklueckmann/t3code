@@ -61,6 +61,8 @@ interface FakeThread {
   readonly status: OrchestrationV2ThreadShell["status"];
   readonly blockingRequest: boolean;
   readonly backgroundTasks: number;
+  /** Set once the first message admitted a run. */
+  readonly runId: string | null;
 }
 
 /** Stands in for the orchestrator: launches are idempotent per command id, like receipts. */
@@ -142,7 +144,7 @@ const makeThreadWorld = Effect.gen(function* () {
         ? { id: "request" as never, kind: "user_input" as never, createdAt: DateTime.makeUnsafe(0) }
         : null,
       pendingBackgroundTasks: Array.from({ length: thread.backgroundTasks }, () => ({}) as never),
-      latestRunId: null,
+      latestRunId: thread.runId as OrchestrationV2ThreadShell["latestRunId"],
     };
     return shell as OrchestrationV2ThreadShell;
   });
@@ -170,11 +172,14 @@ const makeThreadWorld = Effect.gen(function* () {
           status: "idle",
           blockingRequest: false,
           backgroundTasks: 0,
+          runId: null,
         }),
       );
       yield* Ref.update(commands, (current) => [...current, `launch ${threadId}`]);
       if (gate?.stage === "before-message") yield* pause;
-      if (input.initialMessage !== undefined) yield* update(threadId, { status: "queued" });
+      if (input.initialMessage !== undefined) {
+        yield* update(threadId, { status: "queued", runId: `run:${threadId}` });
+      }
     }
     const signal = yield* Ref.get(launched);
     if (signal !== null && input.initialMessage !== undefined) {
@@ -509,6 +514,8 @@ it.effect.each(["before-thread", "before-message"] as const)(
           // The launch is under way: no thread yet, or a thread whose run has not started.
           const taskId = BotTaskId.make("bot-task:cancel-while-launching");
           yield* services.tasks.cancel({ taskId });
+          // A reconcile pass before the run is admitted must not use up the stop meant for it.
+          yield* services.tasks.reconcile;
           yield* Deferred.succeed(gate.release, undefined);
           const task = yield* Fiber.join(starting);
           const workThreadId = task.workThreadId ?? assert.fail("no work thread");
