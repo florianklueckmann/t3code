@@ -1,19 +1,23 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
   BotId,
+  DEFAULT_SERVER_SETTINGS,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
   type BotDetail,
   type ModelSelection,
+  type ServerConfig,
 } from "@t3tools/contracts";
 
+import { buildHiddenModelManagementGroups } from "../../lib/modelOptions";
 import {
   attachBotProjectDraft,
   botDraftFromDetail,
   detachBotProjectDraft,
   emptyBotSourceDraft,
   hasBotDraftChanges,
+  isBotModelOption,
   newBotDraft,
   planBotSave,
   updateBotProjectDraft,
@@ -131,5 +135,56 @@ describe("hasBotDraftChanges", () => {
     expect(
       hasBotDraftChanges(baseline, detachBotProjectDraft(added, baseline, ProjectId.make("new"))),
     ).toBe(false);
+  });
+});
+
+describe("Bot model picker", () => {
+  // regression: T3B-7 managing hidden models offered providers Bots cannot run on
+  it("reveals hidden Codex models without offering other providers", () => {
+    const instances = [
+      ["codex_work", "codex"],
+      ["codex_personal", "codex"],
+      ["claudeAgent", "claudeAgent"],
+    ] as const;
+    const config = {
+      settings: {
+        ...DEFAULT_SERVER_SETTINGS,
+        providerInstances: Object.fromEntries(
+          instances.map(([instanceId, driver]) => [instanceId, { driver, enabled: true }]),
+        ),
+        providerModelPreferences: {
+          codex_work: { hiddenModels: ["gpt-old"], modelOrder: [] },
+        },
+      },
+      providers: instances.map(([instanceId, driver]) => ({
+        instanceId,
+        driver,
+        enabled: true,
+        installed: true,
+        auth: { status: "authenticated" },
+        models: [
+          { slug: "gpt-5", name: "GPT-5", capabilities: null },
+          { slug: "gpt-old", name: "GPT Old", capabilities: null },
+        ],
+      })),
+    } as unknown as ServerConfig;
+    const managedGroups = (isEligible: typeof isBotModelOption | undefined) =>
+      buildHiddenModelManagementGroups({
+        config,
+        selectedModel: null,
+        lockedProviderInstanceId: undefined,
+        projectId: null,
+        isEligible,
+      }).map((group) => [group.providerKey, group.models.map((option) => option.selection.model)]);
+
+    expect(managedGroups(isBotModelOption)).toEqual([
+      ["codex_work", ["gpt-5", "gpt-old"]],
+      ["codex_personal", ["gpt-5", "gpt-old"]],
+    ]);
+    expect(managedGroups(undefined).map(([providerKey]) => providerKey)).toEqual([
+      "codex_work",
+      "codex_personal",
+      "claudeAgent",
+    ]);
   });
 });
