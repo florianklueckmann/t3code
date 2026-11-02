@@ -92,3 +92,15 @@ export function activeBotConversations(
       : bot.projects.flatMap((context) => (context.detachedAt === null ? [{ bot, context }] : [])),
   );
 }
+
+/** The active Bot whose home conversation in `projectId` is `threadId`, if any. */
+export function botOfHomeThread(
+  bots: ReadonlyArray<BotSummary>,
+  thread: { readonly id: string; readonly projectId: string },
+): BotSummary | null {
+  return (
+    activeBotConversations(bots).find(
+      ({ context }) => context.homeThreadId === thread.id && context.projectId === thread.projectId,
+    )?.bot ?? null
+  );
+}

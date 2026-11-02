@@ -1,6 +1,14 @@
+import {
+  BotId,
+  type BotSummary,
+  ProjectId,
+  ProviderInstanceId,
+  ThreadId,
+} from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  botOfHomeThread,
   botProjectContextChanges,
   botProjectContextDraft,
   botSourceDrafts,
@@ -60,5 +68,36 @@ describe("botProjectContextChanges", () => {
     expect(botProjectContextChanges({ guidance: saved.guidance, sources: [] }, saved)).toEqual({
       sources: [],
     });
+  });
+});
+
+describe("botOfHomeThread", () => {
+  const home = { id: "bot-home:companion:campaign-a", projectId: "campaign-a" };
+  const bot = (overrides: { archivedAt?: string; detachedAt?: string } = {}): BotSummary => ({
+    id: BotId.make("companion"),
+    name: "Companion",
+    modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
+    learningPolicy: "after_adoption",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    archivedAt: overrides.archivedAt ?? null,
+    projects: [
+      {
+        projectId: ProjectId.make(home.projectId),
+        homeThreadId: ThreadId.make(home.id),
+        attachedAt: "2026-01-01T00:00:00.000Z",
+        detachedAt: overrides.detachedAt ?? null,
+      },
+    ],
+  });
+
+  it.each([
+    ["an active home conversation", [bot()], home, "Companion"],
+    ["a thread in another project", [bot()], { ...home, projectId: "campaign-b" }, null],
+    ["an id that only looks like a home thread", [bot()], { ...home, id: "bot-home:x:y" }, null],
+    ["a detached project", [bot({ detachedAt: "2026-01-02T00:00:00.000Z" })], home, null],
+    ["an archived Bot", [bot({ archivedAt: "2026-01-02T00:00:00.000Z" })], home, null],
+  ])("resolves %s", (_case, bots, thread, name) => {
+    expect(botOfHomeThread(bots, thread)?.name ?? null).toBe(name);
   });
 });

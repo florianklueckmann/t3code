@@ -16,6 +16,7 @@ import * as Layer from "effect/Layer";
 import * as DateTime from "effect/DateTime";
 import * as Ref from "effect/Ref";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Stream from "effect/Stream";
 
 import * as ServerConfig from "../config.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
@@ -382,6 +383,32 @@ it.effect("moves home conversations to a new model and rejects providers without
           .pipe(Effect.flip);
         assert.include(rejectedCreate.message, "Codex");
       }),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect("pushes a rename to open Bot list subscriptions without renaming the conversation", () =>
+  Effect.gen(function* () {
+    yield* seedProjects;
+    const world = yield* makeThreadWorld;
+    yield* withServices(world.threadLayer, ({ bots }) =>
+      Effect.gen(function* () {
+        yield* createCampaignBot(bots);
+        yield* bots.attachProject({ botId, projectId: campaignA });
+        const pull = yield* Stream.toPull(bots.subscribeList());
+        assert.deepEqual(
+          (yield* pull).map(({ bots: list }) => list.map((bot) => bot.name)),
+          [["Faerun Companion"]],
+        );
+
+        // Another client or the t3_bot tool renames it while this subscriber is open.
+        yield* bots.update({ botId, name: "Sword Coast Companion" });
+        assert.deepEqual(
+          (yield* pull).map(({ bots: list }) => list.map((bot) => bot.name)),
+          [["Sword Coast Companion"]],
+        );
+        assert.notInclude(yield* Ref.get(world.commands), "thread.metadata.update");
+      }).pipe(Effect.scoped),
     );
   }).pipe(Effect.provide(layerDatabase)),
 );

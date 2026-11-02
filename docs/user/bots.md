@@ -13,6 +13,10 @@ for how it should work and answer, a model, and a **Learning** option (see
 under **Projects**. T3 Code starts the Bot's conversation in that project,
 titled with the Bot's name and using the project's default permission mode.
 
+The conversation title then works like any other thread's: your first message
+gives it a generated title, and you can rename it. Renaming the Bot does not
+change the title. The conversation header always shows the Bot's current name.
+
 To open a conversation, choose **Open conversation** next to the project in
 **Settings → Bots**, or search the command palette for the Bot or project name
 and pick **Open \<Bot\> in \<project\>**. Both work on web, desktop and mobile.

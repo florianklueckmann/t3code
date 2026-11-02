@@ -1,4 +1,5 @@
 import {
+  BOT_HOME_THREAD_ID_PREFIX,
   type BotAttachProjectInput,
   type BotCreateInput,
   type BotDetachProjectInput,
@@ -70,7 +71,7 @@ export class BotService extends Context.Service<
  * Bot ids contain no colon, which keeps the pair recoverable from the id.
  */
 function botHomeThreadId(botId: BotId, projectId: ProjectId): ThreadId {
-  return ThreadId.make(`bot-home:${botId}:${projectId}`);
+  return ThreadId.make(`${BOT_HOME_THREAD_ID_PREFIX}${botId}:${projectId}`);
 }
 
 const botError = (message: string, botId?: BotId) => (cause?: unknown) =>

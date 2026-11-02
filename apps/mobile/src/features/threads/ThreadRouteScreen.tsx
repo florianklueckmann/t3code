@@ -1,4 +1,5 @@
 import * as Dialog from "../../components/ui/Dialog";
+import { useHomeThreadBot } from "./useHomeThreadBot";
 import { useRememberThreadProject } from "./useRememberThreadProject";
 import { useOpenPullRequest } from "../../native/useOpenPullRequest";
 import { makeTurnCommandMetadata } from "../../lib/commandMetadata";
@@ -533,7 +534,9 @@ function ThreadRouteContent(
       : scopeThreadRef(delegatedFrom.environmentId, delegatedFrom.threadId);
   // The title it had at delegation, until this client sees the parent itself.
   const delegatedFromThread = useThreadShell(delegatedFromRef);
+  const homeThreadBot = useHomeThreadBot(selectedThread);
   const headerSubtitle = [
+    homeThreadBot === null ? null : `Bot ${homeThreadBot.name}`,
     selectedThreadProject?.title ?? null,
     selectedEnvironmentConnection?.environmentLabel ?? null,
     // A linked environment's delegated task names its parent; other linked work its origin.
