@@ -70,6 +70,10 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.botsDetachProject]: AuthOrchestrationOperateScope,
   [WS_METHODS.botsStartTask]: AuthOrchestrationOperateScope,
   [WS_METHODS.botsCancelTask]: AuthOrchestrationOperateScope,
+  [WS_METHODS.botsRecordLearning]: AuthOrchestrationOperateScope,
+  [WS_METHODS.botsDecideLearning]: AuthOrchestrationOperateScope,
+  [WS_METHODS.botsRetireLearning]: AuthOrchestrationOperateScope,
+  [WS_METHODS.botsRestoreLearning]: AuthOrchestrationOperateScope,
   [ORCHESTRATION_V2_WS_METHODS.stopWorkflow]: AuthOrchestrationOperateScope,
   // Force stop kills agent processes, as Stop on a terminal does.
   [ORCHESTRATION_V2_WS_METHODS.forceStopThread]: AuthOrchestrationOperateScope,

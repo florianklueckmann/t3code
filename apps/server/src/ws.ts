@@ -2361,6 +2361,15 @@ export const layerWsRpc = (
         [WS_METHODS.botsSubscribeTasks]: (input) => botTasks.subscribeList(input),
         [WS_METHODS.botsStartTask]: (input) => botTasks.start(input),
         [WS_METHODS.botsCancelTask]: (input) => botTasks.cancel(input),
+        // The app's user records directly, so it is a standing instruction.
+        [WS_METHODS.botsRecordLearning]: (input) =>
+          bots
+            .recordLearning({ ...input, origin: "instruction", source: { kind: "user" } })
+            .pipe(Effect.map((recorded) => recorded.bot)),
+        [WS_METHODS.botsDecideLearning]: (input) => bots.decideLearning(input),
+        [WS_METHODS.botsRetireLearning]: (input) => bots.retireLearning(input),
+        [WS_METHODS.botsRestoreLearning]: (input) =>
+          bots.restoreLearning({ ...input, source: { kind: "user" } }),
         [WS_METHODS.guestShareCreate]: (input) =>
           Effect.annotateCurrentSpan({ "orchestration_v2.thread_id": input.threadId }).pipe(
             Effect.andThen(guestShares.create(input)),

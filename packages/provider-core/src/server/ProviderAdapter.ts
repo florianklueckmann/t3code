@@ -56,6 +56,11 @@ export const ProviderAdapterV2RuntimePolicy = Schema.Struct({
    * it; adapters use it to refuse native mode choices a user makes beside T3 Code's own.
    */
   maxRuntimeMode: Schema.optional(RuntimeMode),
+  /**
+   * "disabled" keeps the provider's own memory out of this thread: nothing from it is injected,
+   * and the thread is not used to build it. Bot conversations use T3 Code's scoped learning instead.
+   */
+  nativeMemory: Schema.optional(Schema.Literal("disabled")),
 });
 export type ProviderAdapterV2RuntimePolicy = typeof ProviderAdapterV2RuntimePolicy.Type;
 

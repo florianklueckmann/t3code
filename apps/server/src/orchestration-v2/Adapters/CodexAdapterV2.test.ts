@@ -2725,6 +2725,43 @@ describe("CodexAdapterV2 post-settle continuation", () => {
               label: "thread/resume with an explicit app thread",
               frame: { id: 5, result: { thread: { id: nativeThreadId, updatedAt: 1782622450 } } },
             },
+            {
+              type: "expect_outbound",
+              label: "thread/resume without native memory",
+              frame: {
+                id: 6,
+                method: "thread/resume",
+                params: {
+                  threadId: nativeThreadId,
+                  excludeTurns: true,
+                  config: {
+                    ...CodexAdapterV2.CODEX_THREAD_CONFIG,
+                    "features.memories": false,
+                    "memories.use_memories": false,
+                    "memories.generate_memories": false,
+                  },
+                },
+              },
+            },
+            {
+              type: "emit_inbound",
+              label: "thread/resume without native memory",
+              frame: { id: 6, result: { thread: { id: nativeThreadId, updatedAt: 1782622450 } } },
+            },
+            {
+              type: "expect_outbound",
+              label: "thread/memoryMode/set",
+              frame: {
+                id: 7,
+                method: "thread/memoryMode/set",
+                params: { threadId: nativeThreadId, mode: "disabled" },
+              },
+            },
+            {
+              type: "emit_inbound",
+              label: "thread/memoryMode/set",
+              frame: { id: 7, result: {} },
+            },
           ],
         });
         const resumeThreadEnvs: Array<unknown> = [];
@@ -2753,11 +2790,22 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           modelSelection: CODEX_TEST_MODEL_SELECTION,
           runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
         });
+        // A Bot conversation: memory stays off even for a thread that began with it on.
+        yield* harness.runtime.resumeThread({
+          providerThread: harness.providerThread,
+          modelSelection: CODEX_TEST_MODEL_SELECTION,
+          runtimePolicy: { ...CODEX_TEST_RUNTIME_POLICY, nativeMemory: "disabled" },
+        });
 
         assert.equal(resumed.nativeThreadRef?.nativeId, nativeThreadId);
         assert.equal(resumed.status, "idle");
         assert.equal(DateTime.toEpochMillis(resumed.updatedAt), 1782622450000);
-        assert.deepEqual(resumeThreadEnvs, [harness.threadId, undefined, explicitThreadId]);
+        assert.deepEqual(resumeThreadEnvs, [
+          harness.threadId,
+          undefined,
+          explicitThreadId,
+          harness.threadId,
+        ]);
       }).pipe(
         Effect.provide(
           Layer.mergeAll(

@@ -11,7 +11,7 @@ Write or run an eval when a change affects what a model sees or does: agent inst
 | [pr-content](pr-content/)       | Whether PR generation describes the diff when project instructions try to redirect it.               |
 | [voice-cleanup](voice-cleanup/) | Whether optional dictation cleanup edits only the spoken text and preserves its meaning.             |
 | [test-signal](test-signal/)     | Whether a cheap model running the test-signal check flags low-signal tests.                          |
-| [bot-sources](bot-sources/)     | Whether Bots follow their project sources in real Codex turns through a dev server.                  |
+| [bot-sources](bot-sources/)     | Whether Bots follow their project sources and learn within their policy and scope, in real Codex turns.                  |
 
 | [bot-preparation](bot-preparation/) | Whether Bot preparation routines give grounded results and Bots set up routines when asked. |
 

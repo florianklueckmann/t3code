@@ -1,5 +1,9 @@
 import { RegistryContext, useAtomValue } from "@effect/atom-react";
 import {
+  BOT_LEARNING_KIND_LABELS,
+  BOT_LEARNING_STATUS_LABELS,
+  botLearningOriginLabel,
+  botLearningViews,
   botProjectContextChanges,
   botProjectContextDraft,
   botRoutineDraft,
@@ -28,6 +32,7 @@ import {
   ProviderDriverKind,
   type BotAppearance,
   type BotDetail,
+  type BotLearningKind,
   type BotLearningPolicy,
   type BotProjectContext,
   type BotSummary,
@@ -67,6 +72,7 @@ import { BotTaskRow, useUpcomingInstantFormatter } from "../chat/BotTaskCards";
 import { ProviderModelPicker } from "../chat/ProviderModelPicker";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
+import { Checkbox } from "../ui/checkbox";
 import {
   Dialog,
   DialogClose,
@@ -309,6 +315,9 @@ function BotRow({
           <BotAvatar appearance={resolveBotAppearance(bot)} size={24} className="shrink-0" />
           <span className="min-w-0 wrap-anywhere">{bot.name}</span>
           {archived ? <Badge variant="outline">Archived</Badge> : null}
+          {bot.pendingLearning > 0 ? (
+            <Badge variant="info">{bot.pendingLearning} to review</Badge>
+          ) : null}
         </span>
       }
       description={modelLabel(entries, bot.modelSelection)}
@@ -685,8 +694,8 @@ function BotEditorForm({
           <div className="space-y-2">
             <Label>Learning</Label>
             <p id="bot-learning-note" className="text-sm text-muted-foreground">
-              Bots don't learn yet. Your choice is saved and takes effect once learning is
-              available.
+              When lessons from your corrections take effect. Your own standing instructions apply
+              right away either way.
             </p>
             <RadioGroup
               aria-label="Learning"
@@ -819,8 +828,24 @@ function BotProjectContexts({
               timeZone={descriptor?.timeZone}
             />
           ) : null}
+          <BotLearningList
+            environmentId={environmentId}
+            bot={bot}
+            projectId={context.projectId}
+            titleOf={titleOf}
+            disabled={disabled}
+            onChanged={onChanged}
+          />
         </BotProjectContextEditor>
       ))}
+      <BotLearningList
+        environmentId={environmentId}
+        bot={bot}
+        projectId={null}
+        titleOf={titleOf}
+        disabled={disabled}
+        onChanged={onChanged}
+      />
       <div className="flex items-center gap-2">
         <Select
           value={pickedProject?.id ?? null}
@@ -861,6 +886,267 @@ function BotProjectContexts({
     </div>
   );
 }
+
+function BotLearningList({
+  environmentId,
+  bot,
+  projectId,
+  titleOf,
+  disabled,
+  onChanged,
+}: {
+  readonly environmentId: EnvironmentId;
+  readonly bot: BotDetail;
+  /** Null lists the entries shared across all of the Bot's projects. */
+  readonly projectId: ProjectId | null;
+  readonly titleOf: (projectId: ProjectId) => string;
+  readonly disabled: boolean;
+  readonly onChanged: () => void;
+}) {
+  const record = useAtomCommand(serverEnvironment.recordBotLearning, { label: "bot learning" });
+  const decide = useAtomCommand(serverEnvironment.decideBotLearning, { label: "bot learning" });
+  const retire = useAtomCommand(serverEnvironment.retireBotLearning, { label: "bot learning" });
+  const restore = useAtomCommand(serverEnvironment.restoreBotLearning, { label: "bot learning" });
+  const canChange = useAtomValue(serverEnvironment.recordBotLearning.permissionAtom(environmentId));
+  const [busy, setBusy] = useState(false);
+  const [text, setText] = useState("");
+  const [kind, setKind] = useState<BotLearningKind>("preference");
+  const [shared, setShared] = useState(false);
+  const locked = disabled || busy || !canChange;
+  const views = botLearningViews(bot.learning, projectId);
+
+  const run = async (
+    title: string,
+    command: () => Promise<AtomCommandResult<unknown, unknown>>,
+  ) => {
+    setBusy(true);
+    const result = await command();
+    setBusy(false);
+    if (settled(title, result)) onChanged();
+    return result._tag !== "Failure";
+  };
+  const add = async () => {
+    if (projectId === null || text.trim() === "") return;
+    const added = await run("Could not add the instruction", () =>
+      record({
+        environmentId,
+        input: {
+          botId: bot.id,
+          projectId,
+          kind,
+          text: text.trim(),
+          ...(shared && kind !== "fact" ? { scope: "bot" as const } : {}),
+        },
+      }),
+    );
+    if (added) setText("");
+  };
+
+  if (projectId === null && views.length === 0) return null;
+  return (
+    <div className="space-y-2">
+      <div className="space-y-1">
+        <Label>{projectId === null ? "Learning for all projects" : "Learning"}</Label>
+        <p className="text-xs text-muted-foreground">
+          {projectId === null
+            ? "Applies in every project this Bot serves."
+            : "What the Bot keeps for later work here: your instructions and lessons from your corrections."}
+        </p>
+      </div>
+      {views.length === 0 ? (
+        <p className="text-sm text-muted-foreground">Nothing learned yet.</p>
+      ) : null}
+      {views.map((view) => {
+        const shown = view.current ?? view.latest;
+        const entryId = view.entry.id;
+        return (
+          <div key={entryId} className="space-y-2 rounded-md border p-2 text-sm">
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0 space-y-1">
+                <div className="flex flex-wrap items-center gap-1">
+                  <Badge variant="outline">{BOT_LEARNING_KIND_LABELS[view.entry.kind]}</Badge>
+                  <Badge variant={view.current ? "success" : "secondary"}>
+                    {BOT_LEARNING_STATUS_LABELS[view.current ? "active" : view.latest.status]}
+                  </Badge>
+                </div>
+                <p
+                  className={view.current ? "wrap-anywhere" : "wrap-anywhere text-muted-foreground"}
+                >
+                  {shown.text}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {botLearningOriginLabel(shown)}
+                  {view.entry.projectId === null ? ` in ${titleOf(shown.learnedInProjectId)}` : ""}
+                  {shown.evidence === "" ? "" : ` · “${shown.evidence}”`}
+                </p>
+              </div>
+              {view.current ? (
+                <Button
+                  size="xs"
+                  variant="ghost-muted"
+                  disabled={locked}
+                  onClick={() =>
+                    void run("Could not retire the entry", () =>
+                      retire({ environmentId, input: { botId: bot.id, entryId } }),
+                    )
+                  }
+                >
+                  Retire
+                </Button>
+              ) : null}
+            </div>
+            {view.pending.map((revision) => (
+              <div key={revision.revision} className="space-y-1 rounded-md bg-muted/40 p-2">
+                <p className="text-xs font-medium">
+                  {view.current ? "Proposed change" : "Proposed"}
+                  {revision.conflictsWithInstruction ? " · conflicts with your instruction" : ""}
+                </p>
+                {/* The entry's own heading already shows the newest proposal's text and evidence. */}
+                {revision === shown ? null : <p className="wrap-anywhere">{revision.text}</p>}
+                {revision.rationale === "" ? null : (
+                  <p className="text-xs text-muted-foreground">{revision.rationale}</p>
+                )}
+                {revision.evidence === "" || revision === shown ? null : (
+                  <p className="text-xs text-muted-foreground">“{revision.evidence}”</p>
+                )}
+                <div className="flex gap-2">
+                  <Button
+                    size="xs"
+                    disabled={locked}
+                    onClick={() =>
+                      void run("Could not adopt the proposal", () =>
+                        decide({
+                          environmentId,
+                          input: {
+                            botId: bot.id,
+                            entryId,
+                            revision: revision.revision,
+                            decision: "adopt",
+                          },
+                        }),
+                      )
+                    }
+                  >
+                    Adopt
+                  </Button>
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    disabled={locked}
+                    onClick={() =>
+                      void run("Could not reject the proposal", () =>
+                        decide({
+                          environmentId,
+                          input: {
+                            botId: bot.id,
+                            entryId,
+                            revision: revision.revision,
+                            decision: "reject",
+                          },
+                        }),
+                      )
+                    }
+                  >
+                    Reject
+                  </Button>
+                </div>
+              </div>
+            ))}
+            {view.restorable.length === 0 ? null : (
+              <details className="text-xs">
+                <summary className="cursor-pointer text-muted-foreground">
+                  History ({view.entry.revisions.length} revisions)
+                </summary>
+                <ul className="mt-1 space-y-1">
+                  {view.restorable.map((revision) => (
+                    <li key={revision.revision} className="flex items-start justify-between gap-2">
+                      <span className="min-w-0 wrap-anywhere">
+                        <span className="text-muted-foreground">
+                          r{revision.revision} · {BOT_LEARNING_STATUS_LABELS[revision.status]}{" "}
+                          ·{" "}
+                        </span>
+                        {revision.text}
+                      </span>
+                      <Button
+                        size="xs"
+                        variant="ghost-muted"
+                        disabled={locked}
+                        onClick={() =>
+                          void run("Could not restore the revision", () =>
+                            restore({
+                              environmentId,
+                              input: { botId: bot.id, entryId, revision: revision.revision },
+                            }),
+                          )
+                        }
+                      >
+                        Restore
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            )}
+          </div>
+        );
+      })}
+      {projectId === null ? null : (
+        <div className="space-y-2">
+          <Textarea
+            aria-label="New instruction"
+            className="max-h-32 overflow-y-auto"
+            placeholder="Add an instruction, such as “Give dates in Dale Reckoning.”"
+            value={text}
+            disabled={locked}
+            onChange={(event) => setText(event.target.value)}
+          />
+          <div className="flex flex-wrap items-center gap-2">
+            <Select
+              value={kind}
+              onValueChange={(value) => {
+                if (value !== null) setKind(value);
+              }}
+            >
+              <div className="grid w-36 grid-cols-1">
+                <SelectTrigger size="sm" aria-label="Kind" disabled={locked}>
+                  <SelectValue>{BOT_LEARNING_KIND_LABELS[kind]}</SelectValue>
+                </SelectTrigger>
+              </div>
+              <SelectPopup>
+                {BOT_LEARNING_KINDS.map((option) => (
+                  <SelectItem key={option} value={option} label={BOT_LEARNING_KIND_LABELS[option]}>
+                    {BOT_LEARNING_KIND_LABELS[option]}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
+            {kind === "fact" ? null : (
+              <label className="flex items-center gap-2 text-sm">
+                <Checkbox
+                  checked={shared}
+                  disabled={locked}
+                  onCheckedChange={(checked) => setShared(checked === true)}
+                />
+                All projects
+              </label>
+            )}
+            <Button
+              size="xs"
+              variant="outline"
+              disabled={locked || text.trim() === ""}
+              onClick={() => void add()}
+            >
+              <PlusIcon aria-hidden />
+              Add
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const BOT_LEARNING_KINDS: ReadonlyArray<BotLearningKind> = ["preference", "procedure", "fact"];
 
 function BotProjectContextEditor({
   context,
