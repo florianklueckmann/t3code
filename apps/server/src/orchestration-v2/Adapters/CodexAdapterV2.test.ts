@@ -252,6 +252,24 @@ describe("CodexAdapterV2 runtime policy", () => {
       assert.isDefined(withT3.additionalContext?.["t3_code_runtime"]);
     }),
   );
+
+  it.effect("sends Bot instructions as trusted application context on every turn", () =>
+    Effect.gen(function* () {
+      const params = yield* CodexAdapterV2.buildCodexTurnStartParams({
+        nativeThreadId: "native-bot",
+        codexInput: [{ type: "text", text: "Is Strahd alive?" }],
+        runtimePolicy: { runtimeMode: "full-access", interactionMode: "default", cwd: null },
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+        hasT3Mcp: true,
+        applicationInstructions: "Campaign A: Strahd is alive.",
+      });
+      assert.deepEqual(params.additionalContext?.["t3_bot_01"], {
+        kind: "application",
+        value: "Campaign A: Strahd is alive.",
+      });
+      assert.isDefined(params.additionalContext?.["t3_code_runtime"]);
+    }),
+  );
 });
 
 describe("CodexAdapterV2 native protocol logging", () => {

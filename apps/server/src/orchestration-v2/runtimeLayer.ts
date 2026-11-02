@@ -1,6 +1,9 @@
 import * as GuestShareService from "../guest/GuestShareService.ts";
 import * as UsageLimitRecoveryWorker from "./UsageLimitRecoveryWorker.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
+import * as BotProjectGuard from "../bots/BotProjectGuard.ts";
+import * as BotService from "../bots/BotService.ts";
+import * as BotTurnContext from "../bots/BotTurnContext.ts";
 import * as Layer from "effect/Layer";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as OrchestrationCommandReceipts from "../persistence/OrchestrationCommandReceipts.ts";
@@ -151,6 +154,7 @@ const layerRunExecutionServiceProvided = RunExecutionService.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
       McpAppModelContext.layer,
+      BotTurnContext.layer,
       PreviewAgentActivity.layer,
       layerCheckpointServiceProvided,
       layerEventSink,
@@ -290,6 +294,16 @@ const layerScheduledTaskProvided = ScheduledTaskService.layer.pipe(
     ),
   ),
 );
+const layerBotServiceProvided = BotService.layer.pipe(
+  Layer.provide(
+    Layer.mergeAll(
+      BotProjectGuard.layer,
+      layerProjectService,
+      layerThreadLaunchProvided,
+      layerThreadManagementProvided,
+    ),
+  ),
+);
 const layerScratchThreadPromotionProvided = ScratchThreadPromotion.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
@@ -373,6 +387,7 @@ export const layerProduction = Layer.mergeAll(
   layerManagedProjectFoldersProvided,
   layerThreadLaunchProvided,
   layerScheduledTaskProvided,
+  layerBotServiceProvided,
   layerScratchThreadPromotionProvided,
   layerSecretRequestsProvided,
   GuestShareService.layer.pipe(

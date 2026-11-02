@@ -59,6 +59,13 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.scheduledTasksDelete]: AuthOrchestrationOperateScope,
   [WS_METHODS.scheduledTasksRunNow]: AuthOrchestrationOperateScope,
   [WS_METHODS.scheduledTasksRotateWebhookToken]: AuthOrchestrationOperateScope,
+  // Bot instructions steer provider turns, so editing a Bot is operating it.
+  [WS_METHODS.botsCreate]: AuthOrchestrationOperateScope,
+  [WS_METHODS.botsUpdate]: AuthOrchestrationOperateScope,
+  [WS_METHODS.botsSetArchived]: AuthOrchestrationOperateScope,
+  [WS_METHODS.botsAttachProject]: AuthOrchestrationOperateScope,
+  [WS_METHODS.botsUpdateProjectContext]: AuthOrchestrationOperateScope,
+  [WS_METHODS.botsDetachProject]: AuthOrchestrationOperateScope,
   [ORCHESTRATION_V2_WS_METHODS.stopWorkflow]: AuthOrchestrationOperateScope,
   // Force stop kills agent processes, as Stop on a terminal does.
   [ORCHESTRATION_V2_WS_METHODS.forceStopThread]: AuthOrchestrationOperateScope,
