@@ -64,6 +64,7 @@ import { ThemedSwitch } from "../../components/ui/ThemedSwitch";
 import { cn } from "../../lib/cn";
 import { useReduceMotionEnabled } from "../../lib/appState";
 import {
+  buildHiddenModelManagementGroups,
   buildModelOptions,
   groupByProvider,
   serverConfigForCwd,
@@ -268,6 +269,8 @@ type ThreadSettingsSessionProps = {
   readonly providerInstanceId?: ProviderInstanceId;
   readonly lockedProviderInstanceId?: ProviderInstanceId;
   readonly providerGroups: ReadonlyArray<ProviderGroup>;
+  /** The caller's restriction on `providerGroups`, kept when hidden models are revealed. */
+  readonly isModelOptionEligible?: (option: ModelOption) => boolean;
   readonly selectedModel: ModelSelection | null;
   readonly prompt: string;
   readonly onPromptChange: (prompt: string) => void;
@@ -349,15 +352,13 @@ function ThreadSettingsSessionProvider(
   const [pendingHiddenKeys, setPendingHiddenKeys] = useState<ReadonlySet<string>>(() => new Set());
   const providerGroups =
     manageHidden && config
-      ? groupByProvider(
-          buildModelOptions(
-            serverConfigForCwd(config, props.cwd),
-            props.selectedModel,
-            props.lockedProviderInstanceId,
-            props.projectId,
-            true,
-          ),
-        )
+      ? buildHiddenModelManagementGroups({
+          config: serverConfigForCwd(config, props.cwd),
+          selectedModel: props.selectedModel,
+          lockedProviderInstanceId: props.lockedProviderInstanceId,
+          projectId: props.projectId,
+          isEligible: props.isModelOptionEligible,
+        })
       : props.providerGroups;
   const legacyFavorites = AsyncResult.isSuccess(preferences)
     ? (preferences.value.modelFavorites ?? EMPTY_MODEL_FAVORITES)
