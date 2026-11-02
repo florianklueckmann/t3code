@@ -1344,6 +1344,11 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:server:bots:live",
       tag: WS_METHODS.botsSubscribe,
     }),
+    // The 50 newest tasks for the filter; statuses update as their work threads run.
+    botTasksLive: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "environment-data:server:bots:tasks:live",
+      tag: WS_METHODS.botsSubscribeTasks,
+    }),
     botDetail: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:server:bots:detail",
       tag: WS_METHODS.botsGet,
@@ -1633,6 +1638,15 @@ export function createServerEnvironmentAtoms<R, E>(
       tag: WS_METHODS.botsDetachProject,
       scheduler: configScheduler,
       concurrency: configConcurrency,
+    }),
+    // Off the config lane: starting a task launches a thread.
+    startBotTask: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bots:start-task",
+      tag: WS_METHODS.botsStartTask,
+    }),
+    cancelBotTask: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bots:cancel-task",
+      tag: WS_METHODS.botsCancelTask,
     }),
     createGuestShare: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:guest-share:create",

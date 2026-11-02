@@ -72,7 +72,7 @@ import {
   type ProviderSubagentStatus,
 } from "@t3tools/client-runtime/state/thread-execution";
 import { formatModelSlugName, resolveSelectableModel } from "@t3tools/shared/model";
-import { isProviderNativeSubagentThread } from "@t3tools/contracts";
+import { isProviderNativeSubagentThread, mayBeBotHomeThreadId } from "@t3tools/contracts";
 import type { QueuedRunEdit } from "../../state/queued-run-edit";
 import type { FollowUpBehavior } from "../../lib/followUpBehavior";
 import type { ActiveTurnComposerAction } from "@t3tools/client-runtime/state/composer-dispatch";
@@ -203,6 +203,7 @@ import { ComposerQueuedEditBanner } from "./ComposerQueuedEdit";
 import { useThreadQueuedCount } from "./ThreadQueueControl";
 import { ThreadGuestShareBar } from "./ThreadGuestShareBar";
 import { ThreadSideChatsRow } from "./ThreadSideChatsRow";
+import { BotHomeTaskCards } from "./BotHomeTaskCards";
 import type { ThreadContentPresentation } from "./threadContentPresentation";
 import { resolveThreadFeedSubmissionAnchor } from "./thread-feed-live-follow";
 import { useOpenLinkedThread } from "./useOpenLinkedThread";
@@ -1688,6 +1689,14 @@ function ThreadDetailBody(
                     />
                     {props.draftMode ? null : (
                       <ThreadSideChatsRow
+                        environmentId={props.environmentId}
+                        threadId={props.selectedThread.id}
+                      />
+                    )}
+                    {props.draftMode ||
+                    !mayBeBotHomeThreadId(props.selectedThread.id) ||
+                    props.serverConfig?.environment.capabilities.botRoutines !== true ? null : (
+                      <BotHomeTaskCards
                         environmentId={props.environmentId}
                         threadId={props.selectedThread.id}
                       />

@@ -2,6 +2,7 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
+  BotId,
   CommandId,
   ContextTransferId,
   EnvironmentId,
@@ -13,8 +14,8 @@ import {
   OrchestratorMcpTarget,
   type OrchestrationV2ThreadShell,
   type ScheduledTask,
-  type ScheduledTaskUpsertInput,
   ScheduledTaskId,
+  type ScheduledTaskUpsertInput,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -60,6 +61,7 @@ import * as ThreadManagementService from "../orchestration-v2/ThreadManagementSe
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import { buildUnavailableProviderSnapshot } from "../provider/unavailableProviderSnapshot.ts";
 import * as ProjectService from "../project/ProjectService.ts";
+import { BotRoutineTarget } from "../scheduledTasks/BotRoutineTarget.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
@@ -2895,6 +2897,73 @@ describe("OrchestratorMcpService provider resolution", () => {
           assert.include(refused.message, "first unbind it");
           assert.deepEqual(yield* Ref.get(modes), []);
         }),
+    );
+
+    it.effect("sets up a Bot routine on the Bot's model only for a full-access caller", () =>
+      Effect.gen(function* () {
+        const saved = yield* Ref.make<ReadonlyArray<ScheduledTaskUpsertInput>>([]);
+        const botModel = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-bot" };
+        const mcp = yield* OrchestratorMcpService.OrchestratorMcpService.pipe(
+          Effect.provide(
+            OrchestratorMcpService.layer.pipe(
+              Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
+              Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)(masterRepository)),
+              Layer.provide(
+                Layer.mergeAll(
+                  NodeServices.layer,
+                  Layer.mock(ThreadManagementService.ThreadManagementService)({}),
+                  ServerSettings.layerTest(),
+                  Layer.mock(ProviderRegistry.ProviderRegistry)({
+                    getProviders: Effect.succeed([]),
+                  }),
+                  Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
+                    list: () => Effect.succeed([]),
+                  }),
+                  // No default model: the routine must not need one.
+                  Layer.mock(ProjectService.ProjectService)({
+                    getById: () =>
+                      Effect.succeedSome({
+                        id: projectId,
+                        workspaceRoot,
+                        defaultModelSelection: null,
+                      } as never),
+                  }),
+                  Layer.mock(SecretRequests.SecretRequests)({}),
+                  Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+                  Layer.succeed(BotRoutineTarget, {
+                    requireRunnable: () => Effect.succeed({ modelSelection: botModel }),
+                    admit: () => Effect.die("unused"),
+                  }),
+                  Layer.mock(ScheduledTaskService.ScheduledTaskService)({
+                    upsert: (input) =>
+                      Ref.update(saved, (inputs) => [...inputs, input]).pipe(
+                        Effect.as({ task: existing }),
+                      ),
+                  }),
+                ),
+              ),
+            ),
+          ),
+        );
+        const routine = {
+          projectId,
+          prompt: "Prepare the next session.",
+          schedule: { type: "once", runAt: "2026-11-12T18:00:00Z" },
+          botId: BotId.make("campaign-companion"),
+          sessionAt: "2026-11-13T18:00:00.000Z",
+        } as const;
+        const refused = yield* mcp.scheduleTask(client, routine).pipe(Effect.flip);
+        assert.include(refused.message, "full access");
+        const fullAccess = { ...client, client: { ...client.client!, access: "full-access" } };
+        yield* mcp.scheduleTask(fullAccess as McpInvocationScope, routine);
+        const [input] = yield* Ref.get(saved);
+        assert.deepEqual(input?.modelSelection, botModel);
+        assert.deepEqual(input?.bot, {
+          botId: routine.botId,
+          sessionAt: "2026-11-13T18:00:00.000Z",
+        });
+        assert.isNull(input?.threadId);
+      }),
     );
 
     it.effect("follows the default branch when a task is unbound from its thread", () =>
