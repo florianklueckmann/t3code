@@ -1327,6 +1327,15 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:server:scheduled-tasks:live",
       tag: WS_METHODS.scheduledTasksSubscribe,
     }),
+    // Summaries only; instructions and guidance load per Bot through botDetail.
+    botsLive: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "environment-data:server:bots:live",
+      tag: WS_METHODS.botsSubscribe,
+    }),
+    botDetail: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:server:bots:detail",
+      tag: WS_METHODS.botsGet,
+    }),
     // A cold transcript scan is measured in seconds, so keep the result around
     // long enough that switching windows or re-rendering does not rescan.
     usageSummary: createEnvironmentRpcQueryAtomFamily(runtime, {
@@ -1569,6 +1578,42 @@ export function createServerEnvironmentAtoms<R, E>(
     rotateScheduledTaskWebhookToken: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:scheduled-task:rotate-webhook-token",
       tag: WS_METHODS.scheduledTasksRotateWebhookToken,
+      scheduler: configScheduler,
+      concurrency: configConcurrency,
+    }),
+    createBot: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bots:create",
+      tag: WS_METHODS.botsCreate,
+      scheduler: configScheduler,
+      concurrency: configConcurrency,
+    }),
+    updateBot: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bots:update",
+      tag: WS_METHODS.botsUpdate,
+      scheduler: configScheduler,
+      concurrency: configConcurrency,
+    }),
+    setBotArchived: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bots:set-archived",
+      tag: WS_METHODS.botsSetArchived,
+      scheduler: configScheduler,
+      concurrency: configConcurrency,
+    }),
+    attachBotProject: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bots:attach-project",
+      tag: WS_METHODS.botsAttachProject,
+      scheduler: configScheduler,
+      concurrency: configConcurrency,
+    }),
+    updateBotProjectContext: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bots:update-project-context",
+      tag: WS_METHODS.botsUpdateProjectContext,
+      scheduler: configScheduler,
+      concurrency: configConcurrency,
+    }),
+    detachBotProject: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bots:detach-project",
+      tag: WS_METHODS.botsDetachProject,
       scheduler: configScheduler,
       concurrency: configConcurrency,
     }),
