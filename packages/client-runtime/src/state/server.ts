@@ -1335,6 +1335,8 @@ export function createServerEnvironmentAtoms<R, E>(
     botDetail: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:server:bots:detail",
       tag: WS_METHODS.botsGet,
+      // Agents edit Bots too, so an editor that opens must not start from a cached copy.
+      staleTimeMs: 0,
     }),
     // A cold transcript scan is measured in seconds, so keep the result around
     // long enough that switching windows or re-rendering does not rescan.
