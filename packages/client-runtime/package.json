@@ -75,6 +75,10 @@
       "types": "./src/bots.ts",
       "default": "./src/bots.ts"
     },
+    "./bot-appearance": {
+      "types": "./src/botAppearance.ts",
+      "default": "./src/botAppearance.ts"
+    },
     "./scheduled-task-webhook": {
       "types": "./src/scheduledTaskWebhook.ts",
       "default": "./src/scheduledTaskWebhook.ts"
