@@ -45,7 +45,7 @@ const BotTool = Tool.make("t3_bot", {
     BotService.BotService,
   ],
   description:
-    "Bots: named identities with one home conversation per attached project. `update` with `projectId` sets that project's guidance and preferred sources (preferred, not exclusive); without it, the Bot. Codex models only.",
+    "Bots: named identities with one home conversation per attached project. `update` with `projectId` sets that project's guidance and preferred sources (preferred, not exclusive); without it, the Bot. `guidance` and `sources` replace the stored values, so send the full list. Codex models only.",
   parameters: BotToolParameters,
   success: Schema.Struct({
     bots: Schema.optional(Schema.Array(BotSummary)),
