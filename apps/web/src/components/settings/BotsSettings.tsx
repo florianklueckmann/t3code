@@ -86,12 +86,12 @@ const LEARNING_POLICY_OPTIONS: ReadonlyArray<{
   {
     value: "automatic",
     label: "Learn automatically",
-    description: "What the Bot learns applies right away.",
+    description: "Apply what the Bot learns right away.",
   },
   {
     value: "after_adoption",
     label: "Only after I adopt it",
-    description: "What the Bot learns waits until you adopt it.",
+    description: "Hold what the Bot learns until you adopt it.",
   },
 ];
 
@@ -626,8 +626,13 @@ function BotEditorForm({
           </Field>
           <div className="space-y-2">
             <Label>Learning</Label>
+            <p id="bot-learning-note" className="text-sm text-muted-foreground">
+              Bots don't learn yet. Your choice is saved and takes effect once learning is
+              available.
+            </p>
             <RadioGroup
               aria-label="Learning"
+              aria-describedby="bot-learning-note"
               value={draft.learningPolicy}
               onValueChange={(value) => {
                 const option = LEARNING_POLICY_OPTIONS.find((entry) => entry.value === value);
