@@ -24,10 +24,12 @@ import * as ThreadManagementService from "../orchestration-v2/ThreadManagementSe
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
+import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as BotProjectGuard from "./BotProjectGuard.ts";
 import * as BotService from "./BotService.ts";
+import * as BotTaskService from "./BotTaskService.ts";
 import * as BotTurnContext from "./BotTurnContext.ts";
 
 const campaignA = ProjectId.make("project-campaign-a");
@@ -124,6 +126,8 @@ const layerSupport = Layer.mergeAll(
   BotProjectGuard.layer,
   Scheduler.layer,
   ServerSettings.layerTest(),
+  // Routine pausing is covered with the real scheduled task service in BotTaskService.test.ts.
+  Layer.mock(ScheduledTaskService.ScheduledTaskService)({ pauseBotRoutines: () => Effect.void }),
 );
 
 const layerDatabase = SqlitePersistence.layerMemory.pipe(
@@ -167,6 +171,7 @@ const withServices = <A, E>(
   }).pipe(
     Effect.provide(
       Layer.merge(BotService.layer, BotTurnContext.layer).pipe(
+        Layer.provide(BotTaskService.layer),
         Layer.provide(Layer.merge(threadLayer, layerSupport)),
       ),
     ),

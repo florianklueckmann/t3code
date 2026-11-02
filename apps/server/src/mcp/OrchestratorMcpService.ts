@@ -107,6 +107,7 @@ import { isSnoozed } from "../orchestration-v2/ThreadSettlementService.ts";
 import { userFacingDispatchErrorMessage } from "../orchestration-v2/UserFacingErrors.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
+import { BOT_ROUTINE_RUNTIME_MODE, BotRoutineTarget } from "../scheduledTasks/BotRoutineTarget.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import {
@@ -268,6 +269,8 @@ function scheduledTaskSummary(task: ScheduledTask, mayRun: boolean): Orchestrato
     projectId: task.projectId,
     boundThreadId: task.threadId,
     freshSession: scheduledTaskThreadMode(task) === "fresh_session",
+    ...(task.bot === undefined ? {} : { botId: task.bot.botId }),
+    ...(task.bot?.sessionAt == null ? {} : { sessionAt: task.bot.sessionAt }),
     schedule: task.schedule,
     nextRunAt: task.nextRunAt,
     lastRunStatus: task.lastRunStatus,
@@ -1051,6 +1054,7 @@ const make = Effect.gen(function* () {
         )
       : Effect.succeed(project.defaultModelSelection);
   const secretRequests = yield* SecretRequests.SecretRequests;
+  const botRoutines = yield* BotRoutineTarget;
 
   const requireCapability = (scope: McpInvocationScope) =>
     scope.capabilities.has("orchestration")
@@ -1993,9 +1997,23 @@ const make = Effect.gen(function* () {
       const projectId = yield* resolveProjectTarget(parent, input.projectId);
       yield* assertLiveCallerForOtherProject(scope, parent, projectId);
       const project = yield* requireProject(projectId);
+      if (input.sessionAt !== undefined && input.botId === undefined) {
+        return yield* failure("invalid_request", "sessionAt needs botId.");
+      }
+      // A routine runs in full access, so only a caller with full access may set one up.
+      if (
+        input.botId !== undefined &&
+        runtimeModeRank(BOT_ROUTINE_RUNTIME_MODE) > runtimeModeRank(limits.runtimeMode)
+      ) {
+        return yield* failure(
+          "invalid_request",
+          "Bot routines run in full access, which is above this thread's mode.",
+        );
+      }
       const bindToCurrentThread =
-        input.bindToCurrentThread ??
-        (parent !== undefined && parent.thread.projectId === projectId);
+        input.botId === undefined &&
+        (input.bindToCurrentThread ??
+          (parent !== undefined && parent.thread.projectId === projectId));
       if (bindToCurrentThread && (parent === undefined || parent.thread.projectId !== projectId)) {
         return yield* failure(
           "invalid_request",
@@ -2004,8 +2022,14 @@ const make = Effect.gen(function* () {
             : "bindToCurrentThread binds to this thread, which belongs to a different project.",
         );
       }
+      // A routine runs on its Bot's model, so it needs no caller or project model.
       const modelSelection =
-        parent?.thread.modelSelection ?? (yield* projectDefaultModelSelection(project));
+        input.botId !== undefined
+          ? (yield* botRoutines
+              .requireRunnable({ botId: input.botId, projectId })
+              .pipe(Effect.mapError((message) => failure("invalid_request", message))))
+              .modelSelection
+          : (parent?.thread.modelSelection ?? (yield* projectDefaultModelSelection(project)));
       const derivedTitle = input.prompt.split("\n")[0]?.trim() ?? "";
       const title =
         input.title ?? (derivedTitle.length > 0 ? derivedTitle.slice(0, 80) : "Scheduled task");
@@ -2027,6 +2051,9 @@ const make = Effect.gen(function* () {
         interactionMode: limits.interactionMode,
         createdBy: "agent",
         creationSource: "mcp",
+        ...(input.botId === undefined
+          ? {}
+          : { bot: { botId: input.botId, sessionAt: input.sessionAt ?? null } }),
         // Scope the idempotency key by provider session so two callers
         // reusing the same clientRequestId cannot collide on one task row.
         ...(input.clientRequestId === undefined
