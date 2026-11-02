@@ -14,7 +14,15 @@ import {
 } from "../components/settings/SettingsScopeContext";
 import { useEnvironments } from "../state/environments";
 import { SettingsScopeNotice } from "../components/settings/SettingsScopeNotice";
-import { SETTINGS_DEVICE_ONLY_PATHS } from "../components/settings/SettingsScopeSentence";
+import {
+  SETTINGS_DEVICE_ONLY_PATHS,
+  SETTINGS_ENVIRONMENT_ONLY_PATHS,
+} from "../components/settings/SettingsScopeSentence";
+import {
+  ALL_ENVIRONMENTS_VALUE,
+  environmentOnlyScopeSearch,
+  selectEnvironmentAxis,
+} from "../components/settings/settingsScopeAxis";
 import { SettingsPageContainer } from "../components/settings/settingsLayout";
 import {
   retainSettingsScope,
@@ -147,15 +155,17 @@ function SettingsRouteLayout() {
   const rawSearch = Route.useSearch();
   const navigate = Route.useNavigate();
   const pathname = useLocation({ select: (location) => location.pathname });
+  const environmentOnly = SETTINGS_ENVIRONMENT_ONLY_PATHS.has(pathname);
   return (
     <SettingsScopeProvider
-      search={rawSearch}
+      search={environmentOnly ? environmentOnlyScopeSearch(rawSearch) : rawSearch}
       singleEnvironment={
-        pathname === "/settings/providers" ||
-        pathname === "/settings/secrets" ||
-        pathname === "/settings/bots"
+        environmentOnly || pathname === "/settings/providers" || pathname === "/settings/secrets"
       }
-      onChange={(next) => {
+      onChange={(selected) => {
+        const next = environmentOnly
+          ? selectEnvironmentAxis(rawSearch, selected.machine ?? ALL_ENVIRONMENTS_VALUE)
+          : selected;
         // Send every axis so retain middleware recognizes "all" as an explicit target.
         void navigate({
           to: pathname,
