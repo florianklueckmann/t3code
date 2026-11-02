@@ -111,7 +111,7 @@ function buildBotInstructions(input: {
       ...(input.task === null
         ? []
         : [
-            `- If this task taught you something that should carry over to later work, propose one concise lesson with "learn", origin "correction", what you observed as evidence and a short rationale. It counts only once this task completes.`,
+            `- If this task taught you something that should carry over to later work, propose one concise lesson with "learn" and origin "correction", also when the task asked for it; standing instructions are recorded in the home conversation. Give what you observed as evidence and a short rationale. It counts only once this task completes.`,
           ]),
     ].join("\n"),
     input.task === null ? homeTaskSection(input) : workTaskSection(input.task),

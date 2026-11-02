@@ -153,7 +153,9 @@ export const make = (deps: {
     const fromTask = input.source.kind === "task";
     if (fromTask) {
       if (input.origin !== "correction") {
-        return yield* fail("A task proposes lessons; standing instructions come from the user.");
+        return yield* fail(
+          'A task proposes lessons; standing instructions come from the user. Record it with origin "correction"; it counts once this task completes.',
+        );
       }
       // A task proposes at most one lesson.
       const earlier = rows.find((row) => row.source_json === base.source_json);
