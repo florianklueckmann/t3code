@@ -6,6 +6,7 @@ import type {
   SidebarProjectSnapshot,
 } from "../../sidebarProjectGrouping";
 import { resolveSettingsScope, validateSettingsScopeSearch } from "./settingsScope";
+import { environmentOnlyScopeSearch, selectSingleEnvironmentScope } from "./settingsScopeAxis";
 
 const laptopId = EnvironmentId.make("laptop");
 const serverId = EnvironmentId.make("server");
@@ -143,6 +144,32 @@ describe("settings scope resolution", () => {
       members: [],
       environmentIds: [],
     });
+  });
+
+  it("lets environment-only pages ignore a project missing from the environment", () => {
+    const connected = environments.map((environment) => ({
+      ...environment,
+      connection: { phase: "connected" as const },
+    }));
+    const named = environmentOnlyScopeSearch({
+      project: "other",
+      machine: laptopId,
+      checkout: other.physicalProjectKey,
+    });
+    expect(resolveSettingsScope(named, groups, environments)).toMatchObject({
+      kind: "environment",
+      environmentId: laptopId,
+      environmentIds: [laptopId],
+    });
+    const unnamed = environmentOnlyScopeSearch({ project: "other" });
+    expect(
+      selectSingleEnvironmentScope(
+        unnamed,
+        resolveSettingsScope(unnamed, groups, environments),
+        connected,
+        laptopId,
+      ),
+    ).toEqual({ machine: laptopId });
   });
 
   it("rejects a cached checkout whose environment was removed", () => {
