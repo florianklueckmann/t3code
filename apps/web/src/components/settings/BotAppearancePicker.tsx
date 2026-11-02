@@ -61,12 +61,9 @@ export function BotAppearancePicker({
           <div className="flex min-h-6 items-center justify-between gap-2">
             <PopoverTitle>Appearance</PopoverTitle>
             {supported ? (
-              <Button
-                size="xs"
-                variant="ghost"
-                disabled={disabled || appearance === null}
-                onClick={() => onChange(null)}
-              >
+              // Stays enabled at the default: disabling the focused button would drop focus out
+              // of the popover, and the next Escape would close the whole editor.
+              <Button size="xs" variant="ghost" disabled={disabled} onClick={() => onChange(null)}>
                 Reset
               </Button>
             ) : null}
