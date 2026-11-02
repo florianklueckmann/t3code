@@ -3,6 +3,7 @@ import * as Effect from "effect/Effect";
 
 import * as BotService from "../../../bots/BotService.ts";
 import * as BotTaskService from "../../../bots/BotTaskService.ts";
+import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import { BotToolkit, type BotToolInput } from "./tools.ts";
 
@@ -46,6 +47,78 @@ const read = Effect.fn("mcp.bot.read")(function* (input: BotToolInput) {
   return { bot: yield* bots.get({ botId }).pipe(Effect.mapError(botFailure)) };
 });
 
+const invalid = (message: string) =>
+  new OrchestratorMcpFailure({ code: "invalid_request", message });
+
+/** Provenance comes from the caller, never from ids the caller supplies. */
+const learningCaller = Effect.fn("mcp.bot.learningCaller")(function* () {
+  const bots = yield* BotService.BotService;
+  const scope = yield* McpInvocationContext.McpInvocationContext;
+  if (scope.thread === undefined) {
+    return {
+      bot: undefined,
+      source: { kind: "agent", label: scope.client?.label ?? "MCP client" } as const,
+    };
+  }
+  const bot = yield* bots.scopeOfThread(scope.thread.threadId).pipe(Effect.mapError(botFailure));
+  if (bot === "inactive") {
+    return yield* invalid(
+      "This Bot conversation is inactive. Restore the Bot or reattach the project first.",
+    );
+  }
+  return {
+    bot,
+    source:
+      bot?.taskId == null
+        ? ({ kind: "thread", threadId: scope.thread.threadId } as const)
+        : ({ kind: "task", taskId: bot.taskId } as const),
+  };
+});
+
+const changeLearning = Effect.fn("mcp.bot.changeLearning")(function* (input: BotToolInput) {
+  const bots = yield* BotService.BotService;
+  const botId = yield* requireBotId(input);
+  const caller = yield* learningCaller();
+  if (input.action === "learn") {
+    const projectId = yield* requireProjectId(input);
+    if (input.learning === undefined) return yield* invalid("`learn` needs `learning`.");
+    if (
+      caller.bot !== undefined &&
+      (caller.bot.botId !== botId || caller.bot.projectId !== projectId)
+    ) {
+      return yield* invalid("A Bot records learning only in its own project conversation.");
+    }
+    const recorded = yield* bots
+      .recordLearning({ ...input.learning, botId, projectId, source: caller.source })
+      .pipe(Effect.mapError(botFailure));
+    return { bot: recorded.bot, learned: recorded.learned };
+  }
+  if (caller.bot?.botId === botId) {
+    return yield* invalid(
+      "A Bot cannot adopt, reject, retire or reinstate its own learning. Ask the user to do it in Settings → Bots.",
+    );
+  }
+  const entryId = input.entryId;
+  if (entryId === undefined) return yield* invalid(`\`${input.action}\` needs \`entryId\`.`);
+  if (input.action === "retire") {
+    return {
+      bot: yield* bots.retireLearning({ botId, entryId }).pipe(Effect.mapError(botFailure)),
+    };
+  }
+  const revision = input.revision;
+  if (revision === undefined) return yield* invalid(`\`${input.action}\` needs \`revision\`.`);
+  const changed =
+    input.action === "reinstate"
+      ? bots.restoreLearning({ botId, entryId, revision, source: caller.source })
+      : bots.decideLearning({
+          botId,
+          entryId,
+          revision,
+          decision: input.action === "adopt" ? "adopt" : "reject",
+        });
+  return { bot: yield* changed.pipe(Effect.mapError(botFailure)) };
+});
+
 const write = Effect.fn("mcp.bot.write")(function* (input: BotToolInput) {
   const bots = yield* BotService.BotService;
   const tasks = yield* BotTaskService.BotTaskService;
@@ -58,6 +131,15 @@ const write = Effect.fn("mcp.bot.write")(function* (input: BotToolInput) {
     }
     const cancelled = tasks.cancel({ taskId: input.taskId });
     return { task: yield* cancelled.pipe(Effect.mapError(botFailure)) };
+  }
+  if (
+    input.action === "learn" ||
+    input.action === "adopt" ||
+    input.action === "reject" ||
+    input.action === "retire" ||
+    input.action === "reinstate"
+  ) {
+    return yield* changeLearning(input);
   }
   const botId = yield* requireBotId(input);
   if (input.action === "start_task") {

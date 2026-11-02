@@ -1408,6 +1408,13 @@ const CODEX_T3_MCP_TOOL_TIMEOUT_SEC = 65 * 60;
 // `t3-code-direct.<tool>`; t3McpToolPresentation.ts must keep resolving that form.
 const CODEX_T3_DIRECT_MCP_SERVER = "t3-code-direct";
 const CODEX_DIRECT_ONLY_T3_TOOL = "t3_thread_wait";
+// `use_memories` and the feature flag stop injection; `generate_memories` stores a new thread
+// as memory_mode "disabled", which Codex's extraction skips.
+const CODEX_NATIVE_MEMORY_DISABLED_CONFIG = {
+  "features.memories": false,
+  "memories.use_memories": false,
+  "memories.generate_memories": false,
+} as const;
 
 function codexThreadRuntimeParams(input: {
   readonly threadId: ThreadId | null;
@@ -1433,6 +1440,9 @@ function codexThreadRuntimeParams(input: {
     ...(input.modelSelection === undefined ? {} : { model: input.modelSelection.model }),
     config: {
       ...CODEX_THREAD_CONFIG,
+      ...(input.runtimePolicy?.nativeMemory === "disabled"
+        ? CODEX_NATIVE_MEMORY_DISABLED_CONFIG
+        : {}),
       // One app-server serves many threads, so the id goes in per-thread shell config, not its env.
       ...(input.threadId === null
         ? {}
@@ -7222,6 +7232,14 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 Effect.andThen(resume),
                 Effect.flatMap(decodeCodexResumeMetadata),
               );
+              if (threadInput.runtimePolicy?.nativeMemory === "disabled") {
+                // Resume does not rewrite a stored thread's memory_mode, so a thread that began
+                // with memory on would otherwise stay eligible for extraction.
+                yield* client.raw.request("thread/memoryMode/set", {
+                  threadId: response.thread.id,
+                  mode: "disabled",
+                });
+              }
               return {
                 ...threadInput.providerThread,
                 providerSessionId: input.providerSessionId,

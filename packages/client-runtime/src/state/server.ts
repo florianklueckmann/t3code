@@ -1648,6 +1648,30 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:server:bots:cancel-task",
       tag: WS_METHODS.botsCancelTask,
     }),
+    recordBotLearning: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bots:record-learning",
+      tag: WS_METHODS.botsRecordLearning,
+      scheduler: configScheduler,
+      concurrency: configConcurrency,
+    }),
+    decideBotLearning: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bots:decide-learning",
+      tag: WS_METHODS.botsDecideLearning,
+      scheduler: configScheduler,
+      concurrency: configConcurrency,
+    }),
+    retireBotLearning: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bots:retire-learning",
+      tag: WS_METHODS.botsRetireLearning,
+      scheduler: configScheduler,
+      concurrency: configConcurrency,
+    }),
+    restoreBotLearning: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bots:restore-learning",
+      tag: WS_METHODS.botsRestoreLearning,
+      scheduler: configScheduler,
+      concurrency: configConcurrency,
+    }),
     createGuestShare: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:guest-share:create",
       tag: WS_METHODS.guestShareCreate,

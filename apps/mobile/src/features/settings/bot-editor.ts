@@ -1,5 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
-import type { BotId, EnvironmentId } from "@t3tools/contracts";
+import type { BotDetail, BotId, EnvironmentId } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
 
 import { appAtomRegistry } from "../../state/atom-registry";
@@ -31,6 +31,21 @@ export function startBotEditor(environmentId: EnvironmentId, botId: BotId): void
   appAtomRegistry.set(botEditorSessionAtom, { environmentId, botId, baseline: null, draft: null });
   // A cached detail can predate edits made elsewhere; the form waits for the refreshed one.
   appAtomRegistry.refresh(serverEnvironment.botDetail({ environmentId, input: { botId } }));
+}
+
+/**
+ * Keeps an untouched form on the detail it shows while that detail reloads, as it does after a
+ * learning change; the form otherwise waits for the reload and loses its scroll position.
+ */
+export function pinBotEditorDraft(shown: BotDetail): void {
+  const current = appAtomRegistry.get(botEditorSessionAtom);
+  if (!current || current.draft !== null || current.botId !== shown.id) return;
+  const draft = botDraftFromDetail(shown);
+  appAtomRegistry.set(botEditorSessionAtom, {
+    ...current,
+    baseline: current.baseline ?? draft,
+    draft,
+  });
 }
 
 export function useBotEditor() {
