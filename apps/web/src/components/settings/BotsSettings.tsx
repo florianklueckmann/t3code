@@ -1,4 +1,4 @@
-import { useAtomValue } from "@effect/atom-react";
+import { RegistryContext, useAtomValue } from "@effect/atom-react";
 import {
   botProjectContextChanges,
   botProjectContextDraft,
@@ -34,7 +34,7 @@ import {
   PlusIcon,
   Trash2Icon,
 } from "lucide-react";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useContext, useState } from "react";
 
 import { useEnvironmentSettings } from "../../hooks/useSettings";
 import { randomUUID } from "../../lib/utils";
@@ -182,6 +182,7 @@ function EnvironmentBots({ environment }: { readonly environment: EnvironmentPre
   const botsQuery = useEnvironmentQuery(serverEnvironment.botsLive({ environmentId, input: {} }));
   const canCreate = useAtomValue(serverEnvironment.createBot.permissionAtom(environmentId));
   const [editor, setEditor] = useState<{ readonly botId: BotId | null } | null>(null);
+  const registry = useContext(RegistryContext);
   const bots = botsQuery.data?.bots.toSorted(
     (left, right) =>
       Number(left.archivedAt !== null) - Number(right.archivedAt !== null) ||
@@ -218,7 +219,13 @@ function EnvironmentBots({ environment }: { readonly environment: EnvironmentPre
               key={bot.id}
               environmentId={environmentId}
               bot={bot}
-              onEdit={() => setEditor({ botId: bot.id })}
+              onEdit={() => {
+                // A cached detail may predate the last save or an MCP edit.
+                registry.refresh(
+                  serverEnvironment.botDetail({ environmentId, input: { botId: bot.id } }),
+                );
+                setEditor({ botId: bot.id });
+              }}
             />
           ))
         )}
@@ -354,9 +361,16 @@ function BotEditorDialog({
   const detailQuery = useEnvironmentQuery(
     botId === null ? null : serverEnvironment.botDetail({ environmentId, input: { botId } }),
   );
-  // The form starts from the first fresh answer and keeps its draft through later refreshes.
+  // The form starts from the answer Edit asked for, not a cached one a save or an MCP edit has
+  // outdated, and keeps its draft through later refreshes.
+  const [openedAt] = useState(() => Date.now());
   const [initialDetail, setInitialDetail] = useState<BotDetail | null>(null);
-  if (initialDetail === null && detailQuery.data !== null && !detailQuery.isPending) {
+  if (
+    initialDetail === null &&
+    detailQuery.data !== null &&
+    !detailQuery.isPending &&
+    detailQuery.dataUpdatedAt >= openedAt
+  ) {
     setInitialDetail(detailQuery.data);
   }
   return (
@@ -681,7 +695,10 @@ function BotProjectContexts({
   const detachProject = useAtomCommand(serverEnvironment.detachBotProject, {
     label: "bot detach project",
   });
+  const canAttach = useAtomValue(serverEnvironment.attachBotProject.permissionAtom(environmentId));
+  const canDetach = useAtomValue(serverEnvironment.detachBotProject.permissionAtom(environmentId));
   const [busy, setBusy] = useState(false);
+  const locked = disabled || busy || !canAttach || !canDetach;
   const [pickedProjectId, setPickedProjectId] = useState<ProjectId | null>(null);
   const attachable = projects.filter(
     (project) =>
@@ -722,7 +739,7 @@ function BotProjectContexts({
           context={context}
           title={titleOf(context.projectId)}
           draft={draftOf(context)}
-          disabled={disabled || busy}
+          disabled={locked}
           onDraftChange={(next) => onDraftChange(context, next)}
           onDetach={() => void detach(context.projectId)}
           onReattach={() => void attach(context.projectId, "Could not reattach project")}
@@ -734,7 +751,7 @@ function BotProjectContexts({
           onValueChange={(projectId) => setPickedProjectId(projectId)}
         >
           <div className="grid min-w-0 flex-1 grid-cols-1">
-            <SelectTrigger size="sm" aria-label="Project to attach" disabled={disabled || busy}>
+            <SelectTrigger size="sm" aria-label="Project to attach" disabled={locked}>
               <SelectValue
                 placeholder={attachable.length === 0 ? "No other projects" : "Select a project"}
               >
@@ -753,7 +770,7 @@ function BotProjectContexts({
         <Button
           size="sm"
           variant="outline"
-          disabled={disabled || busy || pickedProject === undefined}
+          disabled={locked || pickedProject === undefined}
           onClick={async () => {
             if (pickedProject === undefined) return;
             if (await attach(pickedProject.id, "Could not attach project")) {
