@@ -283,8 +283,11 @@ type ThreadSettingsSessionProps = {
   readonly restoreSelection?: (selection: ModelSelection) => ModelSelection;
   readonly optionDescriptors: ReadonlyArray<ProviderOptionDescriptor>;
   readonly onUpdateOptionSelections: (selections: ReadonlyArray<ProviderOptionSelection>) => void;
-  readonly runtimeMode: RuntimeMode;
-  readonly onUpdateRuntimeMode: (mode: RuntimeMode) => void;
+  /** Omitted when the target has no runtime mode of its own, which hides the Runtime row. */
+  readonly runtime?: {
+    readonly mode: RuntimeMode;
+    readonly onUpdate: (mode: RuntimeMode) => void;
+  };
 };
 
 /** The composer draft the sheet edits: the thread's own, or a queued message being edited. */
@@ -305,9 +308,9 @@ type ThreadSettingsSessionValue = {
   readonly pendingHiddenKeys: ReadonlySet<string>;
   readonly manageHidden: boolean;
   readonly setManageHidden: (value: boolean) => void;
-  readonly runtimeMode: RuntimeMode;
+  readonly runtimeMode: RuntimeMode | undefined;
   readonly runtimeModeChoices: ReadonlyArray<RuntimeModeChoice>;
-  readonly onUpdateRuntimeMode: (mode: RuntimeMode) => void;
+  readonly onUpdateRuntimeMode: ((mode: RuntimeMode) => void) | undefined;
   readonly displayedDescriptors: ReadonlyArray<ProviderOptionDescriptor>;
   readonly promptTraits: ReturnType<typeof getPromptControlledTraits>;
   readonly displayedModelSelection: ModelSelection | null;
@@ -517,10 +520,9 @@ function ThreadSettingsSessionProvider(
     runtimeModeChoicesForSupportedModes(displayedModel?.supportedRuntimeModes),
     [config?.managedPolicy],
   );
-  const compatibleRuntimeMode = compatibleRuntimeModeForChoices(
-    props.runtimeMode,
-    runtimeModeChoices,
-  );
+  const compatibleRuntimeMode = props.runtime
+    ? compatibleRuntimeModeForChoices(props.runtime.mode, runtimeModeChoices)
+    : undefined;
 
   const hasLegacyModels = props.providerGroups.some((group) =>
     group.models.some((model) => model.isLegacy),
@@ -616,7 +618,7 @@ function ThreadSettingsSessionProvider(
     pendingHiddenKeys,
     runtimeMode: compatibleRuntimeMode,
     runtimeModeChoices,
-    onUpdateRuntimeMode: props.onUpdateRuntimeMode,
+    onUpdateRuntimeMode: props.runtime?.onUpdate,
     displayedDescriptors,
     promptTraits,
     displayedModelSelection: pendingModel?.selection ?? props.selectedModel,
@@ -841,16 +843,21 @@ function ThreadSettingsOptionsItem(props: {
     : null;
   // Both iOS search layouts float a bottom toolbar over the list's last rows.
   const bottomToolbarInset = Platform.OS === "ios" ? NATIVE_MAIL_SEARCH_TOOLBAR_CONTENT_INSET : 0;
+  const showsRuntime = session.onUpdateRuntimeMode !== undefined;
+  const showsOptions = showsRuntime || session.displayedDescriptors.length > 0;
 
   return (
     <View style={{ paddingBottom: insets.bottom + bottomToolbarInset + 12 }}>
       <ChatGptSharingStatus provider={selectedProvider} />
-      <Text className="px-5 pb-2 pt-2 text-sm font-t3-medium text-foreground-muted">Options</Text>
+      {showsOptions ? (
+        <Text className="px-5 pb-2 pt-2 text-sm font-t3-medium text-foreground-muted">Options</Text>
+      ) : null}
       <Animated.View
         className="mx-4 overflow-hidden rounded-2xl bg-grouped-card"
         layout={THREAD_SETTINGS_OPTIONS_LAYOUT_TRANSITION}
       >
-        {session.displayedDescriptors.map((descriptor) => {
+        {session.displayedDescriptors.map((descriptor, index) => {
+          const isLast = !showsRuntime && index === session.displayedDescriptors.length - 1;
           if (descriptor.type === "select") {
             return (
               <Animated.View
@@ -862,6 +869,7 @@ function ThreadSettingsOptionsItem(props: {
                 layout={THREAD_SETTINGS_OPTIONS_LAYOUT_TRANSITION}
               >
                 <DisclosureRow
+                  isLast={isLast}
                   label={descriptor.label}
                   value={
                     session.promptTraits.ultrathinkPromptControlled &&
@@ -886,6 +894,7 @@ function ThreadSettingsOptionsItem(props: {
               layout={THREAD_SETTINGS_OPTIONS_LAYOUT_TRANSITION}
             >
               <SwitchRow
+                isLast={isLast}
                 label={descriptor.label}
                 value={descriptor.currentValue ?? false}
                 onValueChange={(value) => session.applyOptionChange(descriptor.id, value)}
@@ -893,17 +902,19 @@ function ThreadSettingsOptionsItem(props: {
             </Animated.View>
           );
         })}
-        <Animated.View layout={THREAD_SETTINGS_OPTIONS_LAYOUT_TRANSITION}>
-          <DisclosureRow
-            isLast
-            label="Runtime"
-            value={
-              session.runtimeModeChoices.find((choice) => choice.mode === session.runtimeMode)
-                ?.label
-            }
-            onPress={() => props.onOpenSubmenu({ kind: "runtime" })}
-          />
-        </Animated.View>
+        {showsRuntime ? (
+          <Animated.View layout={THREAD_SETTINGS_OPTIONS_LAYOUT_TRANSITION}>
+            <DisclosureRow
+              isLast
+              label="Runtime"
+              value={
+                session.runtimeModeChoices.find((choice) => choice.mode === session.runtimeMode)
+                  ?.label
+              }
+              onPress={() => props.onOpenSubmenu({ kind: "runtime" })}
+            />
+          </Animated.View>
+        ) : null}
       </Animated.View>
 
       <Text className="px-5 pb-2 pt-7 text-sm font-t3-medium text-foreground-muted">Catalog</Text>
@@ -1108,7 +1119,7 @@ function ThreadSettingsChoiceContent(props: {
             selected: choice.mode === session.runtimeMode,
             onPress: () => {
               void Haptics.selectionAsync();
-              session.onUpdateRuntimeMode(choice.mode);
+              session.onUpdateRuntimeMode?.(choice.mode);
               props.onSelected();
             },
           })),
@@ -1570,8 +1581,10 @@ export function ExistingThreadSettingsRouteScreen({
         rememberModelOptions(modelSelection.instanceId, modelSelection.model, options ?? []);
         updateModelSelection({ ...modelSelection, options });
       }}
-      runtimeMode={draftSettings.runtimeMode ?? selectedThread.runtimeMode}
-      onUpdateRuntimeMode={(runtimeMode) => updateComposerDraftSettings(threadKey, { runtimeMode })}
+      runtime={{
+        mode: draftSettings.runtimeMode ?? selectedThread.runtimeMode,
+        onUpdate: (runtimeMode) => updateComposerDraftSettings(threadKey, { runtimeMode }),
+      }}
       onClose={() => navigation.goBack()}
     />
   );
@@ -1599,8 +1612,7 @@ export function NewTaskThreadSettingsRouteScreen() {
       restoreSelection={withRememberedModelOptions}
       optionDescriptors={optionDescriptors}
       onUpdateOptionSelections={flow.setSelectedModelOptions}
-      runtimeMode={flow.runtimeMode}
-      onUpdateRuntimeMode={flow.setRuntimeMode}
+      runtime={{ mode: flow.runtimeMode, onUpdate: flow.setRuntimeMode }}
       onClose={() => navigation.goBack()}
     />
   );
