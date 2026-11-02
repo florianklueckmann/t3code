@@ -717,7 +717,7 @@ it.effect("counts a work task's lesson only once the server sees that task compl
             decision: "adopt",
           })
           .pipe(Effect.flip);
-        assert.include(early.message, "has not completed");
+        assert.include(early.message, "did not complete");
         const instructionFromTask = yield* bots
           .recordLearning({
             ...correction,
@@ -741,6 +741,19 @@ it.effect("counts a work task's lesson only once the server sees that task compl
             ?.status;
         assert.equal(statusOf("Open session prep with a recap."), "active");
         assert.equal(statusOf("Skip the recap."), "diagnostic");
+        // History cannot bring a lesson from unfinished work back either.
+        const diagnostic = detail.learning.find(
+          (entry) => entry.revisions[0]?.text === "Skip the recap.",
+        );
+        const restored = yield* bots
+          .restoreLearning({
+            botId,
+            entryId: diagnostic?.id ?? assert.fail(),
+            revision: 1,
+            source: { kind: "user" },
+          })
+          .pipe(Effect.flip);
+        assert.include(restored.message, "did not complete");
         const homeInstructions = yield* instructionsFor(turnContext, home);
         assert.include(homeInstructions, "Open session prep with a recap.");
         assert.notInclude(homeInstructions, "Skip the recap.");

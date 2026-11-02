@@ -144,7 +144,10 @@ export function botLearningViews(
         pending: newestFirst.filter((revision) => revision.status === "pending"),
         latest,
         restorable: newestFirst.filter(
-          (revision) => revision.status !== "active" && revision.status !== "pending",
+          (revision) =>
+            revision.status !== "active" &&
+            revision.status !== "pending" &&
+            revision.status !== "diagnostic",
         ),
       },
     ];

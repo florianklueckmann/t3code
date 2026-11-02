@@ -260,6 +260,17 @@ export const make = (deps: {
       : Effect.succeed(match);
   };
 
+  /** A task's lesson can become active, by adoption or restore, only once that task completed. */
+  const requireEligible = Effect.fn("BotLearning.requireEligible")(function* (
+    row: BotStore.BotLearningRow,
+  ) {
+    const source = yield* BotStore.learningSourceOf(row);
+    if (source.kind !== "task") return;
+    if ((yield* deps.taskStatus(source.taskId)) !== "completed") {
+      return yield* fail("The task that proposed this did not complete, so it cannot be applied.");
+    }
+  });
+
   /** Adopting a proposal whose entry changed since it was made marks it stale instead. */
   const decide = Effect.fn("BotLearning.decide")(function* (input: BotDecideLearningInput) {
     const rows = yield* store.listLearning(input.botId);
@@ -267,14 +278,7 @@ export const make = (deps: {
     if (row.status !== "pending") {
       return yield* fail(`Revision ${row.revision} is ${row.status}, not pending.`);
     }
-    const source = yield* BotStore.learningSourceOf(row);
-    if (input.decision === "adopt" && source.kind === "task") {
-      if ((yield* deps.taskStatus(source.taskId)) !== "completed") {
-        return yield* fail(
-          "The task that proposed this has not completed, so it cannot be adopted.",
-        );
-      }
-    }
+    if (input.decision === "adopt") yield* requireEligible(row);
     const now = yield* deps.now;
     const head = activeOf(revisionsOf(rows, row.entry_id));
     const status: BotLearningStatus =
@@ -371,6 +375,7 @@ export const make = (deps: {
         `Revision ${target.revision} is ${target.status}; restore an earlier revision instead.`,
       );
     }
+    yield* requireEligible(target);
     const revisions = revisionsOf(rows, input.entryId);
     const now = yield* deps.now;
     const row: BotStore.BotLearningRow = {
