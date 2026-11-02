@@ -229,22 +229,21 @@ const make = Effect.gen(function* () {
   });
 
   /**
-   * Stable per stage, so a repeated stop replays. A stop sent before the launch admitted its run
-   * stops nothing, so the stop after the launch needs its own id to take effect.
+   * Stops the work thread's run. The id is keyed to that run, so a repeat replays once the stop
+   * took effect, and a stop sent before the launch admitted its run cannot stand in for it.
    */
-  const stopWorkThread = (
+  const stopWorkThread = Effect.fn("BotTaskService.stopWorkThread")(function* (
     row: BotTaskRow,
     workThreadId: string,
-    stage: "requested" | "after-launch",
-  ) =>
-    threads
+  ) {
+    const shell = yield* threads
+      .getThreadShell(ThreadId.make(workThreadId))
+      .pipe(Effect.mapError(botError("Failed to read the Bot task's work thread.")));
+    if (shell === null || shell.latestRunId === null) return;
+    yield* threads
       .dispatch({
         type: "thread.stop",
-        commandId: CommandId.make(
-          stage === "requested"
-            ? `bot-task-cancel:${row.task_id}`
-            : `bot-task-cancel:${row.task_id}:after-launch`,
-        ),
+        commandId: CommandId.make(`bot-task-cancel:${row.task_id}:${shell.latestRunId}`),
         threadId: ThreadId.make(workThreadId),
         reason: row.detail ?? "The Bot task was cancelled.",
       })
@@ -253,6 +252,7 @@ const make = Effect.gen(function* () {
           botError(`Failed to stop the Bot task: ${errorMessage(cause)}`)(cause),
         ),
       );
+  });
 
   /**
    * Launches the work thread. The same ids make a retried launch replay instead of duplicating.
@@ -291,7 +291,7 @@ const make = Effect.gen(function* () {
       `.pipe(Effect.mapError(storageError));
       const after = yield* readRow(row.task_id);
       if (after?.cancel_requested_at != null) {
-        yield* stopWorkThread(after, row.work_thread_id, "after-launch");
+        yield* stopWorkThread(after, row.work_thread_id);
       }
     } else {
       // A launch that was refused is not retried: nothing broadens or repeats work on its own.
@@ -506,7 +506,7 @@ const make = Effect.gen(function* () {
         UPDATE bot_tasks SET dispatched_at = COALESCE(dispatched_at, ${now})
         WHERE task_id = ${row.task_id}
       `.pipe(Effect.mapError(storageError));
-      yield* stopWorkThread(row, workThreadId, "requested");
+      yield* stopWorkThread(row, workThreadId);
     } else {
       yield* sql`
         UPDATE bot_tasks
@@ -564,7 +564,7 @@ const make = Effect.gen(function* () {
       });
       // A cancelled task still working gets its stop again, for one that failed or came too early.
       if (row.cancel_requested_at !== null && !isTerminal(status)) {
-        yield* stopWorkThread(row, row.work_thread_id, "after-launch");
+        yield* stopWorkThread(row, row.work_thread_id);
       }
       if (status === row.status) return;
       const now = yield* nowIso;
