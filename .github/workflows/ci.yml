@@ -1,10 +1,13 @@
 name: CI
 
 on:
+  workflow_dispatch:
   pull_request:
   push:
     branches:
       - main
+      - t3bot
+      - t3b-11/fork-ci
 
 permissions:
   contents: read
@@ -14,6 +17,8 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Forks use disposable GitHub-hosted runners without the private task cache.
+  # Their longer limits include cold installs on smaller machines.
   # Skips jobs a pull request cannot affect: a web change does not run the
   # server shards, a server change does not run the mobile tests, and the macOS
   # lint (~6.7x a Linux minute) runs only for native mobile sources.
@@ -22,7 +27,7 @@ jobs:
   # open: if the diff cannot be resolved, everything runs.
   changes:
     name: Changes
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ${{ github.repository == 'pingdotgg/t3code' && 'blacksmith-2vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
     timeout-minutes: 5
     outputs:
       typecheck: ${{ steps.detect.outputs.typecheck }}
@@ -63,8 +68,8 @@ jobs:
       contents: read
       id-token: write
     name: Lint
-    runs-on: blacksmith-8vcpu-ubuntu-2404
-    timeout-minutes: 10
+    runs-on: ${{ github.repository == 'pingdotgg/t3code' && 'blacksmith-8vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
+    timeout-minutes: ${{ github.repository == 'pingdotgg/t3code' && 10 || 45 }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -119,8 +124,8 @@ jobs:
     name: Build and Typecheck
     needs: changes
     if: ${{ !cancelled() && (needs.changes.outputs.build != 'false' || needs.changes.outputs.typecheck != 'false') }}
-    runs-on: blacksmith-8vcpu-ubuntu-2404
-    timeout-minutes: 10
+    runs-on: ${{ github.repository == 'pingdotgg/t3code' && 'blacksmith-8vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
+    timeout-minutes: ${{ github.repository == 'pingdotgg/t3code' && 10 || 45 }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -194,7 +199,7 @@ jobs:
 
       - name: Typecheck
         if: ${{ !cancelled() && steps.typecheck.outcome == 'success' }}
-        timeout-minutes: 5
+        timeout-minutes: ${{ github.repository == 'pingdotgg/t3code' && 5 || 20 }}
         run: |
           until test -s "$RUNNER_TEMP/typecheck-status"; do sleep 1; done
           cat "$RUNNER_TEMP/typecheck.log"
@@ -213,8 +218,8 @@ jobs:
     name: Test
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.test != 'false' }}
-    runs-on: blacksmith-8vcpu-ubuntu-2404
-    timeout-minutes: 10
+    runs-on: ${{ github.repository == 'pingdotgg/t3code' && 'blacksmith-8vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
+    timeout-minutes: ${{ github.repository == 'pingdotgg/t3code' && 10 || 45 }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -289,8 +294,8 @@ jobs:
     name: Test Web
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.test_web != 'false' }}
-    runs-on: blacksmith-8vcpu-ubuntu-2404
-    timeout-minutes: 10
+    runs-on: ${{ github.repository == 'pingdotgg/t3code' && 'blacksmith-8vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
+    timeout-minutes: ${{ github.repository == 'pingdotgg/t3code' && 10 || 45 }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -332,7 +337,16 @@ jobs:
           fi
 
       - name: Test
+        if: github.repository == 'pingdotgg/t3code'
         run: vp run --filter @t3tools/web test
+
+      # Leave CPU headroom for Chromium and PDF workers on the four-core hosted runner.
+      - name: Test on GitHub-hosted runner
+        if: github.repository != 'pingdotgg/t3code'
+        working-directory: apps/web
+        run: |
+          node --input-type=module -e 'import os from "node:os"; console.log({ availableParallelism: os.availableParallelism(), logicalCpus: os.cpus().length, vitestMaxWorkers: 2 })'
+          vp test run --passWithNoTests --project unit --project browser --maxWorkers=2
 
       # Browser tests run source modules; this boots the production chunk graph.
       - name: Boot the built web client
@@ -353,10 +367,10 @@ jobs:
       contents: read
       id-token: write
     name: Test Server ${{ matrix.shard }}
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ github.repository == 'pingdotgg/t3code' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
     # Shards take 2-5 minutes. When the shared task cache throttles reads, each
     # failed fetch stalls vp for 15-90s, which pushed shards past 10 minutes.
-    timeout-minutes: 20
+    timeout-minutes: ${{ github.repository == 'pingdotgg/t3code' && 20 || 45 }}
     strategy:
       fail-fast: false
       matrix:
@@ -469,8 +483,8 @@ jobs:
     name: Rust
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.rust != 'false' }}
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 10
+    runs-on: ${{ github.repository == 'pingdotgg/t3code' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
+    timeout-minutes: ${{ github.repository == 'pingdotgg/t3code' && 10 || 45 }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -502,8 +516,8 @@ jobs:
     name: Mobile Native Static Analysis
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.mobile_native != 'false' }}
-    runs-on: blacksmith-6vcpu-macos-26
-    timeout-minutes: 10
+    runs-on: ${{ github.repository == 'pingdotgg/t3code' && 'blacksmith-6vcpu-macos-26' || 'macos-26-intel' }}
+    timeout-minutes: ${{ github.repository == 'pingdotgg/t3code' && 10 || 45 }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -535,8 +549,8 @@ jobs:
     name: Release Smoke
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.release_smoke != 'false' }}
-    runs-on: blacksmith-8vcpu-ubuntu-2404
-    timeout-minutes: 10
+    runs-on: ${{ github.repository == 'pingdotgg/t3code' && 'blacksmith-8vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
+    timeout-minutes: ${{ github.repository == 'pingdotgg/t3code' && 10 || 45 }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -575,7 +589,7 @@ jobs:
         mobile_native_static_analysis,
         release_smoke,
       ]
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ${{ github.repository == 'pingdotgg/t3code' && 'blacksmith-2vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
     timeout-minutes: 5
     steps:
       - name: Require every job to pass
