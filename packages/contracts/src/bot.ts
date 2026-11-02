@@ -53,6 +53,47 @@ const BotSourcePreferences = Schema.Array(BotSourcePreference).check(
   Schema.isMaxLength(BOT_SOURCE_PREFERENCES_MAX),
 );
 
+export const BOT_APPEARANCE_COLORS = [
+  "teal",
+  "sky",
+  "violet",
+  "pink",
+  "orange",
+  "amber",
+  "lime",
+  "gray",
+] as const;
+export const BOT_APPEARANCE_FACES = [
+  "happy",
+  "sleepy",
+  "wink",
+  "curious",
+  "joy",
+  "focused",
+] as const;
+export const BOT_APPEARANCE_TOPPERS = ["none", "antenna", "ears", "sprout", "bow"] as const;
+
+/** How a Bot looks in clients. Presentation only: it never reaches the model. */
+export const BotAppearance = Schema.Struct({
+  color: Schema.Literals(BOT_APPEARANCE_COLORS),
+  face: Schema.Literals(BOT_APPEARANCE_FACES),
+  topper: Schema.Literals(BOT_APPEARANCE_TOPPERS),
+});
+export type BotAppearance = typeof BotAppearance.Type;
+
+const BotAppearanceValue = Schema.String.check(Schema.isMaxLength(32));
+
+/**
+ * A stored look as read back. Values stay plain strings so a client older than a
+ * newly added option still decodes the Bot, then falls back per field.
+ */
+export const ReceivedBotAppearance = Schema.Struct({
+  color: BotAppearanceValue,
+  face: BotAppearanceValue,
+  topper: BotAppearanceValue,
+});
+export type ReceivedBotAppearance = typeof ReceivedBotAppearance.Type;
+
 export const BotProjectContextSummary = Schema.Struct({
   projectId: ProjectId,
   homeThreadId: ThreadId,
@@ -74,6 +115,8 @@ export const BotSummary = Schema.Struct({
   name: BotName,
   modelSelection: ModelSelection,
   learningPolicy: BotLearningPolicy,
+  /** Null uses the default derived from the Bot id; absent on servers without appearance. */
+  appearance: Schema.optionalKey(Schema.NullOr(ReceivedBotAppearance)),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   archivedAt: Schema.NullOr(IsoDateTime),
@@ -106,6 +149,7 @@ export const BotCreateInput = Schema.Struct({
   instructions: BotInstructions,
   modelSelection: ModelSelection,
   learningPolicy: BotLearningPolicy,
+  appearance: Schema.optional(Schema.NullOr(BotAppearance)),
 });
 export type BotCreateInput = typeof BotCreateInput.Type;
 
@@ -115,6 +159,8 @@ export const BotUpdateInput = Schema.Struct({
   instructions: Schema.optional(BotInstructions),
   modelSelection: Schema.optional(ModelSelection),
   learningPolicy: Schema.optional(BotLearningPolicy),
+  /** Null returns the Bot to its default look. */
+  appearance: Schema.optional(Schema.NullOr(BotAppearance)),
 });
 export type BotUpdateInput = typeof BotUpdateInput.Type;
 

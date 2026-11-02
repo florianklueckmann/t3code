@@ -25,6 +25,11 @@ Changes to a Bot's instructions, guidance or sources apply from its next turn,
 including in conversations that are already running. Changing its model
 switches all of its attached conversations to that model.
 
+Each Bot gets its own little figure. To change its color, face or topper, open
+the Bot and select the figure next to its name (on mobile, **Change look**).
+The look is shared by all of the Bot's projects and only changes how it
+appears, never how it works. **Reset** returns it to its default.
+
 ## Project guidance and preferred sources
 
 Each attached project has its own **Guidance** and **Preferred sources**. Guidance

@@ -91,6 +91,19 @@ describe("planBotSave", () => {
     });
   });
 
+  it("saves a chosen look and resets it to the default", () => {
+    const look = { color: "lime", face: "wink", topper: "bow" } as const;
+    const plain = botDraftFromDetail(detail);
+    expect(planBotSave(plain, { ...plain, appearance: look })).toEqual({
+      steps: [{ type: "update", input: { botId, appearance: look } }],
+    });
+    const styled = botDraftFromDetail({ ...detail, appearance: look });
+    expect(planBotSave(styled, { ...styled, appearance: { ...look } })).toEqual({ steps: [] });
+    expect(planBotSave(styled, { ...styled, appearance: null })).toEqual({
+      steps: [{ type: "update", input: { botId, appearance: null } }],
+    });
+  });
+
   it("detaches, reattaches with kept context, and updates guidance", () => {
     const baseline = botDraftFromDetail(detail);
     const draft = updateBotProjectDraft(

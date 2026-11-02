@@ -213,7 +213,13 @@ const make = Effect.gen(function* () {
   const create: BotService["Service"]["create"] = Effect.fn("BotService.create")(function* (input) {
     yield* requireSupportedSelection(input.botId, input.modelSelection);
     const now = yield* nowIso;
-    const row = BotStore.botRow({ ...input, createdAt: now, updatedAt: now, archivedAt: null });
+    const row = BotStore.botRow({
+      ...input,
+      appearanceJson: BotStore.encodeAppearance(input.appearance ?? null),
+      createdAt: now,
+      updatedAt: now,
+      archivedAt: null,
+    });
     const existing = yield* store
       .getBot(input.botId)
       .pipe(Effect.mapError(storeError(input.botId)));
@@ -222,7 +228,8 @@ const make = Effect.gen(function* () {
         existing.name === row.name &&
         existing.instructions === row.instructions &&
         existing.model_selection_json === row.model_selection_json &&
-        existing.learning_policy === row.learning_policy;
+        existing.learning_policy === row.learning_policy &&
+        existing.appearance_json === row.appearance_json;
       if (!sameRequest) return yield* botError("A Bot with this id already exists.", input.botId)();
       return yield* readDetail(input.botId);
     }
@@ -270,6 +277,10 @@ const make = Effect.gen(function* () {
           instructions: input.instructions ?? current.instructions,
           modelSelection: input.modelSelection ?? current.modelSelection,
           learningPolicy: input.learningPolicy ?? current.learningPolicy,
+          appearanceJson:
+            input.appearance === undefined
+              ? bot.appearance_json
+              : BotStore.encodeAppearance(input.appearance),
           createdAt: bot.created_at,
           updatedAt: now,
           archivedAt: null,

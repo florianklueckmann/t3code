@@ -6,12 +6,14 @@ import {
   squashAtomCommandFailure,
   type AtomCommandResult,
 } from "@t3tools/client-runtime/state/runtime";
+import { defaultBotAppearance, resolveBotAppearance } from "@t3tools/client-runtime/bot-appearance";
 import { BotId, resolveEnvironmentMachineKind } from "@t3tools/contracts";
 import type { BotDetail, BotSummary, EnvironmentId, ProjectId } from "@t3tools/contracts";
 import { useRef, useState } from "react";
 import { Platform, Pressable, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { BotAvatar } from "../../components/BotAvatar";
 import { EnvironmentMachineSymbol } from "../../components/EnvironmentMachineSymbol";
 import { Button } from "../../components/ui/Button";
 import * as Dialog from "../../components/ui/Dialog";
@@ -60,6 +62,7 @@ type BotRoutes = {
   SettingsBotNew: undefined;
   SettingsBotEdit: undefined;
   SettingsBotModel: undefined;
+  SettingsBotLook: undefined;
 };
 
 const BOT_NAME_MAX = 80;
@@ -218,6 +221,7 @@ function EnvironmentBots({
               }}
               className="flex-row items-center gap-3 active:opacity-70"
             >
+              <BotAvatar appearance={resolveBotAppearance(bot)} size={32} />
               <View className="min-w-0 flex-1 gap-1">
                 <Text textRole="body" className="text-foreground" numberOfLines={1}>
                   {bot.name}
@@ -446,6 +450,7 @@ function BotForm({
   const [archiving, setArchiving] = useState(false);
   const environmentUnavailable = environmentLabel === null;
   const readOnly = saving || archiving || archived || !canOperate || environmentUnavailable;
+  const appearanceSupported = config?.environment.capabilities.botAppearance === true;
 
   const runStep = (step: BotSaveStep): Promise<AtomCommandResult<BotDetail, unknown>> => {
     switch (step.type) {
@@ -523,6 +528,30 @@ function BotForm({
         accessibilityElementsHidden={saving}
         importantForAccessibility={saving ? "no-hide-descendants" : "auto"}
       >
+        <View className="items-center gap-1">
+          <BotAvatar appearance={draft.appearance ?? defaultBotAppearance(draft.botId)} size={72} />
+          {appearanceSupported ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Change appearance"
+              accessibilityState={{ disabled: readOnly }}
+              disabled={readOnly}
+              onPress={() => navigation.navigate("SettingsBotLook")}
+              className="px-3 py-1 active:opacity-70"
+            >
+              <Text
+                className={readOnly ? "text-sm text-foreground-muted" : "text-sm text-primary-text"}
+              >
+                Change look
+              </Text>
+            </Pressable>
+          ) : (
+            <Text className="px-4 text-center text-sm text-foreground-muted">
+              Update T3 Code on {environmentLabel ?? "this environment"} to change how this Bot
+              looks.
+            </Text>
+          )}
+        </View>
         <SettingsSection>
           <SelectRow
             label="Runs on"

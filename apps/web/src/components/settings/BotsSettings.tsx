@@ -6,6 +6,11 @@ import {
   type BotProjectContextDraft,
   type BotSourceDraft,
 } from "@t3tools/client-runtime/bots";
+import {
+  resolveBotAppearance,
+  sameBotAppearance,
+  savedBotAppearance,
+} from "@t3tools/client-runtime/bot-appearance";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
   type AtomCommandResult,
@@ -15,6 +20,7 @@ import {
 import {
   BotId,
   ProviderDriverKind,
+  type BotAppearance,
   type BotDetail,
   type BotLearningPolicy,
   type BotProjectContext,
@@ -46,6 +52,7 @@ import { useEnvironmentQuery } from "../../state/query";
 import { EMPTY_SERVER_PROVIDERS, serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { buildThreadRouteParams } from "../../threadRoutes";
+import { BotAvatar } from "../BotAvatar";
 import { ProviderModelPicker } from "../chat/ProviderModelPicker";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -66,6 +73,7 @@ import { Radio, RadioGroup } from "../ui/radio-group";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Textarea } from "../ui/textarea";
 import { stackedThreadToast, toastManager } from "../ui/toast";
+import { BotAppearancePicker } from "./BotAppearancePicker";
 import { useSettingsScope } from "./SettingsScopeContext";
 import { searchableSetting } from "./settingsSearch";
 import {
@@ -233,7 +241,7 @@ function EnvironmentBots({ environment }: { readonly environment: EnvironmentPre
       {editor ? (
         <BotEditorDialog
           key={editor.botId ?? "new"}
-          environmentId={environmentId}
+          environment={environment}
           botId={editor.botId}
           onCreated={(botId) => setEditor({ botId })}
           onClose={() => setEditor(null)}
@@ -274,6 +282,7 @@ function BotRow({
     <SettingsRow
       title={
         <span className="flex min-w-0 items-center gap-2">
+          <BotAvatar appearance={resolveBotAppearance(bot)} size={24} className="shrink-0" />
           <span className="min-w-0 wrap-anywhere">{bot.name}</span>
           {archived ? <Badge variant="outline">Archived</Badge> : null}
         </span>
@@ -347,16 +356,17 @@ function BotRow({
 }
 
 function BotEditorDialog({
-  environmentId,
+  environment,
   botId,
   onCreated,
   onClose,
 }: {
-  readonly environmentId: EnvironmentId;
+  readonly environment: EnvironmentPresentation;
   readonly botId: BotId | null;
   readonly onCreated: (botId: BotId) => void;
   readonly onClose: () => void;
 }) {
+  const environmentId = environment.environmentId;
   const [saving, setSaving] = useState(false);
   const detailQuery = useEnvironmentQuery(
     botId === null ? null : serverEnvironment.botDetail({ environmentId, input: { botId } }),
@@ -394,7 +404,7 @@ function BotEditorDialog({
           </>
         ) : (
           <BotEditorForm
-            environmentId={environmentId}
+            environment={environment}
             saved={initialDetail}
             current={detailQuery.data}
             refreshDetail={detailQuery.refresh}
@@ -415,6 +425,8 @@ interface BotDraft {
   /** Null until the user picks a model; the form then shows the saved or default one. */
   readonly modelSelection: ModelSelection | null;
   readonly learningPolicy: BotLearningPolicy | null;
+  /** Null keeps the default look derived from the Bot id. */
+  readonly appearance: BotAppearance | null;
 }
 
 function Field({
@@ -435,7 +447,7 @@ function Field({
 }
 
 function BotEditorForm({
-  environmentId,
+  environment,
   saved,
   current,
   refreshDetail,
@@ -444,7 +456,7 @@ function BotEditorForm({
   onCreated,
   onClose,
 }: {
-  readonly environmentId: EnvironmentId;
+  readonly environment: EnvironmentPresentation;
   /** Null when creating a Bot. */
   readonly saved: BotDetail | null;
   readonly current: BotDetail | null;
@@ -454,14 +466,21 @@ function BotEditorForm({
   readonly onCreated: (botId: BotId) => void;
   readonly onClose: () => void;
 }) {
+  const environmentId = environment.environmentId;
+  const appearanceSupported =
+    environment.serverConfig?.environment.capabilities.botAppearance === true;
   // Chosen once per form so a retried create stays idempotent.
   const [newBotId] = useState(() => BotId.make(randomUUID()));
+  const savedAppearance = saved ? savedBotAppearance(saved) : null;
   const [draft, setDraft] = useState<BotDraft>(() => ({
     name: saved?.name ?? "",
     instructions: saved?.instructions ?? "",
     modelSelection: null,
     learningPolicy: saved?.learningPolicy ?? null,
+    appearance: savedAppearance,
   }));
+  const appearanceChanged =
+    appearanceSupported && !sameBotAppearance(draft.appearance, savedAppearance);
   const [contextDrafts, setContextDrafts] = useState<
     ReadonlyMap<ProjectId, BotProjectContextDraft>
   >(() => new Map());
@@ -503,6 +522,7 @@ function BotEditorForm({
         instructions: draft.instructions.trim(),
         modelSelection,
         learningPolicy: draft.learningPolicy,
+        ...(appearanceChanged ? { appearance: draft.appearance } : {}),
       },
     });
     setSaving(false);
@@ -530,7 +550,8 @@ function BotEditorForm({
       name !== bot.name ||
       instructions !== bot.instructions ||
       draft.modelSelection !== null ||
-      draft.learningPolicy !== bot.learningPolicy;
+      draft.learningPolicy !== bot.learningPolicy ||
+      appearanceChanged;
     if (botChanged) {
       const result = await updateBot({
         environmentId,
@@ -542,6 +563,7 @@ function BotEditorForm({
           ...(draft.learningPolicy !== null && draft.learningPolicy !== bot.learningPolicy
             ? { learningPolicy: draft.learningPolicy }
             : {}),
+          ...(appearanceChanged ? { appearance: draft.appearance } : {}),
         },
       });
       if (!settled("Could not save Bot", result)) {
@@ -581,14 +603,26 @@ function BotEditorForm({
               This Bot is archived. Restore it from the list to edit it.
             </p>
           ) : null}
-          <Field label="Name" htmlFor="bot-name">
-            <Input
-              id="bot-name"
-              placeholder="e.g. Release helper"
-              value={draft.name}
-              onChange={(event) => setDraft((prev) => ({ ...prev, name: event.target.value }))}
+          <div className="flex items-end gap-3">
+            <BotAppearancePicker
+              botId={saved?.id ?? newBotId}
+              appearance={draft.appearance}
+              supported={appearanceSupported}
+              environmentLabel={environment.label}
+              disabled={saving || archived}
+              onChange={(appearance) => setDraft((prev) => ({ ...prev, appearance }))}
             />
-          </Field>
+            <div className="min-w-0 flex-1">
+              <Field label="Name" htmlFor="bot-name">
+                <Input
+                  id="bot-name"
+                  placeholder="e.g. Release helper"
+                  value={draft.name}
+                  onChange={(event) => setDraft((prev) => ({ ...prev, name: event.target.value }))}
+                />
+              </Field>
+            </div>
+          </div>
           <Field label="Instructions" htmlFor="bot-instructions">
             <Textarea
               id="bot-instructions"

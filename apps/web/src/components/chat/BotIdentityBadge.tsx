@@ -1,10 +1,11 @@
+import { resolveBotAppearance } from "@t3tools/client-runtime/bot-appearance";
 import { botOfHomeThread } from "@t3tools/client-runtime/bots";
 import type { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
-import { BotMessageSquareIcon } from "lucide-react";
 
 import { useEnvironment } from "../../state/environments";
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
+import { BotAvatar } from "../BotAvatar";
 import { Badge } from "../ui/badge";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
@@ -34,7 +35,11 @@ export function BotIdentityBadge(props: {
   return (
     <Tooltip>
       <TooltipTrigger render={<Badge variant="info" size="sm" />}>
-        <BotMessageSquareIcon aria-hidden />
+        <BotAvatar
+          appearance={resolveBotAppearance(bot)}
+          size={14}
+          className="size-3.5 opacity-100"
+        />
         <span className="sr-only">Bot </span>
         {bot.name}
       </TooltipTrigger>
