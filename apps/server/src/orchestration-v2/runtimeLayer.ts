@@ -3,6 +3,7 @@ import * as UsageLimitRecoveryWorker from "./UsageLimitRecoveryWorker.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as BotProjectGuard from "../bots/BotProjectGuard.ts";
 import * as BotService from "../bots/BotService.ts";
+import * as BotTaskService from "../bots/BotTaskService.ts";
 import * as BotTurnContext from "../bots/BotTurnContext.ts";
 import * as Layer from "effect/Layer";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
@@ -284,6 +285,9 @@ const layerThreadLaunchProvided = ThreadLaunchService.layer.pipe(
 const layerSecretRequestsProvided = SecretRequests.layer.pipe(
   Layer.provide(layerThreadManagementProvided),
 );
+const layerBotTaskProvided = BotTaskService.layer.pipe(
+  Layer.provide(Layer.mergeAll(layerThreadLaunchProvided, layerThreadManagementProvided)),
+);
 const layerScheduledTaskProvided = ScheduledTaskService.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
@@ -291,6 +295,7 @@ const layerScheduledTaskProvided = ScheduledTaskService.layer.pipe(
       layerThreadManagementProvided,
       layerManagedProjectFoldersProvided,
       layerSecretRequestsProvided,
+      BotTaskService.layerRoutineTarget.pipe(Layer.provide(layerBotTaskProvided)),
     ),
   ),
 );
@@ -301,6 +306,8 @@ const layerBotServiceProvided = BotService.layer.pipe(
       layerProjectService,
       layerThreadLaunchProvided,
       layerThreadManagementProvided,
+      layerScheduledTaskProvided,
+      layerBotTaskProvided,
     ),
   ),
 );
@@ -388,6 +395,7 @@ export const layerProduction = Layer.mergeAll(
   layerThreadLaunchProvided,
   layerScheduledTaskProvided,
   layerBotServiceProvided,
+  layerBotTaskProvided,
   layerScratchThreadPromotionProvided,
   layerSecretRequestsProvided,
   GuestShareService.layer.pipe(

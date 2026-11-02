@@ -23,6 +23,8 @@ import {
   type ScheduledTaskRunNowResult,
   type ScheduledTaskSetEnabledInput,
   type ScheduledTaskUpsertInput,
+  type ScheduledTaskBotTarget,
+  type BotId,
   managedPolicyDeniedMessage,
   managedRuntimeModeDenial,
 } from "@t3tools/contracts";
@@ -54,7 +56,13 @@ import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as DueHint from "../scheduling/DueHint.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
-import { isMissedFixedTimeRun, isSameSchedule, nextScheduledRunAt } from "./Schedule.ts";
+import { BOT_ROUTINE_RUNTIME_MODE, BotRoutineTarget } from "./BotRoutineTarget.ts";
+import {
+  isMissedFixedTimeRun,
+  isSameSchedule,
+  latestOccurrenceAtOrBefore,
+  nextScheduledRunAt,
+} from "./Schedule.ts";
 import {
   redactHeaders,
   redactQuery,
@@ -211,6 +219,9 @@ interface ScheduledTaskRow {
   readonly run_count: number;
   readonly webhook_token: string | null;
   readonly webhook_secret: string | null;
+  readonly bot_id: string | null;
+  readonly bot_session_at: string | null;
+  readonly schedule_revision: number;
 }
 
 interface WebhookDeliveryRow {
@@ -247,6 +258,11 @@ export class ScheduledTaskService extends Context.Service<
     ) => Effect.Effect<ScheduledTaskDeleteResult, ScheduledTaskError>;
     /** Deletes only tasks that still target this thread, including their webhook deliveries. */
     readonly deleteForThread: (threadId: ThreadId) => Effect.Effect<void, ScheduledTaskError>;
+    /** Pauses a Bot's routines, in one project or all; they stay paused until resumed. */
+    readonly pauseBotRoutines: (input: {
+      readonly botId: BotId;
+      readonly projectId?: ProjectId | undefined;
+    }) => Effect.Effect<void, ScheduledTaskError>;
     /** Points tasks bound to these threads at the project the threads moved to. */
     readonly moveThreadTasks: (input: {
       readonly threadIds: ReadonlyArray<ThreadId>;
@@ -384,6 +400,7 @@ const decodeRow = Effect.fnUntraced(
       lastRunError: row.last_run_error,
       runCount: row.run_count,
       ...(webhook === undefined ? {} : { webhook }),
+      ...(row.bot_id === null ? {} : { bot: { botId: row.bot_id, sessionAt: row.bot_session_at } }),
     });
   },
   (effect, row, _origin?) =>
@@ -442,6 +459,15 @@ export const layer = Layer.effect(
     const secretRequests = yield* SecretRequests.SecretRequests;
     const scheduler = yield* Scheduler.Scheduler;
     const readWebhookOrigin = yield* ScheduledTaskWebhookOrigin;
+    const botTarget = yield* BotRoutineTarget;
+    const requireBotRunnable = (
+      bot: ScheduledTaskBotTarget,
+      projectId: ProjectId,
+      taskId: ScheduledTaskId,
+    ) =>
+      botTarget
+        .requireRunnable({ botId: bot.botId, projectId })
+        .pipe(Effect.mapError((message) => taskError(message, { taskId })));
     const managedPolicy = yield* ManagedPolicy.ManagedPolicy;
     const webhookPolicyOrganization = ManagedPolicy.deniedBy(managedPolicy, "webhookTasks");
     // Existing webhook tasks stay stored but report why they do not run.
@@ -504,7 +530,10 @@ export const layer = Layer.effect(
         last_run_error,
         run_count,
         webhook_token,
-        webhook_secret
+        webhook_secret,
+        bot_id,
+        bot_session_at,
+        schedule_revision
       FROM scheduled_tasks
       -- Not updated_at: toggles, runs and edits rewrite it, and clients render
       -- this order as-is, so rows would move under the pointer.
@@ -545,7 +574,10 @@ export const layer = Layer.effect(
         last_run_error,
         run_count,
         webhook_token,
-        webhook_secret
+        webhook_secret,
+        bot_id,
+        bot_session_at,
+        schedule_revision
       FROM scheduled_tasks
       WHERE task_id = ${id}
     `.pipe(NodeSqliteClient.readOnly);
@@ -622,7 +654,9 @@ export const layer = Layer.effect(
           last_run_error,
           run_count,
           webhook_token,
-          webhook_secret
+          webhook_secret,
+          bot_id,
+          bot_session_at
         )
         SELECT
           ${task.id},
@@ -646,7 +680,9 @@ export const layer = Layer.effect(
           ${task.lastRunError},
           ${task.runCount},
           ${webhook.token},
-          ${webhook.secret}
+          ${webhook.secret},
+          ${task.bot?.botId ?? null},
+          ${task.bot?.sessionAt ?? null}
         WHERE ${requireExisting ? 0 : 1} = 1
            OR EXISTS (SELECT 1 FROM scheduled_tasks WHERE task_id = ${task.id})
         ON CONFLICT (task_id)
@@ -663,6 +699,10 @@ export const layer = Layer.effect(
           interaction_mode = excluded.interaction_mode,
           creation_source = excluded.creation_source,
           updated_at = excluded.updated_at,
+          bot_id = excluded.bot_id,
+          bot_session_at = excluded.bot_session_at,
+          -- A new revision gives a re-armed routine new occurrence keys.
+          schedule_revision = scheduled_tasks.schedule_revision + ${keptSchedule === null ? 1 : 0},
           -- Keep a next_run_at that a finishing run moved during this save, unless
           -- another edit changed the schedule or enabled state meanwhile.
           next_run_at = CASE
@@ -794,6 +834,76 @@ export const layer = Layer.effect(
         ),
     );
 
+    /**
+     * Hands one occurrence to the Bot task admission. Its key comes from the routine, its
+     * revision and the due instant, so a retry or a crash replay admits the same task.
+     */
+    const dispatchRoutine = Effect.fn("ScheduledTaskService.dispatchRoutine")(function* (
+      task: ScheduledTask,
+      bot: ScheduledTaskBotTarget,
+      occurrence: {
+        readonly trigger: "scheduled" | "manual" | "webhook";
+        readonly startedAt: DateTime.DateTime;
+        readonly dueAt: DateTime.DateTime;
+      },
+    ) {
+      const [revision] = yield* sql<{ readonly schedule_revision: number }>`
+        SELECT schedule_revision FROM scheduled_tasks WHERE task_id = ${task.id}
+      `.pipe(
+        Effect.mapError((cause) =>
+          taskError("Could not load schedule task.", { taskId: task.id, cause }),
+        ),
+      );
+      const occurrenceKey =
+        occurrence.trigger === "scheduled"
+          ? `${task.id}:${revision?.schedule_revision ?? 0}:${DateTime.toEpochMillis(occurrence.dueAt)}`
+          : `${task.id}:manual:${DateTime.toEpochMillis(occurrence.startedAt)}`;
+      const admission = yield* botTarget
+        .admit({
+          scheduledTaskId: task.id,
+          occurrenceKey,
+          dueAt: iso(occurrence.dueAt),
+          sessionAt: bot.sessionAt ?? null,
+          botId: bot.botId,
+          projectId: task.projectId,
+          title: task.title,
+          prompt: task.prompt,
+        })
+        .pipe(Effect.mapError((message) => taskError(message, { taskId: task.id })));
+      if (admission._tag === "inactive") {
+        yield* pauseRoutines({ taskId: task.id });
+        return yield* taskError(`${admission.reason} The routine is paused until you resume it.`, {
+          taskId: task.id,
+        });
+      }
+      return admission._tag === "admitted" ? admission.workThreadId : null;
+    });
+
+    /** Pauses matching routines; their pending occurrences go with `next_run_at`. */
+    const pauseRoutines = Effect.fn("ScheduledTaskService.pauseRoutines")(function* (
+      target:
+        | { readonly taskId: ScheduledTaskId }
+        | { readonly botId: BotId; readonly projectId?: ProjectId | undefined },
+    ) {
+      const now = iso(yield* localNow);
+      const taskId = "taskId" in target ? target.taskId : null;
+      const botId = "botId" in target ? target.botId : null;
+      const projectId = "botId" in target ? (target.projectId ?? null) : null;
+      const paused = yield* sql<{ readonly task_id: string }>`
+        UPDATE scheduled_tasks
+        SET enabled = 0, next_run_at = NULL, schedule_revision = schedule_revision + 1,
+            updated_at = ${now}
+        WHERE bot_id IS NOT NULL AND enabled = 1
+          AND (${taskId} IS NULL OR task_id = ${taskId})
+          AND (${botId} IS NULL OR bot_id = ${botId})
+          AND (${projectId} IS NULL OR project_id = ${projectId})
+        RETURNING task_id
+      `.pipe(
+        Effect.mapError((cause) => taskError("Could not pause the Bot's routines.", { cause })),
+      );
+      if (paused.length > 0) yield* notifyChanged;
+    });
+
     const runTask = Effect.fn("ScheduledTaskService.runTask")(function* (
       task: ScheduledTask,
       trigger: "scheduled" | "manual" | "webhook",
@@ -802,6 +912,8 @@ export const layer = Layer.effect(
         readonly prompt: string;
         readonly dispatched: Ref.Ref<boolean>;
       },
+      /** The occurrence a Bot routine runs for, when missed ones were coalesced into it. */
+      occurrenceDueAt?: DateTime.DateTime,
     ) {
       // Read before reserving: nothing between the reservation and its release may fail.
       const startedAt = yield* localNow;
@@ -920,36 +1032,48 @@ export const layer = Layer.effect(
             );
 
         // Capture defects and interrupts too so dispatch failures still reach markCompleted.
-        const result =
-          active.threadId === null
+        const result: Exit.Exit<ThreadId | null, unknown> =
+          active.bot !== undefined
             ? yield* Effect.exit(
-                threadLaunch
-                  .launch({
-                    commandId,
-                    projectId: active.projectId,
-                    title: active.title,
-                    modelSelection: active.modelSelection,
-                    runtimeMode: active.runtimeMode,
-                    interactionMode: active.interactionMode,
-                    workspaceStrategy: active.workspaceStrategy,
-                    initialMessage: {
-                      messageId,
-                      scheduledTaskId: active.id,
-                      text: prompt,
-                      attachments: [],
-                    },
-                    createdBy: active.createdBy,
-                    creationSource: active.creationSource,
-                  })
-                  .pipe(Effect.map((launched) => launched.threadId)),
+                dispatchRoutine(active, active.bot, {
+                  trigger,
+                  startedAt,
+                  dueAt:
+                    occurrenceDueAt ??
+                    (trigger === "scheduled" && Option.isSome(parsedNextRunAt)
+                      ? parsedNextRunAt.value
+                      : startedAt),
+                }),
               )
-            : yield* Effect.exit(
-                // The stored selection only seeds fresh threads. A bound run
-                // follows the thread's current provider, so it passes none.
-                sendBound(ThreadId.make(active.threadId), active.projectId, 2).pipe(
-                  Effect.as(ThreadId.make(active.threadId)),
-                ),
-              );
+            : active.threadId === null
+              ? yield* Effect.exit(
+                  threadLaunch
+                    .launch({
+                      commandId,
+                      projectId: active.projectId,
+                      title: active.title,
+                      modelSelection: active.modelSelection,
+                      runtimeMode: active.runtimeMode,
+                      interactionMode: active.interactionMode,
+                      workspaceStrategy: active.workspaceStrategy,
+                      initialMessage: {
+                        messageId,
+                        scheduledTaskId: active.id,
+                        text: prompt,
+                        attachments: [],
+                      },
+                      createdBy: active.createdBy,
+                      creationSource: active.creationSource,
+                    })
+                    .pipe(Effect.map((launched) => launched.threadId)),
+                )
+              : yield* Effect.exit(
+                  // The stored selection only seeds fresh threads. A bound run
+                  // follows the thread's current provider, so it passes none.
+                  sendBound(ThreadId.make(active.threadId), active.projectId, 2).pipe(
+                    Effect.as(ThreadId.make(active.threadId)),
+                  ),
+                );
 
         const runSucceeded = result._tag === "Success";
         if (webhook !== undefined && runSucceeded) yield* Ref.set(webhook.dispatched, true);
@@ -1111,9 +1235,18 @@ export const layer = Layer.effect(
         due,
         ({ task, dueAt }) =>
           Effect.suspend(() =>
-            isMissedFixedTimeRun(task.schedule, dueAt, now)
-              ? rescheduleMissedRun(task, now)
-              : runTask(task, "scheduled"),
+            // A routine still prepares after a downtime: it runs the latest missed occurrence
+            // once, and the Bot task admission skips it if its session already started.
+            task.bot !== undefined
+              ? runTask(
+                  task,
+                  "scheduled",
+                  undefined,
+                  latestOccurrenceAtOrBefore(task.schedule, dueAt, now),
+                )
+              : isMissedFixedTimeRun(task.schedule, dueAt, now)
+                ? rescheduleMissedRun(task, now)
+                : runTask(task, "scheduled"),
           ).pipe(
             Effect.catch((cause) =>
               Effect.logWarning("Scheduled task run failed", { taskId: task.id, cause }),
@@ -1236,6 +1369,43 @@ export const layer = Layer.effect(
       // keep their run history, and so real load failures propagate instead
       // of silently resetting an existing row.
       const existingTask = yield* findTask(id);
+      // Omitted keeps the stored target, so an older editor cannot turn a routine into a plain
+      // thread schedule.
+      const requestedBot = input.bot ?? existingTask?.bot;
+      const bot: ScheduledTaskBotTarget | undefined =
+        requestedBot === undefined
+          ? undefined
+          : {
+              botId: requestedBot.botId,
+              sessionAt:
+                requestedBot.sessionAt == null
+                  ? null
+                  : iso(DateTime.makeUnsafe(requestedBot.sessionAt)),
+            };
+      if (bot !== undefined) {
+        if (input.schedule.type === "webhook") {
+          return yield* taskError("Bot routines run on a time schedule, not a webhook.", {
+            taskId: id,
+          });
+        }
+        if (
+          bot.sessionAt != null &&
+          (input.schedule.type !== "once" ||
+            Date.parse(input.schedule.runAt) > Date.parse(bot.sessionAt))
+        ) {
+          return yield* taskError("A session time needs a one-time run at or before it.", {
+            taskId: id,
+          });
+        }
+        if (input.enabled) {
+          const routineDenial = managedRuntimeModeDenial(
+            managedPolicy.summary,
+            BOT_ROUTINE_RUNTIME_MODE,
+          );
+          if (routineDenial !== undefined) return yield* taskError(routineDenial, { taskId: id });
+          yield* requireBotRunnable(bot, input.projectId, id);
+        }
+      }
       // Keep the existing next_run_at when the schedule itself is untouched:
       // editing a title or prompt must not postpone (or resurrect) a due
       // run — only schedule/enabled changes restart the clock.
@@ -1324,10 +1494,11 @@ export const layer = Layer.effect(
         enabled: input.enabled,
         schedule,
         projectId: input.projectId,
-        threadId: input.threadId ?? null,
-        workspaceStrategy,
+        // A routine always runs in a new work thread of the Bot, in the routine mode.
+        threadId: bot === undefined ? (input.threadId ?? null) : null,
+        workspaceStrategy: bot === undefined ? workspaceStrategy : { type: "root" },
         modelSelection: input.modelSelection,
-        runtimeMode: input.runtimeMode,
+        runtimeMode: bot === undefined ? input.runtimeMode : BOT_ROUTINE_RUNTIME_MODE,
         interactionMode: input.interactionMode,
         createdBy: existingTask?.createdBy ?? input.createdBy ?? "user",
         creationSource: input.creationSource ?? "web",
@@ -1340,6 +1511,7 @@ export const layer = Layer.effect(
         lastRunStatus: existingTask?.lastRunStatus ?? "never",
         lastRunError: existingTask?.lastRunError ?? null,
         runCount: existingTask?.runCount ?? 0,
+        ...(bot === undefined ? {} : { bot }),
       };
       yield* saveTask(
         task,
@@ -1370,6 +1542,10 @@ export const layer = Layer.effect(
       if (modeDenial !== undefined) {
         return yield* taskError(modeDenial, { taskId: input.id });
       }
+      // Restoring or reattaching a Bot leaves its routines paused; resuming one checks the Bot.
+      if (input.enabled && existing.bot !== undefined) {
+        yield* requireBotRunnable(existing.bot, existing.projectId, input.id);
+      }
       const now = yield* localNow;
       yield* requireFutureOnce(
         { enabled: input.enabled, schedule: existing.schedule },
@@ -1383,7 +1559,8 @@ export const layer = Layer.effect(
           UPDATE scheduled_tasks
           SET enabled = ${input.enabled ? 1 : 0},
               next_run_at = ${next},
-              updated_at = ${iso(now)}
+              updated_at = ${iso(now)},
+              schedule_revision = schedule_revision + 1
           WHERE task_id = ${input.id}
           RETURNING task_id
         `.pipe(
@@ -2399,6 +2576,7 @@ export const layer = Layer.effect(
       setEnabled,
       delete: deleteTask,
       deleteForThread,
+      pauseBotRoutines: pauseRoutines,
       moveThreadTasks,
       runNow,
       rotateWebhookToken,

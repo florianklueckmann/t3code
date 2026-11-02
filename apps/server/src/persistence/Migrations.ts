@@ -82,6 +82,7 @@ import Migration0076 from "./Migrations/076_ProjectionProjectsPinArchive.ts";
 import Migration0077 from "./Migrations/077_RepairBooleanSettledOverride.ts";
 import Migration0078 from "./Migrations/078_Bots.ts";
 import Migration0079 from "./Migrations/079_BotAppearance.ts";
+import Migration0080 from "./Migrations/080_BotTasks.ts";
 
 const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
@@ -164,6 +165,7 @@ const migrationEntries = [
   [77, "RepairBooleanSettledOverride", Migration0077],
   [78, "Bots", Migration0078],
   [79, "BotAppearance", Migration0079],
+  [80, "BotTasks", Migration0080],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
