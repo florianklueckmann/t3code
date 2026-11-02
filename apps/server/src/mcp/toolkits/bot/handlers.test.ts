@@ -3,6 +3,7 @@ import {
   BotId,
   type BotDetail,
   BotError,
+  BotLearningEntryId,
   EnvironmentId,
   ProjectId,
   ProviderInstanceId,
@@ -38,9 +39,16 @@ const detail = {
   updatedAt: "2026-11-02T00:00:00.000Z",
   archivedAt: null,
   projects: [],
+  learning: [],
+  pendingLearning: 0,
 } satisfies BotDetail;
 
-const callTool = (params: BotToolInput, access: "read-only" | undefined) =>
+const callTool = (
+  params: BotToolInput,
+  access: "read-only" | undefined,
+  /** The Bot conversation the calling thread is, if any. */
+  callerBot?: { readonly botId: BotId; readonly projectId: ProjectId },
+) =>
   Effect.gen(function* () {
     const calls = yield* Ref.make<ReadonlyArray<string>>([]);
     const record = (call: string) =>
@@ -81,6 +89,24 @@ const callTool = (params: BotToolInput, access: "read-only" | undefined) =>
                 updateProjectContext: (input) =>
                   record(`project:${input.projectId}:${input.guidance}:${input.sources?.length}`),
                 update: () => Effect.fail(new BotError({ message: "This Bot is archived." })),
+                scopeOfThread: () => Effect.succeed(callerBot),
+                recordLearning: (input) =>
+                  record(
+                    `learn:${input.projectId}:${input.origin}:${
+                      input.source.kind === "thread" ? input.source.threadId : input.source.kind
+                    }`,
+                  ).pipe(
+                    Effect.map((bot) => ({
+                      bot,
+                      learned: {
+                        entryId: BotLearningEntryId.make("entry-1"),
+                        revision: 1,
+                        status: "pending" as const,
+                        duplicate: false,
+                      },
+                    })),
+                  ),
+                decideLearning: (input) => record(`decide:${input.decision}`),
               }),
               Layer.mock(BotTaskService.BotTaskService)({
                 list: () =>
@@ -110,6 +136,57 @@ it.effect("routes project updates to that project's guidance and sources", () =>
     );
     expect(calls).toEqual([`project:${campaignA}:Use the vault from now on.:1`]);
   }),
+);
+
+it.effect(
+  "records learning only from the Bot's own conversation and leaves decisions to the user",
+  () =>
+    Effect.gen(function* () {
+      const campaignB = ProjectId.make("project-campaign-b");
+      const own = { botId, projectId: campaignA };
+      const learning = {
+        origin: "correction" as const,
+        kind: "preference" as const,
+        text: "Dates use Dale Reckoning.",
+      };
+
+      const learned = yield* callTool(
+        { action: "learn", botId, projectId: campaignA, learning },
+        undefined,
+        own,
+      );
+      // The source is the calling thread, whatever the caller claims.
+      expect(learned.calls).toEqual([`learn:${campaignA}:correction:${threadId}`]);
+      expect(learned.result).toMatchObject({ learned: { status: "pending" } });
+
+      const otherProject = yield* callTool(
+        { action: "learn", botId, projectId: campaignB, learning },
+        undefined,
+        own,
+      );
+      expect(otherProject.result).toMatchObject({ code: "invalid_request" });
+      expect(otherProject.calls).toEqual([]);
+
+      const selfAdopt = yield* callTool(
+        { action: "adopt", botId, entryId: BotLearningEntryId.make("entry-1"), revision: 1 },
+        undefined,
+        own,
+      );
+      expect(selfAdopt.result).toMatchObject({ code: "invalid_request" });
+      expect(selfAdopt.calls).toEqual([]);
+
+      // Another agent the user directs can decide, behind the same write access as other edits.
+      const adopted = yield* callTool(
+        { action: "adopt", botId, entryId: BotLearningEntryId.make("entry-1"), revision: 1 },
+        undefined,
+      );
+      expect(adopted.calls).toEqual(["decide:adopt"]);
+      const readOnly = yield* callTool(
+        { action: "learn", botId, projectId: campaignA, learning },
+        "read-only",
+      );
+      expect(readOnly.result).toMatchObject({ code: "capability_denied" });
+    }),
 );
 
 it.effect("lets read-only clients read Bots but not change them", () =>

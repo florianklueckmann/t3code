@@ -4,13 +4,13 @@ An eval runs a real model against T3 Code's real text or code and scores what th
 
 Write or run an eval when a change affects what a model sees or does: agent instructions, MCP tool descriptions and schemas, tool results, generated titles, or the guidance an agent gets for a feature such as Device Manager.
 
-| Eval                                | Measures                                                                                             |
-| ----------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| [mcp-tool-use](mcp-tool-use/)       | Whether agents use T3's MCP tools correctly, including device routing and recovery, in fake threads. |
-| [thread-titles](thread-titles/)     | Whether generated thread titles name the right subject.                                              |
-| [test-signal](test-signal/)         | Whether a cheap model running the test-signal check flags low-signal tests.                          |
-| [bot-sources](bot-sources/)         | Whether Bots follow their project sources in real Codex turns through a dev server.                  |
-| [bot-preparation](bot-preparation/) | Whether Bot preparation routines give grounded results and Bots set up routines when asked.          |
+| Eval                                | Measures                                                                                                |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| [mcp-tool-use](mcp-tool-use/)       | Whether agents use T3's MCP tools correctly, including device routing and recovery, in fake threads.    |
+| [thread-titles](thread-titles/)     | Whether generated thread titles name the right subject.                                                 |
+| [test-signal](test-signal/)         | Whether a cheap model running the test-signal check flags low-signal tests.                             |
+| [bot-sources](bot-sources/)         | Whether Bots follow their project sources and learn within their policy and scope, in real Codex turns. |
+| [bot-preparation](bot-preparation/) | Whether Bot preparation routines give grounded results and Bots set up routines when asked.             |
 
 ## Run an eval
 

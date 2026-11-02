@@ -1,5 +1,9 @@
 import type {
   BotId,
+  BotLearningEntry,
+  BotLearningKind,
+  BotLearningRevision,
+  BotLearningStatus,
   BotProjectContext,
   BotProjectContextSummary,
   BotSourcePreference,
@@ -86,6 +90,66 @@ export function botProjectContextChanges(
     ...(guidanceChanged ? { guidance } : {}),
     ...(sourcesChanged ? { sources: parsed.sources } : {}),
   };
+}
+
+export const BOT_LEARNING_KIND_LABELS: Record<BotLearningKind, string> = {
+  fact: "Fact",
+  preference: "Preference",
+  procedure: "Procedure",
+};
+
+export const BOT_LEARNING_STATUS_LABELS: Record<BotLearningStatus, string> = {
+  pending: "Waiting for you",
+  active: "Active",
+  rejected: "Rejected",
+  retired: "Retired",
+  superseded: "Replaced",
+  stale: "Outdated",
+};
+
+export function botLearningOriginLabel(revision: BotLearningRevision): string {
+  return revision.origin === "instruction" ? "Your instruction" : "Learned from a correction";
+}
+
+export interface BotLearningView {
+  readonly entry: BotLearningEntry;
+  /** The revision in use, if any. */
+  readonly current: BotLearningRevision | undefined;
+  /** Proposals waiting for the user to adopt or reject them, newest first. */
+  readonly pending: ReadonlyArray<BotLearningRevision>;
+  /** The newest revision, which names the entry when nothing is active. */
+  readonly latest: BotLearningRevision;
+  /** Earlier revisions the user can make current again, newest first. */
+  readonly restorable: ReadonlyArray<BotLearningRevision>;
+}
+
+/**
+ * The entries of one scope (a project, or null for those shared across projects): those
+ * waiting for the user first, then active ones, then the rest.
+ */
+export function botLearningViews(
+  entries: ReadonlyArray<BotLearningEntry>,
+  projectId: ProjectId | null,
+): ReadonlyArray<BotLearningView> {
+  const views = entries.flatMap((entry): ReadonlyArray<BotLearningView> => {
+    const latest = entry.revisions.at(-1);
+    if (entry.projectId !== projectId || latest === undefined) return [];
+    const newestFirst = [...entry.revisions].reverse();
+    return [
+      {
+        entry,
+        current: entry.revisions.find((revision) => revision.status === "active"),
+        pending: newestFirst.filter((revision) => revision.status === "pending"),
+        latest,
+        restorable: newestFirst.filter(
+          (revision) => revision.status !== "active" && revision.status !== "pending",
+        ),
+      },
+    ];
+  });
+  const rank = (view: BotLearningView) =>
+    view.pending.length > 0 ? 0 : view.current !== undefined ? 1 : 2;
+  return [...views].sort((a, b) => rank(a) - rank(b));
 }
 
 export interface BotConversation {

@@ -1,6 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
+  type BotDetail,
   BotId,
   type OrchestrationV2ServerCommand,
   type OrchestrationV2ThreadShell,
@@ -439,6 +440,290 @@ it.effect("pushes a rename to open Bot list subscriptions without renaming the c
         );
         assert.notInclude(yield* Ref.get(world.commands), "thread.metadata.update");
       }).pipe(Effect.scoped),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
+const correction = {
+  origin: "correction" as const,
+  kind: "preference" as const,
+  text: "Give in-world dates in Dale Reckoning.",
+  evidence: "No, we use DR dates here.",
+  source: { kind: "thread" as const, threadId: ThreadId.make("bot-home:faerun-companion:a") },
+};
+
+const statusesOf = (detail: { readonly learning: BotDetail["learning"] }) =>
+  detail.learning.map((entry) => entry.revisions.map((revision) => revision.status).join(","));
+
+it.effect(
+  "applies corrections by policy, standing instructions at once, and keeps them across a restart",
+  () =>
+    Effect.gen(function* () {
+      yield* seedProjects;
+      const world = yield* makeThreadWorld;
+      const autoId = BotId.make("auto-companion");
+      const homes = yield* withServices(world.threadLayer, ({ bots, turnContext }) =>
+        Effect.gen(function* () {
+          yield* createCampaignBot(bots);
+          yield* bots.create({
+            botId: autoId,
+            name: "Auto Companion",
+            instructions: "",
+            modelSelection: codex,
+            learningPolicy: "automatic",
+          });
+          const adoption = yield* bots.attachProject({ botId, projectId: campaignA });
+          const auto = yield* bots.attachProject({ botId: autoId, projectId: campaignA });
+          const adoptionHome = adoption.projects[0]?.homeThreadId ?? assert.fail();
+          const autoHome = auto.projects[0]?.homeThreadId ?? assert.fail();
+
+          const automatic = yield* bots.recordLearning({
+            ...correction,
+            botId: autoId,
+            projectId: campaignA,
+          });
+          assert.equal(automatic.learned.status, "active");
+          assert.include(yield* instructionsFor(turnContext, autoHome), "Dale Reckoning");
+          // The user restating it makes it their instruction, which inferred lessons cannot override.
+          const confirmed = yield* bots.recordLearning({
+            ...correction,
+            origin: "instruction",
+            source: { kind: "user" },
+            botId: autoId,
+            projectId: campaignA,
+          });
+          assert.deepEqual(confirmed.learned, {
+            ...automatic.learned,
+            revision: 2,
+            duplicate: false,
+          });
+          const override = yield* bots.recordLearning({
+            ...correction,
+            text: "Give dates in the Gregorian calendar.",
+            replaces: { entryId: confirmed.learned.entryId, revision: 2 },
+            botId: autoId,
+            projectId: campaignA,
+          });
+          assert.equal(override.learned.status, "pending");
+
+          const proposed = yield* bots.recordLearning({
+            ...correction,
+            botId,
+            projectId: campaignA,
+          });
+          assert.equal(proposed.learned.status, "pending");
+          assert.equal(proposed.bot.pendingLearning, 1);
+          assert.notInclude(yield* instructionsFor(turnContext, adoptionHome), "Dale Reckoning");
+
+          const instruction = yield* bots.recordLearning({
+            botId,
+            projectId: campaignA,
+            origin: "instruction",
+            kind: "preference",
+            text: "Answer in German.",
+            source: { kind: "user" },
+          });
+          assert.equal(instruction.learned.status, "active");
+          assert.include(yield* instructionsFor(turnContext, adoptionHome), "Answer in German.");
+
+          yield* bots.decideLearning({
+            botId,
+            entryId: proposed.learned.entryId,
+            revision: 1,
+            decision: "adopt",
+          });
+          return { adoptionHome };
+        }),
+      );
+
+      yield* withServices(world.threadLayer, ({ bots, turnContext }) =>
+        Effect.gen(function* () {
+          const detail = yield* bots.get({ botId });
+          assert.deepEqual(statusesOf(detail), ["active", "active"]);
+          assert.equal(detail.pendingLearning, 0);
+          const dates = detail.learning.find((entry) => entry.revisions[0]?.text.includes("Dale"));
+          assert.deepEqual(dates?.revisions[0]?.source, correction.source);
+          assert.equal(dates?.revisions[0]?.evidence, correction.evidence);
+          const instructions = yield* instructionsFor(turnContext, homes.adoptionHome);
+          assert.include(instructions, "Dale Reckoning");
+          assert.include(instructions, "Answer in German.");
+        }),
+      );
+    }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect("settles duplicates, stale replacements and conflicts with standing instructions", () =>
+  Effect.gen(function* () {
+    yield* seedProjects;
+    const world = yield* makeThreadWorld;
+    yield* withServices(world.threadLayer, ({ bots, turnContext }) =>
+      Effect.gen(function* () {
+        yield* bots.create({
+          botId,
+          name: "Faerun Companion",
+          instructions: "",
+          modelSelection: codex,
+          learningPolicy: "automatic",
+        });
+        const attached = yield* bots.attachProject({ botId, projectId: campaignA });
+        const home = attached.projects[0]?.homeThreadId ?? assert.fail();
+
+        const first = yield* bots.recordLearning({ ...correction, botId, projectId: campaignA });
+        const again = yield* bots.recordLearning({
+          ...correction,
+          text: "  give in-world dates in  Dale Reckoning. ",
+          botId,
+          projectId: campaignA,
+        });
+        assert.isTrue(again.learned.duplicate);
+        assert.deepEqual(statusesOf(again.bot), ["active"]);
+
+        const entryId = first.learned.entryId;
+        const revised = yield* bots.recordLearning({
+          ...correction,
+          text: "Give in-world dates in Dale Reckoning, with the month name.",
+          replaces: { entryId, revision: 1 },
+          botId,
+          projectId: campaignA,
+        });
+        assert.equal(revised.learned.status, "active");
+        const stale = yield* bots.recordLearning({
+          ...correction,
+          text: "Give dates in the Gregorian calendar.",
+          replaces: { entryId, revision: 1 },
+          botId,
+          projectId: campaignA,
+        });
+        assert.equal(stale.learned.status, "stale");
+        assert.deepEqual(statusesOf(stale.bot), ["superseded,active,stale"]);
+        assert.notInclude(yield* instructionsFor(turnContext, home), "Gregorian");
+
+        // The user's standing instruction is not overridden by a later inferred lesson.
+        const instruction = yield* bots.recordLearning({
+          ...correction,
+          origin: "instruction",
+          text: "Keep answers under five sentences.",
+          replaces: { entryId, revision: 2 },
+          botId,
+          projectId: campaignA,
+        });
+        assert.equal(instruction.learned.status, "active");
+        assert.equal(instruction.learned.revision, 4);
+        const conflicting = {
+          ...correction,
+          replaces: { entryId, revision: 4 },
+          botId,
+          projectId: campaignA,
+        };
+        const longer = yield* bots.recordLearning({ ...conflicting, text: "Answer at length." });
+        const listed = yield* bots.recordLearning({ ...conflicting, text: "Answer as a list." });
+        assert.equal(longer.learned.status, "pending");
+        assert.equal(listed.learned.status, "pending");
+        const repeated = yield* bots.recordLearning({ ...conflicting, text: "Answer at length." });
+        assert.deepEqual(repeated.learned, { ...longer.learned, duplicate: true });
+        const entry = listed.bot.learning[0];
+        assert.isTrue(entry?.revisions[4]?.conflictsWithInstruction);
+        assert.include(yield* instructionsFor(turnContext, home), "under five sentences");
+
+        // Adopting one of two contradictory proposals settles the other.
+        const decided = yield* bots.decideLearning({
+          botId,
+          entryId,
+          revision: listed.learned.revision,
+          decision: "adopt",
+        });
+        assert.deepEqual(statusesOf(decided), [
+          "superseded,superseded,stale,superseded,stale,active",
+        ]);
+
+        const retired = yield* bots.retireLearning({ botId, entryId });
+        assert.notInclude(yield* instructionsFor(turnContext, home), "Answer as a list.");
+        assert.deepEqual(statusesOf(retired), [
+          "superseded,superseded,stale,superseded,stale,retired",
+        ]);
+        const restored = yield* bots.restoreLearning({
+          botId,
+          entryId,
+          revision: 4,
+          source: { kind: "user" },
+        });
+        assert.include(yield* instructionsFor(turnContext, home), "under five sentences");
+        assert.equal(restored.learning[0]?.revisions.at(-1)?.origin, "instruction");
+      }),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect("keeps campaign learning apart and applies a shared preference to both", () =>
+  Effect.gen(function* () {
+    yield* seedProjects;
+    const world = yield* makeThreadWorld;
+    yield* withServices(world.threadLayer, ({ bots, turnContext }) =>
+      Effect.gen(function* () {
+        yield* bots.create({
+          botId,
+          name: "Faerun Companion",
+          instructions: "",
+          modelSelection: codex,
+          learningPolicy: "automatic",
+        });
+        yield* bots.attachProject({ botId, projectId: campaignA });
+        const detail = yield* bots.attachProject({ botId, projectId: campaignB });
+        const [homeA, homeB] = detail.projects.map((project) => project.homeThreadId);
+
+        yield* bots.recordLearning({
+          ...correction,
+          kind: "fact",
+          text: "Strahd fled to the Amber Temple.",
+          botId,
+          projectId: campaignA,
+        });
+        const sharedFact = yield* bots
+          .recordLearning({
+            ...correction,
+            kind: "fact",
+            scope: "bot",
+            text: "Strahd is dead.",
+            botId,
+            projectId: campaignA,
+          })
+          .pipe(Effect.flip);
+        assert.include(sharedFact.message, "Facts stay");
+
+        // Sharing is deliberate: an inferred lesson for every project waits for the user.
+        const inferred = yield* bots.recordLearning({
+          ...correction,
+          scope: "bot",
+          text: "Sign answers with the Bot's name.",
+          botId,
+          projectId: campaignA,
+        });
+        assert.equal(inferred.learned.status, "pending");
+        yield* bots.recordLearning({
+          botId,
+          projectId: campaignA,
+          scope: "bot",
+          origin: "instruction",
+          kind: "preference",
+          text: "Use metric units.",
+          source: { kind: "user" },
+        });
+
+        const a = yield* instructionsFor(turnContext, homeA ?? assert.fail());
+        const b = yield* instructionsFor(turnContext, homeB ?? assert.fail());
+        assert.include(a, "Amber Temple");
+        assert.notInclude(b, "Amber Temple");
+        assert.include(a, "Use metric units.");
+        assert.include(b, "Use metric units.");
+        assert.notInclude(b, "Sign answers");
+
+        const detached = yield* bots.detachProject({ botId, projectId: campaignB });
+        const refused = yield* bots
+          .recordLearning({ ...correction, botId, projectId: campaignB })
+          .pipe(Effect.flip);
+        assert.include(refused.message, "not attached");
+        assert.lengthOf(detached.learning, 3);
+      }),
     );
   }).pipe(Effect.provide(layerDatabase)),
 );

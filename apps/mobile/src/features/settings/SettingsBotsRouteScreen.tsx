@@ -29,6 +29,7 @@ import { ThreadSettingsPickerScreen } from "../threads/ThreadSettingsSheet";
 import { reportBotFailure } from "../bots/reportBotFailure";
 import { useSelectWorkspaceDetail } from "../workspace/useSelectWorkspaceDetail";
 import { useBotEditor, startBotEditor, startNewBotEditor } from "./bot-editor";
+import { BotLearningSection } from "./BotLearningSection";
 import { BotRoutinesSection } from "./BotRoutinesSection";
 import {
   attachBotProjectDraft,
@@ -585,7 +586,7 @@ function BotForm({
         </SettingsSection>
         <SettingsSection
           title="Learning"
-          footer="Bots don't learn yet. Your choice is saved and takes effect once learning is available."
+          footer="When lessons from your corrections take effect. Your own standing instructions apply right away either way."
         >
           {BOT_LEARNING_POLICIES.map((policy, index) => (
             <Pressable
@@ -638,8 +639,30 @@ function BotForm({
                 disabled={readOnly}
               />
             ) : null}
+            {/* Learning needs the saved attachment, not a draft one. */}
+            {project.attached &&
+            baseline.projects.some(
+              (saved) => saved.projectId === project.projectId && saved.attached,
+            ) ? (
+              <BotLearningSection
+                environmentId={environmentId}
+                botId={draft.botId}
+                projectId={project.projectId}
+                title={`${projectTitle(project.projectId)} · Learning`}
+                disabled={readOnly}
+              />
+            ) : null}
           </Fragment>
         ))}
+        {baseline.created ? (
+          <BotLearningSection
+            environmentId={environmentId}
+            botId={draft.botId}
+            projectId={null}
+            title="Learning for all projects"
+            disabled={readOnly}
+          />
+        ) : null}
         <SettingsSection footer="Each project gets its own conversation with this Bot.">
           <SelectRow
             label="Attach project"

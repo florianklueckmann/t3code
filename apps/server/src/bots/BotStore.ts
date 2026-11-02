@@ -3,6 +3,8 @@ import {
   BotDetail,
   type BotId,
   type BotLearningPolicy,
+  BotLearningSource,
+  type BotLearningStatus,
   BotSourcePreference,
   type ModelSelection,
   type ProjectId,
@@ -42,6 +44,26 @@ export interface BotContextRow {
   readonly attached_at: string;
   readonly detached_at: string | null;
   readonly updated_at: string;
+}
+
+export interface BotLearningRow {
+  readonly entry_id: string;
+  readonly revision: number;
+  readonly bot_id: string;
+  readonly project_id: string | null;
+  readonly kind: string;
+  readonly text: string;
+  readonly normalized_text: string;
+  readonly rationale: string;
+  readonly evidence: string;
+  readonly origin: string;
+  readonly source_json: string;
+  readonly learned_in_project_id: string;
+  readonly status: BotLearningStatus;
+  readonly base_revision: number | null;
+  readonly conflicts_with_instruction: number;
+  readonly created_at: string;
+  readonly decided_at: string | null;
 }
 
 export class BotStoreError extends Schema.TaggedError<BotStoreError>()("BotStoreError", {
@@ -89,14 +111,66 @@ export class BotStore extends Context.Service<
     readonly attachedBotNames: (
       projectId: ProjectId,
     ) => Effect.Effect<ReadonlyArray<string>, BotStoreError>;
-    /** Forgets detached contexts once their project, and with it their conversation, is deleted. */
+    /**
+     * Forgets detached contexts and their project's learning once the project, and with it
+     * their conversation, is deleted.
+     */
     readonly deleteContextsForProject: (projectId: ProjectId) => Effect.Effect<void, BotStoreError>;
+    /** Every revision of the Bot's learning, or of all Bots, oldest first within an entry. */
+    readonly listLearning: (
+      botId?: string,
+    ) => Effect.Effect<ReadonlyArray<BotLearningRow>, BotStoreError>;
+    readonly pendingLearningCounts: Effect.Effect<ReadonlyMap<string, number>, BotStoreError>;
+    readonly insertLearning: (row: BotLearningRow) => Effect.Effect<void, BotStoreError>;
+    readonly setLearningStatus: (input: {
+      readonly entryId: string;
+      readonly revision: number;
+      readonly status: BotLearningStatus;
+      readonly decidedAt: string;
+    }) => Effect.Effect<void, BotStoreError>;
   }
 >()("t3/bots/BotStore") {}
+
+const SourceJson = Schema.fromJsonString(BotLearningSource);
+export const encodeLearningSource = Schema.encodeSync(SourceJson);
+const decodeLearningSource = Schema.decodeUnknownEffect(SourceJson);
+
+/** Groups revision rows into entries, in the order each entry first appears. */
+const toLearningEntries = Effect.fn("BotStore.toLearningEntries")(function* (
+  rows: ReadonlyArray<BotLearningRow>,
+) {
+  const entries = new Map<string, { first: BotLearningRow; revisions: Array<unknown> }>();
+  for (const row of rows) {
+    const revision = {
+      revision: row.revision,
+      text: row.text,
+      rationale: row.rationale,
+      evidence: row.evidence,
+      origin: row.origin,
+      source: yield* decodeLearningSource(row.source_json),
+      learnedInProjectId: row.learned_in_project_id,
+      status: row.status,
+      baseRevision: row.base_revision,
+      conflictsWithInstruction: row.conflicts_with_instruction !== 0,
+      createdAt: row.created_at,
+      decidedAt: row.decided_at,
+    };
+    const entry = entries.get(row.entry_id);
+    if (entry === undefined) entries.set(row.entry_id, { first: row, revisions: [revision] });
+    else entry.revisions.push(revision);
+  }
+  return [...entries.values()].map(({ first, revisions }) => ({
+    id: first.entry_id,
+    projectId: first.project_id,
+    kind: first.kind,
+    revisions,
+  }));
+});
 
 export const toDetail = Effect.fn("BotStore.toDetail")(function* (
   bot: BotRow,
   contexts: ReadonlyArray<BotContextRow>,
+  learning: ReadonlyArray<BotLearningRow>,
 ) {
   const projects = yield* Effect.forEach(contexts, (context) =>
     decodeSources(context.sources_json).pipe(
@@ -122,6 +196,8 @@ export const toDetail = Effect.fn("BotStore.toDetail")(function* (
     updatedAt: bot.updated_at,
     archivedAt: bot.archived_at,
     projects,
+    learning: yield* toLearningEntries(learning),
+    pendingLearning: learning.filter((row) => row.status === "pending").length,
   });
 });
 
@@ -280,9 +356,62 @@ export const layer = Layer.effect(
 
     const deleteContextsForProject = Effect.fn("BotStore.deleteContextsForProject")(
       function* (projectId: ProjectId) {
-        yield* sql`DELETE FROM bot_project_contexts WHERE project_id = ${projectId}`;
+        // Shared entries learned there stay; they apply to the Bot's other projects.
+        yield* sql.withTransaction(
+          Effect.gen(function* () {
+            yield* sql`DELETE FROM bot_learning_revisions WHERE project_id = ${projectId}`;
+            yield* sql`DELETE FROM bot_project_contexts WHERE project_id = ${projectId}`;
+          }),
+        );
       },
       Effect.mapError(fail("delete-contexts-for-project")),
+    );
+
+    const listLearning = Effect.fn("BotStore.listLearning")(
+      function* (botId?: string) {
+        return botId === undefined
+          ? yield* sql<BotLearningRow>`
+            SELECT * FROM bot_learning_revisions ORDER BY created_at, entry_id, revision
+          `
+          : yield* sql<BotLearningRow>`
+            SELECT * FROM bot_learning_revisions
+            WHERE bot_id = ${botId} ORDER BY created_at, entry_id, revision
+          `;
+      },
+      Effect.mapError(fail("list-learning")),
+    );
+
+    const insertLearning = Effect.fn("BotStore.insertLearning")(
+      function* (row: BotLearningRow) {
+        yield* sql`
+        INSERT INTO bot_learning_revisions (
+          entry_id, revision, bot_id, project_id, kind, text, normalized_text, rationale,
+          evidence, origin, source_json, learned_in_project_id, status, base_revision,
+          conflicts_with_instruction, created_at, decided_at
+        ) VALUES (
+          ${row.entry_id}, ${row.revision}, ${row.bot_id}, ${row.project_id}, ${row.kind},
+          ${row.text}, ${row.normalized_text}, ${row.rationale}, ${row.evidence}, ${row.origin},
+          ${row.source_json}, ${row.learned_in_project_id}, ${row.status}, ${row.base_revision},
+          ${row.conflicts_with_instruction}, ${row.created_at}, ${row.decided_at}
+        )
+      `;
+      },
+      Effect.mapError(fail("insert-learning")),
+    );
+
+    const setLearningStatus = Effect.fn("BotStore.setLearningStatus")(
+      function* (input: {
+        readonly entryId: string;
+        readonly revision: number;
+        readonly status: BotLearningStatus;
+        readonly decidedAt: string;
+      }) {
+        yield* sql`
+        UPDATE bot_learning_revisions SET status = ${input.status}, decided_at = ${input.decidedAt}
+        WHERE entry_id = ${input.entryId} AND revision = ${input.revision}
+      `;
+      },
+      Effect.mapError(fail("set-learning-status")),
     );
 
     return BotStore.of({
@@ -302,6 +431,16 @@ export const layer = Layer.effect(
       `.pipe(Effect.mapError(fail("pending-thread-syncs"))),
       attachedBotNames,
       deleteContextsForProject,
+      listLearning,
+      pendingLearningCounts: sql<{ readonly bot_id: string; readonly pending: number }>`
+        SELECT bot_id, COUNT(*) AS pending FROM bot_learning_revisions
+        WHERE status = 'pending' GROUP BY bot_id
+      `.pipe(
+        Effect.map((rows) => new Map(rows.map((row) => [row.bot_id, row.pending]))),
+        Effect.mapError(fail("pending-learning-counts")),
+      ),
+      insertLearning,
+      setLearningStatus,
     });
   }),
 );

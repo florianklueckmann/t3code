@@ -85,6 +85,32 @@ export interface Turn {
   /** Case-insensitive regexes on the answer. */
   readonly textMust?: ReadonlyArray<string>;
   readonly textMustNot?: ReadonlyArray<string>;
+  /** The user adopts the seeded proposal in settings before this turn. */
+  readonly adoptSeedFirst?: boolean;
+}
+
+/** Where a learning entry applies: one project, or every project of the Bot. */
+export type LearningScopeKey = ProjectKey | "all";
+
+/**
+ * Learning recorded before the turns by someone other than the Bot, as the user or another agent
+ * would. It never appears in the conversation, so only the Bot's context can carry it.
+ */
+export interface LearningSeed {
+  readonly origin: "instruction" | "correction";
+  readonly kind: "fact" | "preference" | "procedure";
+  readonly text: string;
+  readonly project: ProjectKey;
+  readonly scope?: "project" | "bot";
+}
+
+/** A learning entry the Bot itself must have recorded during the turns. */
+export interface ExpectedLearning {
+  readonly scope: LearningScopeKey;
+  /** Case-insensitive regex on the entry's text. */
+  readonly text: string;
+  readonly origin: "instruction" | "correction";
+  readonly status: "active" | "pending";
 }
 
 export interface BotSourcesCase {
@@ -98,9 +124,24 @@ export interface BotSourcesCase {
   readonly turns: ReadonlyArray<Turn>;
   /** The Bot's source locations per project after the turns. Unlisted projects stay unchanged. */
   readonly sourcesAfter?: Partial<Record<ProjectKey, ReadonlyArray<string>>>;
+  /** Defaults to "after_adoption". */
+  readonly learningPolicy?: "automatic" | "after_adoption";
+  readonly seed?: LearningSeed;
+  /** What the Bot must record. Without it, the Bot must record no learning at all. */
+  readonly learningAfter?: ReadonlyArray<ExpectedLearning>;
 }
 
 const T3B_4 = "T3B-4 acceptance criteria (synthetic)";
+const T3B_6 = "T3B-6 acceptance criteria (synthetic)";
+
+const OPEN_LORD = "Who is the Open Lord of Waterdeep in our campaign right now?";
+const TABLE_READY = "End every answer with the line 'Table ready.'";
+const tooLong = [
+  { prompt: OPEN_LORD, textMust: ["Mirt"] },
+  {
+    prompt: "Too long. I read your answers out at the table, so I need them in a single sentence.",
+  },
+];
 
 export const CASES: ReadonlyArray<BotSourcesCase> = [
   {
@@ -199,5 +240,92 @@ export const CASES: ReadonlyArray<BotSourcesCase> = [
         textMustNot: ["Mirt"],
       },
     ],
+  },
+  {
+    id: "correction-learned-automatically",
+    kind: "bad",
+    source: T3B_6,
+    experience:
+      "A correction that should carry over becomes one project lesson, active at once when the Bot learns automatically.",
+    home: "a",
+    learningPolicy: "automatic",
+    turns: tooLong,
+    learningAfter: [
+      { scope: "a", text: "sentence|short|brief|concise", origin: "correction", status: "active" },
+    ],
+  },
+  {
+    id: "correction-waits-for-adoption",
+    kind: "bad",
+    source: T3B_6,
+    experience:
+      "With learning after adoption, the same correction is proposed and waits, and the Bot says so.",
+    home: "a",
+    turns: [tooLong[0]!, { ...tooLong[1]!, textMust: ["adopt|approv|review|settings"] }],
+    learningAfter: [
+      { scope: "a", text: "sentence|short|brief|concise", origin: "correction", status: "pending" },
+    ],
+  },
+  {
+    id: "standing-instruction-applies-at-once",
+    kind: "bad",
+    source: T3B_6,
+    experience:
+      "A standing instruction applies at once even when inferred lessons wait for adoption.",
+    home: "a",
+    turns: [{ prompt: "From now on, end every answer with the line 'Table ready.'" }],
+    learningAfter: [{ scope: "a", text: "table ready", origin: "instruction", status: "active" }],
+  },
+  {
+    id: "adopted-lesson-reaches-new-conversation",
+    kind: "guard",
+    source: T3B_6,
+    experience:
+      "A proposed lesson the conversation never saw changes answers only after the user adopts it.",
+    home: "a",
+    seed: { origin: "correction", kind: "preference", text: TABLE_READY, project: "a" },
+    turns: [
+      { prompt: OPEN_LORD, textMust: ["Mirt"], textMustNot: ["table ready"] },
+      {
+        prompt: "Who held the title before Mirt?",
+        adoptSeedFirst: true,
+        textMust: ["table ready"],
+      },
+    ],
+  },
+  {
+    id: "automatic-lesson-reaches-new-conversation",
+    kind: "guard",
+    source: T3B_6,
+    experience:
+      "When the Bot learns automatically, a lesson applies in a new conversation at once.",
+    home: "a",
+    learningPolicy: "automatic",
+    seed: { origin: "correction", kind: "preference", text: TABLE_READY, project: "a" },
+    turns: [{ prompt: OPEN_LORD, textMust: ["Mirt", "table ready"] }],
+  },
+  {
+    id: "lesson-stays-in-its-campaign",
+    kind: "guard",
+    source: T3B_6,
+    experience: "A lesson from campaign A does not change answers in campaign B.",
+    home: "b",
+    seed: { origin: "instruction", kind: "preference", text: TABLE_READY, project: "a" },
+    turns: [{ prompt: OPEN_LORD, textMust: ["Laeral"], textMustNot: ["table ready"] }],
+  },
+  {
+    id: "shared-preference-reaches-both-campaigns",
+    kind: "control",
+    source: T3B_6,
+    experience: "A preference the user shares across projects applies in campaign B too.",
+    home: "b",
+    seed: {
+      origin: "instruction",
+      kind: "preference",
+      text: TABLE_READY,
+      project: "a",
+      scope: "bot",
+    },
+    turns: [{ prompt: OPEN_LORD, textMust: ["Laeral", "table ready"] }],
   },
 ];

@@ -2,19 +2,24 @@ import {
   BOT_HOME_THREAD_ID_PREFIX,
   type BotAttachProjectInput,
   type BotCreateInput,
+  type BotDecideLearningInput,
   type BotDetachProjectInput,
   type BotDetail,
   BotError,
   type BotGetInput,
-  type BotId,
+  BotId,
+  BotLearningPolicy,
+  type BotLearningSource,
   type BotListResult,
+  type BotRestoreLearningInput,
+  type BotRetireLearningInput,
   type BotSetArchivedInput,
   type BotUpdateInput,
   type BotUpdateProjectContextInput,
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   type ModelSelection,
-  type ProjectId,
+  ProjectId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
@@ -26,6 +31,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 
@@ -36,6 +42,7 @@ import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as BotLearning from "./BotLearning.ts";
 import * as BotProjectGuard from "./BotProjectGuard.ts";
 import * as BotStore from "./BotStore.ts";
 import * as BotTaskService from "./BotTaskService.ts";
@@ -57,6 +64,28 @@ export class BotService extends Context.Service<
       input: BotUpdateProjectContextInput,
     ) => Effect.Effect<BotDetail, BotError>;
     readonly detachProject: (input: BotDetachProjectInput) => Effect.Effect<BotDetail, BotError>;
+    /** The Bot and project whose conversation a thread is, if it is one. */
+    readonly scopeOfThread: (threadId: ThreadId) => Effect.Effect<
+      | {
+          readonly botId: BotId;
+          readonly projectId: ProjectId;
+        }
+      | undefined,
+      BotError
+    >;
+    /** Records a standing instruction or proposes an inferred lesson, as the policy allows. */
+    readonly recordLearning: (input: BotLearning.RecordLearningInput) => Effect.Effect<
+      {
+        readonly bot: BotDetail;
+        readonly learned: BotLearning.RecordLearningResult;
+      },
+      BotError
+    >;
+    readonly decideLearning: (input: BotDecideLearningInput) => Effect.Effect<BotDetail, BotError>;
+    readonly retireLearning: (input: BotRetireLearningInput) => Effect.Effect<BotDetail, BotError>;
+    readonly restoreLearning: (
+      input: BotRestoreLearningInput & { readonly source: BotLearningSource },
+    ) => Effect.Effect<BotDetail, BotError>;
     /**
      * The attached project to use when a caller names none: the only one, or an
      * error listing the choices so the caller can ask the user.
@@ -82,6 +111,8 @@ const botError = (message: string, botId?: BotId) => (cause?: unknown) =>
     ...(botId === undefined ? {} : { botId }),
     ...(cause === undefined ? {} : { cause }),
   });
+
+const isLearningPolicy = Schema.is(BotLearningPolicy);
 
 const errorMessage = (cause: unknown): string =>
   cause instanceof Error && cause.message !== "" ? cause.message : String(cause);
@@ -112,7 +143,10 @@ const make = Effect.gen(function* () {
     const bot = yield* store.getBot(botId).pipe(Effect.mapError(storeError(botId)));
     if (bot === undefined) return yield* botError("Bot not found.", botId)();
     const contexts = yield* store.listContexts(botId).pipe(Effect.mapError(storeError(botId)));
-    return yield* BotStore.toDetail(bot, contexts).pipe(Effect.mapError(storeError(botId)));
+    const learning = yield* store.listLearning(botId).pipe(Effect.mapError(storeError(botId)));
+    return yield* BotStore.toDetail(bot, contexts, learning).pipe(
+      Effect.mapError(storeError(botId)),
+    );
   });
 
   const requireActiveBot = Effect.fn("BotService.requireActiveBot")(function* (botId: BotId) {
@@ -197,22 +231,27 @@ const make = Effect.gen(function* () {
   const list: BotService["Service"]["list"] = Effect.gen(function* () {
     const bots = yield* store.listBots;
     const contexts = yield* store.listContexts();
+    const pendingLearning = yield* store.pendingLearningCounts;
     const details = yield* Effect.forEach(bots, (bot) =>
       BotStore.toDetail(
         bot,
         contexts.filter((context) => context.bot_id === bot.bot_id),
+        [],
       ),
     );
     return {
-      bots: details.map(({ instructions: _instructions, projects: botProjects, ...bot }) => ({
-        ...bot,
-        projects: botProjects.map((project) => ({
-          projectId: project.projectId,
-          homeThreadId: project.homeThreadId,
-          attachedAt: project.attachedAt,
-          detachedAt: project.detachedAt,
-        })),
-      })),
+      bots: details.map(
+        ({ instructions: _instructions, learning: _learning, projects: botProjects, ...bot }) => ({
+          ...bot,
+          pendingLearning: pendingLearning.get(bot.id) ?? 0,
+          projects: botProjects.map((project) => ({
+            projectId: project.projectId,
+            homeThreadId: project.homeThreadId,
+            attachedAt: project.attachedAt,
+            detachedAt: project.detachedAt,
+          })),
+        }),
+      ),
     };
   }).pipe(Effect.mapError(storeError()), Effect.withSpan("BotService.list"));
 
@@ -550,6 +589,86 @@ const make = Effect.gen(function* () {
     return only;
   });
 
+  const scopeOfThread: BotService["Service"]["scopeOfThread"] = Effect.fn(
+    "BotService.scopeOfThread",
+  )(function* (threadId) {
+    const context = yield* store.getContextByThread(threadId).pipe(Effect.mapError(storeError()));
+    if (context === undefined) return undefined;
+    return {
+      botId: BotId.make(context.bot_id),
+      projectId: ProjectId.make(context.project_id),
+    };
+  });
+
+  const learning = BotLearning.make({
+    store,
+    now: nowIso,
+    newEntryId: crypto
+      .randomUUIDv4()
+      .pipe(Effect.mapError(botError("Failed to allocate a learning entry id."))),
+  });
+  // Revision numbers, duplicates and staleness are decided from one read of the Bot's learning.
+  const learningLocks = yield* KeyedLock.make<BotId>();
+
+  const changeLearning = <A>(
+    botId: BotId,
+    change: (bot: BotStore.BotRow) => Effect.Effect<A, BotError | BotStore.BotStoreError>,
+  ) =>
+    learningLocks
+      .withLock(
+        botId,
+        Effect.gen(function* () {
+          const bot = yield* requireActiveBot(botId);
+          return yield* sql.withTransaction(change(bot));
+        }),
+      )
+      .pipe(
+        Effect.catchTags({
+          BotStoreError: storeError(botId),
+          SqlError: storeError(botId),
+        }),
+        Effect.tap(() => notifyChanged),
+      );
+
+  const recordLearning: BotService["Service"]["recordLearning"] = Effect.fn(
+    "BotService.recordLearning",
+  )(function* (input) {
+    const learned = yield* changeLearning(input.botId, (bot) =>
+      Effect.gen(function* () {
+        const context = yield* store.getContext(input.botId, input.projectId);
+        if (context === undefined || context.detached_at !== null) {
+          return yield* botError("The Bot is not attached to this project.", input.botId)();
+        }
+        if (!isLearningPolicy(bot.learning_policy)) {
+          return yield* botError("The Bot's learning policy is unreadable.", input.botId)();
+        }
+        return yield* learning.record(bot.learning_policy, input);
+      }),
+    );
+    return { bot: yield* readDetail(input.botId), learned };
+  });
+
+  const decideLearning: BotService["Service"]["decideLearning"] = Effect.fn(
+    "BotService.decideLearning",
+  )(function* (input) {
+    yield* changeLearning(input.botId, () => learning.decide(input));
+    return yield* readDetail(input.botId);
+  });
+
+  const retireLearning: BotService["Service"]["retireLearning"] = Effect.fn(
+    "BotService.retireLearning",
+  )(function* (input) {
+    yield* changeLearning(input.botId, () => learning.retire(input));
+    return yield* readDetail(input.botId);
+  });
+
+  const restoreLearning: BotService["Service"]["restoreLearning"] = Effect.fn(
+    "BotService.restoreLearning",
+  )(function* (input) {
+    yield* changeLearning(input.botId, () => learning.restore(input));
+    return yield* readDetail(input.botId);
+  });
+
   const syncPending = store.pendingThreadSyncs.pipe(
     Effect.flatMap((pending) =>
       Effect.forEach(
@@ -582,6 +701,11 @@ const make = Effect.gen(function* () {
     updateProjectContext,
     detachProject,
     resolveProject,
+    scopeOfThread,
+    recordLearning,
+    decideLearning,
+    retireLearning,
+    restoreLearning,
   });
 });
 

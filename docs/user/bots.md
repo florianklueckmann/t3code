@@ -9,7 +9,7 @@ its own conversation, guidance and preferred sources.
 
 Open **Settings → Bots** and choose **New Bot**. Give it a name, instructions
 for how it should work and answer, a model, and a **Learning** option (see
-[Current limits](#current-limits)). Then attach it to a project
+[Learning](#learning)). Then attach it to a project
 under **Projects**. T3 Code starts the Bot's conversation in that project,
 titled with the Bot's name and using the project's default permission mode.
 
@@ -85,12 +85,42 @@ the card shows it as skipped. A routine also skips a run while its previous one
 is still working. You can pause, resume, run, edit or delete a routine in
 **Settings → Bots**, and cancel a running task from its card.
 
+## Learning
+
+A Bot keeps what it learns per project, so a lesson from one campaign or
+codebase does not leak into another. You see it under each project in
+**Settings → Bots**, with where it came from and its earlier versions.
+
+- **Your standing instructions** ("from now on…", "always…", "never…") apply
+  from the Bot's next turn under either Learning option. The Bot records them
+  when you say them, and you can also add them in settings.
+- **Lessons from your corrections** follow the Bot's **Learning** option. With
+  **Learn automatically** they apply from the next turn. With **Only after I
+  adopt it** they wait under the project until you choose **Adopt** or
+  **Reject**.
+  A Bot cannot adopt its own lessons.
+- A lesson never overrides one of your standing instructions on its own. If it
+  would, it waits for you even when the Bot learns automatically.
+- Learning applies to the project it came from. It applies to all of the Bot's
+  projects only when you say so, or when you adopt a lesson the Bot proposed
+  for all projects. Facts about a project always stay with that project.
+- **Retire** stops an entry, and **Restore** brings back an earlier version.
+  A proposal made against a version that has since changed is marked outdated
+  instead of being applied. The same lesson is not recorded twice.
+
+The Bot gets its current learning at the start of each turn, not its whole
+history. Learning does not add preferred sources, settle project decisions or
+give the Bot more access. Research it did for one task stays in the
+conversation but does not become a standing preference.
+
+Bot conversations do not use Codex's own memories: nothing from them is added
+to a Bot's turns, and Bot conversations are not used to build them. Your other
+Codex threads keep your Codex memory settings.
+
 ## Current limits
 
 - Bots run on Codex models only. If you switch a Bot conversation to another
   provider, its turns fail until you switch back.
-- The **Learning** setting is saved with the Bot but has no effect yet. Bots do
-  not learn from their conversations on their own.
 - Results appear in T3 Code only. Routines don't send push notifications or
   emails, or read your calendar.
 

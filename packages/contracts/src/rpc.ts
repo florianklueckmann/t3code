@@ -379,12 +379,16 @@ import {
 import {
   BotAttachProjectInput,
   BotCreateInput,
+  BotDecideLearningInput,
   BotDetachProjectInput,
   BotDetail,
   BotError,
   BotGetInput,
   BotListInput,
   BotListResult,
+  BotRecordLearningInput,
+  BotRestoreLearningInput,
+  BotRetireLearningInput,
   BotSetArchivedInput,
   BotUpdateInput,
   BotUpdateProjectContextInput,
@@ -578,6 +582,10 @@ export const WS_METHODS = {
   botsSubscribeTasks: "bots.subscribeTasks",
   botsStartTask: "bots.startTask",
   botsCancelTask: "bots.cancelTask",
+  botsRecordLearning: "bots.recordLearning",
+  botsDecideLearning: "bots.decideLearning",
+  botsRetireLearning: "bots.retireLearning",
+  botsRestoreLearning: "bots.restoreLearning",
 
   cloudGetRelayClientStatus: "cloud.getRelayClientStatus",
   cloudInstallRelayClient: "cloud.installRelayClient",
@@ -2060,6 +2068,30 @@ const WsBotsCancelTaskRpc = Rpc.make(WS_METHODS.botsCancelTask, {
   error: BotRpcError,
 });
 
+const WsBotsRecordLearningRpc = Rpc.make(WS_METHODS.botsRecordLearning, {
+  payload: BotRecordLearningInput,
+  success: BotDetail,
+  error: BotRpcError,
+});
+
+const WsBotsDecideLearningRpc = Rpc.make(WS_METHODS.botsDecideLearning, {
+  payload: BotDecideLearningInput,
+  success: BotDetail,
+  error: BotRpcError,
+});
+
+const WsBotsRetireLearningRpc = Rpc.make(WS_METHODS.botsRetireLearning, {
+  payload: BotRetireLearningInput,
+  success: BotDetail,
+  error: BotRpcError,
+});
+
+const WsBotsRestoreLearningRpc = Rpc.make(WS_METHODS.botsRestoreLearning, {
+  payload: BotRestoreLearningInput,
+  success: BotDetail,
+  error: BotRpcError,
+});
+
 const WsSubscribeAuthAccessRpc = Rpc.make(WS_METHODS.subscribeAuthAccess, {
   payload: Schema.Struct({}),
   success: AuthAccessStreamEvent,
@@ -2156,6 +2188,10 @@ export const WsRpcGroup = RpcGroup.make(
   WsBotsSubscribeTasksRpc,
   WsBotsStartTaskRpc,
   WsBotsCancelTaskRpc,
+  WsBotsRecordLearningRpc,
+  WsBotsDecideLearningRpc,
+  WsBotsRetireLearningRpc,
+  WsBotsRestoreLearningRpc,
   WsServerReportClientActivityRpc,
   WsCloudGetRelayClientStatusRpc,
   WsCloudInstallRelayClientRpc,
