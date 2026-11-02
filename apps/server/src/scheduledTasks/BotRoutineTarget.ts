@@ -1,4 +1,11 @@
-import type { BotId, ProjectId, RuntimeMode, ScheduledTaskId, ThreadId } from "@t3tools/contracts";
+import type {
+  BotId,
+  ModelSelection,
+  ProjectId,
+  RuntimeMode,
+  ScheduledTaskId,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 
@@ -28,11 +35,14 @@ export type BotRoutineAdmission =
  * the Bot services, which themselves pause routines through the scheduled task service.
  */
 export interface BotRoutineTargetShape {
-  /** Fails with a user-facing reason when the Bot cannot run routines in this project. */
+  /**
+   * The Bot's model, which its routines run on; fails with a user-facing reason when the Bot
+   * cannot run routines in this project.
+   */
   readonly requireRunnable: (input: {
     readonly botId: BotId;
     readonly projectId: ProjectId;
-  }) => Effect.Effect<void, string>;
+  }) => Effect.Effect<{ readonly modelSelection: ModelSelection }, string>;
   readonly admit: (occurrence: BotRoutineOccurrence) => Effect.Effect<BotRoutineAdmission, string>;
 }
 

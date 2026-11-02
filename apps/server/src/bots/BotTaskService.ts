@@ -13,11 +13,13 @@ import {
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   MessageId,
+  type ModelSelection,
   type OrchestrationV2ThreadShell,
   type ProjectId,
   type RuntimeMode,
   ThreadId,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
@@ -102,9 +104,10 @@ export function deriveTaskStatus(input: {
       return "waiting";
     case "completed":
       return (shell.pendingBackgroundTasks?.length ?? 0) > 0 ? "running" : "completed";
+    // A server restart also ends runs as cancelled, so only a stop someone asked for counts.
     case "interrupted":
     case "cancelled":
-      return input.cancelRequested ? "cancelled" : shell.status;
+      return input.cancelRequested ? "cancelled" : "interrupted";
     case "failed":
     case "rolled_back":
       return "failed";
@@ -123,7 +126,7 @@ export class BotTaskService extends Context.Service<
     readonly requireRunnable: (input: {
       readonly botId: BotId;
       readonly projectId: ProjectId;
-    }) => Effect.Effect<void, BotError>;
+    }) => Effect.Effect<{ readonly modelSelection: ModelSelection }, BotError>;
     readonly get: (taskId: BotTaskId) => Effect.Effect<BotTaskSummary, BotError>;
     readonly list: (input: BotTaskListInput) => Effect.Effect<BotTaskListResult, BotError>;
     readonly subscribeList: (input: BotTaskListInput) => Stream.Stream<BotTaskListResult, BotError>;
@@ -221,6 +224,8 @@ const make = Effect.gen(function* () {
   )(function* (input) {
     const context = yield* activeContext(input.botId, input.projectId);
     if (context._tag === "inactive") return yield* botError(context.reason, input.botId)();
+    const detail = yield* BotStore.toDetail(context.bot, []).pipe(Effect.mapError(storageError));
+    return { modelSelection: detail.modelSelection };
   });
 
   /** Launches the work thread. The same ids make a retried launch replay instead of duplicating. */
@@ -257,7 +262,7 @@ const make = Effect.gen(function* () {
       // A launch that was refused is not retried: nothing broadens or repeats work on its own.
       yield* sql`
         UPDATE bot_tasks
-        SET status = 'failed', detail = ${`The work thread could not start: ${errorMessage(launched.cause)}`},
+        SET status = 'failed', detail = ${`The work thread could not start: ${errorMessage(Cause.squash(launched.cause))}`},
             completed_at = ${now}, updated_at = ${now}
         WHERE task_id = ${row.task_id} AND completed_at IS NULL
       `.pipe(Effect.mapError(storageError));

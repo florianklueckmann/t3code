@@ -295,6 +295,8 @@ it.effect.each<{
   { shell: { status: "completed", backgroundTasks: 1 }, expected: "running" },
   { shell: { status: "failed" }, expected: "failed" },
   { shell: { status: "interrupted" }, expected: "interrupted" },
+  // A restart ends runs as cancelled; only a stop someone asked for reads as cancelled.
+  { shell: { status: "cancelled" }, expected: "interrupted" },
   { shell: { status: "interrupted" }, cancelRequested: true, expected: "cancelled" },
   { shell: null, expected: "interrupted" },
 ])("derives $expected from the work thread", ({ shell, cancelRequested, expected }) =>

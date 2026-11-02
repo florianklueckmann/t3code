@@ -95,7 +95,13 @@ import {
 import {
   formatNextScheduledTaskRun,
   formatScheduledTaskInterval,
+  formatTimeOfDay,
+  repeatLabel,
+  timeOfDayFromPicker,
+  timeOfDayPickerValue,
+  WEEKDAYS,
 } from "./scheduledTaskPresentation";
+import { startBotEditor } from "./bot-editor";
 
 type ScheduledTaskRoutes = {
   SettingsScheduledTaskNew: undefined;
@@ -103,6 +109,7 @@ type ScheduledTaskRoutes = {
   SettingsScheduledTaskModel: undefined;
   SettingsScheduledTaskBranch: undefined;
   SettingsScheduledTaskThread: undefined;
+  SettingsBotEdit: undefined;
 };
 
 const DAYS = [
@@ -147,29 +154,6 @@ function formatRunAtDate(value: Date): string {
 
 function formatRunAtTime(value: Date): string {
   return value.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-}
-
-function timePickerValue(value: string): Date {
-  const [hours, minutes] = value.split(":").map(Number);
-  const time = new Date();
-  time.setHours(
-    Number.isInteger(hours) ? (hours ?? 9) : 9,
-    Number.isInteger(minutes) ? (minutes ?? 0) : 0,
-    0,
-    0,
-  );
-  return time;
-}
-
-function repeatLabel(weekdays: ReadonlyArray<number>): string {
-  const days = new Set(weekdays);
-  if (days.size === 7) return "Every day";
-  if (days.size === 5 && [1, 2, 3, 4, 5].every((day) => days.has(day))) return "Weekdays";
-  return (
-    DAYS.filter((day) => days.has(day.index))
-      .map((day) => day.label)
-      .join(", ") || "Choose days"
-  );
 }
 
 function WebhookFilterRows(props: {
@@ -990,12 +974,12 @@ function TaskForm({
               </Pressable>
               {timePickerOpen ? (
                 <DateTimePicker
-                  value={timePickerValue(draft.schedule.timeOfDay)}
+                  value={timeOfDayPickerValue(draft.schedule.timeOfDay)}
                   mode="time"
                   display={Platform.OS === "ios" ? "spinner" : "default"}
                   onDismiss={() => setTimePickerOpen(false)}
                   onValueChange={(_, selected) => {
-                    const timeOfDay = `${String(selected.getHours()).padStart(2, "0")}:${String(selected.getMinutes()).padStart(2, "0")}`;
+                    const timeOfDay = timeOfDayFromPicker(selected);
                     setDraft((current) => ({
                       ...current,
                       schedule: { ...current.schedule, timeOfDay },
@@ -1018,7 +1002,7 @@ function TaskForm({
                     title: "Weekdays",
                     state: repeatLabel(draft.schedule.weekdays) === "Weekdays" ? "on" : undefined,
                   },
-                  ...DAYS.map((day) => ({
+                  ...WEEKDAYS.map((day) => ({
                     id: String(day.index),
                     title: day.label,
                     attributes: { keepsMenuPresented: true },
@@ -1223,7 +1207,9 @@ function TaskForm({
         </SettingsSection>
         {draft.schedule.mode === "fixed_time" ? (
           <Text className="px-2 text-sm text-foreground-muted">
-            Time uses the environment's time zone, which may differ from your phone's.
+            {config?.environment.timeZone
+              ? `Time uses ${config.environment.timeZone}, the environment's time zone, which may differ from your phone's.`
+              : "Time uses the environment's time zone, which may differ from your phone's."}
           </Text>
         ) : null}
       </View>
@@ -1346,6 +1332,17 @@ function EnvironmentTasks({
   readonly onEdit: (task: ScheduledTask) => void;
 }) {
   const environmentId = environment.environmentId;
+  const timeZone = environment.serverConfig.environment.timeZone;
+  const navigation = useNavigation<NativeStackNavigationProp<ScheduledTaskRoutes>>();
+  // The generic form's thread, model and mode fields do not apply to a routine.
+  const edit = (task: ScheduledTask) => {
+    if (task.bot === undefined) {
+      onEdit(task);
+      return;
+    }
+    startBotEditor(environmentId, task.bot.botId);
+    navigation.navigate("SettingsBotEdit");
+  };
   const tasks = useEnvironmentQuery(
     serverEnvironment.scheduledTasksLive({ environmentId, input: {} }),
   );
@@ -1418,16 +1415,17 @@ function EnvironmentTasks({
           >
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel={`Edit ${task.title}`}
-              onPress={() => {
-                onEdit(task);
-              }}
+              accessibilityLabel={
+                task.bot ? `Open the Bot settings for ${task.title}` : `Edit ${task.title}`
+              }
+              onPress={() => edit(task)}
               className="min-w-0 flex-1 gap-1 active:opacity-70"
             >
               <Text textRole="body" className="text-foreground" numberOfLines={1}>
                 {task.title}
               </Text>
               <Text className="text-sm text-foreground-muted" numberOfLines={2}>
+                {task.bot ? "Bot routine · " : ""}
                 {describeSchedule(task, tasks.data?.timeZone)}
                 {!task.enabled
                   ? " · Paused"
@@ -1448,7 +1446,7 @@ function EnvironmentTasks({
             </Pressable>
             <Menu
               actions={[
-                { id: "edit", title: "Edit" },
+                { id: "edit", title: task.bot ? "Edit in Bot settings" : "Edit" },
                 ...(task.threadId !== null && scheduledTaskThreadMode(task) !== "new_thread"
                   ? [{ id: "thread", title: "Open thread" }]
                   : []),
@@ -1469,7 +1467,7 @@ function EnvironmentTasks({
               onPressAction={({ nativeEvent }) => {
                 const action = nativeEvent.event;
                 if (action === "edit") {
-                  onEdit(task);
+                  edit(task);
                 } else if (action === "thread" && task.threadId !== null) {
                   selectDetail({
                     name: "Thread",

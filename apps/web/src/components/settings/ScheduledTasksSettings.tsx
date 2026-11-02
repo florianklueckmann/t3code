@@ -3,6 +3,7 @@ import { connectionStatusTitle } from "@t3tools/client-runtime/connection";
 import { AsyncResult } from "effect/reactivity";
 import {
   ChevronDownIcon,
+  BotMessageSquareIcon,
   Clock3Icon,
   CopyIcon,
   InboxIcon,
@@ -15,6 +16,7 @@ import {
 } from "lucide-react";
 import { type ReactNode, useRef, useState } from "react";
 import type {
+  BotId,
   EnvironmentId,
   ModelSelection,
   OrchestrationV2ThreadLaunchWorkspaceStrategy,
@@ -153,8 +155,10 @@ import {
   SETTINGS_PICKER_TRIGGER_CLASSNAME,
 } from "./settingsLayout";
 
-const WEEKDAY_ORDER = [1, 2, 3, 4, 5, 6, 0] as const;
-const WEEKDAY_SHORT = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"] as const;
+export { WEEKDAY_LABELS } from "./scheduledTasksSettings.logic";
+
+export const WEEKDAY_ORDER = [1, 2, 3, 4, 5, 6, 0] as const;
+export const WEEKDAY_SHORT = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"] as const;
 
 // Thread ids are trimmed, so the leading space keeps this from matching one.
 const NEW_THREAD_DESTINATION = " new-thread";
@@ -362,7 +366,7 @@ function deliveryOutcomeVariant(outcome: string) {
   return "outline";
 }
 
-function statusVariant(status: ScheduledTask["lastRunStatus"]) {
+export function scheduledRunStatusVariant(status: ScheduledTask["lastRunStatus"]) {
   if (status === "failed") return "error";
   if (status === "succeeded") return "success";
   if (status === "running") return "info";
@@ -409,7 +413,10 @@ export function ScheduledTasksSettings(target: {
   }
   if (linkedTask && linkedEnvironmentId !== undefined && openedLinkTaskId !== target.taskId) {
     setOpenedLinkTaskId(target.taskId);
-    if (editor === null) setEditor({ environmentId: linkedEnvironmentId, task: linkedTask });
+    // Bot routines are edited in the Bot settings; this form has no Bot target.
+    if (editor === null && linkedTask.bot === undefined) {
+      setEditor({ environmentId: linkedEnvironmentId, task: linkedTask });
+    }
   }
   const navigate = useNavigate({ from: "/settings/scheduled-tasks" });
   const closeEditor = () => {
@@ -725,6 +732,20 @@ function ScheduledTaskEnvironmentSection({
   );
 }
 
+function BotRoutineBadge({
+  environmentId,
+  botId,
+}: {
+  readonly environmentId: EnvironmentId;
+  readonly botId: BotId;
+}) {
+  const botsQuery = useEnvironmentQuery(serverEnvironment.botsLive({ environmentId, input: {} }));
+  const name = botsQuery.data?.bots.find((bot) => bot.id === botId)?.name;
+  return (
+    <Badge variant="outline">{name === undefined ? "Bot routine" : `Bot routine · ${name}`}</Badge>
+  );
+}
+
 function ScheduledTaskRow({
   environmentId,
   task,
@@ -739,6 +760,7 @@ function ScheduledTaskRow({
   const canOperate = useAtomValue(
     serverEnvironment.upsertScheduledTask.permissionAtom(environmentId),
   );
+  const navigate = useNavigate();
   const [busy, setBusy] = useState(false);
   const [deliveriesOpen, setDeliveriesOpen] = useState(false);
   const isWebhook = task.schedule.type === "webhook";
@@ -780,7 +802,16 @@ function ScheduledTaskRow({
   };
   return (
     <SettingsRow
-      title={task.title}
+      title={
+        task.bot === undefined ? (
+          task.title
+        ) : (
+          <span className="flex min-w-0 flex-wrap items-center gap-2">
+            <span className="min-w-0 wrap-anywhere">{task.title}</span>
+            <BotRoutineBadge environmentId={environmentId} botId={task.bot.botId} />
+          </span>
+        )
+      }
       description={<span className="line-clamp-2">{task.prompt}</span>}
       status={
         <div className="flex flex-wrap items-center gap-2">
@@ -801,7 +832,9 @@ function ScheduledTaskRow({
             )}
           </span>
           {task.lastRunStatus !== "never" ? (
-            <Badge variant={statusVariant(task.lastRunStatus)}>{task.lastRunStatus}</Badge>
+            <Badge variant={scheduledRunStatusVariant(task.lastRunStatus)}>
+              {task.lastRunStatus}
+            </Badge>
           ) : null}
           {task.threadId !== null && scheduledTaskThreadMode(task) !== "new_thread" ? (
             <ScheduledTaskThreadLink environmentId={environmentId} threadId={task.threadId} />
@@ -831,10 +864,17 @@ function ScheduledTaskRow({
               <MoreHorizontalIcon className="size-4" />
             </MenuTrigger>
             <MenuPopup align="end">
-              <MenuItem onClick={onEdit}>
-                <PencilIcon />
-                Edit
-              </MenuItem>
+              {task.bot === undefined ? (
+                <MenuItem onClick={onEdit}>
+                  <PencilIcon />
+                  Edit
+                </MenuItem>
+              ) : (
+                <MenuItem onClick={() => void navigate({ to: "/settings/bots" })}>
+                  <BotMessageSquareIcon />
+                  Edit in Bots settings
+                </MenuItem>
+              )}
               {isWebhook ? (
                 <MenuItem onClick={() => setDeliveriesOpen(true)}>
                   <InboxIcon />
@@ -1368,6 +1408,7 @@ function ScheduledTaskEditorForm({
     task?.schedule.type === "once";
   const offersThreadModes =
     environment?.serverConfig?.environment.capabilities.scheduledTaskThreadModes === true;
+  const environmentTimeZone = environment?.serverConfig?.environment.timeZone;
   const connected =
     environment?.connection.phase === "connected" && environment.serverConfig !== null;
   const tasksQuery = useEnvironmentQuery(
@@ -2107,6 +2148,11 @@ function ScheduledTaskEditorForm({
                     </Toggle>
                   ))}
                 </ToggleGroup>
+                {environmentTimeZone === undefined ? null : (
+                  <span className="text-xs text-muted-foreground">
+                    Times use {environmentTimeZone}
+                  </span>
+                )}
               </div>
             ) : (
               <div className="flex items-center gap-2">

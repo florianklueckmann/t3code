@@ -116,7 +116,7 @@ import { isSnoozed } from "../orchestration-v2/ThreadSettlementService.ts";
 import { userFacingDispatchErrorMessage } from "../orchestration-v2/UserFacingErrors.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
-import { BOT_ROUTINE_RUNTIME_MODE } from "../scheduledTasks/BotRoutineTarget.ts";
+import { BOT_ROUTINE_RUNTIME_MODE, BotRoutineTarget } from "../scheduledTasks/BotRoutineTarget.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import {
@@ -291,6 +291,7 @@ function scheduledTaskSummary(task: ScheduledTask, mayRun: boolean): Orchestrato
     boundThreadId: task.threadId,
     freshSession: scheduledTaskThreadMode(task) === "fresh_session",
     ...(task.bot === undefined ? {} : { botId: task.bot.botId }),
+    ...(task.bot?.sessionAt == null ? {} : { sessionAt: task.bot.sessionAt }),
     schedule: task.schedule,
     nextRunAt: task.nextRunAt,
     lastRunStatus: task.lastRunStatus,
@@ -1300,6 +1301,7 @@ const make = Effect.gen(function* () {
     return selection;
   });
   const secretRequests = yield* SecretRequests.SecretRequests;
+  const botRoutines = yield* BotRoutineTarget;
 
   const requireCapability = (scope: McpInvocationScope) =>
     scope.capabilities.has("orchestration")
@@ -2253,8 +2255,14 @@ const make = Effect.gen(function* () {
             : "bindToCurrentThread binds to this thread, which belongs to a different project.",
         );
       }
+      // A routine runs on its Bot's model, so it needs no caller or project model.
       const modelSelection =
-        parent?.thread.modelSelection ?? (yield* projectDefaultModelSelection(project));
+        input.botId !== undefined
+          ? (yield* botRoutines
+              .requireRunnable({ botId: input.botId, projectId })
+              .pipe(Effect.mapError((message) => failure("invalid_request", message))))
+              .modelSelection
+          : (parent?.thread.modelSelection ?? (yield* projectDefaultModelSelection(project)));
       // Never end on a lone high surrogate, which renders as a broken character.
       const derivedTitle = (input.prompt.split("\n")[0]?.trim() ?? "")
         .slice(0, 80)
