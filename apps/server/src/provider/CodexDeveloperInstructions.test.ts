@@ -5,8 +5,39 @@ import { describe, it } from "vite-plus/test";
 
 import {
   buildCodexAdditionalContext,
+  buildCodexApplicationInstructions,
   CODEX_ADDITIONAL_CONTEXT_VALUE_MAX_BYTES,
+  splitCodexContextValue,
 } from "./CodexDeveloperInstructions.ts";
+
+describe("buildCodexApplicationInstructions", () => {
+  it("splits long instructions into ordered entries under the cap without losing text", () => {
+    const line = "Prefer the campaign vault. 🐉 Ünterwegs.\n";
+    const instructions = line.repeat(400);
+    const context = buildCodexApplicationInstructions(instructions);
+    const keys = Object.keys(context);
+    NodeAssert.ok(keys.length > 1);
+    NodeAssert.deepEqual(keys, [...keys].sort());
+    for (const entry of Object.values(context)) {
+      NodeAssert.equal(entry.kind, "application");
+      NodeAssert.ok(
+        Buffer.byteLength(entry.value, "utf8") <= CODEX_ADDITIONAL_CONTEXT_VALUE_MAX_BYTES,
+      );
+      NodeAssert.ok(entry.value.endsWith("\n"), "chunks break at line ends when they can");
+    }
+    NodeAssert.equal(
+      Object.values(context)
+        .map((entry) => entry.value)
+        .join(""),
+      instructions,
+    );
+  });
+
+  it("cuts a long line between code points", () => {
+    const chunks = splitCodexContextValue("🐉".repeat(10), 9);
+    NodeAssert.deepEqual(chunks, ["🐉🐉", "🐉🐉", "🐉🐉", "🐉🐉", "🐉🐉"]);
+  });
+});
 
 describe("buildCodexAdditionalContext", () => {
   describe.each([

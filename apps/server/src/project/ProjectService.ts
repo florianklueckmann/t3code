@@ -28,6 +28,7 @@ import {
   planProjectCommand,
   type ProjectCommand,
 } from "../orchestration-v2/ProjectCommands.ts";
+import * as BotProjectGuard from "../bots/BotProjectGuard.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as ThreadCommandExecutor from "../orchestration-v2/ThreadCommandExecutor.ts";
 import { planThreadDeletion } from "../orchestration-v2/ThreadDeletion.ts";
@@ -94,6 +95,15 @@ export class ProjectInvalidError extends Schema.TaggedError<ProjectInvalidError>
   }
 }
 
+export class ProjectBotAttachedError extends Schema.TaggedError<ProjectBotAttachedError>()(
+  "ProjectBotAttachedError",
+  { projectId: ProjectId, botNames: Schema.Array(Schema.String) },
+) {
+  override get message(): string {
+    return `Detach ${this.botNames.join(", ")} from this project before deleting it.`;
+  }
+}
+
 export class ProjectOperationError extends Schema.TaggedError<ProjectOperationError>()(
   "ProjectOperationError",
   {
@@ -104,6 +114,7 @@ export class ProjectOperationError extends Schema.TaggedError<ProjectOperationEr
       "list-threads",
       "delete-thread",
       "dispatch-project-command",
+      "read-bot-attachments",
     ]),
     projectId: Schema.optional(ProjectId),
     workspaceRoot: Schema.optional(Schema.String),
@@ -120,6 +131,7 @@ export type ProjectServiceError =
   | ProjectConflictError
   | ProjectNotEmptyError
   | ProjectInvalidError
+  | ProjectBotAttachedError
   | ProjectOperationError;
 
 export class ProjectService extends Context.Service<
@@ -173,6 +185,7 @@ export const make = Effect.gen(function* () {
   const legacyImporter = yield* LegacyV1ThreadImporter.LegacyV1ThreadImporter;
   const threadCommands = yield* ThreadCommandExecutor.ThreadCommandExecutor;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
+  const botGuard = yield* BotProjectGuard.BotProjectGuard;
   const projectLocks = yield* KeyedLock.make<ProjectId>();
   const workspaceLocks = yield* KeyedLock.make<string>();
 
@@ -522,10 +535,26 @@ export const make = Effect.gen(function* () {
       }
 
       const isFirstDelete = existing.value.deletedAt === null;
-      if (isFirstDelete) {
-        yield* deleteChildThreads(input);
-      }
-      yield* commit({ type: "project.delete", commandId: input.commandId, projectId });
+      const botAttachmentError = (cause: unknown) =>
+        new ProjectOperationError({ operation: "read-bot-attachments", projectId, cause });
+      // The lock keeps a concurrent attach from landing between this check and the delete.
+      yield* botGuard.withProjectLock(
+        projectId,
+        Effect.gen(function* () {
+          if (isFirstDelete) {
+            const botNames = yield* botGuard
+              .attachedBotNames(projectId)
+              .pipe(Effect.mapError(botAttachmentError));
+            if (botNames.length > 0) {
+              return yield* new ProjectBotAttachedError({ projectId, botNames });
+            }
+            yield* deleteChildThreads(input);
+          }
+          yield* commit({ type: "project.delete", commandId: input.commandId, projectId });
+          // Detached contexts pointed at conversations this delete just removed.
+          yield* botGuard.forgetProject(projectId).pipe(Effect.mapError(botAttachmentError));
+        }),
+      );
       if (isFirstDelete) {
         yield* clearProjectSettingsOverrides(projectId);
       }
@@ -619,5 +648,5 @@ export const make = Effect.gen(function* () {
 });
 
 export const layer = Layer.effect(ProjectService, make).pipe(
-  Layer.provide(ThreadCommandExecutor.layer),
+  Layer.provide(Layer.merge(ThreadCommandExecutor.layer, BotProjectGuard.layer)),
 );

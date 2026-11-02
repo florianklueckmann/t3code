@@ -26,6 +26,7 @@ import * as ProjectionReplay from "../orchestration-v2/testkit/ProjectionReplay.
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as ThreadCommandExecutor from "../orchestration-v2/ThreadCommandExecutor.ts";
+import * as BotProjectGuard from "../bots/BotProjectGuard.ts";
 import { planThreadDeletion } from "../orchestration-v2/ThreadDeletion.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -44,6 +45,7 @@ const layerServices = Layer.mergeAll(
   ProjectStore.layer,
   IdAllocator.layer,
   ThreadCommandExecutor.layer,
+  BotProjectGuard.layer,
   Layer.succeed(WorkspacePaths.WorkspacePaths, {
     normalizeWorkspaceRoot: (workspaceRoot) => Effect.succeed(workspaceRoot),
     resolveRelativePathWithinRoot: ({ workspaceRoot, relativePath }) =>
@@ -527,4 +529,52 @@ it.effect(
         assert.isUndefined(settingsAfterDelete.projectSettingsOverrides[projectId]);
       }).pipe(Effect.provide(layerServices));
     }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect("rejects deleting a project while a Bot is attached and forgets it once detached", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const projectId = ProjectId.make("project:bot-attached");
+    yield* seedProject(projectId);
+    yield* sql`
+      INSERT INTO bots (
+        bot_id, name, instructions, model_selection_json, learning_policy, created_at, updated_at
+      ) VALUES (
+        'campaign-bot', 'Campaign Bot', '', '{"instanceId":"codex","model":"gpt-5"}',
+        'automatic', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'
+      )
+    `;
+    yield* sql`
+      INSERT INTO bot_project_contexts (
+        home_thread_id, bot_id, project_id, guidance, sources_json, revision,
+        attached_at, detached_at, updated_at
+      ) VALUES (
+        'bot-home:campaign-bot:project:bot-attached', 'campaign-bot', ${projectId}, '', '[]', 0,
+        '2026-01-01T00:00:00.000Z', NULL, '2026-01-01T00:00:00.000Z'
+      )
+    `;
+
+    yield* Effect.gen(function* () {
+      const service = yield* ProjectService.make;
+      const rejected = yield* service
+        .delete({ commandId: CommandId.make("command:bot-attached:delete"), projectId })
+        .pipe(Effect.flip);
+      assert.equal(rejected._tag, "ProjectBotAttachedError");
+      assert.equal(rejected.message, "Detach Campaign Bot from this project before deleting it.");
+
+      yield* sql`
+        UPDATE bot_project_contexts SET detached_at = '2026-01-02T00:00:00.000Z'
+        WHERE project_id = ${projectId}
+      `;
+      yield* service.delete({
+        commandId: CommandId.make("command:bot-detached:delete"),
+        projectId,
+        force: true,
+      });
+      const remaining = yield* sql`
+        SELECT 1 FROM bot_project_contexts WHERE project_id = ${projectId}
+      `;
+      assert.lengthOf(remaining, 0);
+    }).pipe(Effect.provide(layerServices));
+  }).pipe(Effect.provide(layerDatabase)),
 );
