@@ -3,6 +3,7 @@ import {
   type BotSummary,
   ProjectId,
   ProviderInstanceId,
+  type ScheduledTask,
   ThreadId,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
@@ -11,6 +12,8 @@ import {
   botOfHomeThread,
   botProjectContextChanges,
   botProjectContextDraft,
+  botRoutineDraft,
+  botRoutineUpsertInput,
   botSourceDrafts,
   emptyBotSourceDraft,
   parseBotSourceDrafts,
@@ -99,5 +102,76 @@ describe("botOfHomeThread", () => {
     ["an archived Bot", [bot({ archivedAt: "2026-01-02T00:00:00.000Z" })], home, null],
   ])("resolves %s", (_case, bots, thread, name) => {
     expect(botOfHomeThread(bots, thread)?.name ?? null).toBe(name);
+  });
+});
+
+describe("botRoutineUpsertInput", () => {
+  const target = {
+    botId: BotId.make("campaign-companion"),
+    projectId: ProjectId.make("project-campaign"),
+    modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
+  };
+  const sessionAtMs = Date.parse("2026-11-06T19:00:00.000Z");
+  const now = Date.parse("2026-11-02T12:00:00.000Z");
+
+  it("runs a session routine once, the lead time before the session", () => {
+    const result = botRoutineUpsertInput(
+      {
+        title: " Session 12 ",
+        prompt: "Prepare session 12.",
+        timing: "session",
+        sessionAtMs,
+        leadMinutes: 90,
+      },
+      target,
+      now,
+    );
+    if (!("input" in result)) throw new Error(result.error);
+    expect(result.input.title).toBe("Session 12");
+    expect(result.input.schedule).toEqual({ type: "once", runAt: "2026-11-06T17:30:00.000Z" });
+    expect(result.input.bot).toEqual({
+      botId: target.botId,
+      sessionAt: "2026-11-06T19:00:00.000Z",
+    });
+    expect(result.input.runtimeMode).toBe("full-access");
+    // Editing the saved routine starts from the same session and lead time.
+    expect(
+      botRoutineDraft({ ...result.input, bot: result.input.bot } as ScheduledTask),
+    ).toMatchObject({ timing: "session", sessionAtMs, leadMinutes: 90 });
+  });
+
+  it("refuses a preparation time that has already passed", () => {
+    const result = botRoutineUpsertInput(
+      {
+        title: "Prep",
+        prompt: "Prepare.",
+        timing: "session",
+        sessionAtMs,
+        leadMinutes: 7 * 24 * 60,
+      },
+      target,
+      now,
+    );
+    expect(result).toHaveProperty("error");
+  });
+
+  it("keeps a recurring routine on its time of day and weekdays", () => {
+    const result = botRoutineUpsertInput(
+      {
+        title: "Weekly",
+        prompt: "Prepare.",
+        timing: "recurring",
+        timeOfDay: "18:00",
+        weekdays: [5],
+      },
+      target,
+      now,
+    );
+    expect(result).toMatchObject({
+      input: {
+        schedule: { type: "fixed_time", timeOfDay: "18:00", weekdays: [5] },
+        bot: { botId: target.botId, sessionAt: null },
+      },
+    });
   });
 });

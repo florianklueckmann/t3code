@@ -66,6 +66,7 @@ import {
   type ResponseContextRecord,
   type ChatFileAttachment,
   isProviderNativeSubagentThread,
+  mayBeBotHomeThreadId,
   type EnvironmentId,
   type MessageId,
   type ModelSelection,
@@ -332,6 +333,7 @@ import {
   shouldShowThreadErrorBanner,
 } from "./chat/ThreadErrorBanner";
 import { QueuedRunsControl, type QueuedRunsControlHandle } from "./chat/QueuedRunsControl";
+import { BotTaskCards } from "./chat/BotTaskCards";
 import { useThreadLinkedPullRequest } from "./pullRequest/useThreadLinkedPullRequest";
 import { useProactivePanels } from "../hooks/useProactivePanels";
 import { useIncrementalTimelineEntries } from "../hooks/useIncrementalTimelineEntries";
@@ -3594,6 +3596,15 @@ export default function ChatView(props: ChatViewProps) {
                         : undefined
                     }
                   >
+                    {isServerThread &&
+                    activeThread &&
+                    mayBeBotHomeThreadId(activeThread.id) &&
+                    serverConfig?.environment.capabilities.botRoutines === true ? (
+                      <BotTaskCards
+                        environmentId={activeThread.environmentId}
+                        threadId={activeThread.id}
+                      />
+                    ) : null}
                     <ChildThreadApprovals threadRef={activeThreadRef} />
                     <div className="relative">
                       <ComposerSurface.Shell contextRow={showComposerContextStrip}>

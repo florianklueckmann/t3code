@@ -1,9 +1,20 @@
 import type {
+  BotId,
   BotProjectContext,
   BotProjectContextSummary,
   BotSourcePreference,
   BotSummary,
+  BotTaskStatus,
+  BotTaskSummary,
+  CommandId,
+  ModelSelection,
+  ProjectId,
+  ScheduledTask,
+  ScheduledTaskId,
+  ScheduledTaskUpsertInput,
+  ThreadId,
 } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 
 /** One editable preferred-source row. */
 export interface BotSourceDraft {
@@ -103,4 +114,196 @@ export function botOfHomeThread(
       ({ context }) => context.homeThreadId === thread.id && context.projectId === thread.projectId,
     )?.bot ?? null
   );
+}
+
+/** The Bot and project whose home conversation this thread is, attached or not. */
+export function botConversationForThread(
+  bots: ReadonlyArray<BotSummary>,
+  threadId: ThreadId,
+): BotConversation | null {
+  for (const bot of bots) {
+    const context = bot.projects.find((project) => project.homeThreadId === threadId);
+    if (context !== undefined) return { bot, context };
+  }
+  return null;
+}
+
+/** Routines of one Bot in one project, from the environment's scheduled tasks. */
+export function botRoutinesFor(
+  tasks: ReadonlyArray<ScheduledTask>,
+  botId: BotId,
+  projectId: ProjectId,
+): ReadonlyArray<ScheduledTask> {
+  return tasks.filter((task) => task.bot?.botId === botId && task.projectId === projectId);
+}
+
+export const BOT_TASK_STATUS_LABELS: Readonly<Record<BotTaskStatus, string>> = {
+  accepted: "Queued",
+  running: "Working",
+  waiting: "Needs input",
+  completed: "Done",
+  failed: "Failed",
+  interrupted: "Interrupted",
+  cancelled: "Cancelled",
+  skipped: "Skipped",
+};
+
+export function isBotTaskOpen(task: Pick<BotTaskSummary, "status">): boolean {
+  return task.status === "accepted" || task.status === "running" || task.status === "waiting";
+}
+
+/**
+ * How a routine is set up in the Bot settings: before a dated session (a one-time run a lead
+ * time ahead of it), or at a fixed time on chosen weekdays.
+ */
+export type BotRoutineDraft = {
+  readonly title: string;
+  readonly prompt: string;
+} & (
+  | {
+      readonly timing: "session";
+      /** Epoch milliseconds, or null while unset. */
+      readonly sessionAtMs: number | null;
+      readonly leadMinutes: number;
+    }
+  | {
+      readonly timing: "recurring";
+      /** HH:MM in the environment's time zone. */
+      readonly timeOfDay: string;
+      /** 0 is Sunday. Empty means every day. */
+      readonly weekdays: ReadonlyArray<number>;
+    }
+);
+
+const DEFAULT_BOT_ROUTINE_LEAD_MINUTES = 24 * 60;
+
+const isoAt = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
+
+export function emptyBotRoutineDraft(): BotRoutineDraft {
+  return {
+    title: "Session preparation",
+    prompt: "",
+    timing: "session",
+    sessionAtMs: null,
+    leadMinutes: DEFAULT_BOT_ROUTINE_LEAD_MINUTES,
+  };
+}
+
+/** The draft for editing a saved routine; null for a timing the Bot settings cannot edit. */
+export function botRoutineDraft(task: ScheduledTask): BotRoutineDraft | null {
+  const base = { title: task.title, prompt: task.prompt };
+  if (task.schedule.type === "once" && task.bot?.sessionAt != null) {
+    const sessionAtMs = Date.parse(task.bot.sessionAt);
+    const leadMinutes = Math.round((sessionAtMs - Date.parse(task.schedule.runAt)) / 60_000);
+    return { ...base, timing: "session", sessionAtMs, leadMinutes };
+  }
+  if (task.schedule.type === "fixed_time") {
+    return {
+      ...base,
+      timing: "recurring",
+      timeOfDay: task.schedule.timeOfDay,
+      weekdays: task.schedule.weekdays ?? [],
+    };
+  }
+  return null;
+}
+
+/**
+ * The save request for a routine draft. A session routine becomes a one-time run that many
+ * minutes before the session, so a single date never turns into a repeating schedule.
+ */
+export function botRoutineUpsertInput(
+  draft: BotRoutineDraft,
+  target: {
+    readonly botId: BotId;
+    readonly projectId: ProjectId;
+    readonly modelSelection: ModelSelection;
+    /** Set when editing; a new routine passes a command id instead. */
+    readonly id?: ScheduledTaskId;
+    readonly commandId?: CommandId;
+    readonly enabled?: boolean;
+  },
+  nowMs: number,
+): { readonly input: ScheduledTaskUpsertInput } | { readonly error: string } {
+  const title = draft.title.trim();
+  const prompt = draft.prompt.trim();
+  if (title === "") return { error: "Give the routine a name." };
+  if (prompt === "") return { error: "Describe what the Bot should prepare." };
+  const common = {
+    ...(target.id === undefined ? {} : { id: target.id, requireExisting: true }),
+    ...(target.commandId === undefined ? {} : { commandId: target.commandId }),
+    title,
+    prompt,
+    enabled: target.enabled ?? true,
+    projectId: target.projectId,
+    workspaceStrategy: { type: "root" } as const,
+    modelSelection: target.modelSelection,
+    runtimeMode: "full-access" as const,
+    interactionMode: "default" as const,
+  };
+  if (draft.timing === "recurring") {
+    if (!/^([01]?\d|2[0-3]):([0-5]\d)$/.test(draft.timeOfDay.trim())) {
+      return { error: "Enter the time as HH:MM." };
+    }
+    return {
+      input: {
+        ...common,
+        schedule: {
+          type: "fixed_time",
+          timeOfDay: draft.timeOfDay.trim(),
+          ...(draft.weekdays.length === 0 ? {} : { weekdays: [...draft.weekdays] }),
+        },
+        bot: { botId: target.botId, sessionAt: null },
+      },
+    };
+  }
+  if (draft.sessionAtMs === null || !Number.isFinite(draft.sessionAtMs)) {
+    return { error: "Pick when the session starts." };
+  }
+  if (!Number.isInteger(draft.leadMinutes) || draft.leadMinutes < 0) {
+    return { error: "The lead time must be zero or more minutes." };
+  }
+  const runAtMs = draft.sessionAtMs - draft.leadMinutes * 60_000;
+  if (runAtMs <= nowMs) {
+    return { error: "That preparation time has passed. Pick a later session or a shorter lead." };
+  }
+  return {
+    input: {
+      ...common,
+      schedule: { type: "once", runAt: isoAt(runAtMs) },
+      bot: { botId: target.botId, sessionAt: isoAt(draft.sessionAtMs) },
+    },
+  };
+}
+
+const WEEKDAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+/** One line for a routine's timing; instants are formatted by the caller's locale formatter. */
+export function describeBotRoutineTiming(
+  task: Pick<ScheduledTask, "schedule" | "bot">,
+  formatInstant: (iso: string) => string,
+  timeZone: string | undefined,
+): string {
+  const zone = timeZone === undefined ? "" : ` (${timeZone})`;
+  const { schedule } = task;
+  switch (schedule.type) {
+    case "once":
+      return task.bot?.sessionAt == null
+        ? `Once, ${formatInstant(schedule.runAt)}`
+        : `${formatInstant(schedule.runAt)}, before the session on ${formatInstant(task.bot.sessionAt)}`;
+    case "fixed_time": {
+      const days =
+        schedule.weekdays === undefined || schedule.weekdays.length === 0
+          ? "Every day"
+          : [...schedule.weekdays]
+              .sort((a, b) => a - b)
+              .map((day) => WEEKDAY_NAMES[day])
+              .join(", ");
+      return `${days} at ${schedule.timeOfDay}${zone}`;
+    }
+    case "interval":
+      return `Every ${Math.round(schedule.everyMs / 60_000)} min`;
+    case "webhook":
+      return "On webhook";
+  }
 }

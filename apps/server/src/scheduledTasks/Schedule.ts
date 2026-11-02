@@ -70,6 +70,28 @@ export function isSameSchedule(a: ScheduledTaskSchedule, b: ScheduledTaskSchedul
   );
 }
 
+// Bounds the walk over a long downtime; a minute interval across a week stays well under it.
+const MAX_COALESCED_OCCURRENCES = 20_000;
+
+/**
+ * The latest occurrence that is due by `now`, starting from the first missed one. Bot routines
+ * run that one and drop the earlier ones, so a downtime yields at most one current run.
+ */
+export function latestOccurrenceAtOrBefore(
+  schedule: ScheduledTaskSchedule,
+  firstDue: DateTime.DateTime,
+  now: DateTime.DateTime,
+): DateTime.DateTime {
+  const nowMs = DateTime.toEpochMillis(now);
+  let latest = firstDue;
+  for (let step = 0; step < MAX_COALESCED_OCCURRENCES; step += 1) {
+    const next = nextScheduledRunAt(schedule, latest);
+    if (next === null || DateTime.toEpochMillis(next) > nowMs) return latest;
+    latest = next;
+  }
+  return latest;
+}
+
 const MISSED_FIXED_TIME_GRACE_MS = 10 * MINUTE_MS;
 
 export function isMissedFixedTimeRun(
