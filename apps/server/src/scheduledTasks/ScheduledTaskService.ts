@@ -1403,9 +1403,13 @@ export const layer = Layer.effect(
             BOT_ROUTINE_RUNTIME_MODE,
           );
           if (routineDenial !== undefined) return yield* taskError(routineDenial, { taskId: id });
-          yield* requireBotRunnable(bot, input.projectId, id);
         }
       }
+      // Runs use the Bot's model at that time; storing it keeps the saved routine truthful.
+      const botModel =
+        bot !== undefined && input.enabled
+          ? (yield* requireBotRunnable(bot, input.projectId, id)).modelSelection
+          : undefined;
       // Keep the existing next_run_at when the schedule itself is untouched:
       // editing a title or prompt must not postpone (or resurrect) a due
       // run — only schedule/enabled changes restart the clock.
@@ -1497,7 +1501,7 @@ export const layer = Layer.effect(
         // A routine always runs in a new work thread of the Bot, in the routine mode.
         threadId: bot === undefined ? (input.threadId ?? null) : null,
         workspaceStrategy: bot === undefined ? workspaceStrategy : { type: "root" },
-        modelSelection: input.modelSelection,
+        modelSelection: botModel ?? input.modelSelection,
         runtimeMode: bot === undefined ? input.runtimeMode : BOT_ROUTINE_RUNTIME_MODE,
         interactionMode: input.interactionMode,
         createdBy: existingTask?.createdBy ?? input.createdBy ?? "user",

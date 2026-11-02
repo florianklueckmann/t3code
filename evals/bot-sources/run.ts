@@ -11,26 +11,23 @@ import * as NodePath from "node:path";
 import * as NodeUtil from "node:util";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import {
-  BotDetail,
-  OrchestratorMcpProviderCapability,
-  OrchestratorMcpThreadReadResult,
-  OrchestratorMcpThreadSendResult,
-  OrchestratorMcpThreadWaitResult,
-  Project,
-} from "@t3tools/contracts";
+import { BotDetail, OrchestratorMcpThreadReadResult, Project } from "@t3tools/contracts";
 import * as Net from "@t3tools/shared/Net";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as References from "effect/References";
 import * as Schema from "effect/Schema";
 
-import * as EnvironmentAuth from "../../apps/server/src/auth/EnvironmentAuth.ts";
-import { resolveCliAuthConfig } from "../../apps/server/src/cli/config.ts";
-import * as ServerConfig from "../../apps/server/src/config.ts";
-import { mcpToolSession } from "../../apps/server/src/mcp/AcpMcpStdioBridge.ts";
-import { readPersistedServerRuntimeState } from "../../apps/server/src/serverRuntimeState.ts";
+import {
+  type Call,
+  encodeJson,
+  readItems,
+  requireCodexModel,
+  runTurn,
+  type ToolActivity,
+  toolActivity,
+  withTools,
+} from "../shared/devServerTools.ts";
 import {
   BOT_INSTRUCTIONS,
   BOT_NAME,
@@ -42,33 +39,6 @@ import {
   TWIN_SOURCES,
 } from "./cases.ts";
 
-const WAIT_SLICE_MS = 15_000;
-const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
-
-const ToolResult = Schema.Struct({
-  isError: Schema.optional(Schema.Boolean),
-  content: Schema.optional(Schema.Array(Schema.Struct({ text: Schema.optional(Schema.String) }))),
-  structuredContent: Schema.optional(Schema.Unknown),
-});
-
-/** A sample that could not finish. It stays in the results and counts as a failure. */
-class SampleError extends Schema.TaggedError<SampleError>()("SampleError", {
-  message: Schema.String,
-}) {}
-
-type Call = <S extends Schema.Decoder<unknown, never>>(
-  tool: string,
-  args: Readonly<Record<string, unknown>>,
-  schema: S,
-) => Effect.Effect<S["Type"], SampleError>;
-
-/** A tool the Bot called during the sample, as the thread's activity records it. */
-export interface ToolActivity {
-  readonly type: string;
-  readonly title: string | null;
-  readonly text: string | null;
-}
-
 export interface SampleRun {
   readonly answers: ReadonlyArray<string>;
   readonly tools: ReadonlyArray<ToolActivity>;
@@ -79,8 +49,6 @@ export interface SampleRun {
   };
   readonly ids: { readonly botId: string; readonly projectIds: Record<ProjectKey, string> };
 }
-
-const Capabilities = Schema.Struct({ providers: Schema.Array(OrchestratorMcpProviderCapability) });
 
 /** A Codex MCP call as T3 records it in the thread's activity. */
 const decodeToolCall = Schema.decodeUnknownOption(
@@ -138,127 +106,6 @@ export const gradeSample = (testCase: BotSourcesCase, run: SampleRun) => {
   }
   return checks;
 };
-
-/** Signs in as a short-lived MCP client of the dev server, as `t3 thread` does, and revokes it after. */
-const withTools = Effect.fn("botSources.withTools")(function* <A, E, R>(
-  baseDir: string,
-  body: (call: Call) => Effect.Effect<A, E, R>,
-) {
-  {
-    const config = yield* resolveCliAuthConfig({ baseDir: Option.some(baseDir) }, Option.none(), {
-      quietLogs: true,
-    });
-    return yield* Effect.gen(function* () {
-      const state = yield* readPersistedServerRuntimeState(config.serverRuntimeStatePath);
-      if (Option.isNone(state)) {
-        return yield* Effect.die(new Error(`No running T3 Code server uses ${baseDir}.`));
-      }
-      const auth = yield* EnvironmentAuth.EnvironmentAuth;
-      const issued = yield* Effect.acquireRelease(
-        auth.issueMcpClientSession({
-          label: "bot-sources eval",
-          access: "full-access",
-          peerLink: false,
-          client: { deviceType: "bot" },
-        }),
-        (session) => auth.revokeSession(session.sessionId).pipe(Effect.ignore({ log: true })),
-      );
-      const session = yield* mcpToolSession({
-        endpoint: new URL("/mcp", state.value.origin).href,
-        authorization: `Bearer ${issued.token}`,
-        clientName: "bot-sources-eval",
-      });
-      const failed = (tool: string) => (cause: unknown) =>
-        new SampleError({ message: `${tool}: ${String(cause)}` });
-      const call: Call = Effect.fn("botSources.call")(function* <
-        S extends Schema.Decoder<unknown, never>,
-      >(tool: string, args: Readonly<Record<string, unknown>>, schema: S) {
-        const result = yield* session
-          .call(tool, args)
-          .pipe(
-            Effect.flatMap(Schema.decodeUnknownEffect(ToolResult)),
-            Effect.mapError(failed(tool)),
-          );
-        if (result.isError === true) {
-          const text = result.content?.map((c) => c.text ?? "").join("\n");
-          return yield* new SampleError({ message: `${tool}: ${text}` });
-        }
-        return yield* Schema.decodeUnknownEffect(schema)(result.structuredContent).pipe(
-          Effect.mapError(failed(tool)),
-        );
-      });
-      return yield* body(call);
-    }).pipe(
-      Effect.scoped,
-      Effect.provide(
-        EnvironmentAuth.layerRuntime.pipe(
-          Layer.provide(ServerConfig.layer(config)),
-          Layer.provide(Layer.succeed(References.MinimumLogLevel, config.logLevel)),
-        ),
-      ),
-    );
-  }
-});
-
-const runTurn = Effect.fn("botSources.runTurn")(function* (
-  call: Call,
-  threadId: string,
-  prompt: string,
-) {
-  const sent = yield* call(
-    "t3_thread_send",
-    { threadId, message: prompt },
-    OrchestratorMcpThreadSendResult,
-  );
-  while (true) {
-    const waited = yield* call(
-      "t3_thread_wait",
-      { threadId, runId: sent.runId, timeoutMs: WAIT_SLICE_MS },
-      OrchestratorMcpThreadWaitResult,
-    );
-    if (!waited.timedOut) {
-      if (waited.status !== "completed") {
-        return yield* new SampleError({ message: `run ${sent.runId} ended ${waited.status}` });
-      }
-      break;
-    }
-    const { thread } = yield* call(
-      "t3_thread_read",
-      { threadId, limit: 1, runLimit: 1 },
-      OrchestratorMcpThreadReadResult,
-    );
-    if (thread.pendingRequestCount > 0) {
-      return yield* new SampleError({ message: `run ${sent.runId} is waiting for user input` });
-    }
-  }
-  return sent.runId;
-});
-
-const readItems = Effect.fn("botSources.readItems")(function* (
-  call: Call,
-  threadId: string,
-  view: "messages" | "activity",
-) {
-  const items: Array<OrchestratorMcpThreadReadResult["items"][number]> = [];
-  let afterPosition: number | undefined;
-  while (true) {
-    const page = yield* call(
-      "t3_thread_read",
-      {
-        threadId,
-        view,
-        limit: 100,
-        maxCharsPerItem: 50_000,
-        runLimit: 1,
-        ...(afterPosition === undefined ? {} : { afterPosition }),
-      },
-      OrchestratorMcpThreadReadResult,
-    );
-    items.push(...page.items);
-    if (!page.hasMore || page.nextPosition === null) return items;
-    afterPosition = page.nextPosition;
-  }
-});
 
 const runSample = Effect.fn("botSources.runSample")(function* (
   call: Call,
@@ -329,10 +176,7 @@ const runSample = Effect.fn("botSources.runSample")(function* (
         ?.text ?? "",
     );
   }
-  const activity = yield* readItems(call, home.homeThreadId, "activity");
-  const tools = activity
-    .filter((item) => item.type !== "user_message" && item.type !== "assistant_message")
-    .map((item) => ({ type: item.type, title: item.title, text: item.text }));
+  const tools = toolActivity(yield* readItems(call, home.homeThreadId, "activity"));
   const read = (id: string) =>
     call("t3_bot", { action: "read", botId: id }, Schema.Struct({ bot: BotDetail })).pipe(
       Effect.map(({ bot }) => bot),
@@ -434,20 +278,9 @@ const main = Effect.gen(function* () {
         ),
       { concurrency: Number(values.concurrency) },
     );
-  const rows = yield* withTools(baseDir, (call) =>
+  const rows = yield* withTools(baseDir, "bot-sources", (call) =>
     Effect.gen(function* () {
-      // No fallback: a model or effort the Codex catalog does not offer stops the run.
-      const { providers } = yield* call("orchestrator_capabilities", {}, Capabilities);
-      const offered = providers
-        .find((provider) => provider.providerInstanceId === "codex")
-        ?.models.find((model) => model.id === values.model)
-        ?.options?.find((option) => option.id === "reasoningEffort")
-        ?.values?.includes(values.effort);
-      if (offered !== true) {
-        return yield* Effect.die(
-          new Error(`Codex does not offer ${values.model} with reasoningEffort ${values.effort}.`),
-        );
-      }
+      yield* requireCodexModel(call, values.model, values.effort);
       return yield* runJobs(call);
     }),
   );

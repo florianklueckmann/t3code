@@ -9,7 +9,7 @@ import {
 import { defaultBotAppearance, resolveBotAppearance } from "@t3tools/client-runtime/bot-appearance";
 import { BotId, resolveEnvironmentMachineKind } from "@t3tools/contracts";
 import type { BotDetail, BotSummary, EnvironmentId, ProjectId } from "@t3tools/contracts";
-import { useRef, useState } from "react";
+import { Fragment, useRef, useState } from "react";
 import { Platform, Pressable, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -30,8 +30,10 @@ import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { withNativeGlassHeaderItem } from "../layout/native-glass-header-items";
 import { ThreadSettingsPickerScreen } from "../threads/ThreadSettingsSheet";
+import { reportBotFailure } from "../bots/reportBotFailure";
 import { useSelectWorkspaceDetail } from "../workspace/useSelectWorkspaceDetail";
 import { useBotEditor, startBotEditor, startNewBotEditor } from "./bot-editor";
+import { BotRoutinesSection } from "./BotRoutinesSection";
 import {
   attachBotProjectDraft,
   BOT_LEARNING_POLICIES,
@@ -70,12 +72,6 @@ const BOT_TEXT_MAX = 16_000;
 const SOURCE_LABEL_MAX = 120;
 const SOURCE_LOCATION_MAX = 2_000;
 const SOURCES_MAX = 50;
-
-function reportBotFailure(title: string, result: AtomCommandResult<unknown, unknown>) {
-  if (result._tag !== "Failure" || isAtomCommandInterrupted(result)) return;
-  const error = squashAtomCommandFailure(result);
-  Dialog.alert(title, error instanceof Error ? error.message : "The request failed.");
-}
 
 function modelLabel(
   options: ReturnType<typeof botModelOptions>,
@@ -429,6 +425,7 @@ function BotForm({
   const summaries = useEnvironmentQuery(serverEnvironment.botsLive({ environmentId, input: {} }));
   const archived = summaries.data?.bots.find((bot) => bot.id === draft.botId)?.archivedAt != null;
   const config = useEnvironmentServerConfig(environmentId);
+  const routinesSupported = config?.environment.capabilities.botRoutines === true;
   const canOperate = useAtomValue(serverEnvironment.updateBot.permissionAtom(environmentId));
   const projects = useProjects().filter((project) => project.environmentId === environmentId);
   const projectTitle = (projectId: ProjectId) =>
@@ -620,16 +617,32 @@ function BotForm({
           ))}
         </SettingsSection>
         {draft.projects.map((project) => (
-          <BotProjectSection
-            key={project.projectId}
-            title={projectTitle(project.projectId)}
-            project={project}
-            disabled={readOnly}
-            onChange={(patch) => updateProject(project.projectId, patch)}
-            onDetach={() =>
-              setDraft((current) => detachBotProjectDraft(current, baseline, project.projectId))
-            }
-          />
+          <Fragment key={project.projectId}>
+            <BotProjectSection
+              title={projectTitle(project.projectId)}
+              project={project}
+              disabled={readOnly}
+              onChange={(patch) => updateProject(project.projectId, patch)}
+              onDetach={() =>
+                setDraft((current) => detachBotProjectDraft(current, baseline, project.projectId))
+              }
+            />
+            {routinesSupported &&
+            !archived &&
+            project.attached &&
+            baseline.projects.some(
+              (saved) => saved.projectId === project.projectId && saved.attached,
+            ) ? (
+              <BotRoutinesSection
+                environmentId={environmentId}
+                botId={draft.botId}
+                projectId={project.projectId}
+                projectTitle={projectTitle(project.projectId)}
+                timeZone={config?.environment.timeZone}
+                disabled={readOnly}
+              />
+            ) : null}
+          </Fragment>
         ))}
         <SettingsSection footer="Each project gets its own conversation with this Bot.">
           <SelectRow

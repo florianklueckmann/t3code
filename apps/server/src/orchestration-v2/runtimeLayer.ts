@@ -396,6 +396,8 @@ export const layerProduction = Layer.mergeAll(
   layerScheduledTaskProvided,
   layerBotServiceProvided,
   layerBotTaskProvided,
+  // The MCP schedule tool reads it to set up routines on a Bot's model.
+  BotTaskService.layerRoutineTarget.pipe(Layer.provide(layerBotTaskProvided)),
   layerScratchThreadPromotionProvided,
   layerSecretRequestsProvided,
   GuestShareService.layer.pipe(
