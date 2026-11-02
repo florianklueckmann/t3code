@@ -235,7 +235,9 @@ Windows investigation while that suite is not a required gate.
 standard GitHub-hosted Ubuntu 24.04 and macOS 26 Intel runners in forks.
 The Intel label avoids the ARM64 capacity queue; native analysis still runs. Fork jobs allow
 45 minutes for cold installs and smaller runners; no private task-cache credential
-is needed. The mobile fingerprint PR check also uses GitHub-hosted Ubuntu in forks.
+is needed. Fork web tests cap Vitest workers at two to leave CPU headroom for
+Chromium and document workers; their assertions, timeouts and test selection stay
+the same. The mobile fingerprint PR check also uses GitHub-hosted Ubuntu in forks.
 
 Pushes to `main`, `t3bot`, and the CI implementation branch `t3b-11/fork-ci` run all
 Linux lanes. Pull requests retain affected-package selection. Manual CI dispatch

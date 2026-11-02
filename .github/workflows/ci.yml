@@ -337,7 +337,16 @@ jobs:
           fi
 
       - name: Test
+        if: github.repository == 'pingdotgg/t3code'
         run: vp run --filter @t3tools/web test
+
+      # Leave CPU headroom for Chromium and PDF workers on the four-core hosted runner.
+      - name: Test on GitHub-hosted runner
+        if: github.repository != 'pingdotgg/t3code'
+        working-directory: apps/web
+        run: |
+          node --input-type=module -e 'import os from "node:os"; console.log({ availableParallelism: os.availableParallelism(), logicalCpus: os.cpus().length, vitestMaxWorkers: 2 })'
+          vp test run --passWithNoTests --project unit --project browser --maxWorkers=2
 
       # Browser tests run source modules; this boots the production chunk graph.
       - name: Boot the built web client
