@@ -236,6 +236,35 @@ Use `vp run lint:mobile` for native mobile changes. CI owns the full suite; see
 The [manual Windows lane](../../.github/workflows/windows-tests.yml) is available for focused
 Windows investigation while that suite is not a required gate.
 
+### Fork CI
+
+[CI](../../.github/workflows/ci.yml) uses Blacksmith in `pingdotgg/t3code` and
+standard GitHub-hosted Ubuntu 24.04 and macOS 26 Intel runners in forks.
+The Intel label avoids the ARM64 capacity queue; native analysis still runs. Fork jobs allow
+45 minutes for cold installs and smaller runners; no private task-cache credential
+is needed. Fork web tests cap Vitest workers at two to leave CPU headroom for
+Chromium and document workers; their assertions, timeouts and test selection stay
+the same. The mobile fingerprint PR check also uses GitHub-hosted Ubuntu in forks.
+
+Pushes to `main`, `t3bot`, and the CI implementation branch `t3b-11/fork-ci` run all
+Linux lanes. Pull requests retain affected-package selection. Manual CI dispatch
+runs every lane, including native mobile analysis; GitHub requires the dispatch
+workflow to exist on the default branch before offering it. Until then, use the
+push trigger. Native mobile analysis on pushes runs when native inputs change.
+The aggregate `Check` still requires every selected job and transfer measurement.
+
+This does not enable signing, publishing, EAS builds, deployments, paid model
+evals, or the separate experimental Windows lane. Those workflows have their own
+runner and credential requirements. A passing CI run is not native device proof.
+
+Do not register a personal macOS login as a runner for public PRs. Jobs execute
+repository scripts with the runner account's filesystem and network access; a
+worktree does not isolate credentials or persistent state. Prefer the disposable
+GitHub-hosted runners. Any future local runner needs a separate access decision
+and a disposable VM without host home mounts, credential forwarding, or private
+network access, reset after each job. See GitHub's
+[self-hosted runner security guidance](https://docs.github.com/en/actions/reference/security/secure-use#hardening-for-self-hosted-runners).
+
 ### Unused code
 
 `vp run knip:check` checks unused files and dependencies across the repo and, at the same time,
