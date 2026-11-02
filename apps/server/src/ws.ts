@@ -123,6 +123,7 @@ import * as ThreadMessageIntake from "./orchestration-v2/ThreadMessageIntake.ts"
 import * as DocumentText from "./provider/DocumentText.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
+import * as BotService from "./bots/BotService.ts";
 import * as SecretRequests from "./secrets/SecretRequests.ts";
 import * as GuestShareService from "./guest/GuestShareService.ts";
 import {
@@ -1313,6 +1314,7 @@ export const layerWsRpc = (
       const commandOutputHub = yield* CommandOutputHub.CommandOutputHub;
       const providerSessionManager = yield* ProviderSessionManager.ProviderSessionManagerV2;
       const scheduledTasks = yield* ScheduledTasks.ScheduledTaskService;
+      const bots = yield* BotService.BotService;
       const secretRequests = yield* SecretRequests.SecretRequests;
       const guestShares = yield* GuestShareService.GuestShareService;
       const pullRequests = yield* PullRequestService.PullRequestService;
@@ -2208,6 +2210,14 @@ export const layerWsRpc = (
           Effect.annotateCurrentSpan({ "scheduled_task.id": input.id }).pipe(
             Effect.andThen(scheduledTasks.rotateWebhookToken(input)),
           ),
+        [WS_METHODS.botsSubscribe]: (_input) => bots.subscribeList(),
+        [WS_METHODS.botsGet]: (input) => bots.get(input),
+        [WS_METHODS.botsCreate]: (input) => bots.create(input),
+        [WS_METHODS.botsUpdate]: (input) => bots.update(input),
+        [WS_METHODS.botsSetArchived]: (input) => bots.setArchived(input),
+        [WS_METHODS.botsAttachProject]: (input) => bots.attachProject(input),
+        [WS_METHODS.botsUpdateProjectContext]: (input) => bots.updateProjectContext(input),
+        [WS_METHODS.botsDetachProject]: (input) => bots.detachProject(input),
         [WS_METHODS.guestShareCreate]: (input) =>
           Effect.annotateCurrentSpan({ "orchestration_v2.thread_id": input.threadId }).pipe(
             Effect.andThen(guestShares.create(input)),
@@ -2878,7 +2888,8 @@ export const layerWsRpc = (
                 new ProjectMutationError({
                   commandId: mutation.commandId,
                   message:
-                    cause._tag === "ProjectNotEmptyError"
+                    cause._tag === "ProjectNotEmptyError" ||
+                    cause._tag === "ProjectBotAttachedError"
                       ? cause.message
                       : "Failed to mutate project.",
                   cause,

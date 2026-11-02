@@ -459,6 +459,11 @@ export interface ProviderAdapterV2TurnInput {
   readonly modelSelection: ModelSelection;
   readonly runtimePolicy: ProviderAdapterV2RuntimePolicy;
   readonly appContext?: ReadonlyArray<{ readonly key: string; readonly text: string }>;
+  /**
+   * Trusted, user-configured instructions for this turn, such as a Bot's. Unlike
+   * `appContext`, adapters deliver them as instructions, not as quoted context.
+   */
+  readonly applicationInstructions?: string;
 }
 
 export interface ProviderAdapterV2SteerInput {

@@ -49,6 +49,8 @@ import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderEventIngestor from "./ProviderEventIngestor.ts";
 import * as ProviderUsageAnalytics from "../telemetry/ProviderUsageAnalytics.ts";
 import * as McpAppModelContext from "../mcpApps/McpAppModelContext.ts";
+import * as BotStore from "../bots/BotStore.ts";
+import * as BotTurnContext from "../bots/BotTurnContext.ts";
 import * as PreviewAgentActivity from "../preview/PreviewAgentActivity.ts";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RunFinalizationService from "./RunFinalizationService.ts";
@@ -69,6 +71,7 @@ const layerRunExecutionTest = RunExecutionService.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
       McpAppModelContext.layerEmpty,
+      BotTurnContext.layerEmpty,
       PreviewAgentActivity.layer,
       Layer.mock(CheckpointService.CheckpointServiceV2)({ captureBaseline: () => Effect.void }),
       layerTurnItemPositionsTest,
@@ -884,6 +887,7 @@ it.effect("passes the thread's MCP app context to the provider under a safe key"
         Layer.provide(
           Layer.mergeAll(
             PreviewAgentActivity.layer,
+            BotTurnContext.layerEmpty,
             Layer.mock(McpAppModelContext.McpAppModelContext)({
               forThread: () =>
                 Effect.succeed([
@@ -925,6 +929,7 @@ it.effect("fails the run when its ownership check cannot be read before calling 
       Layer.provide(
         Layer.mergeAll(
           McpAppModelContext.layerEmpty,
+          BotTurnContext.layerEmpty,
           PreviewAgentActivity.layer,
           Layer.mock(CheckpointService.CheckpointServiceV2)({ captureBaseline: () => Effect.void }),
           layerTurnItemPositionsTest,
@@ -1127,6 +1132,7 @@ it.effect("starts the provider when checkpoint baseline capture fails", () =>
       Layer.provide(
         Layer.mergeAll(
           McpAppModelContext.layerEmpty,
+          BotTurnContext.layerEmpty,
           PreviewAgentActivity.layer,
           Layer.mock(CheckpointService.CheckpointServiceV2)({
             captureBaseline: () =>
@@ -1247,6 +1253,7 @@ it.effect.each(["failure", "interruption", "stale-attempt", "start-guard"] as co
         Layer.provide(
           Layer.mergeAll(
             McpAppModelContext.layerEmpty,
+            BotTurnContext.layerEmpty,
             PreviewAgentActivity.layer,
             Layer.mock(CheckpointService.CheckpointServiceV2)({
               captureBaseline: () =>
@@ -1430,6 +1437,7 @@ it.effect("ingests new member threads of an owned child after the root turn term
               ]),
           }),
           McpAppModelContext.layerEmpty,
+          BotTurnContext.layerEmpty,
           PreviewAgentActivity.layer,
           Layer.mock(CheckpointService.CheckpointServiceV2)({ captureBaseline: () => Effect.void }),
           layerTurnItemPositionsTest,
@@ -1690,6 +1698,7 @@ it.effect("ends a nested native subagent and its thread when the root run is int
       Layer.provide(
         Layer.mergeAll(
           McpAppModelContext.layerEmpty,
+          BotTurnContext.layerEmpty,
           PreviewAgentActivity.layer,
           Layer.mock(CheckpointService.CheckpointServiceV2)({ captureBaseline: () => Effect.void }),
           layerTurnItemPositionsTest,
@@ -2101,6 +2110,7 @@ it.effect(
         Layer.provide(
           Layer.mergeAll(
             McpAppModelContext.layerEmpty,
+            BotTurnContext.layerEmpty,
             PreviewAgentActivity.layer,
             Layer.mock(CheckpointService.CheckpointServiceV2)({
               captureBaseline: () => Effect.void,
@@ -3081,6 +3091,128 @@ it.effect("does not start a turn whose run settled during the app context read",
   }),
 );
 
+it.effect("delivers the current Bot instructions with the provider turn", () =>
+  Effect.gen(function* () {
+    const delivered = yield* Ref.make<ReadonlyArray<string | undefined>>([]);
+    const { observed } = yield* captureRootRunTermination({
+      key: "bot-context:active",
+      shouldFinalizeRun: () => Effect.succeed(true),
+      events: (ids) => Stream.make(rootTerminalEvent(ids, "completed")),
+      botContext: Effect.succeed({ _tag: "active", instructions: "Campaign A canon." }),
+      startTurn: (turnInput) =>
+        Ref.update(delivered, (current) => [...current, turnInput.applicationInstructions]),
+    });
+    assert.deepEqual(yield* Ref.get(delivered), ["Campaign A canon."]);
+    assert.deepEqual(observed, ["run:waiting", "pull-requests-refreshed"]);
+  }),
+);
+
+const startBlockedBotRun = Effect.fn("RunExecutionServiceTest.startBlockedBotRun")(function* (
+  key: string,
+  botContext: ReturnType<BotTurnContext.BotTurnContext["Service"]["forThread"]>,
+) {
+  const providerStarts = yield* Ref.make(0);
+  const writes = yield* Ref.make<ReadonlyArray<OrchestrationV2DomainEvent>>([]);
+  const threadId = ThreadId.make(`thread:${key}`);
+  const attemptId = RunAttemptId.make(`attempt:${key}`);
+  const providerInstanceId = ProviderInstanceId.make("codex");
+  const layerTest = RunExecutionService.layer.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        McpAppModelContext.layerEmpty,
+        Layer.mock(BotTurnContext.BotTurnContext)({ forThread: () => botContext }),
+        PreviewAgentActivity.layer,
+        Layer.mock(CheckpointService.CheckpointServiceV2)({ captureBaseline: () => Effect.void }),
+        layerTurnItemPositionsTest,
+        Layer.mock(EventSink.EventSinkV2)({
+          writeIfRunCurrent: (input) =>
+            Ref.update(writes, (current) => [...current, ...input.events]).pipe(
+              Effect.as({ committed: true, storedEvents: [] }),
+            ),
+        }),
+        IdAllocator.layer,
+        Layer.mock(ProviderEventIngestor.ProviderEventIngestorV2)({
+          ingestNormalized: () => Effect.succeed([]),
+        }),
+        ServerSettings.layerTest(),
+      ),
+    ),
+  );
+  yield* Effect.gen(function* () {
+    const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
+    yield* runExecution.startRootRun({
+      commandId: CommandId.make(`command:${key}`),
+      appThread: rootAppThread(threadId),
+      providerSessionId: ProviderSessionId.make(`session:${key}`),
+      session: {
+        events: Stream.never,
+        startTurn: () => Ref.update(providerStarts, (count) => count + 1),
+      } as unknown as ProviderAdapter.ProviderAdapterV2SessionRuntime,
+      run: {
+        id: RunId.make(`run:${key}`),
+        threadId,
+        ordinal: 1,
+        providerInstanceId,
+      } as OrchestrationV2Run,
+      rootNode: { id: NodeId.make(`node:${key}`) } as OrchestrationV2ExecutionNode,
+      checkpointScope: {
+        id: CheckpointScopeId.make(`checkpoint-scope:${key}`),
+      } as OrchestrationV2CheckpointScope,
+      providerThread: {
+        id: ProviderThreadId.make(`provider-thread:${key}`),
+        driver,
+      } as OrchestrationV2ProviderThread,
+      attempt: { id: attemptId, providerTurnId: null } as OrchestrationV2RunAttempt,
+      attemptId,
+      providerTurnOrdinal: 1,
+      shouldFinalizeRun: () => Effect.succeed(true),
+      message: {
+        messageId: MessageId.make(`message:${key}`),
+        text: "What happened last session?",
+        attachments: [],
+        createdBy: "user",
+        creationSource: "web",
+      },
+      modelSelection: { instanceId: providerInstanceId, model: "gpt-5.4" },
+      runtimePolicy: { runtimeMode: "full-access", interactionMode: "default", cwd: process.cwd() },
+    });
+  }).pipe(Effect.provide(layerTest));
+  const written = yield* Ref.get(writes);
+  const runUpdate = written.find((event) => event.type === "run.updated");
+  return {
+    providerStarts: yield* Ref.get(providerStarts),
+    status: runUpdate?.type === "run.updated" ? runUpdate.payload.status : undefined,
+    payload: JSON.stringify(written),
+  };
+});
+
+it.effect(
+  "fails a Bot conversation turn without starting the provider while the Bot is inactive",
+  () =>
+    Effect.gen(function* () {
+      const result = yield* startBlockedBotRun(
+        "bot-context-inactive",
+        Effect.succeed({ _tag: "inactive", message: "This Bot is archived." }),
+      );
+      assert.equal(result.providerStarts, 0);
+      assert.equal(result.status, "failed");
+      assert.include(result.payload, "This Bot is archived.");
+    }),
+);
+
+it.effect("fails a Bot conversation turn when its instructions cannot be read", () =>
+  Effect.gen(function* () {
+    const result = yield* startBlockedBotRun(
+      "bot-context-read-failure",
+      Effect.fail(
+        new BotStore.BotStoreError({ operation: "get-context-by-thread", cause: "locked" }),
+      ),
+    );
+    assert.equal(result.providerStarts, 0);
+    assert.equal(result.status, "failed");
+  }),
+);
+
 it.effect("keeps completed runs completed when pull request refresh fails", () =>
   Effect.gen(function* () {
     const { observed } = yield* captureRootRunTermination({
@@ -3117,6 +3249,7 @@ function captureRootRunTermination(input: {
   readonly onSubscriptionClose?: Effect.Effect<void>;
   readonly shouldStartProviderTurn?: RunExecutionService.RunExecutionServiceV2StartRootRunInput["shouldStartProviderTurn"];
   readonly appContext?: ReturnType<McpAppModelContext.McpAppModelContext["Service"]["forThread"]>;
+  readonly botContext?: ReturnType<BotTurnContext.BotTurnContext["Service"]["forThread"]>;
   readonly ingestNormalized?: ProviderEventIngestor.ProviderEventIngestorV2["Service"]["ingestNormalized"];
   readonly beforeTerminalWrite?: (
     request: Parameters<EventSink.EventSinkV2["Service"]["writeIfRunCurrent"]>[0],
@@ -3160,6 +3293,9 @@ function captureRootRunTermination(input: {
         Layer.mergeAll(
           Layer.mock(McpAppModelContext.McpAppModelContext)({
             forThread: () => input.appContext ?? Effect.succeed([]),
+          }),
+          Layer.mock(BotTurnContext.BotTurnContext)({
+            forThread: () => input.botContext ?? Effect.succeed({ _tag: "none" }),
           }),
           Layer.mock(CheckpointService.CheckpointServiceV2)({ captureBaseline: () => Effect.void }),
           layerTurnItemPositionsTest,
@@ -3682,6 +3818,7 @@ function runBackgroundItemScenario(
       Layer.provide(
         Layer.mergeAll(
           McpAppModelContext.layerEmpty,
+          BotTurnContext.layerEmpty,
           Layer.succeed(PreviewAgentActivity.PreviewAgentActivity, previewActivity),
           Layer.mock(CheckpointService.CheckpointServiceV2)({ captureBaseline: () => Effect.void }),
           layerTurnItemPositionsTest,
