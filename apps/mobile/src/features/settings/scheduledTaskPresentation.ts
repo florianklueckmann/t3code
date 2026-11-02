@@ -2,6 +2,52 @@ const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
 
+export const WEEKDAYS = [
+  { index: 1, label: "Mon" },
+  { index: 2, label: "Tue" },
+  { index: 3, label: "Wed" },
+  { index: 4, label: "Thu" },
+  { index: 5, label: "Fri" },
+  { index: 6, label: "Sat" },
+  { index: 0, label: "Sun" },
+] as const;
+
+export function repeatLabel(weekdays: ReadonlyArray<number>): string {
+  const days = new Set(weekdays);
+  if (days.size === 7) return "Every day";
+  if (days.size === 5 && [1, 2, 3, 4, 5].every((day) => days.has(day))) return "Weekdays";
+  return (
+    WEEKDAYS.filter((day) => days.has(day.index))
+      .map((day) => day.label)
+      .join(", ") || "Choose days"
+  );
+}
+
+/** An HH:MM time of day in the phone's locale format. */
+export function formatTimeOfDay(value: string): string {
+  const [hours, minutes] = value.split(":").map(Number);
+  if (!Number.isInteger(hours) || !Number.isInteger(minutes)) return value;
+  const time = new Date();
+  time.setHours(hours ?? 9, minutes ?? 0, 0, 0);
+  return time.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
+export function timeOfDayPickerValue(value: string): Date {
+  const [hours, minutes] = value.split(":").map(Number);
+  const time = new Date();
+  time.setHours(
+    Number.isInteger(hours) ? (hours ?? 9) : 9,
+    Number.isInteger(minutes) ? (minutes ?? 0) : 0,
+    0,
+    0,
+  );
+  return time;
+}
+
+export function timeOfDayFromPicker(selected: Date): string {
+  return `${String(selected.getHours()).padStart(2, "0")}:${String(selected.getMinutes()).padStart(2, "0")}`;
+}
+
 export function formatScheduledTaskInterval(everyMs: number): string {
   const units = [
     [7 * DAY, "week"],

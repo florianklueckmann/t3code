@@ -33,10 +33,12 @@ import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
+import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as BotProjectGuard from "./BotProjectGuard.ts";
 import * as BotStore from "./BotStore.ts";
+import * as BotTaskService from "./BotTaskService.ts";
 
 /** The only driver whose adapter delivers Bot instructions on every turn so far. */
 const BOT_SUPPORTED_DRIVER = "codex";
@@ -94,6 +96,8 @@ const make = Effect.gen(function* () {
   const providerInstances = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const scheduler = yield* Scheduler.Scheduler;
+  const scheduledTasks = yield* ScheduledTaskService.ScheduledTaskService;
+  const botTasks = yield* BotTaskService.BotTaskService;
   const crypto = yield* Crypto.Crypto;
   // Subscribers re-read the full list, so only the newest change signal matters.
   const changes = yield* PubSub.sliding<void>(1);
@@ -167,6 +171,20 @@ const make = Effect.gen(function* () {
       });
     }
     yield* store.clearThreadSync({ homeThreadId, revision: context.revision });
+  });
+
+  /**
+   * Archive and detach pause routines before stopping unfinished work, so nothing new starts
+   * meanwhile. Restore and reattach leave routines paused until the user resumes them.
+   */
+  const stopWork = Effect.fn("BotService.stopWork")(function* (
+    botId: BotId,
+    projectId?: ProjectId,
+  ) {
+    yield* scheduledTasks
+      .pauseBotRoutines({ botId, projectId })
+      .pipe(Effect.mapError((cause) => botError(cause.message, botId)(cause)));
+    yield* botTasks.cancelForContext({ botId, projectId });
   });
 
   const syncThreads = (botId: BotId, contexts: ReadonlyArray<BotStore.BotContextRow>) =>
@@ -322,6 +340,7 @@ const make = Effect.gen(function* () {
         )
         .pipe(Effect.mapError(storeError(input.botId)));
       if (changed) yield* notifyChanged;
+      if (input.archived) yield* stopWork(input.botId);
       // A repeated request finishes a transition an earlier one left pending.
       yield* syncThreads(input.botId, attached);
       return yield* readDetail(input.botId);
@@ -501,6 +520,7 @@ const make = Effect.gen(function* () {
       yield* store.upsertContext(next).pipe(Effect.mapError(storeError(input.botId)));
       yield* notifyChanged;
     }
+    yield* stopWork(input.botId, input.projectId);
     yield* syncThreads(input.botId, [next]);
     return yield* readDetail(input.botId);
   });

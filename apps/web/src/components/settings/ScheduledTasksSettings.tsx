@@ -2,6 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { connectionStatusTitle } from "@t3tools/client-runtime/connection";
 import { AsyncResult } from "effect/reactivity";
 import {
+  BotMessageSquareIcon,
   Clock3Icon,
   CopyIcon,
   InboxIcon,
@@ -13,6 +14,7 @@ import {
 } from "lucide-react";
 import { type ReactNode, useRef, useState } from "react";
 import type {
+  BotId,
   EnvironmentId,
   ModelSelection,
   OrchestrationV2ThreadLaunchWorkspaceStrategy,
@@ -126,9 +128,9 @@ import {
   SETTINGS_PICKER_TRIGGER_CLASSNAME,
 } from "./settingsLayout";
 
-const WEEKDAY_ORDER = [1, 2, 3, 4, 5, 6, 0] as const;
-const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
-const WEEKDAY_SHORT = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"] as const;
+export const WEEKDAY_ORDER = [1, 2, 3, 4, 5, 6, 0] as const;
+export const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
+export const WEEKDAY_SHORT = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"] as const;
 
 const WORKSPACE_MODE_LABELS: Record<WorkspaceMode, string> = {
   worktree: "Create a new worktree",
@@ -299,7 +301,8 @@ const ONCE_FORMATTER = new Intl.DateTimeFormat(undefined, {
   timeStyle: "short",
 });
 
-export function scheduleLabel(schedule: ScheduledTaskSchedule): string {
+/** `timeZone` is the environment's zone, which fixed times run in. */
+export function scheduleLabel(schedule: ScheduledTaskSchedule, timeZone?: string): string {
   if (schedule.type === "webhook") return "On webhook";
   if (schedule.type === "once") return `Once, ${ONCE_FORMATTER.format(new Date(schedule.runAt))}`;
   if (schedule.type === "interval") {
@@ -315,7 +318,7 @@ export function scheduleLabel(schedule: ScheduledTaskSchedule): string {
       : weekdays.length === 5 && weekdays.every((day) => day >= 1 && day <= 5)
         ? "Weekdays"
         : weekdays.map((day) => WEEKDAY_LABELS[day]).join(", ");
-  return `${days} at ${schedule.timeOfDay}`;
+  return `${days} at ${schedule.timeOfDay}${timeZone === undefined ? "" : ` (${timeZone})`}`;
 }
 
 /** formatRelativeTime handles only the past; upcoming runs need future labels. */
@@ -356,7 +359,7 @@ function deliveryOutcomeVariant(outcome: string) {
   return "outline";
 }
 
-function statusVariant(status: ScheduledTask["lastRunStatus"]) {
+export function scheduledRunStatusVariant(status: ScheduledTask["lastRunStatus"]) {
   if (status === "failed") return "error";
   if (status === "succeeded") return "success";
   if (status === "running") return "info";
@@ -403,7 +406,10 @@ export function ScheduledTasksSettings(target: {
   }
   if (linkedTask && linkedEnvironmentId !== undefined && openedLinkTaskId !== target.taskId) {
     setOpenedLinkTaskId(target.taskId);
-    if (editor === null) setEditor({ environmentId: linkedEnvironmentId, task: linkedTask });
+    // Bot routines are edited in the Bot settings; this form has no Bot target.
+    if (editor === null && linkedTask.bot === undefined) {
+      setEditor({ environmentId: linkedEnvironmentId, task: linkedTask });
+    }
   }
   const navigate = useNavigate({ from: "/settings/scheduled-tasks" });
   const closeEditor = () => {
@@ -581,6 +587,7 @@ function ScheduledTaskEnvironmentList({
               <ScheduledTaskRow
                 key={task.id}
                 environmentId={environment.environmentId}
+                timeZone={environment.serverConfig?.environment.timeZone}
                 task={task}
                 onEdit={() => onEdit(environment.environmentId, task)}
               />
@@ -705,6 +712,7 @@ function ScheduledTaskEnvironmentSection({
               <ScheduledTaskRow
                 key={task.id}
                 environmentId={environment.environmentId}
+                timeZone={environment.serverConfig?.environment.timeZone}
                 task={task}
                 onEdit={() => onEdit(environment.environmentId, task)}
               />
@@ -716,18 +724,35 @@ function ScheduledTaskEnvironmentSection({
   );
 }
 
+function BotRoutineBadge({
+  environmentId,
+  botId,
+}: {
+  readonly environmentId: EnvironmentId;
+  readonly botId: BotId;
+}) {
+  const botsQuery = useEnvironmentQuery(serverEnvironment.botsLive({ environmentId, input: {} }));
+  const name = botsQuery.data?.bots.find((bot) => bot.id === botId)?.name;
+  return (
+    <Badge variant="outline">{name === undefined ? "Bot routine" : `Bot routine · ${name}`}</Badge>
+  );
+}
+
 function ScheduledTaskRow({
   environmentId,
+  timeZone,
   task,
   onEdit,
 }: {
   readonly environmentId: EnvironmentId;
+  readonly timeZone: string | undefined;
   readonly task: ScheduledTask;
   readonly onEdit: () => void;
 }) {
   const canOperate = useAtomValue(
     serverEnvironment.upsertScheduledTask.permissionAtom(environmentId),
   );
+  const navigate = useNavigate();
   const [busy, setBusy] = useState(false);
   const [deliveriesOpen, setDeliveriesOpen] = useState(false);
   const isWebhook = task.schedule.type === "webhook";
@@ -762,12 +787,21 @@ function ScheduledTaskRow({
   };
   return (
     <SettingsRow
-      title={task.title}
+      title={
+        task.bot === undefined ? (
+          task.title
+        ) : (
+          <span className="flex min-w-0 flex-wrap items-center gap-2">
+            <span className="min-w-0 wrap-anywhere">{task.title}</span>
+            <BotRoutineBadge environmentId={environmentId} botId={task.bot.botId} />
+          </span>
+        )
+      }
       description={<span className="line-clamp-2">{task.prompt}</span>}
       status={
         <div className="flex flex-wrap items-center gap-2">
           <span>
-            {scheduleLabel(task.schedule)} ·{" "}
+            {scheduleLabel(task.schedule, timeZone)} ·{" "}
             {task.blockedByPolicy !== undefined ? (
               task.blockedByPolicy
             ) : !task.enabled ? (
@@ -783,7 +817,9 @@ function ScheduledTaskRow({
             )}
           </span>
           {task.lastRunStatus !== "never" ? (
-            <Badge variant={statusVariant(task.lastRunStatus)}>{task.lastRunStatus}</Badge>
+            <Badge variant={scheduledRunStatusVariant(task.lastRunStatus)}>
+              {task.lastRunStatus}
+            </Badge>
           ) : null}
           {task.lastRunError ? <span className="text-destructive">{task.lastRunError}</span> : null}
         </div>
@@ -810,10 +846,17 @@ function ScheduledTaskRow({
               <MoreHorizontalIcon className="size-4" />
             </MenuTrigger>
             <MenuPopup align="end">
-              <MenuItem onClick={onEdit}>
-                <PencilIcon />
-                Edit
-              </MenuItem>
+              {task.bot === undefined ? (
+                <MenuItem onClick={onEdit}>
+                  <PencilIcon />
+                  Edit
+                </MenuItem>
+              ) : (
+                <MenuItem onClick={() => void navigate({ to: "/settings/bots" })}>
+                  <BotMessageSquareIcon />
+                  Edit in Bots settings
+                </MenuItem>
+              )}
               {isWebhook ? (
                 <MenuItem onClick={() => setDeliveriesOpen(true)}>
                   <InboxIcon />
@@ -1193,6 +1236,7 @@ function ScheduledTaskEditorForm({
   const offersOnce =
     environment?.serverConfig?.environment.capabilities.oneTimeSchedules === true ||
     task?.schedule.type === "once";
+  const environmentTimeZone = environment?.serverConfig?.environment.timeZone;
   const connected =
     environment?.connection.phase === "connected" && environment.serverConfig !== null;
   const tasksQuery = useEnvironmentQuery(
@@ -1892,6 +1936,11 @@ function ScheduledTaskEditorForm({
                     </Toggle>
                   ))}
                 </ToggleGroup>
+                {environmentTimeZone === undefined ? null : (
+                  <span className="text-xs text-muted-foreground">
+                    Times use {environmentTimeZone}
+                  </span>
+                )}
               </div>
             ) : (
               <div className="flex items-center gap-2">
