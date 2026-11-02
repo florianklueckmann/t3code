@@ -174,6 +174,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   scheduledTaskThreadModes: Schema.optionalKey(Schema.Boolean),
   /** Server can transcribe 16 kHz mono PCM audio on the environment machine. */
   voiceTranscription: Schema.optionalKey(Schema.Boolean),
+  /** Server answers the `bots.*` RPCs. Older servers have no Bots. */
+  bots: Schema.optionalKey(Schema.Boolean),
 });
 export type ExecutionEnvironmentCapabilities = typeof ExecutionEnvironmentCapabilities.Type;
 

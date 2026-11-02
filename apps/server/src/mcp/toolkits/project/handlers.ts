@@ -39,6 +39,8 @@ function projectFailure(error: Project.ProjectServiceError) {
   const message =
     error._tag === "ProjectInvalidError"
       ? error.detail
+      : error._tag === "ProjectBotAttachedError"
+      ? error.message
       : error._tag === "ProjectNotFoundError"
         ? "The project was not found."
         : error._tag === "ProjectConflictError"

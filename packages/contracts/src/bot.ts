@@ -1,0 +1,144 @@
+import * as Schema from "effect/Schema";
+
+import {
+  IsoDateTime,
+  ProjectId,
+  ThreadId,
+  TrimmedNonEmptyString,
+  TrimmedString,
+} from "./baseSchemas.ts";
+import { ModelSelection } from "./modelSelection.ts";
+
+/** No colons: the server derives home thread ids from the Bot and project ids. */
+export const BotId = TrimmedNonEmptyString.check(
+  Schema.isMaxLength(128),
+  Schema.isPattern(/^[A-Za-z0-9_-]+$/),
+).pipe(Schema.brand("BotId"));
+export type BotId = typeof BotId.Type;
+
+const BOT_NAME_MAX_CHARS = 80;
+const BOT_INSTRUCTIONS_MAX_CHARS = 16_000;
+const BOT_SOURCE_PREFERENCES_MAX = 50;
+
+/** How learning becomes active: on its own, or only after the user adopts it. */
+export const BotLearningPolicy = Schema.Literals(["automatic", "after_adoption"]);
+export type BotLearningPolicy = typeof BotLearningPolicy.Type;
+
+const BotName = TrimmedNonEmptyString.check(Schema.isMaxLength(BOT_NAME_MAX_CHARS));
+const BotInstructions = TrimmedString.check(Schema.isMaxLength(BOT_INSTRUCTIONS_MAX_CHARS));
+
+/**
+ * A source the Bot prefers for a project. It is guidance for research and
+ * answers, not an allowlist: the Bot may use other sources when these do not
+ * answer the question.
+ */
+export const BotSourcePreference = Schema.Struct({
+  label: TrimmedNonEmptyString.check(Schema.isMaxLength(120)),
+  /** A path, URL or tool name, as the user wrote it. */
+  location: TrimmedNonEmptyString.check(Schema.isMaxLength(2_000)),
+});
+export type BotSourcePreference = typeof BotSourcePreference.Type;
+
+const BotSourcePreferences = Schema.Array(BotSourcePreference).check(
+  Schema.isMaxLength(BOT_SOURCE_PREFERENCES_MAX),
+);
+
+export const BotProjectContextSummary = Schema.Struct({
+  projectId: ProjectId,
+  homeThreadId: ThreadId,
+  attachedAt: IsoDateTime,
+  detachedAt: Schema.NullOr(IsoDateTime),
+});
+export type BotProjectContextSummary = typeof BotProjectContextSummary.Type;
+
+export const BotProjectContext = Schema.Struct({
+  ...BotProjectContextSummary.fields,
+  guidance: BotInstructions,
+  sources: BotSourcePreferences,
+  updatedAt: IsoDateTime,
+});
+export type BotProjectContext = typeof BotProjectContext.Type;
+
+export const BotSummary = Schema.Struct({
+  id: BotId,
+  name: BotName,
+  modelSelection: ModelSelection,
+  learningPolicy: BotLearningPolicy,
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+  archivedAt: Schema.NullOr(IsoDateTime),
+  projects: Schema.Array(BotProjectContextSummary),
+});
+export type BotSummary = typeof BotSummary.Type;
+
+export const BotDetail = Schema.Struct({
+  ...BotSummary.fields,
+  instructions: BotInstructions,
+  projects: Schema.Array(BotProjectContext),
+});
+export type BotDetail = typeof BotDetail.Type;
+
+export const BotListInput = Schema.Struct({});
+export type BotListInput = typeof BotListInput.Type;
+
+export const BotListResult = Schema.Struct({
+  bots: Schema.Array(BotSummary),
+});
+export type BotListResult = typeof BotListResult.Type;
+
+export const BotGetInput = Schema.Struct({ botId: BotId });
+export type BotGetInput = typeof BotGetInput.Type;
+
+export const BotCreateInput = Schema.Struct({
+  /** Chosen by the client so a retried create is idempotent. */
+  botId: BotId,
+  name: BotName,
+  instructions: BotInstructions,
+  modelSelection: ModelSelection,
+  learningPolicy: BotLearningPolicy,
+});
+export type BotCreateInput = typeof BotCreateInput.Type;
+
+export const BotUpdateInput = Schema.Struct({
+  botId: BotId,
+  name: Schema.optional(BotName),
+  instructions: Schema.optional(BotInstructions),
+  modelSelection: Schema.optional(ModelSelection),
+  learningPolicy: Schema.optional(BotLearningPolicy),
+});
+export type BotUpdateInput = typeof BotUpdateInput.Type;
+
+export const BotSetArchivedInput = Schema.Struct({
+  botId: BotId,
+  archived: Schema.Boolean,
+});
+export type BotSetArchivedInput = typeof BotSetArchivedInput.Type;
+
+/** Attaches a project, or reattaches a detached one with its earlier conversation. */
+export const BotAttachProjectInput = Schema.Struct({
+  botId: BotId,
+  projectId: ProjectId,
+  guidance: Schema.optional(BotInstructions),
+  sources: Schema.optional(BotSourcePreferences),
+});
+export type BotAttachProjectInput = typeof BotAttachProjectInput.Type;
+
+export const BotUpdateProjectContextInput = Schema.Struct({
+  botId: BotId,
+  projectId: ProjectId,
+  guidance: Schema.optional(BotInstructions),
+  sources: Schema.optional(BotSourcePreferences),
+});
+export type BotUpdateProjectContextInput = typeof BotUpdateProjectContextInput.Type;
+
+export const BotDetachProjectInput = Schema.Struct({
+  botId: BotId,
+  projectId: ProjectId,
+});
+export type BotDetachProjectInput = typeof BotDetachProjectInput.Type;
+
+export class BotError extends Schema.TaggedError<BotError>()("BotError", {
+  message: Schema.String,
+  botId: Schema.optional(BotId),
+  cause: Schema.optional(Schema.Defect()),
+}) {}
