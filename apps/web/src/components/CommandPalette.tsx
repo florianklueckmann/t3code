@@ -250,6 +250,7 @@ import {
   remoteProjectSourceIcon,
   sourceControlHostIcon,
 } from "./CommandPaletteAddProject";
+import { useCommandPaletteBotItems } from "./CommandPaletteBotItems";
 import { useCommandPaletteThreadItems } from "./CommandPaletteThreadItems";
 import { useCommandPaletteThemeItems } from "./CommandPaletteThemeItems";
 import {
@@ -725,6 +726,16 @@ function OpenCommandPaletteDialog(props: {
   const canTriage =
     useAtomValue(serverEnvironment.prepareTriage.permissionAtom(triageEnvironmentId)) &&
     supportsTriage(triageEnvironmentId);
+  const botEnvironment = environments.find(
+    (environment) =>
+      environment.environmentId === (currentProjectEnvironmentId ?? primaryEnvironmentId),
+  );
+  const botItems = useCommandPaletteBotItems(
+    botEnvironment?.connection.phase === "connected" &&
+      botEnvironment.serverConfig?.environment.capabilities.bots === true
+      ? botEnvironment.environmentId
+      : null,
+  );
   const currentProject = resolveCommandPaletteProject(
     projectByKey,
     currentProjectEnvironmentId,
@@ -1658,6 +1669,8 @@ function OpenCommandPaletteDialog(props: {
       },
     });
   }
+
+  actionItems.push(...botItems);
 
   actionItems.push({
     kind: "action",

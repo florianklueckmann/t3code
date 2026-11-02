@@ -31,6 +31,7 @@ export type SettingsPath =
   | "/settings/browser"
   | "/settings/devices"
   | "/settings/scheduled-tasks"
+  | "/settings/bots"
   | "/settings/source-control"
   | "/settings/worktrees"
   | "/settings/connections"
@@ -116,6 +117,7 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/about": msg("About"),
   "/settings/voice": msg("Voice"),
   "/settings/archived": msg("Archive"),
+  "/settings/bots": msg("Bots"),
 };
 
 /** Sidebar order. A group with a hidden heading is set apart on screen by space alone. */
@@ -145,6 +147,7 @@ export const SETTINGS_NAV_GROUPS: ReadonlyArray<{
       "/settings/browser",
       "/settings/devices",
       "/settings/scheduled-tasks",
+      "/settings/bots",
     ],
   },
   {
@@ -1364,6 +1367,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     secretsFeatureOnly: true,
   },
   {
+    id: "bots",
+    title: "Bots",
+    to: "/settings/bots",
+    searchTerms: ["assistant agent instructions project conversation preferred sources learning"],
+  },
+  {
     id: "archive",
     title: "Archived threads",
     to: "/settings/archived",
@@ -1395,6 +1404,7 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   "/settings/access": "connections",
   "/settings/secrets": null,
   "/settings/scheduled-tasks": null,
+  "/settings/bots": null,
   "/settings/maintenance": null,
   "/settings/labs": null,
   "/settings/about": null,
