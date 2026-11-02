@@ -56,22 +56,24 @@ export function BotLookRouteScreen() {
           ) : null}
         </View>
         <SettingsSection title="Color">
-          <OptionRow>
+          {/* Two even rows of four; eight in one row do not fit a phone. */}
+          <View className="flex-row flex-wrap gap-y-2 p-3">
             {BOT_COLOR_OPTIONS.map((option) => (
-              <OptionButton
-                key={option.value}
-                label={option.label}
-                checked={shown.color === option.value}
-                round
-                onPress={() => set({ color: option.value })}
-              >
-                <View
-                  className="size-7 rounded-full border border-black/10"
-                  style={{ backgroundColor: BOT_COLOR_PALETTE[option.value].body }}
-                />
-              </OptionButton>
+              <View key={option.value} className="w-1/4 items-center">
+                <OptionButton
+                  label={option.label}
+                  checked={shown.color === option.value}
+                  round
+                  onPress={() => set({ color: option.value })}
+                >
+                  <View
+                    className="size-7 rounded-full border border-black/10"
+                    style={{ backgroundColor: BOT_COLOR_PALETTE[option.value].body }}
+                  />
+                </OptionButton>
+              </View>
             ))}
-          </OptionRow>
+          </View>
         </SettingsSection>
         <SettingsSection title="Face">
           <OptionRow>
