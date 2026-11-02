@@ -178,6 +178,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   bots: Schema.optionalKey(Schema.Boolean),
   /** Server stores Bot appearance; clients send it only when this is set. */
   botAppearance: Schema.optionalKey(Schema.Boolean),
+  /** Server runs Bot tasks and routines (`bots.*Task*`, scheduled tasks with a `bot` target). */
+  botRoutines: Schema.optionalKey(Schema.Boolean),
 });
 export type ExecutionEnvironmentCapabilities = typeof ExecutionEnvironmentCapabilities.Type;
 
@@ -189,6 +191,8 @@ export const ExecutionEnvironmentDescriptor = Schema.Struct({
   orchestrationProtocolVersion: Schema.optionalKey(Schema.Int),
   /** Highest migration this server's database holds; absent on older servers. */
   databaseMigration: Schema.optionalKey(Schema.Int),
+  /** IANA zone that fixed-time schedules run in; absent on older servers. */
+  timeZone: Schema.optionalKey(TrimmedNonEmptyString),
   capabilities: ExecutionEnvironmentCapabilities,
 });
 export type ExecutionEnvironmentDescriptor = typeof ExecutionEnvironmentDescriptor.Type;

@@ -10,6 +10,7 @@ import {
   ThreadId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
+import { BotId } from "./bot.ts";
 import { ModelSelection } from "./modelSelection.ts";
 import {
   OrchestrationV2Actor,
@@ -217,6 +218,18 @@ export type ScheduledTaskUpsertSchedule = typeof ScheduledTaskUpsertSchedule.Typ
 export const ScheduledTaskRunStatus = Schema.Literals(["never", "running", "succeeded", "failed"]);
 export type ScheduledTaskRunStatus = typeof ScheduledTaskRunStatus.Type;
 
+/**
+ * Runs the task as a routine of a Bot attached to the task's project: each run is a Bot task in
+ * its own work thread. Saves that omit it keep the stored target, so an older editor cannot turn
+ * a routine into a plain thread schedule.
+ */
+export const ScheduledTaskBotTarget = Schema.Struct({
+  botId: BotId,
+  /** When the prepared session starts. A one-time run still due after this is skipped. */
+  sessionAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+});
+export type ScheduledTaskBotTarget = typeof ScheduledTaskBotTarget.Type;
+
 export const ScheduledTaskWebhookEndpoint = Schema.Struct({
   path: TrimmedNonEmptyString,
   url: Schema.NullOr(TrimmedNonEmptyString),
@@ -261,6 +274,7 @@ export const ScheduledTask = Schema.Struct({
   lastRunError: Schema.NullOr(Schema.String),
   runCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   webhook: Schema.optional(ScheduledTaskWebhookEndpoint),
+  bot: Schema.optional(ScheduledTaskBotTarget),
   /** Why the task cannot run regardless of `enabled`, such as a managed policy refusing webhooks. */
   blockedByPolicy: Schema.optionalKey(Schema.String),
 });
@@ -294,6 +308,7 @@ export const ScheduledTaskUpsertInput = Schema.Struct({
   interactionMode: ProviderInteractionMode,
   createdBy: Schema.optional(OrchestrationV2Actor),
   creationSource: Schema.optional(OrchestrationV2CreationSource),
+  bot: Schema.optional(ScheduledTaskBotTarget),
 });
 export type ScheduledTaskUpsertInput = typeof ScheduledTaskUpsertInput.Type;
 

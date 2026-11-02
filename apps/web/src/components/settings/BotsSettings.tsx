@@ -2,6 +2,11 @@ import { RegistryContext, useAtomValue } from "@effect/atom-react";
 import {
   botProjectContextChanges,
   botProjectContextDraft,
+  botRoutineDraft,
+  botRoutinesFor,
+  botRoutineUpsertInput,
+  describeBotRoutineTiming,
+  emptyBotRoutineDraft,
   emptyBotSourceDraft,
   type BotProjectContextDraft,
   type BotSourceDraft,
@@ -19,6 +24,7 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import {
   BotId,
+  CommandId,
   ProviderDriverKind,
   type BotAppearance,
   type BotDetail,
@@ -28,6 +34,8 @@ import {
   type EnvironmentId,
   type ModelSelection,
   type ProjectId,
+  type ScheduledTask,
+  type ScheduledTaskId,
   type ThreadId,
 } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
@@ -36,7 +44,9 @@ import {
   ArchiveRestoreIcon,
   MessageSquareIcon,
   MoreHorizontalIcon,
+  PauseIcon,
   PencilIcon,
+  PlayIcon,
   PlusIcon,
   Trash2Icon,
 } from "lucide-react";
@@ -47,12 +57,13 @@ import { randomUUID } from "../../lib/utils";
 import { getCustomModelOptionsByInstance } from "../../modelSelection";
 import { providerInstanceEntriesFor, type ProviderInstanceEntry } from "../../providerInstances";
 import { useProjects } from "../../state/entities";
-import type { EnvironmentPresentation } from "../../state/environments";
+import { useEnvironment, type EnvironmentPresentation } from "../../state/environments";
 import { useEnvironmentQuery } from "../../state/query";
 import { EMPTY_SERVER_PROVIDERS, serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { buildThreadRouteParams } from "../../threadRoutes";
 import { BotAvatar } from "../BotAvatar";
+import { BotTaskRow, useUpcomingInstantFormatter } from "../chat/BotTaskCards";
 import { ProviderModelPicker } from "../chat/ProviderModelPicker";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -68,12 +79,25 @@ import {
 } from "../ui/dialog";
 import { Input } from "../ui/input";
 import { Label } from "../ui/label";
-import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
+import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/menu";
 import { Radio, RadioGroup } from "../ui/radio-group";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Textarea } from "../ui/textarea";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { BotAppearancePicker } from "./BotAppearancePicker";
+import { Toggle, ToggleGroup } from "../ui/toggle-group";
+import {
+  ScheduledRelativeLabel,
+  scheduledRunStatusVariant,
+  WEEKDAY_LABELS,
+  WEEKDAY_ORDER,
+  WEEKDAY_SHORT,
+} from "./ScheduledTasksSettings";
+import {
+  botRoutineDraftFromForm,
+  botRoutineForm,
+  type BotRoutineForm,
+} from "./botRoutineForm.logic";
 import { useSettingsScope } from "./SettingsScopeContext";
 import { searchableSetting } from "./settingsSearch";
 import {
@@ -745,6 +769,10 @@ function BotProjectContexts({
       !bot.projects.some((context) => context.projectId === project.id),
   );
   const pickedProject = attachable.find((project) => project.id === pickedProjectId);
+  const descriptor = useEnvironment(environmentId)?.serverConfig?.environment;
+  // An archived Bot's routines stay paused, so it shows none to manage.
+  const routinesSupported =
+    descriptor?.capabilities.botRoutines === true && bot.archivedAt === null;
 
   const run = async (
     title: string,
@@ -782,7 +810,16 @@ function BotProjectContexts({
           onDraftChange={(next) => onDraftChange(context, next)}
           onDetach={() => void detach(context.projectId)}
           onReattach={() => void attach(context.projectId, "Could not reattach project")}
-        />
+        >
+          {routinesSupported ? (
+            <BotRoutines
+              environmentId={environmentId}
+              bot={bot}
+              projectId={context.projectId}
+              timeZone={descriptor?.timeZone}
+            />
+          ) : null}
+        </BotProjectContextEditor>
       ))}
       <div className="flex items-center gap-2">
         <Select
@@ -833,6 +870,7 @@ function BotProjectContextEditor({
   onDraftChange,
   onDetach,
   onReattach,
+  children,
 }: {
   readonly context: BotProjectContext;
   readonly title: string;
@@ -841,6 +879,8 @@ function BotProjectContextEditor({
   readonly onDraftChange: (draft: BotProjectContextDraft) => void;
   readonly onDetach: () => void;
   readonly onReattach: () => void;
+  /** Shown below the context while the project is attached. */
+  readonly children?: ReactNode;
 }) {
   const detached = context.detachedAt !== null;
   const guidanceId = `bot-guidance-${context.projectId}`;
@@ -934,8 +974,399 @@ function BotProjectContextEditor({
               </div>
             ))}
           </div>
+          {children}
         </>
       )}
     </div>
+  );
+}
+
+const RECENT_BOT_TASK_LIMIT = 5;
+
+function BotRoutines({
+  environmentId,
+  bot,
+  projectId,
+  timeZone,
+}: {
+  readonly environmentId: EnvironmentId;
+  readonly bot: BotDetail;
+  readonly projectId: ProjectId;
+  readonly timeZone: string | undefined;
+}) {
+  const routinesQuery = useEnvironmentQuery(
+    serverEnvironment.scheduledTasksLive({ environmentId, input: {} }),
+  );
+  const tasksQuery = useEnvironmentQuery(
+    serverEnvironment.botTasksLive({ environmentId, input: { botId: bot.id, projectId } }),
+  );
+  const canOperate = useAtomValue(
+    serverEnvironment.upsertScheduledTask.permissionAtom(environmentId),
+  );
+  const [editing, setEditing] = useState<ScheduledTaskId | "new" | null>(null);
+  const routines =
+    routinesQuery.data === null
+      ? null
+      : botRoutinesFor(routinesQuery.data.tasks, bot.id, projectId);
+  const recentTasks = tasksQuery.data?.tasks.slice(0, RECENT_BOT_TASK_LIMIT) ?? [];
+  const editorFor = (task: ScheduledTask | null) => (
+    <BotRoutineEditor
+      environmentId={environmentId}
+      bot={bot}
+      projectId={projectId}
+      timeZone={timeZone}
+      task={task}
+      onDone={() => setEditing(null)}
+    />
+  );
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between gap-2">
+        <div className="min-w-0 space-y-1">
+          <Label>Routines</Label>
+          <p className="text-xs text-muted-foreground">
+            Each run starts a new work thread in full access, with no approval prompts. Routines
+            prepare and propose; they don't edit your files.
+          </p>
+        </div>
+        <Button
+          className="shrink-0"
+          size="xs"
+          variant="outline"
+          disabled={!canOperate || editing !== null}
+          onClick={() => setEditing("new")}
+        >
+          <PlusIcon aria-hidden />
+          Add routine
+        </Button>
+      </div>
+      {routinesQuery.error !== null ? (
+        <p className="text-xs text-destructive">{routinesQuery.error}</p>
+      ) : routines === null ? (
+        <p className="text-xs text-muted-foreground" role="status">
+          Loading routines…
+        </p>
+      ) : routines.length === 0 && editing !== "new" ? (
+        <p className="text-xs text-muted-foreground">No routines yet.</p>
+      ) : (
+        <ul className="space-y-2">
+          {routines.map((task) =>
+            editing === task.id ? (
+              <li key={task.id}>{editorFor(task)}</li>
+            ) : (
+              <BotRoutineRow
+                key={task.id}
+                environmentId={environmentId}
+                task={task}
+                timeZone={timeZone}
+                canOperate={canOperate}
+                onEdit={editing === null ? () => setEditing(task.id) : null}
+              />
+            ),
+          )}
+        </ul>
+      )}
+      {editing === "new" ? editorFor(null) : null}
+      {tasksQuery.error !== null ? (
+        <p className="text-xs text-destructive">{tasksQuery.error}</p>
+      ) : recentTasks.length === 0 ? null : (
+        <div className="space-y-2">
+          <Label>Recent tasks</Label>
+          <ul className="space-y-2 text-xs">
+            {recentTasks.map((task) => (
+              <BotTaskRow key={task.id} environmentId={environmentId} task={task} />
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BotRoutineRow({
+  environmentId,
+  task,
+  timeZone,
+  canOperate,
+  onEdit,
+}: {
+  readonly environmentId: EnvironmentId;
+  readonly task: ScheduledTask;
+  readonly timeZone: string | undefined;
+  readonly canOperate: boolean;
+  /** Null while another routine form is open. */
+  readonly onEdit: (() => void) | null;
+}) {
+  const formatInstant = useUpcomingInstantFormatter();
+  const setEnabled = useAtomCommand(serverEnvironment.setScheduledTaskEnabled, {
+    label: "bot routine enabled",
+  });
+  const runNow = useAtomCommand(serverEnvironment.runScheduledTaskNow, {
+    label: "bot routine run now",
+  });
+  const remove = useAtomCommand(serverEnvironment.deleteScheduledTask, {
+    label: "bot routine delete",
+  });
+  const [busy, setBusy] = useState(false);
+  const act = async (
+    title: string,
+    command: () => Promise<AtomCommandResult<unknown, unknown>>,
+  ) => {
+    setBusy(true);
+    const result = await command();
+    setBusy(false);
+    settled(title, result);
+  };
+  const editable = botRoutineDraft(task) !== null;
+  return (
+    <li className="flex items-start justify-between gap-2 text-xs">
+      <div className="min-w-0 space-y-0.5">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="min-w-0 text-sm font-medium wrap-anywhere">{task.title}</span>
+          {task.enabled ? null : <Badge variant="outline">Paused</Badge>}
+          {task.lastRunStatus === "never" ? null : (
+            <Badge variant={scheduledRunStatusVariant(task.lastRunStatus)}>
+              Last run {task.lastRunStatus}
+            </Badge>
+          )}
+        </div>
+        <p className="text-muted-foreground">
+          {describeBotRoutineTiming(task, formatInstant, timeZone)}
+        </p>
+        {task.blockedByPolicy !== undefined ? (
+          <p className="text-muted-foreground">{task.blockedByPolicy}</p>
+        ) : task.enabled && task.nextRunAt !== null ? (
+          <p className="text-muted-foreground">
+            Next run <ScheduledRelativeLabel value={task.nextRunAt} />
+          </p>
+        ) : null}
+        {task.lastRunError ? (
+          <p className="text-destructive wrap-anywhere">{task.lastRunError}</p>
+        ) : null}
+      </div>
+      <div className="flex shrink-0 items-center gap-1">
+        <Button
+          size="xs"
+          variant="outline"
+          disabled={busy || !canOperate}
+          onClick={() =>
+            void act(task.enabled ? "Could not pause routine" : "Could not resume routine", () =>
+              setEnabled({ environmentId, input: { id: task.id, enabled: !task.enabled } }),
+            )
+          }
+        >
+          {task.enabled ? <PauseIcon aria-hidden /> : <PlayIcon aria-hidden />}
+          {task.enabled ? "Pause" : "Resume"}
+        </Button>
+        <Menu>
+          <MenuTrigger
+            render={
+              <Button
+                size="icon-sm"
+                variant="ghost"
+                disabled={busy || !canOperate}
+                aria-label={`Actions for ${task.title}`}
+              />
+            }
+          >
+            <MoreHorizontalIcon className="size-4" />
+          </MenuTrigger>
+          <MenuPopup align="end">
+            <MenuItem
+              onClick={() =>
+                void act("Could not run routine", () =>
+                  runNow({ environmentId, input: { id: task.id } }),
+                )
+              }
+            >
+              <PlayIcon />
+              Run now
+            </MenuItem>
+            {editable ? (
+              <MenuItem disabled={onEdit === null} onClick={() => onEdit?.()}>
+                <PencilIcon />
+                Edit
+              </MenuItem>
+            ) : null}
+            <MenuSeparator />
+            <MenuItem
+              onClick={() =>
+                void act("Could not delete routine", () =>
+                  remove({ environmentId, input: { id: task.id } }),
+                )
+              }
+            >
+              <Trash2Icon />
+              Delete
+            </MenuItem>
+          </MenuPopup>
+        </Menu>
+      </div>
+    </li>
+  );
+}
+
+function BotRoutineEditor({
+  environmentId,
+  bot,
+  projectId,
+  timeZone,
+  task,
+  onDone,
+}: {
+  readonly environmentId: EnvironmentId;
+  readonly bot: BotDetail;
+  readonly projectId: ProjectId;
+  readonly timeZone: string | undefined;
+  /** Null when adding a routine. */
+  readonly task: ScheduledTask | null;
+  readonly onDone: () => void;
+}) {
+  // Chosen once per form so a retried create stays idempotent.
+  const [commandId] = useState(() => CommandId.make(randomUUID()));
+  const [form, setForm] = useState(() =>
+    botRoutineForm((task === null ? null : botRoutineDraft(task)) ?? emptyBotRoutineDraft()),
+  );
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const canOperate = useAtomValue(
+    serverEnvironment.upsertScheduledTask.permissionAtom(environmentId),
+  );
+  const upsert = useAtomCommand(serverEnvironment.upsertScheduledTask, {
+    label: "bot routine upsert",
+  });
+  const idPrefix = `bot-routine-${task?.id ?? `new-${projectId}`}`;
+  const update = (patch: Partial<BotRoutineForm>) => setForm((prev) => ({ ...prev, ...patch }));
+
+  const save = async () => {
+    const built = botRoutineUpsertInput(
+      botRoutineDraftFromForm(form),
+      {
+        botId: bot.id,
+        projectId,
+        modelSelection: bot.modelSelection,
+        ...(task === null ? { commandId } : { id: task.id, enabled: task.enabled }),
+      },
+      Date.now(),
+    );
+    if ("error" in built) {
+      setError(built.error);
+      return;
+    }
+    setError(null);
+    setSaving(true);
+    const result = await upsert({ environmentId, input: built.input });
+    setSaving(false);
+    if (result._tag !== "Failure") {
+      onDone();
+    } else if (!isAtomCommandInterrupted(result)) {
+      const failure = squashAtomCommandFailure(result);
+      setError(failure instanceof Error ? failure.message : String(failure));
+    }
+  };
+
+  return (
+    <fieldset disabled={saving} className="min-w-0 space-y-3 rounded-md border p-3">
+      <Field label="Name" htmlFor={`${idPrefix}-title`}>
+        <Input
+          id={`${idPrefix}-title`}
+          value={form.title}
+          onChange={(event) => update({ title: event.target.value })}
+        />
+      </Field>
+      <Field label="Brief" htmlFor={`${idPrefix}-prompt`}>
+        <Textarea
+          id={`${idPrefix}-prompt`}
+          className="max-h-48 overflow-y-auto"
+          placeholder="What should the Bot prepare? A reminder, a recap of the last session, open questions, proposals."
+          value={form.prompt}
+          onChange={(event) => update({ prompt: event.target.value })}
+        />
+      </Field>
+      <div className="space-y-2">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <Label>When</Label>
+          <ToggleGroup
+            aria-label="Routine timing"
+            value={[form.timing]}
+            onValueChange={(values) => {
+              const timing = values[0];
+              if (timing === "session" || timing === "recurring") update({ timing });
+            }}
+          >
+            <Toggle value="session">Before a session</Toggle>
+            <Toggle value="recurring">Recurring</Toggle>
+          </ToggleGroup>
+        </div>
+        {form.timing === "session" ? (
+          <div className="flex flex-wrap items-center gap-2">
+            <Label htmlFor={`${idPrefix}-session`}>Session starts</Label>
+            <Input
+              type="datetime-local"
+              id={`${idPrefix}-session`}
+              nativeInput
+              className="w-56"
+              value={form.sessionAt}
+              onChange={(event) => update({ sessionAt: event.target.value })}
+            />
+            <Input
+              type="number"
+              aria-label="Hours before the session"
+              nativeInput
+              min={0}
+              step="any"
+              className="w-20"
+              value={form.leadHours}
+              onChange={(event) => update({ leadHours: event.target.value })}
+            />
+            <span className="text-xs text-muted-foreground">hours before</span>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <Label htmlFor={`${idPrefix}-time`}>Run at</Label>
+              <Input
+                type="time"
+                id={`${idPrefix}-time`}
+                nativeInput
+                className="w-32"
+                value={form.timeOfDay}
+                onChange={(event) => update({ timeOfDay: event.target.value })}
+              />
+              <ToggleGroup
+                multiple
+                variant="outline"
+                size="sm"
+                aria-label="Days to run"
+                value={form.weekdays.map(String)}
+                onValueChange={(values) => update({ weekdays: values.map(Number) })}
+              >
+                {WEEKDAY_ORDER.map((day) => (
+                  <Toggle key={day} value={String(day)} aria-label={WEEKDAY_LABELS[day]}>
+                    {WEEKDAY_SHORT[day]}
+                  </Toggle>
+                ))}
+              </ToggleGroup>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {`Runs at this time in ${timeZone === undefined ? "" : `${timeZone}, `}the environment's time zone. With no days picked, it runs every day.`}
+            </p>
+          </div>
+        )}
+      </div>
+      {error === null ? null : (
+        <p role="alert" className="text-xs text-destructive">
+          {error}
+        </p>
+      )}
+      <div className="flex justify-end gap-2">
+        <Button size="xs" variant="outline" onClick={onDone}>
+          Cancel
+        </Button>
+        <Button size="xs" disabled={!canOperate} onClick={() => void save()}>
+          {task === null ? "Add routine" : "Save routine"}
+        </Button>
+      </div>
+    </fieldset>
   );
 }

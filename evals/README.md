@@ -13,6 +13,8 @@ Write or run an eval when a change affects what a model sees or does: agent inst
 | [test-signal](test-signal/)     | Whether a cheap model running the test-signal check flags low-signal tests.                          |
 | [bot-sources](bot-sources/)     | Whether Bots follow their project sources in real Codex turns through a dev server.                  |
 
+| [bot-preparation](bot-preparation/) | Whether Bot preparation routines give grounded results and Bots set up routines when asked. |
+
 ## Run an eval
 
 1. Run `vp i` at the repo root.

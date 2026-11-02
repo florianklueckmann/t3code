@@ -389,6 +389,11 @@ import {
   BotSetArchivedInput,
   BotUpdateInput,
   BotUpdateProjectContextInput,
+  BotCancelTaskInput,
+  BotStartTaskInput,
+  BotTaskListInput,
+  BotTaskListResult,
+  BotTaskSummary,
 } from "./bot.ts";
 import { SecretRequestAnswerInput, SecretRequestError } from "./secretRequest.ts";
 import {
@@ -571,6 +576,9 @@ export const WS_METHODS = {
   botsAttachProject: "bots.attachProject",
   botsUpdateProjectContext: "bots.updateProjectContext",
   botsDetachProject: "bots.detachProject",
+  botsSubscribeTasks: "bots.subscribeTasks",
+  botsStartTask: "bots.startTask",
+  botsCancelTask: "bots.cancelTask",
 
   cloudGetRelayClientStatus: "cloud.getRelayClientStatus",
   cloudInstallRelayClient: "cloud.installRelayClient",
@@ -2053,6 +2061,25 @@ const WsBotsDetachProjectRpc = Rpc.make(WS_METHODS.botsDetachProject, {
   error: BotRpcError,
 });
 
+const WsBotsSubscribeTasksRpc = Rpc.make(WS_METHODS.botsSubscribeTasks, {
+  payload: BotTaskListInput,
+  success: BotTaskListResult,
+  error: BotRpcError,
+  stream: true,
+});
+
+const WsBotsStartTaskRpc = Rpc.make(WS_METHODS.botsStartTask, {
+  payload: BotStartTaskInput,
+  success: BotTaskSummary,
+  error: BotRpcError,
+});
+
+const WsBotsCancelTaskRpc = Rpc.make(WS_METHODS.botsCancelTask, {
+  payload: BotCancelTaskInput,
+  success: BotTaskSummary,
+  error: BotRpcError,
+});
+
 const WsSubscribeAuthAccessRpc = Rpc.make(WS_METHODS.subscribeAuthAccess, {
   payload: Schema.Struct({}),
   success: AuthAccessStreamEvent,
@@ -2146,6 +2173,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsBotsAttachProjectRpc,
   WsBotsUpdateProjectContextRpc,
   WsBotsDetachProjectRpc,
+  WsBotsSubscribeTasksRpc,
+  WsBotsStartTaskRpc,
+  WsBotsCancelTaskRpc,
   WsServerReportClientActivityRpc,
   WsCloudGetRelayClientStatusRpc,
   WsCloudInstallRelayClientRpc,

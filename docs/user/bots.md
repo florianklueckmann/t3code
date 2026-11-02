@@ -52,13 +52,47 @@ change applies from the next turn. You can also edit sources in
 **Settings → Bots**. Recording a source from the conversation needs the access
 described in [Agents and Bots](#agents-and-bots).
 
+## Tasks and routines
+
+A Bot can work on something in its own **work thread** instead of in its
+conversation. Ask the Bot to do it as a separate task, or start a routine. The
+work thread runs in the Bot's project with its instructions, guidance and
+sources. When it finishes, its card in the Bot's conversation shows the
+outcome, the conversation is marked unread, and **Open** takes you to the
+result. Cards also show tasks that are still working, waiting for your answer,
+failed, were cancelled, or were skipped.
+
+A **routine** prepares something on a schedule. In **Settings → Bots**, edit
+the Bot and choose **Add routine** under the project. Describe what to prepare,
+then pick a timing:
+
+- **Before a session**: give the session's date and time and how long before it
+  to prepare. The routine runs once.
+- **Recurring**: a time of day on chosen weekdays, in the environment's time
+  zone, which the form shows.
+
+A preparation gives you a reminder, a recap of recorded play from the
+project's sources, open questions, and proposals marked as proposals. If there
+is no record of play, it says so. It doesn't change your files, notes or other
+tools; ask for edits as a separate task.
+
+Routines run in **Full access** without asking for approval, because nobody is
+there to approve them. Tasks you ask for run in the conversation's mode.
+
+If the environment was off when a routine was due, it runs the latest missed
+preparation once when it is back, unless the session has already started; then
+the card shows it as skipped. A routine also skips a run while its previous one
+is still working. You can pause, resume, run, edit or delete a routine in
+**Settings → Bots**, and cancel a running task from its card.
+
 ## Current limits
 
 - Bots run on Codex models only. If you switch a Bot conversation to another
   provider, its turns fail until you switch back.
 - The **Learning** setting is saved with the Bot but has no effect yet. Bots do
   not learn from their conversations on their own.
-- Bots do not run routines or scheduled work on their own.
+- Results appear in T3 Code only. Routines don't send push notifications or
+  emails, or read your calendar.
 
 ## Detach and archive
 
@@ -69,6 +103,10 @@ with its history, switched to the Bot's current model.
 **Archive** stops the Bot everywhere and archives all of its conversations. An
 archived Bot cannot be edited or attached to projects. **Restore** brings back the
 Bot and the conversations of its attached projects. Bots cannot be deleted.
+
+Detach and archive also pause the Bot's routines there and stop its unfinished
+tasks. Reattach and restore leave routines paused; resume each one when you want
+it back.
 
 Unarchiving a Bot conversation yourself does not reattach the project or restore
 the Bot. Messages there fail until you do.

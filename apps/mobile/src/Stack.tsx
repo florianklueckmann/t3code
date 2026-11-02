@@ -118,6 +118,7 @@ import {
   SettingsBotsRouteScreen,
 } from "./features/settings/SettingsBotsRouteScreen";
 import { BotLookRouteScreen } from "./features/settings/BotLookRouteScreen";
+import { SettingsBotRoutineRouteScreen } from "./features/settings/SettingsBotRoutineRouteScreen";
 import { SettingsKeyboardRouteScreen } from "./features/settings/SettingsKeyboardRouteScreen";
 import { SettingsLegalRouteScreen } from "./features/settings/SettingsLegalRouteScreen";
 import { SettingsVoiceRouteScreen } from "./features/settings/SettingsVoiceRouteScreen";
@@ -324,6 +325,10 @@ const SETTINGS_SCREENS = {
   SettingsBotEdit: createNativeStackScreen({
     screen: SettingsBotEditRouteScreen,
     options: { ...SETTINGS_PAGE_OPTIONS, title: "Edit Bot" },
+  }),
+  SettingsBotRoutine: createNativeStackScreen({
+    screen: SettingsBotRoutineRouteScreen,
+    options: { ...SETTINGS_PAGE_OPTIONS, title: "Routine" },
   }),
   SettingsBotModel: createNativeStackScreen({
     screen: BotModelPickerRouteScreen,
