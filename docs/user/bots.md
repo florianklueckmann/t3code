@@ -28,11 +28,20 @@ is what the Bot should know about this project. Preferred sources are where it
 should look first, such as a folder, a URL or a tool. Both apply only to that
 project's conversation.
 
-Preferred sources are a preference, not a limit. The Bot can still use other
-sources when they help, and looking something up elsewhere once does not add
-that source to the list. To make a source a default, add it in
-**Settings → Bots**, or ask the Bot to record it for the project (see
-[Agents and Bots](#agents-and-bots)).
+Preferred sources are a preference, not a limit. The Bot starts with relevant
+saved sources and looks further when they are not enough. Its answers identify
+their sources and, when relevant, the edition. They distinguish source facts,
+decisions already made in the project, and suggestions. When a source is missing
+or unreadable, or sources disagree, the Bot explains the gap and what could fill
+it.
+
+"Look in X" applies to the current task and its follow-ups. A later, unrelated
+question goes back to the saved sources, though earlier lookups stay in the
+conversation history. "Use X from now on" adds X to this project's sources and
+keeps the others; the Bot removes or replaces a source only when you ask. The
+change applies from the next turn. You can also edit sources in
+**Settings → Bots**. Recording a source from the conversation needs the access
+described in [Agents and Bots](#agents-and-bots).
 
 ## Current limits
 
