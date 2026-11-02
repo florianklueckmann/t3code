@@ -1228,8 +1228,11 @@ export const layer = Layer.effect(
       const tasks = yield* listDueTasks(now).pipe(
         Effect.mapError((cause) => taskError("Could not list schedule tasks.", { cause })),
       );
+      // In the environment's zone, so walking missed fixed-time runs keeps their local time.
       const due = tasks.flatMap((task) =>
-        task.nextRunAt === null ? [] : [{ task, dueAt: DateTime.makeUnsafe(task.nextRunAt) }],
+        task.nextRunAt === null
+          ? []
+          : [{ task, dueAt: DateTime.setZone(DateTime.makeUnsafe(task.nextRunAt), now.zone) }],
       );
       yield* Effect.forEach(
         due,
@@ -1268,11 +1271,13 @@ export const layer = Layer.effect(
           Effect.gen(function* () {
             const decoded = yield* Effect.result(decodeRow(row));
             if (Result.isSuccess(decoded)) {
+              // A routine keeps its due time: running it again reaches the same idempotent
+              // admission, so an occurrence the crash cut short is not lost.
               yield* sql`
                 UPDATE scheduled_tasks
                 SET last_run_status = 'failed',
                     last_run_error = 'Run was interrupted by a server restart.',
-                    next_run_at = ${nextRunAfterRun(decoded.success, now)},
+                    next_run_at = ${decoded.success.bot === undefined ? nextRunAfterRun(decoded.success, now) : row.next_run_at},
                     updated_at = ${iso(now)},
                     run_count = run_count + CASE WHEN EXISTS (
                       SELECT 1 FROM scheduled_task_webhook_pending
