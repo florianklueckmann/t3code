@@ -1,5 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import {
+  BotId,
   CheckpointScopeId,
   ChatAttachmentId,
   ChatFileAttachment,
@@ -16,6 +17,7 @@ import {
   type OrchestrationV2RunAttempt,
   type OrchestrationV2Subagent,
   type OrchestrationV2TurnItem,
+  ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderSessionId,
@@ -3139,7 +3141,16 @@ it.effect("delivers the current Bot instructions with the provider turn", () =>
       key: "bot-context:active",
       shouldFinalizeRun: () => Effect.succeed(true),
       events: (ids) => Stream.make(rootTerminalEvent(ids, "completed")),
-      botContext: Effect.succeed({ _tag: "active", instructions: "Campaign A canon." }),
+      botContext: Effect.succeed({
+        _tag: "active",
+        instructions: "Campaign A canon.",
+        scope: {
+          botId: BotId.make("campaign-bot"),
+          projectId: ProjectId.make("campaign-a"),
+          homeThreadId: ThreadId.make("bot-home:campaign-bot:campaign-a"),
+          taskId: null,
+        },
+      }),
       startTurn: (turnInput) =>
         Ref.update(delivered, (current) => [...current, turnInput.applicationInstructions]),
     });

@@ -207,6 +207,8 @@ export const make = Effect.gen(function* () {
     serverSelfUpdate === "desktop-managed" && serverConfig.desktopTelemetryControlFd !== undefined;
 
   const databaseMigration = databaseMigrationHead(serverConfig.dbPath);
+  // Fixed-time schedules run in the process's local zone.
+  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || undefined;
   const descriptor: ExecutionEnvironmentDescriptor = {
     environmentId,
     label,
@@ -218,6 +220,7 @@ export const make = Effect.gen(function* () {
     serverVersion: packageJson.version,
     orchestrationProtocolVersion: ORCHESTRATION_PROTOCOL_VERSION,
     ...(databaseMigration === undefined ? {} : { databaseMigration }),
+    ...(timeZone === undefined ? {} : { timeZone }),
     capabilities: {
       repositoryIdentity: true,
       connectionProbe: true,
@@ -274,6 +277,7 @@ export const make = Effect.gen(function* () {
       scheduledTaskThreadModes: true,
       bots: true,
       botAppearance: true,
+      botRoutines: true,
       npmReleaseLookup: true,
       voiceTranscription: isSpeechPlatformSupported(hostPlatform, hostArchitecture, hostLibc),
       ...(serverSelfUpdate === null ? {} : { serverSelfUpdate }),

@@ -1,5 +1,13 @@
-import { BotSourcePreference, type ThreadId } from "@t3tools/contracts";
+import {
+  type BotId,
+  BotSourcePreference,
+  BotTaskId,
+  type ProjectId,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
+import * as Option from "effect/Option";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -7,11 +15,28 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import * as BotStore from "./BotStore.ts";
 
+/** Which Bot, project and conversation a thread belongs to, for home and work threads alike. */
+export interface BotTurnScope {
+  readonly botId: BotId;
+  readonly projectId: ProjectId;
+  readonly homeThreadId: ThreadId;
+  /** Set on a task's work thread; null in the home conversation. */
+  readonly taskId: BotTaskId | null;
+}
+
 export type BotTurnContextResult =
   | { readonly _tag: "none" }
-  /** The thread is a Bot's home conversation, but the Bot is archived or the project detached. */
+  /** The thread is a Bot's conversation, but the Bot is archived or the project detached. */
   | { readonly _tag: "inactive"; readonly message: string }
-  | { readonly _tag: "active"; readonly instructions: string };
+  | { readonly _tag: "active"; readonly instructions: string; readonly scope: BotTurnScope };
+
+interface WorkTask {
+  readonly taskId: string;
+  readonly origin: string;
+  readonly homeThreadId: string;
+  readonly dueAt: string | null;
+  readonly sessionAt: string | null;
+}
 
 export class BotTurnContext extends Context.Service<
   BotTurnContext,
@@ -31,9 +56,14 @@ function buildBotInstructions(input: {
   readonly projectTitle: string;
   readonly guidance: string;
   readonly sources: ReadonlyArray<BotSourcePreference>;
+  readonly task: WorkTask | null;
 }): string {
+  const place =
+    input.task === null
+      ? `This conversation is your home conversation for the project "${input.projectTitle}" (projectId "${input.projectId}").`
+      : `This thread is a work thread for one task (taskId "${input.task.taskId}") of your home conversation for the project "${input.projectTitle}" (projectId "${input.projectId}").`;
   const sections = [
-    `You are "${input.botName}" (botId "${input.botId}"), a Bot the user configured in T3 Code. This conversation is your home conversation for the project "${input.projectTitle}" (projectId "${input.projectId}"). Apply the project guidance and sources below only to this project; your other projects have their own. Names can repeat across Bots and projects, so identify them by these ids.`,
+    `You are "${input.botName}" (botId "${input.botId}"), a Bot the user configured in T3 Code. ${place} Apply the project guidance and sources below only to this project; your other projects have their own. Names can repeat across Bots and projects, so identify them by these ids.`,
     input.botInstructions === ""
       ? null
       : `Bot instructions from the user:\n${input.botInstructions}`,
@@ -53,8 +83,52 @@ function buildBotInstructions(input: {
       '- A one-off instruction such as "look in X" or "check X too" covers that task and its natural follow-ups. It does not change the established sources: for later, unrelated questions, return to them, even if earlier research is still in this conversation.',
       `- Change the established sources or guidance only when the user asks for a standing change, such as "use X from now on" or "stop using Y". Then call t3_bot with action "update", botId "${input.botId}" and projectId "${input.projectId}". \`sources\` replaces the whole list, so send every source to keep plus the change; remove or replace a source only when the user asked for that. Use action "list" only if these ids are rejected.`,
     ].join("\n"),
+    input.task === null ? homeTaskSection(input) : workTaskSection(input.task),
   ];
   return `<t3_bot>\n${sections.filter((section) => section !== null).join("\n\n")}\n</t3_bot>`;
+}
+
+function homeTaskSection(input: { readonly botId: string; readonly projectId: string }): string {
+  return [
+    "Tasks and routines:",
+    `- When the user asks you to do something as a separate task, call t3_bot with action "start_task", botId "${input.botId}", projectId "${input.projectId}" and the request as \`task\`. It runs in its own work thread; its result appears here as a card.`,
+    `- When the user asks for preparation on a schedule or before a dated session, call schedule_task with botId "${input.botId}" and projectId "${input.projectId}". Give a one-time \`schedule\` with \`sessionAt\` for a dated session, or a fixed time for a recurring one.`,
+  ].join("\n");
+}
+
+/** In the environment's zone, which is the zone fixed-time schedules run in. */
+function formatInstant(iso: string): string {
+  const time = DateTime.make(iso);
+  return Option.isNone(time)
+    ? iso
+    : `${new Intl.DateTimeFormat("en-US", { dateStyle: "full", timeStyle: "short" }).format(DateTime.toDateUtc(time.value))} (${iso})`;
+}
+
+function workTaskSection(task: WorkTask): string {
+  const result =
+    "Your final message is the task's result. It appears as a card in your home conversation that links to this thread.";
+  if (task.origin !== "routine") {
+    return [
+      "This task:",
+      "- The user asked for it; the first message describes it. Work on it here.",
+      `- ${result}`,
+    ].join("\n");
+  }
+  return [
+    "This task is a scheduled preparation routine. The first message is the user's brief for it.",
+    task.dueAt === null ? null : `- It was due ${formatInstant(task.dueAt)}.`,
+    task.sessionAt === null
+      ? null
+      : `- The session it prepares starts ${formatInstant(task.sessionAt)}.`,
+    `- ${result} Give it these parts, under these headings:`,
+    "  1. Reminder: what is coming up and when.",
+    "  2. Recap: what happened in recorded play, from the project's sources, naming where each point comes from. If no record of play exists or it cannot be read, say so plainly; never reconstruct a recap from memory or invention.",
+    "  3. Open questions the user should settle before the session.",
+    "  4. Preparation proposals, each clearly marked as a proposal, not a decision.",
+    "- Prepare only: do not edit files, notes, vaults, Foundry or other tools' data. If something should change, propose it; the user asks for edits as a separate task.",
+  ]
+    .filter((line) => line !== null)
+    .join("\n");
 }
 
 const decodeSources = Schema.decodeUnknownEffect(
@@ -67,8 +141,39 @@ export const layer = Layer.effect(
     const sql = yield* SqlClient.SqlClient;
     const store = yield* BotStore.BotStore;
 
+    /** A task's work thread, resolved to the home conversation it belongs to. */
+    const findWorkTask = Effect.fn("BotTurnContext.findWorkTask")(function* (threadId: ThreadId) {
+      const rows = yield* sql<{
+        readonly task_id: string;
+        readonly origin: string;
+        readonly home_thread_id: string;
+        readonly occurrence_due_at: string | null;
+        readonly session_at: string | null;
+      }>`
+        SELECT task_id, origin, home_thread_id, occurrence_due_at, session_at
+        FROM bot_tasks WHERE work_thread_id = ${threadId}
+      `.pipe(
+        Effect.mapError((cause) => new BotStore.BotStoreError({ operation: "read-task", cause })),
+      );
+      const row = rows[0];
+      if (row === undefined) return null;
+      return {
+        taskId: row.task_id,
+        origin: row.origin,
+        homeThreadId: row.home_thread_id,
+        dueAt: row.occurrence_due_at,
+        sessionAt: row.session_at,
+      } satisfies WorkTask;
+    });
+
     const forThread = Effect.fn("BotTurnContext.forThread")(function* (threadId: ThreadId) {
-      const context = yield* store.getContextByThread(threadId);
+      const homeContext = yield* store.getContextByThread(threadId);
+      const task = homeContext === undefined ? yield* findWorkTask(threadId) : null;
+      const context =
+        homeContext ??
+        (task === null
+          ? undefined
+          : yield* store.getContextByThread(ThreadId.make(task.homeThreadId)));
       if (context === undefined) return { _tag: "none" } as const;
       const bot = yield* store.getBot(context.bot_id);
       if (bot === undefined || bot.archived_at !== null) {
@@ -105,7 +210,14 @@ export const layer = Layer.effect(
           projectTitle: project[0]?.title ?? context.project_id,
           guidance: context.guidance,
           sources,
+          task,
         }),
+        scope: {
+          botId: bot.bot_id as BotId,
+          projectId: context.project_id as ProjectId,
+          homeThreadId: ThreadId.make(context.home_thread_id),
+          taskId: task === null ? null : BotTaskId.make(task.taskId),
+        },
       } as const;
     });
 
