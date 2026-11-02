@@ -16,6 +16,7 @@ import {
   type ProjectId,
   ThreadId,
 } from "@t3tools/contracts";
+import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
@@ -97,6 +98,8 @@ const make = Effect.gen(function* () {
   const changes = yield* PubSub.sliding<void>(1);
   const notifyChanged = PubSub.publish(changes, undefined).pipe(Effect.asVoid);
 
+  const syncLocks = yield* KeyedLock.make<ThreadId>();
+
   const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
   const storeError = (botId?: BotId) => botError("Bot storage failed.", botId);
 
@@ -133,15 +136,20 @@ const make = Effect.gen(function* () {
   });
 
   /**
-   * Archives or unarchives a home thread to match its recorded intent. The
-   * intent is written first, so a crash here leaves it for the scheduler to
-   * finish; a turn on an inactive conversation fails at start meanwhile.
+   * Applies the recorded archive intent to a home thread. Intent is written
+   * first, so the scheduler finishes what a crash left. Rereading it under a
+   * per-thread lock keeps a stale sync from undoing a newer transition.
    */
-  const syncThread = Effect.fn("BotService.syncThread")(function* (
-    context: BotStore.BotContextRow,
+  const syncThread = Effect.fn("BotService.syncThread")(function* (stale: BotStore.BotContextRow) {
+    const homeThreadId = ThreadId.make(stale.home_thread_id);
+    yield* syncLocks.withLock(homeThreadId, applyThreadSync(homeThreadId));
+  });
+
+  const applyThreadSync = Effect.fn("BotService.applyThreadSync")(function* (
+    homeThreadId: ThreadId,
   ) {
-    if (context.thread_sync === null) return;
-    const homeThreadId = ThreadId.make(context.home_thread_id);
+    const context = yield* store.getContextByThread(homeThreadId);
+    if (context === undefined || context.thread_sync === null) return;
     const shell = yield* threads.getThreadShell(homeThreadId);
     const wantArchived = context.thread_sync === "archive";
     if (
@@ -392,8 +400,44 @@ const make = Effect.gen(function* () {
       }),
     );
     yield* notifyChanged;
-    if (result !== undefined) yield* syncThreads(input.botId, [result]);
+    if (result !== undefined) {
+      yield* syncThreads(input.botId, [result]);
+      // Model changes skip detached conversations, so a reattach catches them up.
+      yield* followBotModel(input.botId, ThreadId.make(result.home_thread_id));
+    }
     return yield* readDetail(input.botId);
+  });
+
+  const followBotModel = Effect.fn("BotService.followBotModel")(function* (
+    botId: BotId,
+    homeThreadId: ThreadId,
+  ) {
+    const detail = yield* readDetail(botId);
+    const shell = yield* threads
+      .getThreadShell(homeThreadId)
+      .pipe(Effect.mapError(botError("Failed to read the Bot conversation.", botId)));
+    if (
+      shell === null ||
+      BotStore.encodeModelSelection(shell.modelSelection) ===
+        BotStore.encodeModelSelection(detail.modelSelection)
+    ) {
+      return;
+    }
+    const commandSuffix = yield* crypto
+      .randomUUIDv4()
+      .pipe(Effect.mapError(botError("Failed to allocate a command id.", botId)));
+    yield* threads
+      .dispatch({
+        type: "thread.model-selection.set",
+        commandId: CommandId.make(`bot-model:${commandSuffix}:${homeThreadId}`),
+        threadId: homeThreadId,
+        modelSelection: detail.modelSelection,
+      })
+      .pipe(
+        Effect.mapError((cause) =>
+          botError(`Failed to switch the Bot conversation: ${errorMessage(cause)}`, botId)(cause),
+        ),
+      );
   });
 
   const updateProjectContext: BotService["Service"]["updateProjectContext"] = Effect.fn(

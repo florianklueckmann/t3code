@@ -47,7 +47,7 @@ export class BotStoreError extends Schema.TaggedError<BotStoreError>()("BotStore
 
 const ModelSelectionJson = Schema.fromJsonString(BotDetail.fields.modelSelection);
 const SourcesJson = Schema.fromJsonString(Schema.Array(BotSourcePreference));
-const encodeModelSelection = Schema.encodeSync(ModelSelectionJson);
+export const encodeModelSelection = Schema.encodeSync(ModelSelectionJson);
 export const encodeSources = Schema.encodeSync(SourcesJson);
 const decodeDetail = Schema.decodeUnknownEffect(BotDetail);
 const decodeModelSelection = Schema.decodeUnknownEffect(ModelSelectionJson);

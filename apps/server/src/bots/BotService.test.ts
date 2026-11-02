@@ -77,9 +77,13 @@ const makeThreadWorld = Effect.gen(function* () {
       getThreadShell: Effect.fn("FakeThreads.getThreadShell")(function* (threadId: ThreadId) {
         const thread = (yield* Ref.get(threads)).get(threadId);
         if (thread === undefined) return null;
-        const shell: Pick<OrchestrationV2ThreadShell, "archivedAt" | "deletedAt"> = {
+        const shell: Pick<
+          OrchestrationV2ThreadShell,
+          "archivedAt" | "deletedAt" | "modelSelection"
+        > = {
           archivedAt: thread.archived ? DateTime.makeUnsafe(0) : null,
           deletedAt: null,
+          modelSelection: { ...codex, model: thread.model },
         };
         return shell as OrchestrationV2ThreadShell;
       }),
@@ -285,11 +289,15 @@ it.effect("detach and reattach keep the same conversation and its guidance", () 
         assert.isNotNull(detached.projects[0]?.detachedAt);
         assert.isTrue((yield* Ref.get(world.threads)).get(home)?.archived);
         assert.equal(yield* instructionsFor(turnContext, home), "inactive");
+        // A model change while detached reaches the conversation on reattach.
+        yield* bots.update({ botId, modelSelection: { ...codex, model: "gpt-5.5" } });
+        assert.equal((yield* Ref.get(world.threads)).get(home)?.model, "gpt-5");
 
         const reattached = yield* bots.attachProject({ botId, projectId: campaignA });
         assert.equal(reattached.projects[0]?.homeThreadId, home);
         assert.isNull(reattached.projects[0]?.detachedAt);
         assert.isFalse((yield* Ref.get(world.threads)).get(home)?.archived);
+        assert.equal((yield* Ref.get(world.threads)).get(home)?.model, "gpt-5.5");
         assert.include(yield* instructionsFor(turnContext, home), "Use the session log.");
       }),
     );
