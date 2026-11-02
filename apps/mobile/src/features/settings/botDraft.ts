@@ -1,4 +1,6 @@
+import { sameBotAppearance, savedBotAppearance } from "@t3tools/client-runtime/bot-appearance";
 import type {
+  BotAppearance,
   BotAttachProjectInput,
   BotCreateInput,
   BotDetachProjectInput,
@@ -49,6 +51,8 @@ export type BotDraft = {
   readonly modelSelection: ModelSelection | null;
   /** Unset on a new Bot: the user chooses it explicitly. */
   readonly learningPolicy: BotLearningPolicy | null;
+  /** Null keeps the default look derived from the Bot id. */
+  readonly appearance: BotAppearance | null;
   readonly projects: ReadonlyArray<BotProjectDraft>;
 };
 
@@ -76,6 +80,7 @@ export function newBotDraft(botId: BotId, modelSelection: ModelSelection | null)
     instructions: "",
     modelSelection,
     learningPolicy: null,
+    appearance: null,
     projects: [],
   };
 }
@@ -89,6 +94,7 @@ export function botDraftFromDetail(detail: BotDetail): BotDraft {
     instructions: detail.instructions,
     modelSelection: detail.modelSelection,
     learningPolicy: detail.learningPolicy,
+    appearance: savedBotAppearance(detail),
     projects: detail.projects.map((project) => ({
       projectId: project.projectId,
       attached: project.detachedAt === null,
@@ -186,7 +192,8 @@ export function hasBotDraftChanges(baseline: BotDraft, draft: BotDraft): boolean
     baseline.name.trim() !== draft.name.trim() ||
     baseline.instructions.trim() !== draft.instructions.trim() ||
     baseline.learningPolicy !== draft.learningPolicy ||
-    !sameModel(baseline.modelSelection, draft.modelSelection)
+    !sameModel(baseline.modelSelection, draft.modelSelection) ||
+    !sameBotAppearance(baseline.appearance, draft.appearance)
   ) {
     return true;
   }
@@ -234,6 +241,7 @@ export function planBotSave(
         instructions,
         modelSelection: draft.modelSelection,
         learningPolicy: draft.learningPolicy,
+        ...(draft.appearance === null ? {} : { appearance: draft.appearance }),
       },
     });
   } else {
@@ -246,6 +254,9 @@ export function planBotSave(
       ...(draft.learningPolicy === baseline.learningPolicy
         ? {}
         : { learningPolicy: draft.learningPolicy }),
+      ...(sameBotAppearance(baseline.appearance, draft.appearance)
+        ? {}
+        : { appearance: draft.appearance }),
     };
     if (Object.keys(changes).length > 0) {
       steps.push({ type: "update", input: { botId, ...changes } });

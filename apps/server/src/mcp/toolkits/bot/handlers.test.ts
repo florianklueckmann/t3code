@@ -32,6 +32,7 @@ const detail = {
   instructions: "",
   modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
   learningPolicy: "automatic",
+  appearance: { color: "teal", face: "happy", topper: "antenna" },
   createdAt: "2026-11-02T00:00:00.000Z",
   updatedAt: "2026-11-02T00:00:00.000Z",
   archivedAt: null,
@@ -48,7 +49,7 @@ const callTool = (params: BotToolInput, access: "read-only" | undefined) =>
       const results = yield* toolkit
         .handle("t3_bot", params)
         .pipe(Stream.unwrap, Stream.runCollect);
-      return results.at(-1)?.result;
+      return results.at(-1)?.encodedResult;
     }).pipe(
       Effect.provide(
         McpToolAccess.HandlersLayer.layer(BotHandlers.layer).pipe(
@@ -108,6 +109,9 @@ it.effect("lets read-only clients read Bots but not change them", () =>
   Effect.gen(function* () {
     const read = yield* callTool({ action: "read", botId }, "read-only");
     expect(read.calls).toEqual(["get"]);
+    // Appearance is client presentation; the agent's view of a Bot stays unchanged.
+    expect(read.result).toMatchObject({ bot: { name: detail.name } });
+    expect(read.result).not.toHaveProperty("bot.appearance");
     const attach = yield* callTool({ action: "attach", botId, projectId: campaignA }, "read-only");
     expect(attach.result).toMatchObject({ code: "capability_denied" });
     expect(attach.calls).toEqual([]);
