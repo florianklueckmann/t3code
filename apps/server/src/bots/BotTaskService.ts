@@ -224,7 +224,9 @@ const make = Effect.gen(function* () {
   )(function* (input) {
     const context = yield* activeContext(input.botId, input.projectId);
     if (context._tag === "inactive") return yield* botError(context.reason, input.botId)();
-    const detail = yield* BotStore.toDetail(context.bot, []).pipe(Effect.mapError(storageError));
+    const detail = yield* BotStore.toDetail(context.bot, [], []).pipe(
+      Effect.mapError(storageError),
+    );
     return { modelSelection: detail.modelSelection };
   });
 
@@ -263,7 +265,7 @@ const make = Effect.gen(function* () {
     if (row === undefined || row.completed_at !== null || row.cancel_requested_at !== null) return;
     const bot = yield* store.getBot(row.bot_id).pipe(Effect.mapError(storageError));
     if (bot === undefined || row.work_thread_id === null) return;
-    const detail = yield* BotStore.toDetail(bot, []).pipe(Effect.mapError(storageError));
+    const detail = yield* BotStore.toDetail(bot, [], []).pipe(Effect.mapError(storageError));
     const launched = yield* threadLaunch
       .launch({
         commandId: CommandId.make(`bot-task-launch:${row.task_id}`),

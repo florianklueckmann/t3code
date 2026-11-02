@@ -33,6 +33,7 @@ import {
   BOT_NAME,
   type BotSourcesCase,
   CASES,
+  type LearningScopeKey,
   PROJECT_TITLE,
   PROJECTS,
   type ProjectKey,
@@ -48,6 +49,17 @@ export interface SampleRun {
     readonly twin: ReadonlyArray<string>;
   };
   readonly ids: { readonly botId: string; readonly projectIds: Record<ProjectKey, string> };
+  /** The Bot's learning entries after the turns, by their newest revision. */
+  readonly learning: ReadonlyArray<LearnedEntry>;
+}
+
+export interface LearnedEntry {
+  readonly scope: LearningScopeKey;
+  readonly text: string;
+  readonly origin: string;
+  readonly status: string;
+  /** Recorded from the Bot's own conversation rather than seeded by the eval. */
+  readonly byBot: boolean;
 }
 
 /** A Codex MCP call as T3 records it in the thread's activity. */
@@ -94,6 +106,22 @@ export const gradeSample = (testCase: BotSourcesCase, run: SampleRun) => {
       ? [call.value.input]
       : [];
   });
+  const learnedByBot = run.learning.filter((entry) => entry.byBot);
+  if (testCase.learningAfter === undefined) {
+    add("no learning recorded", learnedByBot.length === 0);
+  }
+  for (const expected of testCase.learningAfter ?? []) {
+    add(
+      `learning ${expected.scope} ${expected.origin} ${expected.status} /${expected.text}/i`,
+      learnedByBot.some(
+        (entry) =>
+          entry.scope === expected.scope &&
+          entry.origin === expected.origin &&
+          entry.status === expected.status &&
+          new RegExp(expected.text, "i").test(entry.text),
+      ),
+    );
+  }
   if (testCase.sourcesAfter === undefined) {
     add("no t3_bot update", updates.length === 0);
   } else {
@@ -141,7 +169,7 @@ const runSample = Effect.fn("botSources.runSample")(function* (
         name: BOT_NAME,
         instructions: BOT_INSTRUCTIONS,
         modelSelection,
-        learningPolicy: "after_adoption",
+        learningPolicy: testCase.learningPolicy ?? "after_adoption",
       },
       Schema.Unknown,
     );
@@ -166,9 +194,37 @@ const runSample = Effect.fn("botSources.runSample")(function* (
   yield* attach(twinId, "a", TWIN_SOURCES);
   const home = attached.bot.projects.find((p) => p.projectId === projectIds[testCase.home]);
   if (home === undefined) return yield* Effect.die(new Error("home conversation missing"));
+  const seed = testCase.seed;
+  const seeded =
+    seed === undefined
+      ? undefined
+      : (yield* call(
+          "t3_bot",
+          {
+            action: "learn",
+            botId,
+            projectId: projectIds[seed.project],
+            learning: {
+              origin: seed.origin,
+              kind: seed.kind,
+              text: seed.text,
+              ...(seed.scope === undefined ? {} : { scope: seed.scope }),
+            },
+          },
+          Schema.Struct({
+            learned: Schema.Struct({ entryId: Schema.String, revision: Schema.Number }),
+          }),
+        )).learned;
 
   const answers: Array<string> = [];
   for (const turn of testCase.turns) {
+    if (turn.adoptSeedFirst === true && seeded !== undefined) {
+      yield* call(
+        "t3_bot",
+        { action: "adopt", botId, entryId: seeded.entryId, revision: seeded.revision },
+        Schema.Unknown,
+      );
+    }
     const runId = yield* runTurn(call, home.homeThreadId, turn.prompt);
     const messages = yield* readItems(call, home.homeThreadId, "messages");
     answers.push(
@@ -198,6 +254,26 @@ const runSample = Effect.fn("botSources.runSample")(function* (
       twin: sourcesOf(twin, "a"),
     },
     ids: { botId, projectIds },
+    learning: bot.learning.flatMap((entry) => {
+      const first = entry.revisions[0];
+      const latest = entry.revisions.at(-1);
+      if (first === undefined || latest === undefined) return [];
+      const scope =
+        entry.projectId === null
+          ? ("all" as const)
+          : (["a", "b"] as const).find((key) => projectIds[key] === entry.projectId);
+      return scope === undefined
+        ? []
+        : [
+            {
+              scope,
+              text: latest.text,
+              origin: latest.origin,
+              status: latest.status,
+              byBot: first.source.kind === "thread",
+            },
+          ];
+    }),
   };
   return {
     ...run,

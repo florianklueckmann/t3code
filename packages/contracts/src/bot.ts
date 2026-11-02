@@ -3,6 +3,8 @@ import * as Schema from "effect/Schema";
 import {
   CommandId,
   IsoDateTime,
+  NonNegativeInt,
+  PositiveInt,
   ProjectId,
   ScheduledTaskId,
   ThreadId,
@@ -113,6 +115,90 @@ export const BotProjectContext = Schema.Struct({
 });
 export type BotProjectContext = typeof BotProjectContext.Type;
 
+export const BotLearningEntryId = TrimmedNonEmptyString.check(
+  Schema.isMaxLength(64),
+  Schema.isPattern(/^[A-Za-z0-9_-]+$/),
+).pipe(Schema.brand("BotLearningEntryId"));
+export type BotLearningEntryId = typeof BotLearningEntryId.Type;
+
+/**
+ * fact: something true about the project, refreshed when it changes. preference: how the user
+ * wants work done. procedure: reusable steps for later work.
+ */
+export const BotLearningKind = Schema.Literals(["fact", "preference", "procedure"]);
+export type BotLearningKind = typeof BotLearningKind.Type;
+
+/**
+ * instruction: the user's own standing instruction, active at once under either policy.
+ * correction: a lesson inferred from the user correcting the Bot, governed by its policy.
+ */
+export const BotLearningOrigin = Schema.Literals(["instruction", "correction"]);
+export type BotLearningOrigin = typeof BotLearningOrigin.Type;
+
+/** project: only the project it was learned in. bot: every project the Bot serves. */
+export const BotLearningScope = Schema.Literals(["project", "bot"]);
+export type BotLearningScope = typeof BotLearningScope.Type;
+
+/**
+ * pending waits for the user, or for the task that proposed it to complete; active is in use;
+ * superseded was replaced by a later revision; stale was proposed against a revision that has
+ * since changed; diagnostic came from a task that did not complete, so it is not eligible.
+ */
+export const BotLearningStatus = Schema.Literals([
+  "pending",
+  "active",
+  "rejected",
+  "retired",
+  "superseded",
+  "stale",
+  "diagnostic",
+]);
+export type BotLearningStatus = typeof BotLearningStatus.Type;
+
+export const BotTaskId = TrimmedNonEmptyString.pipe(Schema.brand("BotTaskId"));
+export type BotTaskId = typeof BotTaskId.Type;
+
+/** Who recorded a revision, resolved by the server rather than claimed by the caller. */
+export const BotLearningSource = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("user") }),
+  Schema.Struct({ kind: Schema.Literal("thread"), threadId: ThreadId }),
+  Schema.Struct({ kind: Schema.Literal("agent"), label: Schema.String }),
+  /** A Bot's work thread; eligible only once that task completed. */
+  Schema.Struct({ kind: Schema.Literal("task"), taskId: BotTaskId }),
+]);
+export type BotLearningSource = typeof BotLearningSource.Type;
+
+const BotLearningText = TrimmedNonEmptyString.check(Schema.isMaxLength(1_000));
+const BotLearningNote = TrimmedString.check(Schema.isMaxLength(2_000));
+
+export const BotLearningRevision = Schema.Struct({
+  revision: PositiveInt,
+  text: BotLearningText,
+  rationale: BotLearningNote,
+  evidence: BotLearningNote,
+  origin: BotLearningOrigin,
+  source: BotLearningSource,
+  learnedInProjectId: ProjectId,
+  status: BotLearningStatus,
+  /** The revision this one was proposed to replace; null for an entry's first revision. */
+  baseRevision: Schema.NullOr(PositiveInt),
+  /** An inferred revision that would override a standing instruction waits for the user. */
+  conflictsWithInstruction: Schema.Boolean,
+  createdAt: IsoDateTime,
+  decidedAt: Schema.NullOr(IsoDateTime),
+});
+export type BotLearningRevision = typeof BotLearningRevision.Type;
+
+export const BotLearningEntry = Schema.Struct({
+  id: BotLearningEntryId,
+  /** Null when the entry is shared across all of the Bot's projects. */
+  projectId: Schema.NullOr(ProjectId),
+  kind: BotLearningKind,
+  /** Oldest first. */
+  revisions: Schema.Array(BotLearningRevision),
+});
+export type BotLearningEntry = typeof BotLearningEntry.Type;
+
 export const BotSummary = Schema.Struct({
   id: BotId,
   name: BotName,
@@ -124,6 +210,8 @@ export const BotSummary = Schema.Struct({
   updatedAt: IsoDateTime,
   archivedAt: Schema.NullOr(IsoDateTime),
   projects: Schema.Array(BotProjectContextSummary),
+  /** Learning revisions waiting for the user to adopt or reject them. */
+  pendingLearning: NonNegativeInt,
 });
 export type BotSummary = typeof BotSummary.Type;
 
@@ -131,6 +219,7 @@ export const BotDetail = Schema.Struct({
   ...BotSummary.fields,
   instructions: BotInstructions,
   projects: Schema.Array(BotProjectContext),
+  learning: Schema.Array(BotLearningEntry),
 });
 export type BotDetail = typeof BotDetail.Type;
 
@@ -196,14 +285,52 @@ export const BotDetachProjectInput = Schema.Struct({
 });
 export type BotDetachProjectInput = typeof BotDetachProjectInput.Type;
 
+export const BotLearningRevisionRef = Schema.Struct({
+  entryId: BotLearningEntryId,
+  revision: PositiveInt,
+});
+export type BotLearningRevisionRef = typeof BotLearningRevisionRef.Type;
+
+/** A standing instruction the user records directly; it is active at once. */
+export const BotRecordLearningInput = Schema.Struct({
+  botId: BotId,
+  /** The project it was learned in; also its scope unless `scope` is "bot". */
+  projectId: ProjectId,
+  scope: Schema.optional(BotLearningScope),
+  kind: BotLearningKind,
+  text: BotLearningText,
+  rationale: Schema.optional(BotLearningNote),
+  evidence: Schema.optional(BotLearningNote),
+  /** The current revision of the entry this one revises. */
+  replaces: Schema.optional(BotLearningRevisionRef),
+});
+export type BotRecordLearningInput = typeof BotRecordLearningInput.Type;
+
+export const BotDecideLearningInput = Schema.Struct({
+  botId: BotId,
+  ...BotLearningRevisionRef.fields,
+  decision: Schema.Literals(["adopt", "reject"]),
+});
+export type BotDecideLearningInput = typeof BotDecideLearningInput.Type;
+
+export const BotRetireLearningInput = Schema.Struct({
+  botId: BotId,
+  entryId: BotLearningEntryId,
+});
+export type BotRetireLearningInput = typeof BotRetireLearningInput.Type;
+
+/** Makes an earlier revision current again, as a new revision. */
+export const BotRestoreLearningInput = Schema.Struct({
+  botId: BotId,
+  ...BotLearningRevisionRef.fields,
+});
+export type BotRestoreLearningInput = typeof BotRestoreLearningInput.Type;
+
 export class BotError extends Schema.TaggedError<BotError>()("BotError", {
   message: Schema.String,
   botId: Schema.optional(BotId),
   cause: Schema.optional(Schema.Defect()),
 }) {}
-
-export const BotTaskId = TrimmedNonEmptyString.pipe(Schema.brand("BotTaskId"));
-export type BotTaskId = typeof BotTaskId.Type;
 
 /**
  * Derived from the work thread's persisted runs, not from schedule acknowledgement or the

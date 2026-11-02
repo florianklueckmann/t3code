@@ -51,6 +51,8 @@ const detail: BotDetail = {
   updatedAt: at,
   archivedAt: null,
   projects: [context(docs), context(app, true)],
+  learning: [],
+  pendingLearning: 0,
 };
 
 describe("planBotSave", () => {

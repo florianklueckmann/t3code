@@ -1,6 +1,11 @@
 import {
   BotAttachProjectInput,
   BotDetail,
+  BotLearningEntryId,
+  BotLearningOrigin,
+  BotLearningRevisionRef,
+  BotLearningStatus,
+  BotRecordLearningInput,
   BotStartTaskInput,
   BotSummary,
   BotTaskId,
@@ -31,6 +36,11 @@ const BotToolParameters = Schema.Struct({
     "start_task",
     "list_tasks",
     "cancel_task",
+    "learn",
+    "adopt",
+    "reject",
+    "retire",
+    "reinstate",
   ]),
   botId: Schema.optional(BotUpdateInput.fields.botId),
   projectId: Schema.optional(BotAttachProjectInput.fields.projectId),
@@ -45,6 +55,19 @@ const BotToolParameters = Schema.Struct({
   learningPolicy: BotUpdateInput.fields.learningPolicy,
   guidance: BotAttachProjectInput.fields.guidance,
   sources: BotAttachProjectInput.fields.sources,
+  learning: Schema.optional(
+    Schema.Struct({
+      origin: BotLearningOrigin,
+      kind: BotRecordLearningInput.fields.kind,
+      text: BotRecordLearningInput.fields.text,
+      rationale: BotRecordLearningInput.fields.rationale,
+      evidence: BotRecordLearningInput.fields.evidence,
+      scope: BotRecordLearningInput.fields.scope,
+      replaces: BotRecordLearningInput.fields.replaces,
+    }),
+  ),
+  entryId: Schema.optional(BotLearningEntryId),
+  revision: Schema.optional(BotLearningRevisionRef.fields.revision),
 });
 export type BotToolInput = typeof BotToolParameters.Type;
 
@@ -62,13 +85,21 @@ const BotTool = Tool.make("t3_bot", {
     BotTaskService.BotTaskService,
   ],
   description:
-    "Bots: named identities with one home conversation per attached project. `update` with `projectId` sets that project's guidance and preferred sources (preferred, not exclusive); without it, the Bot. `guidance` and `sources` replace the stored values, so send the full list. `start_task` runs `task` in a new work thread of the Bot's project; its result shows as a card in the home conversation. Codex models only.",
+    "Bots: named identities with one home conversation per attached project. `update` with `projectId` sets that project's guidance and preferred sources (preferred, not exclusive); without it, the Bot. `guidance` and `sources` replace the stored values, so send the full list. `start_task` runs `task` in a new work thread of the Bot's project; its result shows as a card in the home conversation. `learn` (with `projectId`, `learning`) records a user's standing instruction or proposes a lesson from their correction. `adopt`, `reject` and `reinstate` (an earlier revision) take `entryId` and `revision`; `retire` takes `entryId`. Codex models only.",
   parameters: BotToolParameters,
   success: Schema.Struct({
     bots: Schema.optional(Schema.Array(Schema.Struct(botToolSummaryFields))),
     bot: Schema.optional(Schema.Struct(botToolDetailFields)),
     tasks: Schema.optional(Schema.Array(BotTaskSummary)),
     task: Schema.optional(BotTaskSummary),
+    learned: Schema.optional(
+      Schema.Struct({
+        entryId: BotLearningEntryId,
+        revision: BotLearningRevisionRef.fields.revision,
+        status: BotLearningStatus,
+        duplicate: Schema.Boolean,
+      }),
+    ),
   }),
 }).annotate(Tool.Destructive, false);
 
