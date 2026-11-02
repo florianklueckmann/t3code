@@ -563,7 +563,7 @@ function BotForm({
         </SettingsSection>
         <SettingsSection
           title="Learning"
-          footer="Decides whether what the Bot learns applies right away or waits for you."
+          footer="Bots don't learn yet. Your choice is saved and takes effect once learning is available."
         >
           {BOT_LEARNING_POLICIES.map((policy, index) => (
             <Pressable
