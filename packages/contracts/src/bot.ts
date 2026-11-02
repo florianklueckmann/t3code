@@ -1,13 +1,16 @@
 import * as Schema from "effect/Schema";
 
 import {
+  CommandId,
   IsoDateTime,
   ProjectId,
+  ScheduledTaskId,
   ThreadId,
   TrimmedNonEmptyString,
   TrimmedString,
 } from "./baseSchemas.ts";
 import { ModelSelection } from "./modelSelection.ts";
+import { RuntimeMode } from "./providerPolicy.ts";
 
 /** No colons: the server derives home thread ids from the Bot and project ids. */
 export const BotId = TrimmedNonEmptyString.check(
@@ -198,3 +201,80 @@ export class BotError extends Schema.TaggedError<BotError>()("BotError", {
   botId: Schema.optional(BotId),
   cause: Schema.optional(Schema.Defect()),
 }) {}
+
+export const BotTaskId = TrimmedNonEmptyString.pipe(Schema.brand("BotTaskId"));
+export type BotTaskId = typeof BotTaskId.Type;
+
+/**
+ * Derived from the work thread's persisted runs, not from schedule acknowledgement or the
+ * settled flag. `accepted` covers admitted work whose run has not started yet.
+ */
+export const BotTaskStatus = Schema.Literals([
+  "accepted",
+  "running",
+  "waiting",
+  "completed",
+  "failed",
+  "interrupted",
+  "cancelled",
+  "skipped",
+]);
+export type BotTaskStatus = typeof BotTaskStatus.Type;
+
+export const BOT_TASK_TERMINAL_STATUSES: ReadonlySet<BotTaskStatus> = new Set([
+  "completed",
+  "failed",
+  "interrupted",
+  "cancelled",
+  "skipped",
+]);
+
+/** `direct` was asked for; `routine` comes from one of the Bot's scheduled routines. */
+export const BotTaskOrigin = Schema.Literals(["direct", "routine"]);
+export type BotTaskOrigin = typeof BotTaskOrigin.Type;
+
+export const BotTaskSummary = Schema.Struct({
+  id: BotTaskId,
+  botId: BotId,
+  projectId: ProjectId,
+  homeThreadId: ThreadId,
+  /** Null when the task never started, such as a skipped occurrence. */
+  workThreadId: Schema.NullOr(ThreadId),
+  origin: BotTaskOrigin,
+  title: TrimmedNonEmptyString,
+  scheduledTaskId: Schema.NullOr(ScheduledTaskId),
+  occurrenceDueAt: Schema.NullOr(IsoDateTime),
+  sessionAt: Schema.NullOr(IsoDateTime),
+  runtimeMode: RuntimeMode,
+  status: BotTaskStatus,
+  /** Why a task was skipped or failed to start. */
+  detail: Schema.NullOr(Schema.String),
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+  completedAt: Schema.NullOr(IsoDateTime),
+});
+export type BotTaskSummary = typeof BotTaskSummary.Type;
+
+export const BotTaskListInput = Schema.Struct({
+  botId: Schema.optional(BotId),
+  projectId: Schema.optional(ProjectId),
+});
+export type BotTaskListInput = typeof BotTaskListInput.Type;
+
+export const BotTaskListResult = Schema.Struct({
+  tasks: Schema.Array(BotTaskSummary),
+});
+export type BotTaskListResult = typeof BotTaskListResult.Type;
+
+export const BotStartTaskInput = Schema.Struct({
+  botId: BotId,
+  projectId: ProjectId,
+  prompt: TrimmedNonEmptyString.check(Schema.isMaxLength(BOT_INSTRUCTIONS_MAX_CHARS)),
+  title: Schema.optional(BotName),
+  /** Makes a retried start return the same task. */
+  commandId: Schema.optional(CommandId),
+});
+export type BotStartTaskInput = typeof BotStartTaskInput.Type;
+
+export const BotCancelTaskInput = Schema.Struct({ taskId: BotTaskId });
+export type BotCancelTaskInput = typeof BotCancelTaskInput.Type;

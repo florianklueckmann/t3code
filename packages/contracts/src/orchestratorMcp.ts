@@ -20,6 +20,7 @@ import {
   TrimmedNonEmptyString,
   TurnItemId,
 } from "./baseSchemas.ts";
+import { BotId } from "./bot.ts";
 import {
   ScheduledTaskRunStatus,
   ScheduledTaskSchedule,
@@ -723,6 +724,17 @@ export const OrchestratorMcpScheduleTaskInput = Schema.Struct({
         "Runs share one thread but each starts a fresh session. Unbound: the first run makes the thread.",
     }),
   ),
+  botId: Schema.optional(
+    BotId.annotate({
+      description:
+        "Run as this Bot's routine: each run is a Bot task in a new work thread, in full access. Not with a webhook.",
+    }),
+  ),
+  sessionAt: Schema.optional(
+    IsoDateTime.annotate({
+      description: "With botId and a 'once' schedule: when the prepared session starts.",
+    }),
+  ),
   clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),
 });
 export type OrchestratorMcpScheduleTaskInput = typeof OrchestratorMcpScheduleTaskInput.Type;
@@ -745,6 +757,7 @@ export const OrchestratorMcpScheduledTask = Schema.Struct({
   projectId: ProjectId,
   boundThreadId: Schema.NullOr(ThreadId),
   freshSession: Schema.Boolean,
+  botId: Schema.optional(BotId),
   schedule: ScheduledTaskSchedule,
   nextRunAt: Schema.NullOr(IsoDateTime),
   lastRunStatus: ScheduledTaskRunStatus,

@@ -2,6 +2,7 @@ import { type BotError, OrchestratorMcpFailure } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
 import * as BotService from "../../../bots/BotService.ts";
+import * as BotTaskService from "../../../bots/BotTaskService.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import { BotToolkit, type BotToolInput } from "./tools.ts";
 
@@ -30,6 +31,14 @@ const requireProjectId = (input: BotToolInput) =>
 
 const read = Effect.fn("mcp.bot.read")(function* (input: BotToolInput) {
   const bots = yield* BotService.BotService;
+  if (input.action === "list_tasks") {
+    const tasks = yield* BotTaskService.BotTaskService;
+    const listed = tasks.list({
+      ...(input.botId === undefined ? {} : { botId: input.botId }),
+      ...(input.projectId === undefined ? {} : { projectId: input.projectId }),
+    });
+    return { tasks: (yield* listed.pipe(Effect.mapError(botFailure))).tasks };
+  }
   if (input.action === "list") {
     return { bots: (yield* bots.list.pipe(Effect.mapError(botFailure))).bots };
   }
@@ -39,7 +48,36 @@ const read = Effect.fn("mcp.bot.read")(function* (input: BotToolInput) {
 
 const write = Effect.fn("mcp.bot.write")(function* (input: BotToolInput) {
   const bots = yield* BotService.BotService;
+  const tasks = yield* BotTaskService.BotTaskService;
+  if (input.action === "cancel_task") {
+    if (input.taskId === undefined) {
+      return yield* new OrchestratorMcpFailure({
+        code: "invalid_request",
+        message: "`cancel_task` needs `taskId`.",
+      });
+    }
+    const cancelled = tasks.cancel({ taskId: input.taskId });
+    return { task: yield* cancelled.pipe(Effect.mapError(botFailure)) };
+  }
   const botId = yield* requireBotId(input);
+  if (input.action === "start_task") {
+    if (input.task === undefined) {
+      return yield* new OrchestratorMcpFailure({
+        code: "invalid_request",
+        message: "`start_task` needs `task`.",
+      });
+    }
+    const project = yield* bots
+      .resolveProject({ botId, projectId: input.projectId })
+      .pipe(Effect.mapError(botFailure));
+    const started = tasks.start({
+      botId,
+      projectId: project.projectId,
+      prompt: input.task,
+      ...(input.title === undefined ? {} : { title: input.title }),
+    });
+    return { task: yield* started.pipe(Effect.mapError(botFailure)) };
+  }
   const { guidance, sources } = input;
   const projectContext = {
     ...(guidance === undefined ? {} : { guidance }),
@@ -84,7 +122,7 @@ const write = Effect.fn("mcp.bot.write")(function* (input: BotToolInput) {
 
 export const layer = McpToolAccess.toLayer(BotToolkit, {
   t3_bot: McpToolAccess.either(
-    (input) => input.action === "list" || input.action === "read",
+    (input) => input.action === "list" || input.action === "read" || input.action === "list_tasks",
     McpToolAccess.reads(read),
     McpToolAccess.writesEnvironment((input) => write(input)),
   ),
