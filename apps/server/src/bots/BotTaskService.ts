@@ -228,12 +228,23 @@ const make = Effect.gen(function* () {
     return { modelSelection: detail.modelSelection };
   });
 
-  /** The same command id each time, so a repeated stop replays. */
-  const stopWorkThread = (row: BotTaskRow, workThreadId: string) =>
+  /**
+   * Stable per stage, so a repeated stop replays. A stop sent before the launch admitted its run
+   * stops nothing, so the stop after the launch needs its own id to take effect.
+   */
+  const stopWorkThread = (
+    row: BotTaskRow,
+    workThreadId: string,
+    stage: "requested" | "after-launch",
+  ) =>
     threads
       .dispatch({
         type: "thread.stop",
-        commandId: CommandId.make(`bot-task-cancel:${row.task_id}`),
+        commandId: CommandId.make(
+          stage === "requested"
+            ? `bot-task-cancel:${row.task_id}`
+            : `bot-task-cancel:${row.task_id}:after-launch`,
+        ),
         threadId: ThreadId.make(workThreadId),
         reason: row.detail ?? "The Bot task was cancelled.",
       })
@@ -279,7 +290,9 @@ const make = Effect.gen(function* () {
         WHERE task_id = ${row.task_id} AND dispatched_at IS NULL
       `.pipe(Effect.mapError(storageError));
       const after = yield* readRow(row.task_id);
-      if (after?.cancel_requested_at != null) yield* stopWorkThread(after, row.work_thread_id);
+      if (after?.cancel_requested_at != null) {
+        yield* stopWorkThread(after, row.work_thread_id, "after-launch");
+      }
     } else {
       // A launch that was refused is not retried: nothing broadens or repeats work on its own.
       yield* sql`
@@ -493,7 +506,7 @@ const make = Effect.gen(function* () {
         UPDATE bot_tasks SET dispatched_at = COALESCE(dispatched_at, ${now})
         WHERE task_id = ${row.task_id}
       `.pipe(Effect.mapError(storageError));
-      yield* stopWorkThread(row, workThreadId);
+      yield* stopWorkThread(row, workThreadId, "requested");
     } else {
       yield* sql`
         UPDATE bot_tasks
@@ -549,6 +562,10 @@ const make = Effect.gen(function* () {
         cancelRequested: row.cancel_requested_at !== null,
         shell,
       });
+      // A cancelled task still working gets its stop again, for one that failed or came too early.
+      if (row.cancel_requested_at !== null && !isTerminal(status)) {
+        yield* stopWorkThread(row, row.work_thread_id, "after-launch");
+      }
       if (status === row.status) return;
       const now = yield* nowIso;
       const terminal = isTerminal(status);
