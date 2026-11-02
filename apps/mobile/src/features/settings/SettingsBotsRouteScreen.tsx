@@ -37,6 +37,7 @@ import {
   botModelOptions,
   defaultBotModelSelection,
   detachBotProjectDraft,
+  isBotModelOption,
   emptyBotSourceDraft,
   newBotDraft,
   planBotSave,
@@ -810,6 +811,7 @@ export function BotModelPickerRouteScreen() {
       environmentId={environmentId}
       projectId={null}
       providerGroups={groupByProvider(models)}
+      isModelOptionEligible={isBotModelOption}
       selectedModel={selectedModel}
       // Bots have no prompt here; Codex has no prompt-controlled options.
       prompt=""

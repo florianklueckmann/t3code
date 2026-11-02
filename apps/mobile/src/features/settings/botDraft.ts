@@ -52,13 +52,15 @@ export type BotDraft = {
   readonly projects: ReadonlyArray<BotProjectDraft>;
 };
 
+export function isBotModelOption(option: ModelOption): boolean {
+  return option.providerDriver === BOT_PROVIDER_DRIVER;
+}
+
 export function botModelOptions(
   config: ServerConfig | null,
   selected: ModelSelection | null,
 ): ReadonlyArray<ModelOption> {
-  return buildModelOptions(config, selected, undefined, null).filter(
-    (option) => option.providerDriver === BOT_PROVIDER_DRIVER,
-  );
+  return buildModelOptions(config, selected, undefined, null).filter(isBotModelOption);
 }
 
 export function defaultBotModelSelection(config: ServerConfig | null): ModelSelection | null {
