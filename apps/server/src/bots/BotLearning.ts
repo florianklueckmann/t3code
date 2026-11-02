@@ -10,6 +10,8 @@ import {
   type BotRecordLearningInput,
   type BotRestoreLearningInput,
   type BotRetireLearningInput,
+  type BotTaskId,
+  type BotTaskStatus,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
@@ -53,9 +55,11 @@ const initialStatus = (input: {
   readonly shared: boolean;
   readonly conflictsWithInstruction: boolean;
   readonly policy: BotLearningPolicy;
+  /** A task's lesson waits until the server sees that task completed. */
+  readonly fromTask: boolean;
 }): BotLearningStatus => {
   if (input.origin === "instruction") return "active";
-  if (input.shared || input.conflictsWithInstruction) return "pending";
+  if (input.fromTask || input.shared || input.conflictsWithInstruction) return "pending";
   return input.policy === "automatic" ? "active" : "pending";
 };
 
@@ -75,6 +79,7 @@ export const make = (deps: {
   readonly store: BotStore.BotStore["Service"];
   readonly now: Effect.Effect<string>;
   readonly newEntryId: Effect.Effect<string, BotError>;
+  readonly taskStatus: (taskId: BotTaskId) => Effect.Effect<BotTaskStatus, BotError>;
 }) => {
   const { store } = deps;
 
@@ -145,6 +150,15 @@ export const make = (deps: {
       learned_in_project_id: input.projectId,
       created_at: now,
     };
+    const fromTask = input.source.kind === "task";
+    if (fromTask) {
+      if (input.origin !== "correction") {
+        return yield* fail("A task proposes lessons; standing instructions come from the user.");
+      }
+      // A task proposes at most one lesson.
+      const earlier = rows.find((row) => row.source_json === base.source_json);
+      if (earlier !== undefined) return duplicateOf(earlier);
+    }
 
     if (input.replaces !== undefined) {
       const revisions = revisionsOf(rows, input.replaces.entryId);
@@ -171,6 +185,7 @@ export const make = (deps: {
             shared: first.project_id === null,
             conflictsWithInstruction,
             policy,
+            fromTask,
           });
       const row: BotStore.BotLearningRow = {
         ...base,
@@ -215,6 +230,7 @@ export const make = (deps: {
       shared,
       conflictsWithInstruction: false,
       policy,
+      fromTask,
     });
     const row: BotStore.BotLearningRow = {
       ...base,
@@ -249,6 +265,14 @@ export const make = (deps: {
     if (row.status !== "pending") {
       return yield* fail(`Revision ${row.revision} is ${row.status}, not pending.`);
     }
+    const source = yield* BotStore.learningSourceOf(row);
+    if (input.decision === "adopt" && source.kind === "task") {
+      if ((yield* deps.taskStatus(source.taskId)) !== "completed") {
+        return yield* fail(
+          "The task that proposed this has not completed, so it cannot be adopted.",
+        );
+      }
+    }
     const now = yield* deps.now;
     const head = activeOf(revisionsOf(rows, row.entry_id));
     const status: BotLearningStatus =
@@ -266,6 +290,54 @@ export const make = (deps: {
         decidedAt: now,
       });
     }
+  });
+
+  /**
+   * Settles a finished task's waiting lesson: a completed task makes it eligible under the
+   * policy, and any other ending leaves it as diagnostic evidence. True when something changed.
+   */
+  const settleTask = Effect.fn("BotLearning.settleTask")(function* (input: {
+    readonly botId: string;
+    readonly policy: BotLearningPolicy;
+    readonly taskId: BotTaskId;
+    readonly status: BotTaskStatus;
+  }) {
+    const rows = yield* store.listLearning(input.botId);
+    const sourceJson = BotStore.encodeLearningSource({ kind: "task", taskId: input.taskId });
+    const waiting = rows.filter(
+      (row) => row.source_json === sourceJson && row.status === "pending",
+    );
+    const now = yield* deps.now;
+    let changed = false;
+    for (const row of waiting) {
+      const head = activeOf(revisionsOf(rows, row.entry_id));
+      const status: BotLearningStatus | undefined =
+        input.status !== "completed"
+          ? "diagnostic"
+          : row.base_revision !== null && head?.revision !== row.base_revision
+            ? "stale"
+            : initialStatus({
+                  origin: "correction",
+                  shared: row.project_id === null,
+                  conflictsWithInstruction: row.conflicts_with_instruction !== 0,
+                  policy: input.policy,
+                  fromTask: false,
+                }) === "active"
+              ? "active"
+              : undefined;
+      if (status === undefined) continue;
+      changed = true;
+      if (status === "active") yield* activate(rows, row, now);
+      else {
+        yield* store.setLearningStatus({
+          entryId: row.entry_id,
+          revision: row.revision,
+          status,
+          decidedAt: now,
+        });
+      }
+    }
+    return changed;
   });
 
   const retire = Effect.fn("BotLearning.retire")(function* (input: BotRetireLearningInput) {
@@ -315,7 +387,7 @@ export const make = (deps: {
     yield* insertRevision(rows, row);
   });
 
-  return { record, decide, retire, restore };
+  return { record, decide, retire, restore, settleTask };
 };
 
 const resultOf = (row: BotStore.BotLearningRow): RecordLearningResult => ({

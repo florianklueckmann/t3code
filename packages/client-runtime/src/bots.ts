@@ -105,9 +105,11 @@ export const BOT_LEARNING_STATUS_LABELS: Record<BotLearningStatus, string> = {
   retired: "Retired",
   superseded: "Replaced",
   stale: "Outdated",
+  diagnostic: "Task didn't finish",
 };
 
 export function botLearningOriginLabel(revision: BotLearningRevision): string {
+  if (revision.source.kind === "task") return "Proposed by a task";
   return revision.origin === "instruction" ? "Your instruction" : "Learned from a correction";
 }
 

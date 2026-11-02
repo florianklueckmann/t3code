@@ -135,6 +135,11 @@ const SourceJson = Schema.fromJsonString(BotLearningSource);
 export const encodeLearningSource = Schema.encodeSync(SourceJson);
 const decodeLearningSource = Schema.decodeUnknownEffect(SourceJson);
 
+export const learningSourceOf = (row: BotLearningRow) =>
+  decodeLearningSource(row.source_json).pipe(
+    Effect.mapError((cause) => new BotStoreError({ operation: "decode-learning-source", cause })),
+  );
+
 /** Groups revision rows into entries, in the order each entry first appears. */
 const toLearningEntries = Effect.fn("BotStore.toLearningEntries")(function* (
   rows: ReadonlyArray<BotLearningRow>,

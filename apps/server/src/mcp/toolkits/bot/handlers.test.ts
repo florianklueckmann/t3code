@@ -4,6 +4,7 @@ import {
   type BotDetail,
   BotError,
   BotLearningEntryId,
+  BotTaskId,
   EnvironmentId,
   ProjectId,
   ProviderInstanceId,
@@ -47,7 +48,7 @@ const callTool = (
   params: BotToolInput,
   access: "read-only" | undefined,
   /** The Bot conversation the calling thread is, if any. */
-  callerBot?: { readonly botId: BotId; readonly projectId: ProjectId },
+  callerBot?: { readonly botId: BotId; readonly projectId: ProjectId; readonly taskId?: BotTaskId },
 ) =>
   Effect.gen(function* () {
     const calls = yield* Ref.make<ReadonlyArray<string>>([]);
@@ -89,7 +90,12 @@ const callTool = (
                 updateProjectContext: (input) =>
                   record(`project:${input.projectId}:${input.guidance}:${input.sources?.length}`),
                 update: () => Effect.fail(new BotError({ message: "This Bot is archived." })),
-                scopeOfThread: () => Effect.succeed(callerBot),
+                scopeOfThread: () =>
+                  Effect.succeed(
+                    callerBot === undefined
+                      ? undefined
+                      : { homeThreadId: threadId, taskId: null, ...callerBot },
+                  ),
                 recordLearning: (input) =>
                   record(
                     `learn:${input.projectId}:${input.origin}:${
@@ -166,6 +172,14 @@ it.effect(
       );
       expect(otherProject.result).toMatchObject({ code: "invalid_request" });
       expect(otherProject.calls).toEqual([]);
+
+      // A work thread's lesson is attributed to its task, which the server resolved.
+      const fromTask = yield* callTool(
+        { action: "learn", botId, projectId: campaignA, learning },
+        undefined,
+        { ...own, taskId: BotTaskId.make("bot-task:1") },
+      );
+      expect(fromTask.calls).toEqual([`learn:${campaignA}:correction:task`]);
 
       const selfAdopt = yield* callTool(
         { action: "adopt", botId, entryId: BotLearningEntryId.make("entry-1"), revision: 1 },

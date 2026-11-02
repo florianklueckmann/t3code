@@ -1,5 +1,6 @@
 import {
   BOT_HOME_THREAD_ID_PREFIX,
+  BOT_TASK_TERMINAL_STATUSES,
   type BotAttachProjectInput,
   type BotCreateInput,
   type BotDecideLearningInput,
@@ -14,6 +15,7 @@ import {
   type BotRestoreLearningInput,
   type BotRetireLearningInput,
   type BotSetArchivedInput,
+  type BotTaskId,
   type BotUpdateInput,
   type BotUpdateProjectContextInput,
   CommandId,
@@ -46,6 +48,7 @@ import * as BotLearning from "./BotLearning.ts";
 import * as BotProjectGuard from "./BotProjectGuard.ts";
 import * as BotStore from "./BotStore.ts";
 import * as BotTaskService from "./BotTaskService.ts";
+import * as BotTurnContext from "./BotTurnContext.ts";
 
 /** The only driver whose adapter delivers Bot instructions on every turn so far. */
 const BOT_SUPPORTED_DRIVER = "codex";
@@ -64,15 +67,13 @@ export class BotService extends Context.Service<
       input: BotUpdateProjectContextInput,
     ) => Effect.Effect<BotDetail, BotError>;
     readonly detachProject: (input: BotDetachProjectInput) => Effect.Effect<BotDetail, BotError>;
-    /** The Bot and project whose conversation a thread is, if it is one. */
-    readonly scopeOfThread: (threadId: ThreadId) => Effect.Effect<
-      | {
-          readonly botId: BotId;
-          readonly projectId: ProjectId;
-        }
-      | undefined,
-      BotError
-    >;
+    /**
+     * The Bot, project and task whose conversation or work thread a thread is; "inactive"
+     * while that Bot is archived or the project detached.
+     */
+    readonly scopeOfThread: (
+      threadId: ThreadId,
+    ) => Effect.Effect<BotTurnContext.BotTurnScope | "inactive" | undefined, BotError>;
     /** Records a standing instruction or proposes an inferred lesson, as the policy allows. */
     readonly recordLearning: (input: BotLearning.RecordLearningInput) => Effect.Effect<
       {
@@ -86,6 +87,8 @@ export class BotService extends Context.Service<
     readonly restoreLearning: (
       input: BotRestoreLearningInput & { readonly source: BotLearningSource },
     ) => Effect.Effect<BotDetail, BotError>;
+    /** Settles lessons whose proposing task has finished, by that task's derived status. */
+    readonly reconcileTaskLearning: Effect.Effect<void, BotError>;
     /**
      * The attached project to use when a caller names none: the only one, or an
      * error listing the choices so the caller can ask the user.
@@ -129,6 +132,7 @@ const make = Effect.gen(function* () {
   const scheduler = yield* Scheduler.Scheduler;
   const scheduledTasks = yield* ScheduledTaskService.ScheduledTaskService;
   const botTasks = yield* BotTaskService.BotTaskService;
+  const turnContext = yield* BotTurnContext.BotTurnContext;
   const crypto = yield* Crypto.Crypto;
   // Subscribers re-read the full list, so only the newest change signal matters.
   const changes = yield* PubSub.sliding<void>(1);
@@ -592,12 +596,12 @@ const make = Effect.gen(function* () {
   const scopeOfThread: BotService["Service"]["scopeOfThread"] = Effect.fn(
     "BotService.scopeOfThread",
   )(function* (threadId) {
-    const context = yield* store.getContextByThread(threadId).pipe(Effect.mapError(storeError()));
-    if (context === undefined) return undefined;
-    return {
-      botId: BotId.make(context.bot_id),
-      projectId: ProjectId.make(context.project_id),
-    };
+    const result = yield* turnContext.forThread(threadId).pipe(Effect.mapError(storeError()));
+    return result._tag === "none"
+      ? undefined
+      : result._tag === "inactive"
+        ? "inactive"
+        : result.scope;
   });
 
   const learning = BotLearning.make({
@@ -606,6 +610,7 @@ const make = Effect.gen(function* () {
     newEntryId: crypto
       .randomUUIDv4()
       .pipe(Effect.mapError(botError("Failed to allocate a learning entry id."))),
+    taskStatus: (taskId) => botTasks.get(taskId).pipe(Effect.map((task) => task.status)),
   });
   // Revision numbers, duplicates and staleness are decided from one read of the Bot's learning.
   const learningLocks = yield* KeyedLock.make<BotId>();
@@ -688,6 +693,54 @@ const make = Effect.gen(function* () {
   );
   yield* scheduler.register("bot-thread-sync", syncPending);
 
+  const reconcileTaskLearning: BotService["Service"]["reconcileTaskLearning"] = Effect.gen(
+    function* () {
+      const rows = yield* store.listLearning().pipe(Effect.mapError(storeError()));
+      const waiting = new Map<string, { readonly botId: BotId; readonly taskId: BotTaskId }>();
+      for (const row of rows) {
+        if (row.status !== "pending") continue;
+        const source = yield* BotStore.learningSourceOf(row).pipe(Effect.mapError(storeError()));
+        if (source.kind !== "task") continue;
+        waiting.set(`${row.bot_id}\u0000${source.taskId}`, {
+          botId: BotId.make(row.bot_id),
+          taskId: source.taskId,
+        });
+      }
+      yield* Effect.forEach(
+        waiting.values(),
+        ({ botId, taskId }) =>
+          Effect.gen(function* () {
+            const task = yield* botTasks.get(taskId);
+            if (!BOT_TASK_TERMINAL_STATUSES.has(task.status)) return;
+            yield* changeLearning(botId, (bot) =>
+              isLearningPolicy(bot.learning_policy)
+                ? learning.settleTask({
+                    botId,
+                    policy: bot.learning_policy,
+                    taskId,
+                    status: task.status,
+                  })
+                : botError("The Bot's learning policy is unreadable.", botId)(),
+            );
+          }).pipe(
+            // An archived Bot keeps its waiting lessons until it is restored.
+            Effect.catchCause((cause) =>
+              Effect.logWarning("Bot task learning reconcile failed", { taskId, cause }),
+            ),
+          ),
+        { discard: true },
+      );
+    },
+  ).pipe(Effect.withSpan("BotService.reconcileTaskLearning"));
+
+  // Task changes settle lessons at once; the scheduler covers changes missed while down.
+  const taskChanges = yield* botTasks.changes;
+  yield* taskChanges.pipe(
+    Stream.runForEach(() => reconcileTaskLearning.pipe(Effect.ignore({ log: true }))),
+    Effect.forkScoped,
+  );
+  yield* scheduler.register("bot-task-learning", reconcileTaskLearning);
+
   return BotService.of({
     list,
     subscribeList,
@@ -706,7 +759,10 @@ const make = Effect.gen(function* () {
     decideLearning,
     retireLearning,
     restoreLearning,
+    reconcileTaskLearning,
   });
 });
 
-export const layer = Layer.effect(BotService, make).pipe(Layer.provide(BotStore.layer));
+export const layer = Layer.effect(BotService, make).pipe(
+  Layer.provide(Layer.merge(BotStore.layer, BotTurnContext.layer)),
+);

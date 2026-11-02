@@ -140,8 +140,9 @@ export const BotLearningScope = Schema.Literals(["project", "bot"]);
 export type BotLearningScope = typeof BotLearningScope.Type;
 
 /**
- * pending waits for the user; active is in use; superseded was replaced by a later revision;
- * stale was proposed against a revision that has since changed.
+ * pending waits for the user, or for the task that proposed it to complete; active is in use;
+ * superseded was replaced by a later revision; stale was proposed against a revision that has
+ * since changed; diagnostic came from a task that did not complete, so it is not eligible.
  */
 export const BotLearningStatus = Schema.Literals([
   "pending",
@@ -150,14 +151,20 @@ export const BotLearningStatus = Schema.Literals([
   "retired",
   "superseded",
   "stale",
+  "diagnostic",
 ]);
 export type BotLearningStatus = typeof BotLearningStatus.Type;
+
+export const BotTaskId = TrimmedNonEmptyString.pipe(Schema.brand("BotTaskId"));
+export type BotTaskId = typeof BotTaskId.Type;
 
 /** Who recorded a revision, resolved by the server rather than claimed by the caller. */
 export const BotLearningSource = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("user") }),
   Schema.Struct({ kind: Schema.Literal("thread"), threadId: ThreadId }),
   Schema.Struct({ kind: Schema.Literal("agent"), label: Schema.String }),
+  /** A Bot's work thread; eligible only once that task completed. */
+  Schema.Struct({ kind: Schema.Literal("task"), taskId: BotTaskId }),
 ]);
 export type BotLearningSource = typeof BotLearningSource.Type;
 
@@ -324,9 +331,6 @@ export class BotError extends Schema.TaggedError<BotError>()("BotError", {
   botId: Schema.optional(BotId),
   cause: Schema.optional(Schema.Defect()),
 }) {}
-
-export const BotTaskId = TrimmedNonEmptyString.pipe(Schema.brand("BotTaskId"));
-export type BotTaskId = typeof BotTaskId.Type;
 
 /**
  * Derived from the work thread's persisted runs, not from schedule acknowledgement or the

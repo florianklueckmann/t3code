@@ -3,6 +3,7 @@ import { assert, it } from "@effect/vitest";
 import {
   type BotDetail,
   BotId,
+  BotTaskId,
   type OrchestrationV2ServerCommand,
   type OrchestrationV2ThreadShell,
   type Project,
@@ -649,6 +650,104 @@ it.effect("settles duplicates, stale replacements and conflicts with standing in
         });
         assert.include(yield* instructionsFor(turnContext, home), "under five sentences");
         assert.equal(restored.learning[0]?.revisions.at(-1)?.origin, "instruction");
+      }),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect("counts a work task's lesson only once the server sees that task completed", () =>
+  Effect.gen(function* () {
+    yield* seedProjects;
+    const world = yield* makeThreadWorld;
+    const sql = yield* SqlClient.SqlClient;
+    // Task rows as BotTaskService persists them, with the status it derived from the work thread.
+    const insertTask = (taskId: string, homeThreadId: ThreadId) =>
+      sql`
+        INSERT INTO bot_tasks (
+          task_id, bot_id, project_id, home_thread_id, work_thread_id, origin, title, prompt,
+          runtime_mode, status, created_at, updated_at
+        ) VALUES (
+          ${taskId}, ${botId}, ${campaignA}, ${homeThreadId}, ${`bot-work:${taskId}`}, 'direct',
+          'Prepare', 'Prepare the session.', 'full-access', 'running',
+          '2026-11-02T00:00:00.000Z', '2026-11-02T00:00:00.000Z'
+        )
+      `.pipe(Effect.orDie);
+    const setTaskStatus = (taskId: string, status: string) =>
+      sql`UPDATE bot_tasks SET status = ${status} WHERE task_id = ${taskId}`.pipe(Effect.orDie);
+    yield* withServices(world.threadLayer, ({ bots, turnContext }) =>
+      Effect.gen(function* () {
+        yield* bots.create({
+          botId,
+          name: "Faerun Companion",
+          instructions: "",
+          modelSelection: codex,
+          learningPolicy: "automatic",
+        });
+        const attached = yield* bots.attachProject({ botId, projectId: campaignA });
+        const home = attached.projects[0]?.homeThreadId ?? assert.fail();
+        yield* insertTask("bot-task:done", home);
+        yield* insertTask("bot-task:failed", home);
+
+        // Provenance comes from the work thread the caller runs in.
+        const scope = yield* bots.scopeOfThread(ThreadId.make("bot-work:bot-task:done"));
+        assert.deepEqual(scope, {
+          botId,
+          projectId: campaignA,
+          homeThreadId: home,
+          taskId: BotTaskId.make("bot-task:done"),
+        });
+        const fromTask = (taskId: string, text: string) =>
+          bots.recordLearning({
+            ...correction,
+            text,
+            source: { kind: "task", taskId: BotTaskId.make(taskId) },
+            botId,
+            projectId: campaignA,
+          });
+
+        // Even a Bot that learns automatically waits for the task to complete.
+        const proposed = yield* fromTask("bot-task:done", "Open session prep with a recap.");
+        assert.equal(proposed.learned.status, "pending");
+        assert.isTrue((yield* fromTask("bot-task:done", "Something else.")).learned.duplicate);
+        const early = yield* bots
+          .decideLearning({
+            botId,
+            entryId: proposed.learned.entryId,
+            revision: 1,
+            decision: "adopt",
+          })
+          .pipe(Effect.flip);
+        assert.include(early.message, "has not completed");
+        const instructionFromTask = yield* bots
+          .recordLearning({
+            ...correction,
+            origin: "instruction",
+            text: "Always skip the recap.",
+            source: { kind: "task", taskId: BotTaskId.make("bot-task:failed") },
+            botId,
+            projectId: campaignA,
+          })
+          .pipe(Effect.flip);
+        assert.include(instructionFromTask.message, "standing instructions come from the user");
+        yield* fromTask("bot-task:failed", "Skip the recap.");
+
+        yield* setTaskStatus("bot-task:done", "completed");
+        yield* setTaskStatus("bot-task:failed", "failed");
+        yield* bots.reconcileTaskLearning;
+
+        const detail = yield* bots.get({ botId });
+        const statusOf = (text: string) =>
+          detail.learning.find((entry) => entry.revisions[0]?.text === text)?.revisions.at(-1)
+            ?.status;
+        assert.equal(statusOf("Open session prep with a recap."), "active");
+        assert.equal(statusOf("Skip the recap."), "diagnostic");
+        const homeInstructions = yield* instructionsFor(turnContext, home);
+        assert.include(homeInstructions, "Open session prep with a recap.");
+        assert.notInclude(homeInstructions, "Skip the recap.");
+        assert.include(
+          yield* instructionsFor(turnContext, ThreadId.make("bot-work:bot-task:failed")),
+          "Open session prep with a recap.",
+        );
       }),
     );
   }).pipe(Effect.provide(layerDatabase)),

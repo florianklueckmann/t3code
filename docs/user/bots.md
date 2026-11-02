@@ -99,6 +99,10 @@ codebase does not leak into another. You see it under each project in
   adopt it** they wait under the project until you choose **Adopt** or
   **Reject**.
   A Bot cannot adopt its own lessons.
+- A task's work thread can propose one lesson. It counts only once the task has
+  completed, then follows the **Learning** option like any other lesson. If the
+  task fails or is interrupted or cancelled, the proposal stays visible as
+  **Task didn't finish** and is never applied.
 - A lesson never overrides one of your standing instructions on its own. If it
   would, it waits for you even when the Bot learns automatically.
 - Learning applies to the project it came from. It applies to all of the Bot's

@@ -1,5 +1,7 @@
 import { assert, it } from "@effect/vitest";
 import {
+  BotId,
+  BotTaskId,
   type OrchestrationV2AppThread,
   ProjectId,
   ProviderInstanceId,
@@ -14,6 +16,7 @@ import * as BotStore from "./BotStore.ts";
 import * as BotTurnContext from "./BotTurnContext.ts";
 
 const botThread = ThreadId.make("bot-home:companion:campaign");
+const workThread = ThreadId.make("bot-work:bot-task:1");
 const archivedBotThread = ThreadId.make("bot-home:archived:campaign");
 const brokenThread = ThreadId.make("bot-home:broken:campaign");
 
@@ -38,8 +41,17 @@ const resolveFor = (threadId: ThreadId) =>
             RuntimePolicy.layer,
             Layer.mock(BotTurnContext.BotTurnContext)({
               forThread: (id) =>
-                id === botThread
-                  ? Effect.succeed({ _tag: "active", instructions: "" } as const)
+                id === botThread || id === workThread
+                  ? Effect.succeed({
+                      _tag: "active",
+                      instructions: "",
+                      scope: {
+                        botId: BotId.make("companion"),
+                        projectId: ProjectId.make("campaign"),
+                        homeThreadId: botThread,
+                        taskId: id === workThread ? BotTaskId.make("bot-task:1") : null,
+                      },
+                    } as const)
                   : id === archivedBotThread
                     ? Effect.succeed({ _tag: "inactive", message: "archived" } as const)
                     : id === brokenThread
@@ -55,6 +67,7 @@ const resolveFor = (threadId: ThreadId) =>
 it.effect("turns provider memory off for Bot conversations only", () =>
   Effect.gen(function* () {
     assert.equal((yield* resolveFor(botThread)).nativeMemory, "disabled");
+    assert.equal((yield* resolveFor(workThread)).nativeMemory, "disabled");
     assert.equal((yield* resolveFor(archivedBotThread)).nativeMemory, "disabled");
     const plain = yield* resolveFor(ThreadId.make("plain"));
     assert.isUndefined(plain.nativeMemory);

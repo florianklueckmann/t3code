@@ -60,9 +60,18 @@ const learningCaller = Effect.fn("mcp.bot.learningCaller")(function* () {
       source: { kind: "agent", label: scope.client?.label ?? "MCP client" } as const,
     };
   }
+  const bot = yield* bots.scopeOfThread(scope.thread.threadId).pipe(Effect.mapError(botFailure));
+  if (bot === "inactive") {
+    return yield* invalid(
+      "This Bot conversation is inactive. Restore the Bot or reattach the project first.",
+    );
+  }
   return {
-    bot: yield* bots.scopeOfThread(scope.thread.threadId).pipe(Effect.mapError(botFailure)),
-    source: { kind: "thread", threadId: scope.thread.threadId } as const,
+    bot,
+    source:
+      bot?.taskId == null
+        ? ({ kind: "thread", threadId: scope.thread.threadId } as const)
+        : ({ kind: "task", taskId: bot.taskId } as const),
   };
 });
 

@@ -108,6 +108,11 @@ function buildBotInstructions(input: {
       '- kind is "fact" for something true about this project, "preference" for how the user wants work done, and "procedure" for reusable steps. Do not record task-only instructions, one-off lookups or research results. Learning never adds sources, settles project canon or widens what you may do.',
       '- Learning applies to this project. Use scope "bot" only when the user says it should apply to all your projects; facts never do.',
       "- To change an entry, pass `replaces` with its id and revision. Adopting, rejecting, retiring and restoring entries is up to the user.",
+      ...(input.task === null
+        ? []
+        : [
+            `- If this task taught you something that should carry over to later work, propose one concise lesson with "learn", origin "correction", what you observed as evidence and a short rationale. It counts only once this task completes.`,
+          ]),
     ].join("\n"),
     input.task === null ? homeTaskSection(input) : workTaskSection(input.task),
   ];
