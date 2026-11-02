@@ -298,6 +298,31 @@ it.effect("archive blocks the conversations and restore reopens them", () =>
   }).pipe(Effect.provide(layerDatabase)),
 );
 
+it.effect("keeps a chosen appearance through restarts and other edits until reset", () =>
+  Effect.gen(function* () {
+    yield* seedProjects;
+    const world = yield* makeThreadWorld;
+    const look = { color: "orange", face: "joy", topper: "sprout" } as const;
+    yield* withServices(world.threadLayer, ({ bots }) =>
+      Effect.gen(function* () {
+        assert.isNull((yield* createCampaignBot(bots)).appearance);
+        yield* bots.update({ botId, appearance: look });
+        yield* bots.update({ botId, name: "Renamed", modelSelection: { ...codex, model: "o3" } });
+        yield* bots.setArchived({ botId, archived: true });
+        yield* bots.setArchived({ botId, archived: false });
+      }),
+    );
+    yield* withServices(world.threadLayer, ({ bots }) =>
+      Effect.gen(function* () {
+        const [summary] = (yield* bots.list).bots;
+        assert.equal(summary?.name, "Renamed");
+        assert.deepStrictEqual(summary?.appearance, look);
+        assert.isNull((yield* bots.update({ botId, appearance: null })).appearance);
+      }),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
 it.effect("detach and reattach keep the same conversation and its guidance", () =>
   Effect.gen(function* () {
     yield* seedProjects;

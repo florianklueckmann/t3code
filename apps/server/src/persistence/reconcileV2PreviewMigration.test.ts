@@ -58,6 +58,7 @@ describe("V2 preview upgrade", () => {
         [76, "ProjectionProjectsPinArchive"],
         [77, "RepairBooleanSettledOverride"],
         [78, "Bots"],
+        [79, "BotAppearance"],
       ]);
       assert.deepStrictEqual(yield* runMigrations(), []);
       assert.deepStrictEqual(yield* sql`SELECT * FROM orchestration_v2_legacy_imports`, imports);
@@ -159,6 +160,7 @@ describe("V2 preview upgrade", () => {
         [76, "ProjectionProjectsPinArchive"],
         [77, "RepairBooleanSettledOverride"],
         [78, "Bots"],
+        [79, "BotAppearance"],
       ]);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );

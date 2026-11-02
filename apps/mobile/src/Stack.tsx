@@ -121,6 +121,7 @@ import {
   SettingsBotNewRouteScreen,
   SettingsBotsRouteScreen,
 } from "./features/settings/SettingsBotsRouteScreen";
+import { BotLookRouteScreen } from "./features/settings/BotLookRouteScreen";
 import { SettingsKeyboardRouteScreen } from "./features/settings/SettingsKeyboardRouteScreen";
 import { SettingsLegalRouteScreen } from "./features/settings/SettingsLegalRouteScreen";
 import { SettingsMicrophoneRouteScreen } from "./features/settings/SettingsMicrophoneRouteScreen";
@@ -443,6 +444,10 @@ const SETTINGS_SCREENS = {
         ? { presentation: "card" as const }
         : THREAD_SETTINGS_SHEET_OPTIONS),
     },
+  }),
+  SettingsBotLook: createNativeStackScreen({
+    screen: BotLookRouteScreen,
+    options: { ...SETTINGS_PAGE_OPTIONS, title: "Look" },
   }),
   SettingsClientStorage: createNativeStackScreen({
     screen: SettingsClientStorageRouteScreen,
