@@ -109,17 +109,18 @@ export function ScheduledTaskModelPickerRouteScreen() {
             : current,
         )
       }
-      runtimeMode={editor.draft.runtimeMode}
-      onUpdateRuntimeMode={(runtimeMode) =>
-        setEditor((current) =>
-          current
-            ? {
-                ...current,
-                draft: { ...current.draft, runtimeMode },
-              }
-            : current,
-        )
-      }
+      runtime={{
+        mode: editor.draft.runtimeMode,
+        onUpdate: (runtimeMode) =>
+          setEditor((current) =>
+            current
+              ? {
+                  ...current,
+                  draft: { ...current.draft, runtimeMode },
+                }
+              : current,
+          ),
+      }}
       onClose={() => navigation.goBack()}
     />
   );

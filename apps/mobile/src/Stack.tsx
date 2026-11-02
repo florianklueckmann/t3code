@@ -112,6 +112,12 @@ import {
   ScheduledTaskBranchPickerRouteScreen,
   ScheduledTaskThreadPickerRouteScreen,
 } from "./features/settings/ScheduledTaskPickerScreens";
+import {
+  BotModelPickerRouteScreen,
+  SettingsBotEditRouteScreen,
+  SettingsBotNewRouteScreen,
+  SettingsBotsRouteScreen,
+} from "./features/settings/SettingsBotsRouteScreen";
 import { SettingsKeyboardRouteScreen } from "./features/settings/SettingsKeyboardRouteScreen";
 import { SettingsLegalRouteScreen } from "./features/settings/SettingsLegalRouteScreen";
 import { SettingsVoiceRouteScreen } from "./features/settings/SettingsVoiceRouteScreen";
@@ -309,6 +315,29 @@ const SETTINGS_SCREENS = {
   SettingsScheduledTaskModel: createNativeStackScreen({
     screen: ScheduledTaskModelPickerRouteScreen,
     options: THREAD_SETTINGS_ROUTE,
+  }),
+  SettingsBots: createNativeStackScreen({
+    screen: SettingsBotsRouteScreen,
+    linking: "settings/bots",
+    options: { ...SETTINGS_PAGE_OPTIONS, title: "Bots" },
+  }),
+  SettingsBotNew: createNativeStackScreen({
+    screen: SettingsBotNewRouteScreen,
+    options: { ...SETTINGS_PAGE_OPTIONS, title: "New Bot" },
+  }),
+  SettingsBotEdit: createNativeStackScreen({
+    screen: SettingsBotEditRouteScreen,
+    options: { ...SETTINGS_PAGE_OPTIONS, title: "Edit Bot" },
+  }),
+  SettingsBotModel: createNativeStackScreen({
+    screen: BotModelPickerRouteScreen,
+    options: {
+      ...SETTINGS_PAGE_OPTIONS,
+      headerShown: false,
+      ...(Platform.OS === "android"
+        ? { presentation: "card" as const }
+        : THREAD_SETTINGS_SHEET_OPTIONS),
+    },
   }),
   SettingsClientStorage: createNativeStackScreen({
     screen: SettingsClientStorageRouteScreen,
