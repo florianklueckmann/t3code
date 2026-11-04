@@ -225,7 +225,11 @@ export type ScheduledTaskRunStatus = typeof ScheduledTaskRunStatus.Type;
  */
 export const ScheduledTaskBotTarget = Schema.Struct({
   botId: BotId,
-  /** When the prepared session starts. A one-time run still due after this is skipped. */
+  allowChanges: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "Whether runs may change files or external data and send messages. Default: false.",
+  }),
+  /** When the event starts. A one-time run still due after this is skipped. */
   sessionAt: Schema.optional(Schema.NullOr(IsoDateTime)),
 });
 export type ScheduledTaskBotTarget = typeof ScheduledTaskBotTarget.Type;

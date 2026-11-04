@@ -62,25 +62,27 @@ outcome, the conversation is marked unread, and **Open** takes you to the
 result. Cards also show tasks that are still working, waiting for your answer,
 failed, were cancelled, or were skipped.
 
-A **routine** prepares something on a schedule. In **Settings → Bots**, edit
-the Bot and choose **Add routine** under the project. Describe what to prepare,
+A **routine** runs a task on a schedule. In **Settings → Bots**, edit
+the Bot and choose **Add routine** under the project. Describe what the Bot should do,
 then pick a timing:
 
-- **Before a session**: give the session's date and time and how long before it
+- **Before an event**: give the event's date and time and how long before it
   to prepare. The routine runs once.
 - **Recurring**: a time of day on chosen weekdays, in the environment's time
   zone, which the form shows.
 
-A preparation gives you a reminder, a recap of recorded play from the
-project's sources, open questions, and proposals marked as proposals. If there
-is no record of play, it says so. It doesn't change your files, notes or other
-tools; ask for edits as a separate task.
+Choose **No changes** to instruct the Bot to report results and propose changes
+without editing files or data or sending messages. Choose **Changes allowed**
+to authorize the edits or messages requested in the brief. New and existing routines
+default to **No changes** until you choose otherwise. The brief determines
+the result's content and format.
 
-Routines run in **Full access** without asking for approval, because nobody is
-there to approve them. Tasks you ask for run in the conversation's mode.
+Both modes run in **Full access** without approval prompts. The change mode
+controls the Bot's instructions, not its tool access. Tasks you ask for directly
+run in the conversation's mode.
 
 If the environment was off when a routine was due, it runs the latest missed
-preparation once when it is back, unless the session has already started; then
+run once when it is back, unless the event has already started; then
 the card shows it as skipped. A routine also skips a run while its previous one
 is still working. You can pause, resume, run, edit or delete a routine in
 **Settings → Bots**, and cancel a running task from its card.

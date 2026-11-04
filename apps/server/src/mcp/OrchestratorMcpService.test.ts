@@ -2903,6 +2903,11 @@ describe("OrchestratorMcpService provider resolution", () => {
       Effect.gen(function* () {
         const saved = yield* Ref.make<ReadonlyArray<ScheduledTaskUpsertInput>>([]);
         const botModel = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-bot" };
+        const storedRoutine: ScheduledTask = {
+          ...existing,
+          runtimeMode: "full-access",
+          bot: { botId: BotId.make("campaign-companion"), allowChanges: true },
+        };
         const mcp = yield* OrchestratorMcpService.OrchestratorMcpService.pipe(
           Effect.provide(
             OrchestratorMcpService.layer.pipe(
@@ -2936,9 +2941,10 @@ describe("OrchestratorMcpService provider resolution", () => {
                     admit: () => Effect.die("unused"),
                   }),
                   Layer.mock(ScheduledTaskService.ScheduledTaskService)({
+                    list: () => Effect.succeed({ tasks: [storedRoutine] }),
                     upsert: (input) =>
                       Ref.update(saved, (inputs) => [...inputs, input]).pipe(
-                        Effect.as({ task: existing }),
+                        Effect.as({ task: storedRoutine }),
                       ),
                   }),
                 ),
@@ -2952,6 +2958,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           schedule: { type: "once", runAt: "2026-11-12T18:00:00Z" },
           botId: BotId.make("campaign-companion"),
           sessionAt: "2026-11-13T18:00:00.000Z",
+          allowChanges: true,
         } as const;
         const refused = yield* mcp.scheduleTask(client, routine).pipe(Effect.flip);
         assert.include(refused.message, "full access");
@@ -2962,8 +2969,28 @@ describe("OrchestratorMcpService provider resolution", () => {
         assert.deepEqual(input?.bot, {
           botId: routine.botId,
           sessionAt: "2026-11-13T18:00:00.000Z",
+          allowChanges: true,
         });
         assert.isNull(input?.threadId);
+        const rejectedUpdate = yield* mcp
+          .updateScheduledTask(client, {
+            scheduledTaskId: storedRoutine.id,
+            allowChanges: true,
+          })
+          .pipe(Effect.flip);
+        assert.include(rejectedUpdate.message, "runtime mode");
+        const fullScope = fullAccess as McpInvocationScope;
+        const summary = yield* mcp.updateScheduledTask(fullScope, {
+          scheduledTaskId: storedRoutine.id,
+          title: "Renamed routine",
+        });
+        assert.isTrue(summary.allowChanges);
+        assert.isTrue((yield* Ref.get(saved)).at(-1)?.bot?.allowChanges);
+        yield* mcp.updateScheduledTask(fullScope, {
+          scheduledTaskId: storedRoutine.id,
+          allowChanges: false,
+        });
+        assert.isFalse((yield* Ref.get(saved)).at(-1)?.bot?.allowChanges);
       }),
     );
 

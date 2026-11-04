@@ -49,7 +49,7 @@ export function withBotRoutineTiming(
   timing: BotRoutineDraft["timing"],
 ): BotRoutineDraft {
   if (draft.timing === timing) return draft;
-  const base = { title: draft.title, prompt: draft.prompt };
+  const base = { title: draft.title, prompt: draft.prompt, allowChanges: draft.allowChanges };
   return timing === "session"
     ? { ...base, timing, sessionAtMs: null, leadMinutes: DAY_MINUTES }
     : { ...base, timing, timeOfDay: "09:00", weekdays: [] };
