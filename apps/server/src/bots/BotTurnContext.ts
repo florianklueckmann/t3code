@@ -37,6 +37,7 @@ interface WorkTask {
   readonly homeThreadId: string;
   readonly dueAt: string | null;
   readonly sessionAt: string | null;
+  readonly allowChanges: boolean;
 }
 
 export class BotTurnContext extends Context.Service<
@@ -123,7 +124,7 @@ function homeTaskSection(input: { readonly botId: string; readonly projectId: st
   return [
     "Tasks and routines:",
     `- When the user asks you to do something as a separate task, call t3_bot with action "start_task", botId "${input.botId}", projectId "${input.projectId}" and the request as \`task\`. It runs in its own work thread; its result appears here as a card.`,
-    `- When the user asks for preparation on a schedule or before a dated session, call schedule_task with botId "${input.botId}" and projectId "${input.projectId}". Give a one-time \`schedule\` with \`sessionAt\` for a dated session, or a fixed time for a recurring one.`,
+    `- When the user asks for work on a schedule, call schedule_task with botId "${input.botId}" and projectId "${input.projectId}". Give a one-time \`schedule\`, optionally with \`sessionAt\` when preparing before an event, or a fixed time for recurring work. For a new routine, honor the user's explicit choice of mode. If no mode is specified, set \`allowChanges: true\` when the requested work involves editing files or data or sending messages; otherwise use false. When updating a routine, omit \`allowChanges\` unless the user asks to change its mode; omission keeps the saved choice.`,
   ].join("\n");
 }
 
@@ -146,17 +147,15 @@ function workTaskSection(task: WorkTask): string {
     ].join("\n");
   }
   return [
-    "This task is a scheduled preparation routine. The first message is the user's brief for it.",
+    "This task is a scheduled routine. The first message is the user's brief for it.",
     task.dueAt === null ? null : `- It was due ${formatInstant(task.dueAt)}.`,
     task.sessionAt === null
       ? null
-      : `- The session it prepares starts ${formatInstant(task.sessionAt)}.`,
-    `- ${result} Give it these parts, under these headings:`,
-    "  1. Reminder: what is coming up and when.",
-    "  2. Recap: what happened in recorded play, from the project's sources, naming where each point comes from. If no record of play exists or it cannot be read, say so plainly; never reconstruct a recap from memory or invention.",
-    "  3. Open questions the user should settle before the session.",
-    "  4. Preparation proposals, each clearly marked as a proposal, not a decision.",
-    "- Prepare only: do not edit files, notes, vaults, Foundry or other tools' data. If something should change, propose it; the user asks for edits as a separate task.",
+      : `- The event it prepares for starts ${formatInstant(task.sessionAt)}.`,
+    `- ${result} Follow the brief's requested format and distinguish completed work, findings, proposals and unresolved questions as relevant.`,
+    task.allowChanges
+      ? "- Changes allowed: carry out the changes requested in the brief, including editing files or external data and sending messages. Stay within that request and the user's other instructions. Report what you changed and anything you could not complete."
+      : "- No changes: read and research, then report results or propose changes. Do not edit files or external data, or send messages. If the brief asks for changes, describe the proposal and explain that this routine is configured without changes.",
   ]
     .filter((line) => line !== null)
     .join("\n");
@@ -180,8 +179,9 @@ export const layer = Layer.effect(
         readonly home_thread_id: string;
         readonly occurrence_due_at: string | null;
         readonly session_at: string | null;
+        readonly allow_changes: number;
       }>`
-        SELECT task_id, origin, home_thread_id, occurrence_due_at, session_at
+        SELECT task_id, origin, home_thread_id, occurrence_due_at, session_at, allow_changes
         FROM bot_tasks WHERE work_thread_id = ${threadId}
       `.pipe(
         Effect.mapError((cause) => new BotStore.BotStoreError({ operation: "read-task", cause })),
@@ -194,6 +194,7 @@ export const layer = Layer.effect(
         homeThreadId: row.home_thread_id,
         dueAt: row.occurrence_due_at,
         sessionAt: row.session_at,
+        allowChanges: row.allow_changes === 1,
       } satisfies WorkTask;
     });
 

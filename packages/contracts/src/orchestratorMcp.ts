@@ -682,9 +682,13 @@ export const OrchestratorMcpScheduleTaskInput = Schema.Struct({
   ),
   sessionAt: Schema.optional(
     IsoDateTime.annotate({
-      description: "With botId and a 'once' schedule: when the prepared session starts.",
+      description: "With botId and a 'once' schedule: when the event being prepared for starts.",
     }),
   ),
+  allowChanges: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "Bot routines only: allow requested file/data edits and messages. Default false; omitted on update keeps the saved choice.",
+  }),
   clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),
 });
 export type OrchestratorMcpScheduleTaskInput = typeof OrchestratorMcpScheduleTaskInput.Type;
@@ -709,6 +713,7 @@ export const OrchestratorMcpScheduledTask = Schema.Struct({
   freshSession: Schema.Boolean,
   botId: Schema.optional(BotId),
   sessionAt: Schema.optional(IsoDateTime),
+  allowChanges: Schema.optional(Schema.Boolean),
   schedule: ScheduledTaskSchedule,
   nextRunAt: Schema.NullOr(IsoDateTime),
   lastRunStatus: ScheduledTaskRunStatus,
@@ -752,6 +757,7 @@ export const OrchestratorMcpUpdateScheduledTaskInput = Schema.Struct({
   enabled: Schema.optional(Schema.Boolean),
   bindToCurrentThread: Schema.optional(Schema.Boolean),
   freshSession: Schema.optional(Schema.Boolean),
+  allowChanges: Schema.optional(Schema.Boolean),
 });
 export type OrchestratorMcpUpdateScheduledTaskInput =
   typeof OrchestratorMcpUpdateScheduledTaskInput.Type;

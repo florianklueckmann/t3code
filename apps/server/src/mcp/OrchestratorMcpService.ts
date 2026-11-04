@@ -269,7 +269,9 @@ function scheduledTaskSummary(task: ScheduledTask, mayRun: boolean): Orchestrato
     projectId: task.projectId,
     boundThreadId: task.threadId,
     freshSession: scheduledTaskThreadMode(task) === "fresh_session",
-    ...(task.bot === undefined ? {} : { botId: task.bot.botId }),
+    ...(task.bot === undefined
+      ? {}
+      : { botId: task.bot.botId, allowChanges: task.bot.allowChanges ?? false }),
     ...(task.bot?.sessionAt == null ? {} : { sessionAt: task.bot.sessionAt }),
     schedule: task.schedule,
     nextRunAt: task.nextRunAt,
@@ -1998,6 +2000,9 @@ const make = Effect.gen(function* () {
       if (input.sessionAt !== undefined && input.botId === undefined) {
         return yield* failure("invalid_request", "sessionAt needs botId.");
       }
+      if (input.allowChanges !== undefined && input.botId === undefined) {
+        return yield* failure("invalid_request", "allowChanges needs botId.");
+      }
       // A routine runs in full access, so only a caller with full access may set one up.
       if (
         input.botId !== undefined &&
@@ -2051,7 +2056,13 @@ const make = Effect.gen(function* () {
         creationSource: "mcp",
         ...(input.botId === undefined
           ? {}
-          : { bot: { botId: input.botId, sessionAt: input.sessionAt ?? null } }),
+          : {
+              bot: {
+                botId: input.botId,
+                sessionAt: input.sessionAt ?? null,
+                allowChanges: input.allowChanges ?? false,
+              },
+            }),
         // Scope the idempotency key by provider session so two callers
         // reusing the same clientRequestId cannot collide on one task row.
         ...(input.clientRequestId === undefined
@@ -2097,6 +2108,9 @@ const make = Effect.gen(function* () {
         const { parent, limits } = yield* loadCaller(scope);
         const existing = yield* loadScheduledTask(input.scheduledTaskId, limits);
         yield* assertLiveCallerForOtherProject(scope, parent, existing.projectId);
+        if (input.allowChanges !== undefined && existing.bot === undefined) {
+          return yield* failure("invalid_request", "allowChanges needs a Bot routine.");
+        }
         if (
           input.bindToCurrentThread === true &&
           (parent === undefined || parent.thread.projectId !== existing.projectId)
@@ -2157,6 +2171,14 @@ const make = Effect.gen(function* () {
           interactionMode: existing.interactionMode,
           createdBy: existing.createdBy,
           creationSource: existing.creationSource,
+          ...(existing.bot === undefined
+            ? {}
+            : {
+                bot: {
+                  ...existing.bot,
+                  allowChanges: input.allowChanges ?? existing.bot.allowChanges ?? false,
+                },
+              }),
         };
         const { task } = yield* scheduledTasks
           .upsert(upsertInput)

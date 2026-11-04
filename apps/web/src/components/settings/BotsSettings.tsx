@@ -1311,8 +1311,8 @@ function BotRoutines({
         <div className="min-w-0 space-y-1">
           <Label>Routines</Label>
           <p className="text-xs text-muted-foreground">
-            Each run starts a new work thread in full access, with no approval prompts. Routines
-            prepare and propose; they don't edit your files.
+            Each run starts a new work thread in Full access, without approval prompts. The change
+            mode controls the Bot's instructions, not its tool access.
           </p>
         </div>
         <Button
@@ -1418,6 +1418,7 @@ function BotRoutineRow({
         </div>
         <p className="text-muted-foreground">
           {describeBotRoutineTiming(task, formatInstant, timeZone)}
+          {task.bot?.allowChanges ? " · Changes allowed" : " · No changes"}
         </p>
         {task.blockedByPolicy !== undefined ? (
           <p className="text-muted-foreground">{task.blockedByPolicy}</p>
@@ -1564,11 +1565,31 @@ function BotRoutineEditor({
         <Textarea
           id={`${idPrefix}-prompt`}
           className="max-h-48 overflow-y-auto"
-          placeholder="What should the Bot prepare? A reminder, a recap of the last session, open questions, proposals."
+          placeholder="What should the Bot do on each run?"
           value={form.prompt}
           onChange={(event) => update({ prompt: event.target.value })}
         />
       </Field>
+      <div className="space-y-2">
+        <Label>Changes</Label>
+        <ToggleGroup
+          aria-label="Routine changes"
+          value={[form.allowChanges ? "allow" : "none"]}
+          onValueChange={(values) => {
+            if (values[0] === "allow" || values[0] === "none") {
+              update({ allowChanges: values[0] === "allow" });
+            }
+          }}
+        >
+          <Toggle value="none">No changes</Toggle>
+          <Toggle value="allow">Changes allowed</Toggle>
+        </ToggleGroup>
+        <p className="text-xs text-muted-foreground">
+          {form.allowChanges
+            ? "The Bot is instructed to carry out the edits or messages requested in the brief."
+            : "The Bot is instructed to report results and propose changes without editing files or data or sending messages."}
+        </p>
+      </div>
       <div className="space-y-2">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <Label>When</Label>
@@ -1580,13 +1601,13 @@ function BotRoutineEditor({
               if (timing === "session" || timing === "recurring") update({ timing });
             }}
           >
-            <Toggle value="session">Before a session</Toggle>
+            <Toggle value="session">Before an event</Toggle>
             <Toggle value="recurring">Recurring</Toggle>
           </ToggleGroup>
         </div>
         {form.timing === "session" ? (
           <div className="flex flex-wrap items-center gap-2">
-            <Label htmlFor={`${idPrefix}-session`}>Session starts</Label>
+            <Label htmlFor={`${idPrefix}-session`}>Event starts</Label>
             <Input
               type="datetime-local"
               id={`${idPrefix}-session`}
@@ -1597,7 +1618,7 @@ function BotRoutineEditor({
             />
             <Input
               type="number"
-              aria-label="Hours before the session"
+              aria-label="Hours before the event"
               nativeInput
               min={0}
               step="any"

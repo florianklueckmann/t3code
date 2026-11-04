@@ -41,11 +41,12 @@ describe("toggleBotRoutineWeekday", () => {
 
 describe("withBotRoutineTiming", () => {
   it("keeps the name and brief and resets the timing", () => {
-    const session = { ...emptyBotRoutineDraft(), prompt: "Recap", sessionAtMs: 1 };
+    const session = { ...emptyBotRoutineDraft(), prompt: "Recap", allowChanges: true };
     const recurring = withBotRoutineTiming(session, "recurring");
     expect(recurring).toEqual({
       title: session.title,
       prompt: "Recap",
+      allowChanges: true,
       timing: "recurring",
       timeOfDay: "09:00",
       weekdays: [],
@@ -54,6 +55,7 @@ describe("withBotRoutineTiming", () => {
       timing: "session",
       sessionAtMs: null,
       leadMinutes: 1440,
+      allowChanges: true,
     });
   });
 });
