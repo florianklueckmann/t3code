@@ -61,10 +61,13 @@ export interface SampleRun {
     readonly botId: string | undefined;
     readonly sessionAt: string | undefined;
     readonly runAt: string | null;
+    readonly allowChanges?: boolean;
+    readonly title?: string;
   }>;
   /** Runs in the home conversation; a routine's result must not start one. */
   readonly homeRuns: number;
   readonly filesChanged: ReadonlyArray<string>;
+  readonly filesAfter: Readonly<Record<string, string>>;
   readonly botId: string;
 }
 
@@ -91,7 +94,19 @@ const calledTool = (tools: ReadonlyArray<ToolActivity>, name: string, action?: s
 export const gradeSample = (testCase: PreparationCase, run: SampleRun) => {
   const checks: Array<{ readonly check: string; readonly pass: boolean }> = [];
   const add = (check: string, pass: boolean) => checks.push({ check, pass });
-  add("no project files changed", run.filesChanged.length === 0);
+  const expectedFiles = testCase.trigger === "routine" ? testCase.expectedFiles : undefined;
+  if (expectedFiles === undefined) {
+    add("no project files changed", run.filesChanged.length === 0);
+  } else {
+    add(
+      "only requested files changed",
+      run.filesChanged.length === Object.keys(expectedFiles).length &&
+        run.filesChanged.every((path) => path in expectedFiles),
+    );
+    for (const [path, content] of Object.entries(expectedFiles)) {
+      add(`requested content in ${path}`, run.filesAfter[path] === content);
+    }
+  }
   if (testCase.trigger === "routine") {
     add(
       "one completed routine task",
@@ -117,6 +132,13 @@ export const gradeSample = (testCase: PreparationCase, run: SampleRun) => {
   const { sessionAt, leadHours } = testCase.routine;
   const [routine, ...others] = run.routines;
   add("one routine for this Bot", routine?.botId === run.botId && others.length === 0);
+  if (testCase.routine.title !== undefined) {
+    add("routine title", routine?.title === testCase.routine.title);
+  }
+  add(
+    "routine change permission",
+    (routine?.allowChanges ?? false) === (testCase.routine.allowChanges ?? false),
+  );
   add(
     "session time",
     routine?.sessionAt !== undefined && Date.parse(routine.sessionAt) === Date.parse(sessionAt),
@@ -216,9 +238,10 @@ const runSample = Effect.fn("botPreparation.runSample")(function* (
       {
         projectId: project.id,
         title: "Session preparation",
-        prompt: BRIEF,
+        prompt: testCase.prompt ?? BRIEF,
         schedule: { type: "once", runAt: inDays(1) },
         botId,
+        ...(testCase.allowChanges === undefined ? {} : { allowChanges: testCase.allowChanges }),
         sessionAt: inDays(2),
       },
       OrchestratorMcpScheduleTaskResult,
@@ -238,6 +261,27 @@ const runSample = Effect.fn("botPreparation.runSample")(function* (
         ?.text ?? "";
     tools = toolActivity(yield* readItems(call, started.threadId, "activity"));
   } else {
+    if (testCase.existingRoutine !== undefined && testCase.routine !== null) {
+      const { sessionAt, leadHours } = testCase.routine;
+      yield* call(
+        "schedule_task",
+        {
+          projectId: project.id,
+          botId,
+          title: testCase.existingRoutine.title,
+          prompt: BRIEF,
+          allowChanges: testCase.existingRoutine.allowChanges,
+          schedule: {
+            type: "once",
+            runAt: DateTime.formatIso(
+              DateTime.add(DateTime.makeUnsafe(sessionAt), { hours: -leadHours }),
+            ),
+          },
+          sessionAt,
+        },
+        OrchestratorMcpScheduleTaskResult,
+      );
+    }
     const runId = yield* runTurn(call, home, testCase.prompt);
     const messages = yield* readItems(call, home, "messages");
     text =
@@ -264,9 +308,12 @@ const runSample = Effect.fn("botPreparation.runSample")(function* (
       botId: task.botId,
       sessionAt: task.sessionAt,
       runAt: task.schedule.type === "once" ? task.schedule.runAt : null,
+      allowChanges: task.allowChanges ?? false,
+      title: task.title,
     })),
     homeRuns: thread.runCount,
     filesChanged: changedFiles(before, snapshot(root)),
+    filesAfter: Object.fromEntries(snapshot(root)),
     botId,
   };
   return { ...run, homeThreadId: home, threadModel: { model: thread.model } };

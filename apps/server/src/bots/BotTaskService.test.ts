@@ -373,6 +373,54 @@ it.effect.each<{
   }),
 );
 
+it.effect("keeps each routine run's change permission after edits and a restart", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(START);
+    yield* seedProject;
+    const world = yield* makeThreadWorld;
+    const workThreads = yield* withServices(world, (services) =>
+      Effect.gen(function* () {
+        yield* attachBot(services);
+        const input = {
+          ...routineInput({ type: "fixed_time", timeOfDay: "18:00" }),
+          bot: { botId, allowChanges: true },
+        };
+        const { task } = yield* services.routines.upsert({
+          ...input,
+          bot: { ...input.bot, allowChanges: true },
+        });
+        assert.isTrue(task.bot?.allowChanges);
+        const changing = yield* services.routines.runNow({ id: task.id });
+        const changingThread = changing.threadId ?? assert.fail();
+        yield* world.update(changingThread, { status: "completed" });
+        yield* services.tasks.reconcile;
+        const saved = yield* services.routines.upsert({
+          ...input,
+          id: task.id,
+          bot: { ...input.bot, allowChanges: false },
+        });
+        assert.isFalse(saved.task.bot?.allowChanges);
+        yield* TestClock.adjust("1 second");
+        const preparing = yield* services.routines.runNow({ id: task.id });
+        return { changingThread, preparingThread: preparing.threadId ?? assert.fail() };
+      }),
+    );
+    yield* withServices(world, (services) =>
+      Effect.gen(function* () {
+        for (const [thread, permission] of [
+          [workThreads.changingThread, "Changes allowed"],
+          [workThreads.preparingThread, "No changes"],
+        ] as const) {
+          const context = yield* services.turnContext.forThread(thread);
+          if (context._tag !== "active") return assert.fail();
+          assert.include(context.instructions, permission);
+          assert.notInclude(context.instructions, "recorded play");
+        }
+      }),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
 it.effect("runs a dated preparation once and publishes its result to the home conversation", () =>
   Effect.gen(function* () {
     vi.stubEnv("TZ", "UTC");
@@ -408,9 +456,10 @@ it.effect("runs a dated preparation once and publishes its result to the home co
           homeThreadId: home,
           taskId: task?.id ?? null,
         });
-        assert.include(context.instructions, "scheduled preparation routine");
+        assert.include(context.instructions, "scheduled routine");
         assert.include(context.instructions, iso(sessionAt));
-        assert.include(context.instructions, "If no record of play exists");
+        assert.include(context.instructions, "No changes");
+        assert.notInclude(context.instructions, "recorded play");
         assert.include(context.instructions, "Help prepare the campaign.");
         const homeContext = yield* services.turnContext.forThread(home);
         assert.isTrue(homeContext._tag === "active" && homeContext.scope.taskId === null);
@@ -628,7 +677,7 @@ it.effect("skips a preparation whose session has started and coalesces missed re
           const tasks = (yield* services.tasks.list({ botId })).tasks;
           const skipped = tasks.filter((task) => task.status === "skipped");
           assert.lengthOf(skipped, 1);
-          assert.include(skipped[0]?.detail ?? "", "session had already started");
+          assert.include(skipped[0]?.detail ?? "", "event had already started");
           assert.isNull(skipped[0]?.workThreadId ?? null);
           const daily = tasks.filter((task) => task.status !== "skipped");
           assert.lengthOf(daily, 1);
@@ -733,7 +782,10 @@ it.effect("keeps a routine's Bot when an editor saves it without one", () =>
     yield* withServices(world, (services) =>
       Effect.gen(function* () {
         yield* attachBot(services);
-        const input = routineInput({ type: "fixed_time", timeOfDay: "18:00" });
+        const input = {
+          ...routineInput({ type: "fixed_time", timeOfDay: "18:00" }),
+          bot: { botId, allowChanges: true },
+        };
         const { task } = yield* services.routines.upsert(input);
         const { bot: _bot, ...olderEditor } = input;
         const saved = yield* services.routines.upsert({
@@ -744,6 +796,9 @@ it.effect("keeps a routine's Bot when an editor saves it without one", () =>
           runtimeMode: "approval-required",
         });
         assert.equal(saved.task.bot?.botId, botId);
+        assert.isTrue(saved.task.bot?.allowChanges);
+        const partial = yield* services.routines.upsert({ ...input, id: task.id, bot: { botId } });
+        assert.isTrue(partial.task.bot?.allowChanges);
         assert.isNull(saved.task.threadId);
         assert.equal(saved.task.runtimeMode, "full-access");
         const webhook = yield* services.routines

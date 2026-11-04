@@ -58,6 +58,7 @@ interface BotTaskRow {
   readonly occurrence_key: string | null;
   readonly occurrence_due_at: string | null;
   readonly session_at: string | null;
+  readonly allow_changes: number;
   readonly runtime_mode: string;
   readonly status: string;
   readonly detail: string | null;
@@ -311,14 +312,14 @@ const make = Effect.gen(function* () {
     sql`
       INSERT INTO bot_tasks (
         task_id, bot_id, project_id, home_thread_id, work_thread_id, origin, title, prompt,
-        scheduled_task_id, occurrence_key, occurrence_due_at, session_at, runtime_mode, status,
+        scheduled_task_id, occurrence_key, occurrence_due_at, session_at, allow_changes, runtime_mode, status,
         detail, dispatched_at, cancel_requested_at, result_run_id, completed_at, notified_at,
         created_at, updated_at
       ) VALUES (
         ${row.task_id}, ${row.bot_id}, ${row.project_id}, ${row.home_thread_id},
         ${row.work_thread_id}, ${row.origin}, ${row.title}, ${row.prompt},
         ${row.scheduled_task_id}, ${row.occurrence_key}, ${row.occurrence_due_at},
-        ${row.session_at}, ${row.runtime_mode}, ${row.status}, ${row.detail},
+        ${row.session_at}, ${row.allow_changes}, ${row.runtime_mode}, ${row.status}, ${row.detail},
         ${row.dispatched_at}, ${row.cancel_requested_at}, ${row.result_run_id},
         ${row.completed_at}, ${row.notified_at}, ${row.created_at}, ${row.updated_at}
       )
@@ -350,6 +351,7 @@ const make = Effect.gen(function* () {
     occurrence_key: input.occurrence?.occurrenceKey ?? null,
     occurrence_due_at: input.occurrence?.dueAt ?? null,
     session_at: input.occurrence?.sessionAt ?? null,
+    allow_changes: input.occurrence?.allowChanges ? 1 : 0,
     runtime_mode: input.runtimeMode,
     status: input.skipReason === undefined ? "accepted" : "skipped",
     detail: input.skipReason ?? null,
@@ -416,7 +418,7 @@ const make = Effect.gen(function* () {
           `;
           const skipReason =
             occurrence.sessionAt !== null && now >= occurrence.sessionAt
-              ? "The session had already started when this preparation was due."
+              ? "The event had already started when this routine was due."
               : open.length > 0
                 ? "The previous run of this routine was still working."
                 : undefined;

@@ -14,6 +14,7 @@ const base: SampleRun = {
   routines: [],
   homeRuns: 0,
   filesChanged: [],
+  filesAfter: {},
   botId: "bp-1",
 };
 
@@ -46,9 +47,31 @@ it("requires a missing record of play to be said, not invented", () => {
   const typographic =
     "Reminder: Friday. Recap: I couldn’t find a record of play. Open questions: none. Proposal: start a session log.";
   expect(failed(gradeSample(testCase, { ...base, text: typographic }))).toEqual([]);
+  const missingLog =
+    "Reminder: Friday. Recap: there is no session log, so I cannot recap play. Open questions: what happened? Proposal: provide the missing log.";
+  expect(failed(gradeSample(testCase, { ...base, text: missingLog }))).toEqual([]);
   const invented =
     "Reminder: Friday. Recap: the party reached the Sunless Gate. Open questions: none. Proposal: more traps.";
   expect(failed(gradeSample(testCase, { ...base, text: invented })).length).toBeGreaterThan(0);
+});
+
+it("requires the requested edit and rejects extra edits when changes are allowed", () => {
+  const testCase = byId("routine-allows-changes");
+  const edited = {
+    ...base,
+    filesChanged: ["world/notes.md"],
+    filesAfter: { "world/notes.md": "# Routine result\n\nReady.\n" },
+  };
+  expect(failed(gradeSample(testCase, edited))).toEqual([]);
+  expect(failed(gradeSample(testCase, base))).toContain("requested content in world/notes.md");
+  expect(
+    failed(
+      gradeSample(testCase, {
+        ...edited,
+        filesChanged: ["world/notes.md", "sessions/session-11.md"],
+      }),
+    ),
+  ).toContain("only requested files changed");
 });
 
 it("checks the routine a home turn sets up against the session and lead time", () => {
@@ -67,4 +90,29 @@ it("checks the routine a home turn sets up against the session and lead time", (
   expect(failed(gradeSample(testCase, { ...base, routines: [] }))).toContain(
     "one routine for this Bot",
   );
+  expect(
+    failed(
+      gradeSample(byId("schedules-explicit-change-permission"), {
+        ...base,
+        routines: [routine],
+      }),
+    ),
+  ).toEqual(["routine change permission"]);
+  const renamed = { ...routine, allowChanges: true, title: "Campaign recap" };
+  expect(
+    failed(
+      gradeSample(byId("renames-routine-without-changing-mode"), {
+        ...base,
+        routines: [renamed],
+      }),
+    ),
+  ).toEqual([]);
+  expect(
+    failed(
+      gradeSample(byId("renames-routine-without-changing-mode"), {
+        ...base,
+        routines: [{ ...renamed, title: "Wrong title" }],
+      }),
+    ),
+  ).toEqual(["routine title"]);
 });

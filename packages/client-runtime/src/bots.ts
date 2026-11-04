@@ -228,6 +228,7 @@ export function isBotTaskOpen(task: Pick<BotTaskSummary, "status">): boolean {
 export type BotRoutineDraft = {
   readonly title: string;
   readonly prompt: string;
+  readonly allowChanges: boolean;
 } & (
   | {
       readonly timing: "session";
@@ -244,23 +245,26 @@ export type BotRoutineDraft = {
     }
 );
 
-const DEFAULT_BOT_ROUTINE_LEAD_MINUTES = 24 * 60;
-
 const isoAt = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
 
 export function emptyBotRoutineDraft(): BotRoutineDraft {
   return {
-    title: "Session preparation",
+    title: "",
     prompt: "",
-    timing: "session",
-    sessionAtMs: null,
-    leadMinutes: DEFAULT_BOT_ROUTINE_LEAD_MINUTES,
+    allowChanges: false,
+    timing: "recurring",
+    timeOfDay: "09:00",
+    weekdays: [],
   };
 }
 
 /** The draft for editing a saved routine; null for a timing the Bot settings cannot edit. */
 export function botRoutineDraft(task: ScheduledTask): BotRoutineDraft | null {
-  const base = { title: task.title, prompt: task.prompt };
+  const base = {
+    title: task.title,
+    prompt: task.prompt,
+    allowChanges: task.bot?.allowChanges ?? false,
+  };
   if (task.schedule.type === "once" && task.bot?.sessionAt != null) {
     const sessionAtMs = Date.parse(task.bot.sessionAt);
     const leadMinutes = Math.round((sessionAtMs - Date.parse(task.schedule.runAt)) / 60_000);
@@ -297,7 +301,7 @@ export function botRoutineUpsertInput(
   const title = draft.title.trim();
   const prompt = draft.prompt.trim();
   if (title === "") return { error: "Give the routine a name." };
-  if (prompt === "") return { error: "Describe what the Bot should prepare." };
+  if (prompt === "") return { error: "Describe what the Bot should do." };
   const common = {
     ...(target.id === undefined ? {} : { id: target.id, requireExisting: true }),
     ...(target.commandId === undefined ? {} : { commandId: target.commandId }),
@@ -322,25 +326,29 @@ export function botRoutineUpsertInput(
           timeOfDay: draft.timeOfDay.trim(),
           ...(draft.weekdays.length === 0 ? {} : { weekdays: [...draft.weekdays] }),
         },
-        bot: { botId: target.botId, sessionAt: null },
+        bot: { botId: target.botId, sessionAt: null, allowChanges: draft.allowChanges },
       },
     };
   }
   if (draft.sessionAtMs === null || !Number.isFinite(draft.sessionAtMs)) {
-    return { error: "Pick when the session starts." };
+    return { error: "Pick when the event starts." };
   }
   if (!Number.isInteger(draft.leadMinutes) || draft.leadMinutes < 0) {
     return { error: "The lead time must be zero or more minutes." };
   }
   const runAtMs = draft.sessionAtMs - draft.leadMinutes * 60_000;
   if (runAtMs <= nowMs) {
-    return { error: "That preparation time has passed. Pick a later session or a shorter lead." };
+    return { error: "That run time has passed. Pick a later event or a shorter lead." };
   }
   return {
     input: {
       ...common,
       schedule: { type: "once", runAt: isoAt(runAtMs) },
-      bot: { botId: target.botId, sessionAt: isoAt(draft.sessionAtMs) },
+      bot: {
+        botId: target.botId,
+        sessionAt: isoAt(draft.sessionAtMs),
+        allowChanges: draft.allowChanges,
+      },
     },
   };
 }
@@ -359,7 +367,7 @@ export function describeBotRoutineTiming(
     case "once":
       return task.bot?.sessionAt == null
         ? `Once, ${formatInstant(schedule.runAt)}`
-        : `${formatInstant(schedule.runAt)}, before the session on ${formatInstant(task.bot.sessionAt)}`;
+        : `${formatInstant(schedule.runAt)}, before the event on ${formatInstant(task.bot.sessionAt)}`;
     case "fixed_time": {
       const days =
         schedule.weekdays === undefined || schedule.weekdays.length === 0

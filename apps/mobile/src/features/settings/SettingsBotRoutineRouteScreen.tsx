@@ -238,15 +238,15 @@ function BotRoutineForm(props: {
           <FormField
             label="Name"
             value={draft.title}
-            placeholder="Session preparation"
+            placeholder="Routine name"
             maxLength={ROUTINE_TITLE_MAX}
             disabled={saving}
             onChange={(title) => setDraft({ ...draft, title })}
           />
           <FormField
-            label="What to prepare"
+            label="Brief"
             value={draft.prompt}
-            placeholder="Recap the last session and list open questions"
+            placeholder="What should the Bot do on each run?"
             multiline
             maxLength={ROUTINE_PROMPT_MAX}
             borderTop
@@ -255,10 +255,30 @@ function BotRoutineForm(props: {
           />
         </SettingsSection>
         <SettingsSection
+          title="Changes"
+          footer={
+            draft.allowChanges
+              ? "The Bot is instructed to carry out the edits or messages requested in the brief."
+              : "The Bot is instructed to report results and propose changes without editing files or data or sending messages."
+          }
+        >
+          <View className="px-4 py-3">
+            <SegmentedControl
+              variant="card"
+              options={[
+                { value: "none", label: "No changes" },
+                { value: "allow", label: "Changes allowed" },
+              ]}
+              selected={draft.allowChanges ? "allow" : "none"}
+              onSelect={(value) => setDraft({ ...draft, allowChanges: value === "allow" })}
+            />
+          </View>
+        </SettingsSection>
+        <SettingsSection
           title="Timing"
           footer={
             draft.timing === "session"
-              ? "Runs once. If the session has already started when the run is due, it is skipped."
+              ? "Runs once. If the event has already started when the run is due, it is skipped."
               : props.timeZone
                 ? `Runs at this time in ${props.timeZone}, the environment's time zone.`
                 : "Runs at this time in the environment's time zone, which may differ from your phone's."
@@ -268,7 +288,7 @@ function BotRoutineForm(props: {
             <SegmentedControl
               variant="card"
               options={[
-                { value: "session", label: "Before a session" },
+                { value: "session", label: "Before an event" },
                 { value: "recurring", label: "Recurring" },
               ]}
               selected={draft.timing}
@@ -296,7 +316,7 @@ function BotRoutineForm(props: {
                 return (
                   <View key={field}>
                     <PickerRow
-                      label={field === "date" ? "Session date" : "Session time"}
+                      label={field === "date" ? "Event date" : "Event time"}
                       value={label}
                       borderTop
                       disabled={saving}
@@ -324,7 +344,7 @@ function BotRoutineForm(props: {
                 );
               })}
               <SelectRow
-                label="Prepare"
+                label="Run"
                 value={
                   draft.leadMinutes === 0
                     ? "When it starts"
@@ -417,7 +437,7 @@ function BotRoutineForm(props: {
         </SettingsSection>
         <Text className="px-2 text-sm text-foreground-muted">
           Each run starts a task in a new work thread in this project, in Full access without
-          approval prompts. A preparation recaps and proposes; it doesn't edit your files.
+          approval prompts. The change mode controls the Bot's instructions, not its tool access.
         </Text>
         {error !== null ? (
           <Text className="px-2 text-sm text-danger-foreground">{error}</Text>

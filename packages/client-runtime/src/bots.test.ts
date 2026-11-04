@@ -120,6 +120,7 @@ describe("botRoutineUpsertInput", () => {
       {
         title: " Session 12 ",
         prompt: "Prepare session 12.",
+        allowChanges: false,
         timing: "session",
         sessionAtMs,
         leadMinutes: 90,
@@ -133,12 +134,13 @@ describe("botRoutineUpsertInput", () => {
     expect(result.input.bot).toEqual({
       botId: target.botId,
       sessionAt: "2026-11-06T19:00:00.000Z",
+      allowChanges: false,
     });
     expect(result.input.runtimeMode).toBe("full-access");
     // Editing the saved routine starts from the same session and lead time.
     expect(
       botRoutineDraft({ ...result.input, bot: result.input.bot } as ScheduledTask),
-    ).toMatchObject({ timing: "session", sessionAtMs, leadMinutes: 90 });
+    ).toMatchObject({ timing: "session", sessionAtMs, leadMinutes: 90, allowChanges: false });
   });
 
   it("refuses a preparation time that has already passed", () => {
@@ -146,6 +148,7 @@ describe("botRoutineUpsertInput", () => {
       {
         title: "Prep",
         prompt: "Prepare.",
+        allowChanges: true,
         timing: "session",
         sessionAtMs,
         leadMinutes: 7 * 24 * 60,
@@ -161,6 +164,7 @@ describe("botRoutineUpsertInput", () => {
       {
         title: "Weekly",
         prompt: "Prepare.",
+        allowChanges: true,
         timing: "recurring",
         timeOfDay: "18:00",
         weekdays: [5],
@@ -171,7 +175,7 @@ describe("botRoutineUpsertInput", () => {
     expect(result).toMatchObject({
       input: {
         schedule: { type: "fixed_time", timeOfDay: "18:00", weekdays: [5] },
-        bot: { botId: target.botId, sessionAt: null },
+        bot: { botId: target.botId, sessionAt: null, allowChanges: true },
       },
     });
   });

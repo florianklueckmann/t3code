@@ -244,6 +244,7 @@ interface ScheduledTaskRow {
   readonly webhook_secret: string | null;
   readonly bot_id: string | null;
   readonly bot_session_at: string | null;
+  readonly bot_allow_changes: number;
   readonly schedule_revision: number;
 }
 
@@ -438,7 +439,15 @@ const decodeRow = Effect.fnUntraced(
       lastRunError: row.last_run_error,
       runCount: row.run_count,
       ...(webhook === undefined ? {} : { webhook }),
-      ...(row.bot_id === null ? {} : { bot: { botId: row.bot_id, sessionAt: row.bot_session_at } }),
+      ...(row.bot_id === null
+        ? {}
+        : {
+            bot: {
+              botId: row.bot_id,
+              sessionAt: row.bot_session_at,
+              allowChanges: row.bot_allow_changes === 1,
+            },
+          }),
     });
   },
   (effect, row, _origin?) =>
@@ -575,6 +584,7 @@ export const layer = Layer.effect(
         webhook_secret,
         bot_id,
         bot_session_at,
+        bot_allow_changes,
         schedule_revision
       FROM scheduled_tasks
       -- Not updated_at: toggles, runs and edits rewrite it, and clients render
@@ -620,6 +630,7 @@ export const layer = Layer.effect(
         webhook_secret,
         bot_id,
         bot_session_at,
+        bot_allow_changes,
         schedule_revision
       FROM scheduled_tasks
       WHERE task_id = ${id}
@@ -700,7 +711,8 @@ export const layer = Layer.effect(
           webhook_token,
           webhook_secret,
           bot_id,
-          bot_session_at
+          bot_session_at,
+          bot_allow_changes
         )
         SELECT
           ${task.id},
@@ -727,7 +739,8 @@ export const layer = Layer.effect(
           ${webhook.token},
           ${webhook.secret},
           ${task.bot?.botId ?? null},
-          ${task.bot?.sessionAt ?? null}
+          ${task.bot?.sessionAt ?? null},
+          ${task.bot?.allowChanges ? 1 : 0}
         WHERE ${requireExisting ? 0 : 1} = 1
            OR EXISTS (SELECT 1 FROM scheduled_tasks WHERE task_id = ${task.id})
         ON CONFLICT (task_id)
@@ -753,6 +766,7 @@ export const layer = Layer.effect(
           updated_at = excluded.updated_at,
           bot_id = excluded.bot_id,
           bot_session_at = excluded.bot_session_at,
+          bot_allow_changes = excluded.bot_allow_changes,
           -- A new revision gives a re-armed routine new occurrence keys.
           schedule_revision = scheduled_tasks.schedule_revision + ${keptSchedule === null ? 1 : 0},
           -- Keep a next_run_at that a finishing run moved during this save, unless
@@ -952,6 +966,7 @@ export const layer = Layer.effect(
           occurrenceKey,
           dueAt: iso(occurrence.dueAt),
           sessionAt: bot.sessionAt ?? null,
+          allowChanges: bot.allowChanges ?? false,
           botId: bot.botId,
           projectId: task.projectId,
           title: task.title,
@@ -1595,6 +1610,7 @@ export const layer = Layer.effect(
           ? undefined
           : {
               botId: requestedBot.botId,
+              allowChanges: requestedBot.allowChanges ?? existingTask?.bot?.allowChanges ?? false,
               sessionAt:
                 requestedBot.sessionAt == null
                   ? null
@@ -1611,7 +1627,7 @@ export const layer = Layer.effect(
           (input.schedule.type !== "once" ||
             Date.parse(input.schedule.runAt) > Date.parse(bot.sessionAt))
         ) {
-          return yield* taskError("A session time needs a one-time run at or before it.", {
+          return yield* taskError("An event time needs a one-time run at or before it.", {
             taskId: id,
           });
         }

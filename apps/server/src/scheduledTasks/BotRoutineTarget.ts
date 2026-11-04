@@ -18,6 +18,7 @@ export interface BotRoutineOccurrence {
   readonly occurrenceKey: string;
   readonly dueAt: string;
   readonly sessionAt: string | null;
+  readonly allowChanges: boolean;
   readonly botId: BotId;
   readonly projectId: ProjectId;
   readonly title: string;

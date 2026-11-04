@@ -8,6 +8,7 @@ describe("bot routine form", () => {
     const draft = {
       title: "Prep",
       prompt: "Recap the last session",
+      allowChanges: true,
       timing: "session",
       sessionAtMs,
       leadMinutes: 90,
@@ -24,6 +25,7 @@ describe("bot routine form", () => {
       ...botRoutineForm({
         title: "Prep",
         prompt: "Recap",
+        allowChanges: false,
         timing: "session",
         sessionAtMs: null,
         leadMinutes: 60,

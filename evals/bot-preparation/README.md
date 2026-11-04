@@ -1,6 +1,6 @@
 # Bot preparation
 
-Runs Bot preparation routines and Bot home-conversation turns end to end through a T3 Code dev server and its configured Codex provider. It checks that a preparation routine produces one result in its own work thread with a reminder, a recap grounded in the recorded play, open questions and marked proposals; that a missing record of play is said rather than invented; that the result neither edits project files nor starts a turn in the home conversation; and that a Bot asked in its home conversation to prepare before a dated session sets up a one-time routine with the right session time and lead time.
+Runs Bot preparation routines and Bot home-conversation turns end to end through a T3 Code dev server and its configured Codex provider. It checks that routines follow their brief and configured change permission, including carrying out a requested file edit in **Changes allowed** mode and proposing it in **No changes** mode; that session preparation gives a reminder, a recap grounded in the recorded play, open questions and marked proposals; that a missing record of play is said rather than invented; that preparation without changes neither edits project files nor starts a turn in the home conversation; and that a Bot asked in its home conversation to prepare before a dated session sets up a one-time routine with the right session time and lead time.
 
 Like [bot-sources](../bot-sources/), nothing is replayed and it calls no model API directly. Turns count against the dev server's Codex login.
 
@@ -23,7 +23,7 @@ To compare a change, run the same cases with the same model and effort against a
 
 ## Cases
 
-`cases.ts` holds one synthetic campaign, with and without a session log, and the cases. Routine cases grade the work thread's final message with case-insensitive regexes, the task's status and the home conversation's run count. Home cases grade the answer, the tools the Bot called and the routines stored for the project. `answers-inline` is the control: a plain question gets an answer, not a task or a routine.
+`cases.ts` holds one synthetic campaign, with and without a session log, and the cases. `routine-allows-changes` and `routine-without-changes` come from a Bot refusing a scheduled edit because every routine was restricted to session preparation; they check both change permissions and a brief that requests a single-sentence result. The edit case also compares the exact resulting file content and rejects changes to any other file. The explicit-mode and rename controls come from a text review: a user's chosen mode takes precedence over inference from the brief, and editing a routine keeps its saved mode unless asked otherwise. These controls passed before the clarification as well. Routine cases grade the work thread's final message with case-insensitive regexes, the task's status and the home conversation's run count. Home cases grade the answer, the tools the Bot called and the routines stored for the project. `answers-inline` is the control: a plain question gets an answer, not a task or a routine.
 
 ## Output
 

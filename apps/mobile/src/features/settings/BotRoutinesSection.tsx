@@ -115,7 +115,7 @@ export function BotRoutinesSection(props: {
     <>
       <SettingsSection
         title={`Routines · ${props.projectTitle}`}
-        footer="Each run is a task in a new work thread in this project, in Full access without approval prompts. A preparation proposes; it doesn't edit your files."
+        footer="Each run starts a new work thread in Full access without approval prompts. The change mode controls the Bot's instructions, not its tool access."
       >
         {scheduled.error ? (
           <Text className="p-4 text-base text-danger-foreground">{scheduled.error}</Text>
@@ -140,6 +140,7 @@ export function BotRoutinesSection(props: {
                   </Text>
                   <Text className="text-sm text-foreground-muted" numberOfLines={2}>
                     {describeBotRoutineTiming(task, formatBotInstant, props.timeZone)}
+                    {task.bot?.allowChanges ? " · Changes allowed" : " · No changes"}
                   </Text>
                   {status ? (
                     <Text className="text-sm text-foreground-muted" numberOfLines={1}>
