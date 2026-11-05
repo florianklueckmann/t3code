@@ -56,6 +56,7 @@ import {
   OrchestrationGetTurnDiffResult,
 } from "./checkpointDiff.ts";
 import { ModelSelection } from "./modelSelection.ts";
+import { BotId, BotTaskId } from "./bot.ts";
 import {
   ThreadLinkedPullRequest,
   ThreadPullRequestLink,
@@ -3407,6 +3408,20 @@ export type OrchestrationV2Command = typeof OrchestrationV2Command.Type;
 
 // Excluded from dispatchCommand so only the server can send these.
 const OrchestrationV2InternalCommand = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("bot-task.result.deliver"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    projectId: ProjectId,
+    botId: BotId,
+    taskId: BotTaskId,
+    sourceThreadId: ThreadId,
+    resultRunId: RunId,
+    homeRunId: RunId,
+    homeMessageId: MessageId,
+    messageId: MessageId,
+    text: Schema.String,
+  }),
   // Guest share commands the server issues after checking T3 Connect and the guest token.
   Schema.Struct({
     type: Schema.Literal("thread.guest-share.open"),

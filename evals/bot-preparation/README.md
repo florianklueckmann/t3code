@@ -28,3 +28,11 @@ To compare a change, run the same cases with the same model and effort against a
 ## Output
 
 `results.jsonl` has one row per sample with its checks, the result or answer, the tool activity and the routines. `summary.md` has the pass counts per case. The rows hold full model output; read them before quoting any.
+
+`returns-task-and-continues`, `returns-incomplete-task-honestly`, and
+`task-without-home-return` cover T3B-24. They start direct Bot work from Home:
+the opted-in result must cause exactly one Home follow-up, perform only the
+user's already authorized edit or identify missing input, and keep the default
+case from waking Home. Missing delivery retains the task, answer, and file
+evidence as failed checks. Compare the same cases and model against a separate
+base server with a fresh home; never downgrade the newer Bot database.

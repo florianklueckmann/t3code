@@ -194,6 +194,8 @@ import { planThreadDeletion } from "./ThreadDeletion.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ServerSettings from "../serverSettings.ts";
 
+import { isDirectHomeInput, latestDirectHomeInput } from "../bots/homeReturn.ts";
+
 const isMessageQuestionAnswer = Schema.is(
   Schema.Union([TrimmedNonEmptyString, Schema.NonEmptyArray(TrimmedNonEmptyString)]),
 );
@@ -364,6 +366,8 @@ export interface OrchestratorV2DispatchResult {
   readonly storedEvents: ReadonlyArray<OrchestrationV2StoredEvent>;
   /** The command id was already accepted; analytics skip it. */
   readonly replayed?: true;
+  /** Idle-only automatic delivery has not consumed a receipt and can be retried. */
+  readonly deferred?: true;
 }
 
 export interface OrchestratorV2Shape {
@@ -554,6 +558,7 @@ export function threadHasUnfinishedWork(records: {
 
 function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
   switch (command.type) {
+    case "bot-task.result.deliver":
     case "thread.create":
     case "thread.archive":
     case "thread.unarchive":
@@ -13606,6 +13611,29 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         yield* recordSubagentFollowup(dispatched, events).pipe(mapDispatchError(command));
         break;
       }
+      case "bot-task.result.deliver":
+        cancelUnsettledEffects = yield* dispatchMessage(
+          {
+            type: "message.dispatch",
+            commandId: command.commandId,
+            threadId: command.threadId,
+            messageId: command.messageId,
+            createdBy: "agent",
+            creationSource: "server",
+            text: command.text,
+            attachments: [],
+            notification: {
+              source: { kind: "system" },
+              outcome: "completed",
+              summary: "Bot work result",
+              detail: command.text,
+            },
+            dispatchMode: { type: "queue_after_active" },
+          },
+          events,
+          effects,
+        );
+        break;
       case "notification.delivery.accept":
         updateDelegatedCompletionOnlyRunId = yield* dispatchNotificationAccepted(command, events);
         break;
@@ -13871,6 +13899,64 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     } satisfies OrchestratorV2DispatchResult;
   });
 
+  const botResultAdmission = Effect.fn("Orchestrator.botResultAdmission")(function* (
+    command: Extract<OrchestrationV2ServerCommand, { type: "bot-task.result.deliver" }>,
+  ) {
+    const home = yield* projectionStore
+      .getThreadRecords(
+        command.threadId,
+        ["runs", "messages", "turnItems", "subagents", "providerThreads", "runtimeRequests"],
+        { messageRoles: ["user"], turnItemTypes: ["user_message"] },
+      )
+      .pipe(mapDispatchError(command));
+    const latest = home.runs.toSorted((left, right) => right.ordinal - left.ordinal)[0];
+    const anchor = home.runs.find((run) => run.id === command.homeRunId);
+    const message = home.messages.find((row) => row.id === anchor?.userMessageId);
+    if (
+      home.thread.id !== `bot-home:${command.botId}:${command.projectId}` ||
+      home.thread.projectId !== command.projectId ||
+      home.thread.deletedAt !== null ||
+      home.thread.archivedAt !== null ||
+      home.thread.settledOverride === "settled" ||
+      isProviderNativeSubagentThread(home.thread) ||
+      !isDirectHomeInput(message) ||
+      latestDirectHomeInput(home)?.id !== command.homeMessageId ||
+      command.sourceThreadId !== `bot-work:${command.taskId}`
+    )
+      return "dispose" as const;
+    // Held user input still takes precedence; it must never be released by a result wake.
+    if (home.runs.some((run) => run.status === "queued")) return "defer" as const;
+    if (
+      hasLiveRun(home) ||
+      home.runtimeRequests.some((request) => request.status === "pending") ||
+      delegatedTaskProgress(home).state === "waiting_for_children" ||
+      home.providerThreads.some((thread) => (thread.pendingBackgroundTasks?.length ?? 0) > 0) ||
+      home.thread.snoozedUntil != null
+    )
+      return "defer" as const;
+    if (anchor?.status !== "completed" || latest?.status !== "completed") return "dispose" as const;
+    const source = yield* projectionStore
+      .getThreadRecords(
+        command.sourceThreadId,
+        ["runs", "messages", "subagents", "providerThreads"],
+        { messageRoles: ["user"] },
+      )
+      .pipe(mapDispatchError(command));
+    if (
+      source.thread.projectId !== command.projectId ||
+      source.thread.deletedAt !== null ||
+      !source.runs.some(
+        (run) =>
+          run.id === command.resultRunId &&
+          run.threadId === command.sourceThreadId &&
+          run.status === "completed",
+      )
+    )
+      return "dispose" as const;
+    if (delegatedTaskProgress(source).state !== "result_available") return "defer" as const;
+    return "deliver" as const;
+  });
+
   /** `sideChatIds` are the live side chats a `thread.delete` cascades to, read under their locks. */
   const dispatchWithReceiptEffect = Effect.fn("orchestrationV2.dispatch.withReceipt")(function* (
     command: OrchestrationV2ServerCommand,
@@ -13908,12 +13994,29 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (shell !== null) yield* refuseAboveDispatchModeLimit(command, threadId, shell);
     }
 
-    const plan = yield* dispatchOnce(command, sideChatIds).pipe(
+    const botAdmission =
+      command.type === "bot-task.result.deliver" ? yield* botResultAdmission(command) : undefined;
+    if (botAdmission === "defer")
+      return {
+        sequence: yield* eventSink
+          .latestSequence({ threadId: commandThreadId(command) })
+          .pipe(mapDispatchError(command)),
+        storedEvents: [],
+        deferred: true,
+      };
+    const plan = yield* (
+      botAdmission === "dispose"
+        ? Effect.succeed({ events: [], effects: [] } as Effect.Success<
+            ReturnType<typeof dispatchOnce>
+          >)
+        : dispatchOnce(command, sideChatIds)
+    ).pipe(
       Effect.tap((planned) => refuseAboveRuntimeModeCeiling(command, planned.events)),
       Effect.filterOrFail(
         (planned) =>
           planned.events.length > 0 ||
           isUnobservedAcknowledgement(command) ||
+          command.type === "bot-task.result.deliver" ||
           command.type === "thread.background-work.settle" ||
           command.type === "thread.interrupt.unresponsive" ||
           command.type === "thread.stop" ||

@@ -387,6 +387,7 @@ export const BotTaskSummary = Schema.Struct({
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   completedAt: Schema.NullOr(IsoDateTime),
+  returnToHome: Schema.optional(Schema.Boolean),
 });
 export type BotTaskSummary = typeof BotTaskSummary.Type;
 
