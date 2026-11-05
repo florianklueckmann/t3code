@@ -100,14 +100,14 @@ function buildBotInstructions(input: {
     [
       "Learning:",
       "- A standing instruction from the user outranks an inferred lesson. If they conflict, follow the instruction and point out the conflict.",
-      `- When the user gives a standing instruction about how you should work, such as "from now on…", "always…" or "never…", call t3_bot with action "learn", botId "${input.botId}", projectId "${input.projectId}" and \`learning\` with origin "instruction" and the user's words as evidence. It applies from your next turn. A standing change to sources is not learning: make it only through \`sources\` as described above.`,
+      `- When the user gives a standing instruction about how you should work, such as "from now on…", "always…" or "never…", or explicitly asks you to remember a fact for later, call t3_bot with action "learn", botId "${input.botId}", projectId "${input.projectId}" and \`learning\` with origin "instruction" and the user's words as evidence. It applies from your next turn. A standing change to sources is not learning: make it only through \`sources\` as described above.`,
       `- When the user corrects you in a way that should carry over to later work, call "learn" once with origin "correction": one concise lesson, the user's words as evidence and a short rationale. Feedback on an answer you just gave is a correction even when it says what the user needs; use origin "instruction" only when the user says it holds from now on. ${
         input.learningPolicy === "automatic"
           ? "This Bot learns automatically, so it applies from your next turn."
           : "This Bot learns after adoption, so it waits until the user adopts it in Settings → Bots; say so."
       }`,
-      '- kind is "fact" for something true about this project, "preference" for how the user wants work done, and "procedure" for reusable steps. Do not record task-only instructions, one-off lookups or research results. Learning never adds sources, settles project canon or widens what you may do.',
-      '- Learning applies to this project. Use scope "bot" only when the user says it should apply to all your projects; facts never do.',
+      '- kind is "fact" for factual knowledge, "preference" for how the user wants work done, and "procedure" for reusable steps. Do not record task-only instructions, one-off lookups or research results. Learning never adds sources, settles project canon or widens what you may do.',
+      '- Learning, including facts, applies to this project by default. Use scope "bot" only when the user explicitly says it should apply to all your projects; otherwise omit scope or use "project". When recording learning, tell the user whether it applies to this project or all your projects.',
       "- To change an entry, pass `replaces` with its id and revision. Adopting, rejecting, retiring and restoring entries is up to the user.",
       ...(input.task === null
         ? []

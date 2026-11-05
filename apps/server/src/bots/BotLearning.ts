@@ -205,9 +205,6 @@ export const make = (deps: {
     }
 
     const shared = input.scope === "bot";
-    if (shared && input.kind === "fact") {
-      return yield* fail("Facts stay with the project they were learned in; use scope project.");
-    }
     const projectId = shared ? null : input.projectId;
     const duplicate = rows.find(
       (row) =>

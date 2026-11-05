@@ -935,7 +935,7 @@ function BotLearningList({
           projectId,
           kind,
           text: text.trim(),
-          ...(shared && kind !== "fact" ? { scope: "bot" as const } : {}),
+          ...(shared ? { scope: "bot" as const } : {}),
         },
       }),
     );
@@ -1120,16 +1120,14 @@ function BotLearningList({
                 ))}
               </SelectPopup>
             </Select>
-            {kind === "fact" ? null : (
-              <label className="flex items-center gap-2 text-sm">
-                <Checkbox
-                  checked={shared}
-                  disabled={locked}
-                  onCheckedChange={(checked) => setShared(checked === true)}
-                />
-                All projects
-              </label>
-            )}
+            <label className="flex items-center gap-2 text-sm">
+              <Checkbox
+                checked={shared}
+                disabled={locked}
+                onCheckedChange={(checked) => setShared(checked === true)}
+              />
+              All projects
+            </label>
             <Button
               size="xs"
               variant="outline"
