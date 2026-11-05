@@ -127,7 +127,8 @@ function BotNotesEditor(props: {
   const parsed = parseBotContinuationDraft(draft);
   const hint = botNoteLimitHint(draft);
   const changed = !("note" in parsed) || !sameBotNote(parsed.note, base.note);
-  const preventRemove = (canWrite && (changed || conflict !== null)) || saving;
+  const hasDraft = changed || conflict !== null;
+  const preventRemove = hasDraft || saving;
 
   const leave = () => {
     done.current = true;
@@ -154,7 +155,7 @@ function BotNotesEditor(props: {
   });
 
   const submit = async (baseRevision: number | null) => {
-    if (saving || !("note" in parsed)) return;
+    if (!canWrite || saving || !("note" in parsed)) return;
     if (conflict === null && !changed) {
       leave();
       return;
@@ -182,7 +183,7 @@ function BotNotesEditor(props: {
   };
 
   const restore = async (revision: BotContinuationRevision) => {
-    if (saving) return;
+    if (!canWrite || saving) return;
     setSaving(true);
     const result = await save({
       ...scope,
@@ -240,7 +241,15 @@ function BotNotesEditor(props: {
           </View>
         </SettingsSection>
       )}
-      {canWrite ? (
+      {canWrite ? null : (
+        <Text className="px-2 text-sm text-foreground-muted">
+          {hasDraft ? "Your unsaved draft is kept. " : ""}
+          {view.writable
+            ? "You can view these notes but not change them on this environment."
+            : "These notes can't be changed while the Bot is archived or the project is detached."}
+        </Text>
+      )}
+      {canWrite || hasDraft ? (
         <View
           className="gap-5"
           pointerEvents={saving ? "none" : "auto"}
@@ -256,7 +265,7 @@ function BotNotesEditor(props: {
                 placeholder={BOT_NOTE_SECTION_PLACEHOLDERS[section]}
                 multiline
                 borderTop={index > 0}
-                disabled={saving}
+                disabled={!canWrite || saving}
                 onChange={(value) => setDraft((current) => ({ ...current, [section]: value }))}
               />
             ))}
@@ -279,7 +288,7 @@ function BotNotesEditor(props: {
               tone="primary"
               fullWidth
               loading={saving}
-              disabled={!changed || "error" in parsed}
+              disabled={!canWrite || !changed || "error" in parsed}
               onPress={() => void submit(base.revision)}
               label={saving ? "Saving…" : "Save notes"}
             />
@@ -289,7 +298,7 @@ function BotNotesEditor(props: {
                 tone="primary"
                 fullWidth
                 loading={saving}
-                disabled={"error" in parsed}
+                disabled={!canWrite || "error" in parsed}
                 onPress={() => void submit(conflict.current.revision)}
                 label={saving ? "Saving…" : "Save mine"}
               />
@@ -297,13 +306,7 @@ function BotNotesEditor(props: {
             </View>
           )}
         </View>
-      ) : (
-        <Text className="px-2 text-sm text-foreground-muted">
-          {view.writable
-            ? "You can view these notes but not change them on this environment."
-            : "These notes can't be changed while the Bot is archived or the project is detached."}
-        </Text>
-      )}
+      ) : null}
       {view.sources.length === 0 ? null : (
         <SettingsSection
           title="Sources"
