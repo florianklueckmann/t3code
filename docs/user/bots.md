@@ -123,8 +123,8 @@ a source that is gone or changed is marked unverified rather than dropped.
 **Edit** the notes one item per line. If the Bot saved in the meantime, your
 draft stays and you choose **Save mine** or **Discard mine**. **History** keeps
 recent versions, and **Restore** saves an earlier one as the newest version, so
-a restore can be undone too. An archived Bot's notes stay readable but can't be
-edited.
+a restore can be undone too. Notes stay readable for archived Bots and detached
+projects, but can't be edited or restored until they are active again.
 
 ## Learning
 
