@@ -185,6 +185,45 @@ export function botOfHomeThread(
   );
 }
 
+export interface RankedBotConversation<T> {
+  readonly context: BotProjectContextSummary;
+  /** Null until the environment's thread shells include the home conversation. */
+  readonly thread: T | null;
+}
+
+/**
+ * A Bot's attached home conversations, the one that needs the user most first, then the most
+ * recently updated. Opening the Bot goes to the first; a Bot without projects has none.
+ */
+export function rankBotConversations<T extends { readonly updatedAt: string }>(
+  bot: BotSummary,
+  threadOf: (threadId: ThreadId) => T | null,
+  urgency: (thread: T) => number,
+): ReadonlyArray<RankedBotConversation<T>> {
+  if (bot.archivedAt !== null) return [];
+  const conversations = bot.projects.flatMap((context) =>
+    context.detachedAt === null ? [{ context, thread: threadOf(context.homeThreadId) }] : [],
+  );
+  const urgencyOf = ({ thread }: RankedBotConversation<T>) =>
+    thread === null ? -1 : urgency(thread);
+  const updatedAtOf = ({ thread }: RankedBotConversation<T>) =>
+    thread === null ? 0 : Date.parse(thread.updatedAt) || 0;
+  return [...conversations].sort(
+    (a, b) => urgencyOf(b) - urgencyOf(a) || updatedAtOf(b) - updatedAtOf(a),
+  );
+}
+
+/** The active Bot that started this work thread, if it is one. */
+export function botOfWorkThread(
+  bots: ReadonlyArray<BotSummary>,
+  tasks: ReadonlyArray<Pick<BotTaskSummary, "botId" | "workThreadId">>,
+  threadId: string,
+): BotSummary | null {
+  const botId = tasks.find((task) => task.workThreadId === threadId)?.botId;
+  if (botId === undefined) return null;
+  return bots.find((bot) => bot.id === botId && bot.archivedAt === null) ?? null;
+}
+
 /** The Bot and project whose home conversation this thread is, attached or not. */
 export function botConversationForThread(
   bots: ReadonlyArray<BotSummary>,

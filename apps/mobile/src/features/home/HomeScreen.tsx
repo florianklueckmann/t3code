@@ -89,6 +89,7 @@ import { SwipeableScrollGateProvider, useSwipeableScrollGate } from "./thread-sw
 import { useFabScroll } from "./FabScrollContext";
 import { useWorkspaceTabs } from "../layout/workspace/WorkspaceTabsContext";
 import { ThreadListFilters } from "./ThreadListFilters";
+import { BotRail } from "../bots/BotRail";
 
 interface HomeScreenProps {
   readonly projects: ReadonlyArray<EnvironmentProject>;
@@ -724,6 +725,13 @@ export function HomeScreen(props: HomeScreenProps) {
   }
 
   const listHeader = Platform.OS === "ios" ? undefined : <HomeTopContentSpacer />;
+  const botRail = (
+    <BotRail
+      threads={props.threads}
+      projects={props.projects}
+      pane={primaryColumn ? "sidebar" : "screen"}
+    />
+  );
 
   const v2ListHeader = (
     <>
@@ -742,6 +750,7 @@ export function HomeScreen(props: HomeScreenProps) {
           onProjectChange={props.onProjectChange}
         />
       ) : null}
+      {botRail}
     </>
   );
 
@@ -776,10 +785,14 @@ export function HomeScreen(props: HomeScreenProps) {
     return (
       <ScreenContent surface="screen">
         <View
-          className="flex-1 items-center justify-center px-4"
+          className="flex-1"
           style={{ paddingBottom: insets.bottom }}
         >
-          {v2ListEmpty}
+          <View style={{ paddingHorizontal: androidListGutter }}>
+            <HomeTopContentSpacer />
+            {botRail}
+          </View>
+          <View className="flex-1 items-center justify-center px-4">{v2ListEmpty}</View>
         </View>
       </ScreenContent>
     );

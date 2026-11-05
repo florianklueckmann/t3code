@@ -31,6 +31,13 @@ export function mayBeBotHomeThreadId(threadId: string): boolean {
   return threadId.startsWith(BOT_HOME_THREAD_ID_PREFIX);
 }
 
+export const BOT_WORK_THREAD_ID_PREFIX = "bot-work:";
+
+/** Like `mayBeBotHomeThreadId`: only the Bot's task list proves which Bot it belongs to. */
+export function mayBeBotWorkThreadId(threadId: string): boolean {
+  return threadId.startsWith(BOT_WORK_THREAD_ID_PREFIX);
+}
+
 const BOT_NAME_MAX_CHARS = 80;
 const BOT_INSTRUCTIONS_MAX_CHARS = 16_000;
 const BOT_SOURCE_PREFERENCES_MAX = 50;

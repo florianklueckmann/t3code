@@ -17,6 +17,7 @@ import {
   botSourceDrafts,
   emptyBotSourceDraft,
   parseBotSourceDrafts,
+  rankBotConversations,
 } from "./bots.ts";
 
 const draft = (label: string, location: string) => ({ ...emptyBotSourceDraft(), label, location });
@@ -103,6 +104,55 @@ describe("botOfHomeThread", () => {
     ["an archived Bot", [bot({ archivedAt: "2026-01-02T00:00:00.000Z" })], home, null],
   ])("resolves %s", (_case, bots, thread, name) => {
     expect(botOfHomeThread(bots, thread)?.name ?? null).toBe(name);
+  });
+});
+
+describe("rankBotConversations", () => {
+  const context = (project: string, detachedAt: string | null = null) => ({
+    projectId: ProjectId.make(project),
+    homeThreadId: ThreadId.make(`bot-home:companion:${project}`),
+    attachedAt: "2026-01-01T00:00:00.000Z",
+    detachedAt,
+  });
+  const bot = (projects: BotSummary["projects"], archivedAt: string | null = null): BotSummary => ({
+    id: BotId.make("companion"),
+    name: "Companion",
+    modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
+    learningPolicy: "after_adoption",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    archivedAt,
+    pendingLearning: 0,
+    projects,
+  });
+  const threads: Record<string, { updatedAt: string; urgency: number }> = {
+    "bot-home:companion:old": { updatedAt: "2026-01-01T00:00:00.000Z", urgency: 0 },
+    "bot-home:companion:new": { updatedAt: "2026-01-03T00:00:00.000Z", urgency: 0 },
+    "bot-home:companion:asks": { updatedAt: "2026-01-02T00:00:00.000Z", urgency: 2 },
+  };
+  const rank = (summary: BotSummary) =>
+    rankBotConversations(
+      summary,
+      (threadId) => threads[threadId] ?? null,
+      (thread) => thread.urgency,
+    ).map(({ context }) => context.projectId);
+
+  it.each([
+    ["the most recently updated first", [context("old"), context("new")], ["new", "old"]],
+    [
+      "one that needs the user before a newer one",
+      [context("new"), context("asks")],
+      ["asks", "new"],
+    ],
+    ["unloaded conversations last", [context("unloaded"), context("old")], ["old", "unloaded"]],
+    ["no detached project", [context("new", "2026-01-04T00:00:00.000Z"), context("old")], ["old"]],
+    ["nothing for a Bot without projects", [], []],
+  ])("orders %s", (_case, projects, expected) => {
+    expect(rank(bot(projects))).toEqual(expected);
+  });
+
+  it("offers nothing for an archived Bot", () => {
+    expect(rank(bot([context("new")], "2026-01-04T00:00:00.000Z"))).toEqual([]);
   });
 });
 

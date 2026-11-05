@@ -429,6 +429,28 @@ const relationshipShellsAtomFamily = Atom.family((key: string) => {
   }).pipe(Atom.withLabel(`web-thread-relationship-shells:${key}`));
 });
 
+const THREAD_KEY_LIST_SEPARATOR = "\n";
+
+const quietThreadShellsByKeysAtomFamily = Atom.family((keys: string) => {
+  const refs = keys === "" ? [] : keys.split(THREAD_KEY_LIST_SEPARATOR).map(parseThreadKey);
+  let previous: ReadonlyArray<EnvironmentThreadShell | null> = [];
+  return Atom.make((get) => {
+    const next = refs.map((ref) => get(environmentThreadShells.quietThreadShellAtom(ref)));
+    if (arrayElementsEqual(previous, next)) return previous;
+    previous = next;
+    return next;
+  }).pipe(Atom.withLabel(`web-quiet-thread-shells-by-keys:${keys}`));
+});
+
+/** Quiet shells of a few known threads, in `refs` order, without subscribing to the rest. */
+export function useQuietThreadShellsByRefs(
+  refs: ReadonlyArray<ScopedThreadRef>,
+): ReadonlyArray<EnvironmentThreadShell | null> {
+  return useAtomValue(
+    quietThreadShellsByKeysAtomFamily(refs.map(threadKey).join(THREAD_KEY_LIST_SEPARATOR)),
+  );
+}
+
 export function useThreadRelationshipShells(
   ref: ScopedThreadRef,
 ): ReadonlyArray<OrchestrationV2ThreadShell> {

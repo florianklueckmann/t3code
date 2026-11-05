@@ -8,12 +8,7 @@ import {
   type EnvironmentThreadSearchMatch,
   type ShownOrder,
 } from "@t3tools/client-runtime/state/thread-search";
-import {
-  isListedThreadLineage,
-  THREAD_JUMP_KEYBINDING_COMMANDS,
-  type EnvironmentId,
-} from "@t3tools/contracts";
-import { AsyncResult, Atom } from "effect/reactivity";
+import { isListedThreadLineage, THREAD_JUMP_KEYBINDING_COMMANDS } from "@t3tools/contracts";
 import {
   foldSearchQuery,
   PALETTE_MESSAGE_LIMIT,
@@ -78,6 +73,7 @@ import { PullRequestGlyph } from "../pull-requests/pullRequestGlyphs";
 import { openSettings } from "../settings/settings-navigation";
 import { useSelectWorkspaceTab } from "../layout/workspace/useSelectWorkspaceTab";
 import { useSelectWorkspaceDetail } from "../layout/workspace/useSelectWorkspaceDetail";
+import { useConnectedBots } from "../bots/bots-across-environments";
 
 const PALETTE_COMMANDS: ReadonlyArray<HardwareKeyboardCommand> = [
   "commandPalette",
@@ -105,20 +101,6 @@ const ACTION_ICONS: Record<string, AppSymbolName> = {
   review: PullRequestGlyph.pullRequest,
   copyThreadReference: "link",
 };
-
-/** Bot summaries of the environments in the JSON key, subscribed only while the palette is open. */
-const paletteBotsAtom = Atom.family((environmentIdsJson: string) =>
-  Atom.make((get) =>
-    (JSON.parse(environmentIdsJson) as EnvironmentId[]).flatMap((environmentId) =>
-      (
-        AsyncResult.getOrElse(
-          get(serverEnvironment.botsLive({ environmentId, input: {} })),
-          () => null,
-        )?.bots ?? []
-      ).map((bot) => ({ environmentId, bot })),
-    ),
-  ),
-);
 
 function itemIcon(item: CommandPaletteItem): AppSymbolName {
   if (item.kind === "thread") return "text.bubble";
@@ -303,16 +285,7 @@ export function CommandPalette(props: {
     useAtomValue(serverEnvironment.prepareTriage.permissionAtom(triageEnvironmentId)) &&
     triageEnvironmentId !== null &&
     serverConfigs.get(triageEnvironmentId)?.environment.capabilities.triage === true;
-  const bots = useAtomValue(
-    paletteBotsAtom(
-      JSON.stringify(
-        searchEnvironmentIds.filter(
-          (environmentId) =>
-            serverConfigs.get(environmentId)?.environment.capabilities.bots === true,
-        ),
-      ),
-    ),
-  );
+  const bots = useConnectedBots();
   const contentMatchByKey = new Map(
     search.matches
       .filter((match) => match.source === "user" || match.source === "assistant")

@@ -39,10 +39,12 @@ import {
   layoutThreadListV2RowMenuActions,
   resolveThreadListV2SnoozeMenuSelection,
   resolveThreadListV2SwipeActions,
+  resolveThreadListV2Attention,
   resolveThreadListV2SnoozePresets,
   resolveThreadListV2Status,
   resolveThreadListV2WokeAt,
   sortThreadsForListV2,
+  threadListV2AttentionUrgency,
   threadListV2ListItemsAreEqual,
   threadHasUnseenCompletion,
   type ThreadListV2ListItem,
@@ -209,6 +211,54 @@ describe("resolveThreadListV2Status", () => {
       expect(threadHasUnseenCompletion(thread)).toBe(true);
     },
   );
+
+  it("ranks attention: requests, then failures, then unread work, then work", () => {
+    const present = (shell: unknown) => presentThreadShell(environmentId, decodeThreadShell(shell));
+    const rawRunning = makeRawThreadShell({
+      status: "running",
+      activeRunId: RunId.make("run-active"),
+      latestRunId: RunId.make("run-active"),
+    });
+    const running = present(rawRunning);
+    const completed = (lastVisitedAt: string) =>
+      present(
+        makeRawThreadShell({
+          latestRunId: RunId.make("run-done"),
+          status: "completed",
+          latestRunCompletedAt: DateTime.makeUnsafe(NOW),
+          lastVisitedAt: DateTime.makeUnsafe(lastVisitedAt),
+        }),
+      );
+    const cases = [
+      [{ ...running, hasPendingApprovals: true }, "approval", 4],
+      [{ ...running, hasPendingUserInput: true }, "input", 4],
+      [{ ...running, pendingGuestMessageCount: 1 }, "request", 4],
+      [
+        {
+          ...running,
+          runtime: {
+            status: "failed",
+            activeRunId: null,
+            providerInstanceId: ProviderInstanceId.make("codex"),
+            providerName: "Codex",
+            lastError: "Run failed",
+            updatedAt: NOW,
+          },
+        },
+        "failed",
+        3,
+      ],
+      [completed("2026-06-01T23:59:00.000Z"), "done", 2],
+      [running, "working", 1],
+      [present({ ...rawRunning, blockedOnThreadWait: true }), null, 0],
+      [completed("2026-06-02T00:01:00.000Z"), null, 0],
+    ] as const;
+
+    for (const [thread, attention, urgency] of cases) {
+      expect(resolveThreadListV2Attention(thread)).toBe(attention);
+      expect(threadListV2AttentionUrgency(resolveThreadListV2Attention(thread))).toBe(urgency);
+    }
+  });
 });
 
 describe("resolveThreadListV2SwipeActions", () => {

@@ -226,6 +226,9 @@ function SidebarProvider({
             "--sidebar-width-icon": SIDEBAR_WIDTH_ICON,
             "--workspace-titlebar-content-left":
               "calc(var(--workspace-controls-left) + var(--workspace-titlebar-control-size) + var(--workspace-titlebar-control-gap))",
+            // The same edge measured from the sidebar's or the main content's own left side.
+            "--workspace-titlebar-content-start":
+              "max(0px, calc(var(--workspace-titlebar-content-left) - var(--sidebar-offset-left, 0px)))",
             ...style,
           } as React.CSSProperties
         }
@@ -367,7 +370,8 @@ function Sidebar({
             "fixed inset-y-0 z-10 hidden h-svh w-(--sidebar-width) md:flex",
             "[[data-panel-animations=true]_&]:transition-[left,right,width] [[data-panel-animations=true]_&]:[transition-duration:var(--panel-animation-duration)] [[data-panel-animations=true]_&]:ease-out",
             side === "left"
-              ? "left-0 group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-width)*-1)]"
+              ? // --sidebar-offset-left makes room for a column pinned left of the sidebar.
+                "left-[var(--sidebar-offset-left,0px)] group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-offset-left,0px)-var(--sidebar-width))]"
               : "right-0 group-data-[collapsible=offcanvas]:right-[calc(var(--sidebar-width)*-1)]",
             variant === "floating" || variant === "inset"
               ? "p-2 group-data-[collapsible=icon]:w-[calc(var(--sidebar-width-icon)+(--spacing(4))+2px)]"
