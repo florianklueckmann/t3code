@@ -627,16 +627,13 @@ function BotForm({
               }
             />
             {notesSupported &&
-            project.attached &&
-            baseline.projects.some(
-              (saved) => saved.projectId === project.projectId && saved.attached,
-            ) ? (
+            baseline.projects.some((saved) => saved.projectId === project.projectId) ? (
               <BotContinuationSection
                 environmentId={environmentId}
                 botId={draft.botId}
                 projectId={project.projectId}
                 title={`${projectTitle(project.projectId)} · Working notes`}
-                disabled={readOnly}
+                disabled={readOnly || !project.attached}
               />
             ) : null}
             {routinesSupported &&

@@ -821,15 +821,17 @@ function BotProjectContexts({
           onDraftChange={(next) => onDraftChange(context, next)}
           onDetach={() => void detach(context.projectId)}
           onReattach={() => void attach(context.projectId, "Could not reattach project")}
+          workingNotes={
+            notesSupported ? (
+              <BotContinuationNotes
+                environmentId={environmentId}
+                botId={bot.id}
+                projectId={context.projectId}
+                disabled={disabled}
+              />
+            ) : null
+          }
         >
-          {notesSupported ? (
-            <BotContinuationNotes
-              environmentId={environmentId}
-              botId={bot.id}
-              projectId={context.projectId}
-              disabled={disabled}
-            />
-          ) : null}
           {routinesSupported ? (
             <BotRoutines
               environmentId={environmentId}
@@ -1164,6 +1166,7 @@ function BotProjectContextEditor({
   onDraftChange,
   onDetach,
   onReattach,
+  workingNotes,
   children,
 }: {
   readonly context: BotProjectContext;
@@ -1173,6 +1176,7 @@ function BotProjectContextEditor({
   readonly onDraftChange: (draft: BotProjectContextDraft) => void;
   readonly onDetach: () => void;
   readonly onReattach: () => void;
+  readonly workingNotes?: ReactNode;
   /** Shown below the context while the project is attached. */
   readonly children?: ReactNode;
 }) {
@@ -1200,6 +1204,7 @@ function BotProjectContextEditor({
           </Button>
         )}
       </div>
+      {workingNotes}
       {detached ? null : (
         <>
           <Field label="Guidance" htmlFor={guidanceId}>
