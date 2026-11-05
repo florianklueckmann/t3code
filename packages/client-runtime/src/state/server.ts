@@ -1,5 +1,6 @@
 import {
   type EnvironmentId,
+  type BotSummary,
   type ProviderInstanceId,
   type ServerConfig,
   type ServerConfigStreamEvent,
@@ -9,6 +10,8 @@ import {
   type ServerSelfUpdateProgressEvent,
   type ServerSelfUpdateResult,
   shouldRecommendDatabaseCompaction,
+  mayBeBotWorkThreadId,
+  ThreadId,
   WS_METHODS,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -40,6 +43,7 @@ import {
 import * as EnvironmentRegistry from "../connection/registry.ts";
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import { safeErrorLogAttributes } from "../errors/safeLog.ts";
+import { botOfWorkThread } from "../bots.ts";
 import * as Persistence from "../platform/persistence.ts";
 import { runCachePersistence } from "./cachePersistence.ts";
 import {
@@ -1203,8 +1207,34 @@ export function createServerEnvironmentAtoms<R, E>(
     concurrency: configConcurrency,
   });
 
+  const botsLive = createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+    label: "environment-data:server:bots:live",
+    tag: WS_METHODS.botsSubscribe,
+  });
+  const botTasksLive = createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+    label: "environment-data:server:bots:tasks:live",
+    tag: WS_METHODS.botsSubscribeTasks,
+  });
+  const workThreadBotFamily = Atom.family((key: string) => {
+    const [environmentId, threadId] = JSON.parse(key) as [EnvironmentId, string];
+    return Atom.make((get): BotSummary | null => {
+      if (!mayBeBotWorkThreadId(threadId)) return null;
+      if (get(configValueAtom(environmentId))?.environment.capabilities.bots !== true) return null;
+      const bots = AsyncResult.getOrElse(get(botsLive({ environmentId, input: {} })), () => null);
+      const tasks = AsyncResult.getOrElse(
+        get(botTasksLive({ environmentId, input: { workThreadId: ThreadId.make(threadId) } })),
+        () => null,
+      );
+      return bots === null || tasks === null
+        ? null
+        : botOfWorkThread(bots.bots, tasks.tasks, threadId);
+    }).pipe(Atom.withLabel(`environment-data:server:bots:work-thread:${key}`));
+  });
+
   return {
     configValueAtom,
+    workThreadBot: (thread: { readonly environmentId: EnvironmentId; readonly id: string }) =>
+      workThreadBotFamily(JSON.stringify([thread.environmentId, thread.id])),
     runStorageCleanup: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:run-storage-cleanup",
       tag: WS_METHODS.serverRunStorageCleanup,
@@ -1340,15 +1370,9 @@ export function createServerEnvironmentAtoms<R, E>(
       tag: WS_METHODS.scheduledTasksSubscribe,
     }),
     // Summaries only; instructions and guidance load per Bot through botDetail.
-    botsLive: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
-      label: "environment-data:server:bots:live",
-      tag: WS_METHODS.botsSubscribe,
-    }),
+    botsLive,
     // The 50 newest tasks for the filter; statuses update as their work threads run.
-    botTasksLive: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
-      label: "environment-data:server:bots:tasks:live",
-      tag: WS_METHODS.botsSubscribeTasks,
-    }),
+    botTasksLive,
     botDetail: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:server:bots:detail",
       tag: WS_METHODS.botsGet,
