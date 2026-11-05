@@ -152,12 +152,19 @@ const write = Effect.fn("mcp.bot.write")(function* (input: BotToolInput) {
     const project = yield* bots
       .resolveProject({ botId, projectId: input.projectId })
       .pipe(Effect.mapError(botFailure));
-    const started = tasks.start({
-      botId,
-      projectId: project.projectId,
-      prompt: input.task,
-      ...(input.title === undefined ? {} : { title: input.title }),
-    });
+    const caller = yield* McpInvocationContext.McpInvocationContext;
+    if (input.returnToHome === true && caller.thread === undefined) {
+      return yield* invalid("`returnToHome` is available only from the Bot's Home conversation.");
+    }
+    const started = tasks.start(
+      {
+        botId,
+        projectId: project.projectId,
+        prompt: input.task,
+        ...(input.title === undefined ? {} : { title: input.title }),
+      },
+      input.returnToHome === true ? { returnToHomeFrom: caller.thread!.threadId } : undefined,
+    );
     return { task: yield* started.pipe(Effect.mapError(botFailure)) };
   }
   const { guidance, sources } = input;

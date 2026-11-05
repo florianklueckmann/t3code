@@ -768,12 +768,16 @@ const make = Effect.gen(function* () {
               ),
             );
       case "message.dispatch":
+      case "bot-task.result.deliver":
         return orchestrator.getThreadRecords(command.threadId, []).pipe(
           Effect.flatMap((projection) =>
             assertProviderInstanceEnabled({
               projectId: projection.thread.projectId,
               commandId: command.commandId,
-              instanceId: (command.modelSelection ?? projection.thread.modelSelection).instanceId,
+              instanceId: (command.type === "message.dispatch"
+                ? (command.modelSelection ?? projection.thread.modelSelection)
+                : projection.thread.modelSelection
+              ).instanceId,
             }),
           ),
         );

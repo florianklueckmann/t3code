@@ -116,3 +116,41 @@ it("checks the routine a home turn sets up against the session and lead time", (
     ),
   ).toEqual(["routine title"]);
 });
+
+it("keeps missing Home returns as failed checks with task and file evidence", () => {
+  const testCase = byId("returns-task-and-continues");
+  const run = {
+    ...base,
+    tasks: [{ status: "completed" as const, origin: "direct" as const, returnToHome: true }],
+    homeRuns: 2,
+    filesChanged: ["world/verified.md"],
+    filesAfter: {
+      "world/verified.md": "# Verified\n\nThe Sunless Gate lies beneath the old mint.\n",
+    },
+    tools: [
+      {
+        type: "tool_call",
+        title: null,
+        text: JSON.stringify({ toolName: "t3_bot", input: { action: "start_task" } }),
+      },
+    ],
+  };
+  expect(failed(gradeSample(testCase, run))).toEqual([]);
+  expect(
+    failed(gradeSample(testCase, { ...run, homeRuns: 1, filesChanged: [], filesAfter: {} })),
+  ).toEqual([
+    "only requested files changed",
+    "requested content in world/verified.md",
+    "bounded Home turns",
+  ]);
+  expect(
+    failed(
+      gradeSample(testCase, {
+        ...run,
+        tasks: [{ status: "completed", origin: "direct" }],
+        homeRuns: 1,
+      }),
+    ),
+  ).toContain("requested Home return policy");
+  expect(failed(gradeSample(testCase, { ...run, homeRuns: 3 }))).toContain("bounded Home turns");
+});

@@ -47,6 +47,7 @@ import {
 } from "../scheduledTasks/BotRoutineTarget.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as BotStore from "./BotStore.ts";
+import { isDirectHomeInput, latestDirectHomeInput } from "./homeReturn.ts";
 
 const LIST_LIMIT = 50;
 
@@ -72,6 +73,9 @@ interface BotTaskRow {
   readonly result_run_id: string | null;
   readonly completed_at: string | null;
   readonly notified_at: string | null;
+  readonly return_home_run_id: string | null;
+  readonly return_home_message_id: string | null;
+  readonly return_finished_at: string | null;
   readonly created_at: string;
   readonly updated_at: string;
 }
@@ -124,7 +128,10 @@ export class BotTaskService extends Context.Service<
   BotTaskService,
   {
     /** Admits a direct request as a task in a new work thread of the Bot's project. */
-    readonly start: (input: BotStartTaskInput) => Effect.Effect<BotTaskSummary, BotError>;
+    readonly start: (
+      input: BotStartTaskInput,
+      options?: { readonly returnToHomeFrom: ThreadId },
+    ) => Effect.Effect<BotTaskSummary, BotError>;
     /** The same admission for a routine occurrence; idempotent per occurrence key. */
     readonly admitRoutine: (
       occurrence: BotRoutineOccurrence,
@@ -198,6 +205,7 @@ const make = Effect.gen(function* () {
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       completedAt: row.completed_at,
+      returnToHome: row.return_home_run_id !== null,
     }).pipe(Effect.mapError(storageError));
 
   const readRow = (taskId: string) =>
@@ -326,14 +334,15 @@ const make = Effect.gen(function* () {
         task_id, bot_id, project_id, home_thread_id, work_thread_id, origin, title, prompt,
         scheduled_task_id, occurrence_key, occurrence_due_at, session_at, allow_changes, runtime_mode, status,
         detail, dispatched_at, cancel_requested_at, result_run_id, completed_at, notified_at,
-        created_at, updated_at
+        created_at, updated_at, return_home_run_id, return_home_message_id, return_finished_at
       ) VALUES (
         ${row.task_id}, ${row.bot_id}, ${row.project_id}, ${row.home_thread_id},
         ${row.work_thread_id}, ${row.origin}, ${row.title}, ${row.prompt},
         ${row.scheduled_task_id}, ${row.occurrence_key}, ${row.occurrence_due_at},
         ${row.session_at}, ${row.allow_changes}, ${row.runtime_mode}, ${row.status}, ${row.detail},
         ${row.dispatched_at}, ${row.cancel_requested_at}, ${row.result_run_id},
-        ${row.completed_at}, ${row.notified_at}, ${row.created_at}, ${row.updated_at}
+        ${row.completed_at}, ${row.notified_at}, ${row.created_at}, ${row.updated_at},
+        ${row.return_home_run_id}, ${row.return_home_message_id}, ${row.return_finished_at}
       )
       ON CONFLICT DO NOTHING
     `;
@@ -373,12 +382,15 @@ const make = Effect.gen(function* () {
     result_run_id: null,
     completed_at: input.skipReason === undefined ? null : input.now,
     notified_at: null,
+    return_home_run_id: null,
+    return_home_message_id: null,
+    return_finished_at: null,
     created_at: input.now,
     updated_at: input.now,
   });
 
   const start: BotTaskService["Service"]["start"] = Effect.fn("BotTaskService.start")(
-    function* (input) {
+    function* (input, options) {
       const suffix =
         input.commandId ??
         (yield* random
@@ -393,18 +405,95 @@ const make = Effect.gen(function* () {
       const home = yield* threads
         .getThreadShell(ThreadId.make(context.context.home_thread_id))
         .pipe(Effect.mapError(botError("Failed to read the Bot conversation.", input.botId)));
-      const row = newRow({
-        taskId,
-        botId: input.botId,
-        projectId: input.projectId,
-        homeThreadId: context.context.home_thread_id,
-        origin: "direct",
-        title: input.title ?? `${context.bot.name}: ${input.prompt.split("\n")[0]?.slice(0, 60)}`,
-        prompt: input.prompt,
-        runtimeMode: home?.runtimeMode ?? BOT_ROUTINE_RUNTIME_MODE,
-        now: yield* nowIso,
-      });
-      yield* insertTask(row).pipe(Effect.mapError(storageError));
+      let returnHomeRunId: string | null = null;
+      let returnHomeMessageId: string | null = null;
+      if (options !== undefined) {
+        if (
+          options.returnToHomeFrom !== context.context.home_thread_id ||
+          home === null ||
+          home.id !== options.returnToHomeFrom ||
+          home.projectId !== input.projectId ||
+          home.deletedAt !== null ||
+          home.archivedAt !== null ||
+          home.status !== "running" ||
+          home.activeRunId === null ||
+          home.activeRunId !== home.latestRunId
+        )
+          return yield* botError(
+            "A result can return only from the Bot's active Home user turn.",
+            input.botId,
+          )();
+        const records = yield* threads
+          .getProjectThreadRecords(
+            { projectId: input.projectId, threadId: options.returnToHomeFrom },
+            ["runs", "messages", "turnItems"],
+            {
+              runIds: [home.activeRunId],
+              messageRunIds: [home.activeRunId],
+              messageRoles: ["user"],
+              turnItemRunIds: [home.activeRunId],
+              turnItemTypes: ["user_message"],
+            },
+          )
+          .pipe(Effect.mapError(botError("Failed to read the Home user turn.", input.botId)));
+        const run = records.runs.find((candidate) => candidate.id === home.activeRunId);
+        const message = records.messages.find((candidate) => candidate.id === run?.userMessageId);
+        if (
+          run?.status !== "running" ||
+          run.threadId !== options.returnToHomeFrom ||
+          !isDirectHomeInput(message)
+        )
+          return yield* botError(
+            "Automatic turns cannot authorize another return to Home.",
+            input.botId,
+          )();
+        const inputMessage = latestDirectHomeInput(records);
+        if (inputMessage === undefined)
+          return yield* botError("The direct Home input is unavailable.", input.botId)();
+        returnHomeRunId = run.id;
+        returnHomeMessageId = inputMessage.id;
+      }
+      const row = {
+        ...newRow({
+          taskId,
+          botId: input.botId,
+          projectId: input.projectId,
+          homeThreadId: context.context.home_thread_id,
+          origin: "direct",
+          title: input.title ?? `${context.bot.name}: ${input.prompt.split("\n")[0]?.slice(0, 60)}`,
+          prompt: input.prompt,
+          runtimeMode: home?.runtimeMode ?? BOT_ROUTINE_RUNTIME_MODE,
+          now: yield* nowIso,
+        }),
+        return_home_run_id: returnHomeRunId,
+        return_home_message_id: returnHomeMessageId,
+      };
+      yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            if (returnHomeRunId !== null) {
+              const attached = yield* activeContext(input.botId, input.projectId);
+              if (
+                attached._tag === "inactive" ||
+                attached.context.home_thread_id !== row.home_thread_id
+              )
+                return yield* botError(
+                  "The Bot is no longer attached to this Home.",
+                  input.botId,
+                )();
+              const pending = yield* sql`SELECT task_id FROM bot_tasks
+            WHERE home_thread_id = ${row.home_thread_id} AND return_home_run_id = ${returnHomeRunId}
+              AND return_finished_at IS NULL AND task_id <> ${row.task_id} LIMIT 1`;
+              if (pending.length > 0)
+                return yield* botError(
+                  "This Home input turn already has a pending task return. Cancel it before starting another.",
+                  input.botId,
+                )();
+            }
+            yield* insertTask(row);
+          }),
+        )
+        .pipe(Effect.mapError((cause) => (isBotError(cause) ? cause : storageError(cause))));
       yield* dispatch(row);
       return yield* get(BotTaskId.make(taskId));
     },
@@ -626,7 +715,11 @@ const make = Effect.gen(function* () {
     function* (input) {
       const row = yield* readRow(input.taskId);
       if (row === undefined) return yield* botError("Bot task not found.")();
+      yield* sql`UPDATE bot_tasks SET return_home_run_id = NULL WHERE task_id = ${row.task_id}`.pipe(
+        Effect.mapError(storageError),
+      );
       if (row.completed_at === null) yield* requestCancel(row, null);
+      yield* publish(row);
       return yield* get(input.taskId);
     },
   );
@@ -634,6 +727,11 @@ const make = Effect.gen(function* () {
   const cancelForContext: BotTaskService["Service"]["cancelForContext"] = Effect.fn(
     "BotTaskService.cancelForContext",
   )(function* (input) {
+    yield* sql`UPDATE bot_tasks SET return_home_run_id = NULL
+      WHERE bot_id = ${input.botId} AND return_finished_at IS NULL
+        AND (${input.projectId ?? null} IS NULL OR project_id = ${input.projectId ?? null})`.pipe(
+      Effect.mapError(storageError),
+    );
     const rows = yield* sql<BotTaskRow>`
       SELECT * FROM bot_tasks
       WHERE bot_id = ${input.botId} AND completed_at IS NULL
@@ -645,6 +743,66 @@ const make = Effect.gen(function* () {
         : "Stopped because the Bot was detached from this project.";
     yield* Effect.forEach(rows, (row) => requestCancel(row, reason), { discard: true });
   });
+
+  // The Bot transaction keeps cancel/detach serialized until the orchestration receipt commits.
+  const deliverResult = Effect.fn("BotTaskService.deliverResult")(
+    function* (taskId: string) {
+      const row = yield* readRow(taskId);
+      if (row === undefined) return;
+      if (
+        row.return_home_run_id === null ||
+        row.return_home_message_id === null ||
+        row.return_finished_at !== null ||
+        row.completed_at === null
+      )
+        return;
+      const finish = sql`UPDATE bot_tasks SET return_finished_at = ${yield* nowIso}
+      WHERE task_id = ${row.task_id} AND return_finished_at IS NULL`.pipe(
+        Effect.mapError(storageError),
+      );
+      const context = yield* activeContext(row.bot_id as BotId, row.project_id as ProjectId);
+      if (
+        row.status !== "completed" ||
+        row.result_run_id === null ||
+        row.work_thread_id === null ||
+        context._tag === "inactive" ||
+        context.context.home_thread_id !== row.home_thread_id
+      ) {
+        yield* finish;
+        return;
+      }
+      const otherWork = yield* sql`SELECT task_id FROM bot_tasks
+      WHERE home_thread_id = ${row.home_thread_id} AND task_id <> ${row.task_id} AND completed_at IS NULL LIMIT 1`.pipe(
+        Effect.mapError(storageError),
+      );
+      if (otherWork.length > 0) return;
+      const { result } = yield* getResult({ taskId: BotTaskId.make(row.task_id) });
+      if (result.state === "unavailable" || result.state === "not_completed") return;
+      const text =
+        result.state === "available" ? result.text : "The saved run has no final answer.";
+      const delivery = yield* threads
+        .dispatch({
+          type: "bot-task.result.deliver",
+          commandId: CommandId.make(`bot-task-return:${row.task_id}:${row.result_run_id}`),
+          threadId: ThreadId.make(row.home_thread_id),
+          projectId: row.project_id as ProjectId,
+          botId: row.bot_id as BotId,
+          taskId: BotTaskId.make(row.task_id),
+          sourceThreadId: ThreadId.make(row.work_thread_id),
+          resultRunId: RunId.make(row.result_run_id),
+          homeRunId: RunId.make(row.return_home_run_id),
+          homeMessageId: MessageId.make(row.return_home_message_id),
+          messageId: MessageId.make(`bot-task-return:${row.task_id}:${row.result_run_id}`),
+          text: `Bot work run completed. Task fulfillment is unverified; existing user instructions and permissions still apply.\nTask: ${row.task_id}\nWork thread: ${row.work_thread_id}\nSaved run: ${row.result_run_id}\n\n${text.slice(0, 16000)}${text.length > 16000 ? "\n[Result truncated; the full saved result remains available on the task.]" : ""}`,
+        })
+        .pipe(Effect.mapError(botError("Failed to return the Bot task result to Home.")));
+      if (delivery.deferred !== true) yield* finish;
+    },
+    (effect) =>
+      sql
+        .withTransaction(effect)
+        .pipe(Effect.mapError((cause) => (isBotError(cause) ? cause : storageError(cause)))),
+  );
 
   /** One step of the reconcile loop for one task; failures stay with that task. */
   const reconcileTask = Effect.fn("BotTaskService.reconcileTask")(function* (row: BotTaskRow) {
@@ -707,12 +865,14 @@ const make = Effect.gen(function* () {
   const reconcile: BotTaskService["Service"]["reconcile"] = Effect.gen(function* () {
     const open = yield* sql<BotTaskRow>`
       SELECT * FROM bot_tasks WHERE completed_at IS NULL OR notified_at IS NULL
+        OR (return_home_run_id IS NOT NULL AND return_finished_at IS NULL)
       ORDER BY created_at, task_id
     `.pipe(Effect.mapError(storageError));
     yield* Effect.forEach(
       open,
       (row) =>
         reconcileTask(row).pipe(
+          Effect.andThen(deliverResult(row.task_id)),
           Effect.catchCause((cause) =>
             Effect.logWarning("Bot task reconcile failed", { taskId: row.task_id, cause }),
           ),

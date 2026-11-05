@@ -72,6 +72,14 @@ its answer proves the goal was achieved. Older tasks may have no saved result.
 Cards also show tasks that are still working, waiting for your answer, failed,
 were interrupted or cancelled, or were skipped.
 
+For a direct task, you can ask the Bot to return its result here automatically
+and continue the work you already authorized. This is off by default and allows
+one pending return per conversation input turn. It waits for active work and
+children to finish; newer direct input cancels the pending return. Failed or
+cancelled tasks keep their status on the card without starting a result turn.
+Detach, archive, and cancelling the task revoke a pending return. Routines and
+older tasks do not gain automatic returns.
+
 A **routine** runs a task on a schedule. In **Settings → Bots**, edit
 the Bot and choose **Add routine** under the project. Describe what the Bot should do,
 then pick a timing:

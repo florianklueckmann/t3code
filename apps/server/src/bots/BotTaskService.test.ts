@@ -157,7 +157,12 @@ const makeThreadWorld = Effect.gen(function* () {
       | "pendingRuntimeRequest"
       | "pendingBackgroundTasks"
       | "latestRunId"
+      | "activeRunId"
+      | "id"
+      | "projectId"
     > = {
+      id: threadId,
+      projectId: thread.projectId,
       archivedAt: thread.archived ? DateTime.makeUnsafe(0) : null,
       deletedAt: null,
       modelSelection: codex,
@@ -168,6 +173,7 @@ const makeThreadWorld = Effect.gen(function* () {
         : null,
       pendingBackgroundTasks: Array.from({ length: thread.backgroundTasks }, () => ({}) as never),
       latestRunId: thread.runId as OrchestrationV2ThreadShell["latestRunId"],
+      activeRunId: thread.status === "running" ? RunId.make(thread.runId!) : null,
     };
     return shell as OrchestrationV2ThreadShell;
   });
@@ -635,6 +641,285 @@ it.effect(
             assert.equal(result.task.status, status);
             assert.equal(result.result.state, "not_completed");
           }
+        }),
+      );
+    }).pipe(Effect.provide(layerDatabase)),
+);
+
+const seedHomeRun = Effect.fn("BotTaskServiceTest.seedHomeRun")(function* (
+  world: ThreadWorld,
+  home: ThreadId,
+  provenance: "ui" | "external-mcp" | "server" | "provider" | "forwarded" | "automatic" = "ui",
+) {
+  const runId = RunId.make(`user-run:${home}`);
+  const messageId = MessageId.make(`user-message:${home}`);
+  const input = makeSubagentConversationArtifacts({
+    messageId,
+    turnItemId: TurnItemId.make(`input:${home}`),
+    threadId: home,
+    rootNodeId: NodeId.make("home-root"),
+    providerThreadId: null,
+    providerTurnId: null,
+    nativeItemRef: null,
+    role: "user",
+    text: "Prepare.",
+    ordinal: 1,
+    now: DateTime.makeUnsafe(START),
+  });
+  yield* world.update(home, { status: "running", runId });
+  yield* Ref.update(world.records, (all) =>
+    new Map(all).set(home, {
+      thread: {
+        id: home,
+        projectId: campaign,
+        deletedAt: null,
+        archivedAt: null,
+      } as OrchestrationV2ThreadProjection["thread"],
+      runs: [
+        {
+          id: runId,
+          threadId: home,
+          userMessageId: messageId,
+          ordinal: 1,
+          status: "running",
+        } as OrchestrationV2Run,
+      ],
+      messages: [
+        {
+          ...input.message,
+          runId,
+          createdBy: provenance === "ui" ? "user" : "agent",
+          creationSource:
+            provenance === "ui"
+              ? "web"
+              : provenance === "server"
+                ? "server"
+                : provenance === "provider"
+                  ? "provider"
+                  : "mcp",
+          ...(provenance === "forwarded" ? { senderThreadId: ThreadId.make("sender") } : {}),
+          ...(provenance === "automatic"
+            ? {
+                notification: {
+                  source: { kind: "system" },
+                  outcome: "completed",
+                  summary: "Result",
+                },
+              }
+            : {}),
+        },
+      ],
+      turnItems: [{ ...input.turnItem, runId }],
+    }),
+  );
+  return runId;
+});
+
+it.effect("returns only opted-in saved results to Home once across retry and restart", () =>
+  Effect.gen(function* () {
+    yield* seedProject;
+    const world = yield* makeThreadWorld;
+    const { task, home, anchor } = yield* withServices(world, (services) =>
+      Effect.gen(function* () {
+        const home = yield* attachBot(services);
+        const anchor = yield* seedHomeRun(world, home, "external-mcp");
+        const task = yield* services.tasks.start(
+          {
+            botId,
+            projectId: campaign,
+            prompt: "Prepare.",
+            commandId: CommandId.make("return-home"),
+          },
+          { returnToHomeFrom: home },
+        );
+        const ordinary = yield* services.tasks.start({
+          botId,
+          projectId: campaign,
+          prompt: "Ordinary.",
+        });
+        yield* world.update(ordinary.workThreadId!, { status: "completed" });
+        yield* world.update(task.workThreadId!, { status: "completed" });
+        yield* services.tasks.reconcile;
+        return { task, home, anchor };
+      }),
+    );
+    const runId = RunId.make(`run:${task.workThreadId}`);
+    yield* Ref.update(world.records, (all) =>
+      new Map(all).set(task.workThreadId!, {
+        thread: {
+          id: task.workThreadId!,
+          projectId: campaign,
+          deletedAt: null,
+        } as OrchestrationV2ThreadProjection["thread"],
+        runs: [
+          { id: runId, threadId: task.workThreadId!, status: "completed" } as OrchestrationV2Run,
+        ],
+        messages: [
+          {
+            id: MessageId.make("result"),
+            threadId: task.workThreadId!,
+            runId,
+            role: "assistant",
+            text: "Saved answer",
+            streaming: false,
+            createdAt: DateTime.makeUnsafe(START),
+            updatedAt: DateTime.makeUnsafe(START),
+          } as OrchestrationV2ThreadProjection["messages"][number],
+        ],
+        turnItems: [],
+      }),
+    );
+    const sql = yield* BotDatabase.BotDatabase;
+    yield* sql`CREATE TRIGGER interrupt_return_bookkeeping BEFORE UPDATE OF return_finished_at ON bot_tasks
+      BEGIN SELECT RAISE(ABORT, 'injected interruption after receipt'); END`;
+    yield* withServices(world, (services) =>
+      Effect.gen(function* () {
+        // The saved run remains authoritative after a later work-thread turn.
+        yield* world.update(task.workThreadId!, { runId: "later-run" });
+        yield* world.update(home, { status: "completed" });
+        yield* Ref.set(world.failNext, "bot-task.result.deliver");
+        yield* services.tasks.reconcile;
+        yield* services.tasks.reconcile;
+        assert.lengthOf(yield* world.commandsMatching("bot-task.result.deliver"), 1);
+        assert.equal(
+          (yield* services.tasks.getResult({ taskId: task.id })).result.state,
+          "available",
+        );
+      }),
+    );
+    assert.isNull(
+      (yield* sql`SELECT return_finished_at FROM bot_tasks WHERE task_id = ${task.id}`)[0]
+        ?.return_finished_at,
+    );
+    yield* sql`DROP TRIGGER interrupt_return_bookkeeping`;
+    yield* withServices(world, (services) => services.tasks.reconcile);
+    assert.deepEqual(yield* world.commandsMatching("bot-task.result.deliver"), [
+      `bot-task.result.deliver ${home} bot-task-return:${task.id}:${runId}`,
+    ]);
+    assert.lengthOf(yield* world.commandsMatching("thread.mark-unread"), 2);
+    const [saved] = yield* sql<{
+      return_home_run_id: string;
+      return_finished_at: string | null;
+    }>`SELECT return_home_run_id, return_finished_at FROM bot_tasks WHERE task_id = ${task.id}`;
+    assert.equal(saved?.return_home_run_id, anchor);
+    assert.isNotNull(saved?.return_finished_at);
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect.each(["foreign-home", "automatic-home", "server", "provider", "forwarded"] as const)(
+  "refuses return-to-Home from %s before launching work",
+  (caller) =>
+    Effect.gen(function* () {
+      yield* seedProject;
+      const world = yield* makeThreadWorld;
+      yield* withServices(world, (services) =>
+        Effect.gen(function* () {
+          const home = yield* attachBot(services);
+          yield* seedHomeRun(
+            world,
+            home,
+            caller === "automatic-home" ? "automatic" : caller === "foreign-home" ? "ui" : caller,
+          );
+          const started = yield* services.tasks
+            .start(
+              { botId, projectId: campaign, prompt: "Prepare." },
+              { returnToHomeFrom: caller === "foreign-home" ? ThreadId.make("other") : home },
+            )
+            .pipe(Effect.exit);
+          assert.equal(started._tag, "Failure");
+          assert.lengthOf((yield* services.tasks.list({ botId })).tasks, 0);
+        }),
+      );
+    }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect.each(["failed", "cancelled", "detach", "archive", "revoke"] as const)(
+  "revokes or retires an opted-in return after %s",
+  (state) =>
+    Effect.gen(function* () {
+      yield* seedProject;
+      const world = yield* makeThreadWorld;
+      yield* withServices(world, (services) =>
+        Effect.gen(function* () {
+          const home = yield* attachBot(services);
+          yield* seedHomeRun(world, home);
+          const task = yield* services.tasks.start(
+            { botId, projectId: campaign, prompt: "Prepare." },
+            { returnToHomeFrom: home },
+          );
+          if (state === "cancelled") yield* services.tasks.cancel({ taskId: task.id });
+          else
+            yield* world.update(task.workThreadId!, {
+              status: state === "failed" ? "failed" : "completed",
+            });
+          yield* services.tasks.reconcile;
+          const runId = RunId.make(`run:${task.workThreadId}`);
+          yield* Ref.update(world.records, (all) =>
+            new Map(all).set(task.workThreadId!, {
+              thread: {
+                id: task.workThreadId!,
+                projectId: campaign,
+                deletedAt: null,
+              } as OrchestrationV2ThreadProjection["thread"],
+              runs: [
+                {
+                  id: runId,
+                  threadId: task.workThreadId!,
+                  status: "completed",
+                } as OrchestrationV2Run,
+              ],
+              messages: [],
+              turnItems: [],
+            }),
+          );
+          if (state === "detach") {
+            yield* services.bots.detachProject({ botId, projectId: campaign });
+            yield* services.bots.attachProject({ botId, projectId: campaign });
+          } else if (state === "archive") {
+            yield* services.bots.setArchived({ botId, archived: true });
+            yield* services.bots.setArchived({ botId, archived: false });
+          } else if (state === "revoke") yield* services.tasks.cancel({ taskId: task.id });
+          yield* world.update(home, { status: "completed" });
+          yield* services.tasks.reconcile;
+          assert.lengthOf(yield* world.commandsMatching("bot-task.result.deliver"), 0);
+          if (state === "failed" || state === "cancelled")
+            assert.equal(
+              (yield* services.tasks.getResult({ taskId: task.id })).result.state,
+              "not_completed",
+            );
+        }),
+      );
+    }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect(
+  "refuses a second pending Home return before launch and allows replacing a revoked one",
+  () =>
+    Effect.gen(function* () {
+      yield* seedProject;
+      const world = yield* makeThreadWorld;
+      yield* withServices(world, (services) =>
+        Effect.gen(function* () {
+          const home = yield* attachBot(services);
+          yield* seedHomeRun(world, home);
+          const first = yield* services.tasks.start(
+            { botId, projectId: campaign, prompt: "First." },
+            { returnToHomeFrom: home },
+          );
+          const second = yield* services.tasks
+            .start({ botId, projectId: campaign, prompt: "Second." }, { returnToHomeFrom: home })
+            .pipe(Effect.result);
+          assert.equal(second._tag, "Failure");
+          if (second._tag === "Failure")
+            assert.include(second.failure.message, "already has a pending task return");
+          assert.lengthOf((yield* services.tasks.list({ botId })).tasks, 1);
+          yield* services.tasks.cancel({ taskId: first.id });
+          const replacement = yield* services.tasks.start(
+            { botId, projectId: campaign, prompt: "Replacement." },
+            { returnToHomeFrom: home },
+          );
+          assert.isTrue(replacement.returnToHome);
+          assert.lengthOf((yield* services.tasks.list({ botId })).tasks, 2);
         }),
       );
     }).pipe(Effect.provide(layerDatabase)),

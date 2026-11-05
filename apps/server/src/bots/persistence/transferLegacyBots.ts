@@ -128,7 +128,13 @@ export const transferLegacyBots = Effect.fn("BotDatabase.transferLegacyBots")(fu
             const expected = targetColumns.filter(
               (row) =>
                 !(table === "bots" && head < 79 && row.name === "appearance_json") &&
-                !(table === "bot_tasks" && head < 83 && row.name === "allow_changes"),
+                !(table === "bot_tasks" && head < 83 && row.name === "allow_changes") &&
+                !(
+                  table === "bot_tasks" &&
+                  ["return_home_run_id", "return_home_message_id", "return_finished_at"].includes(
+                    row.name,
+                  )
+                ),
             );
             if (
               sourceColumns.length !== expected.length ||
@@ -158,6 +164,11 @@ export const transferLegacyBots = Effect.fn("BotDatabase.transferLegacyBots")(fu
               const row = { ...source };
               if (table === "bots" && head < 79) row.appearance_json = null;
               if (table === "bot_tasks" && head < 83) row.allow_changes = 0;
+              if (table === "bot_tasks") {
+                row.return_home_run_id = null;
+                row.return_home_message_id = null;
+                row.return_finished_at = null;
+              }
               const keys = targetColumns
                 .filter((column) => column.pk > 0)
                 .map((column) => column.name);

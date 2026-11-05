@@ -48,6 +48,10 @@ const BotToolParameters = Schema.Struct({
     description: "`start_task`: what the task should do, as the first message of its work thread.",
   }),
   title: BotStartTaskInput.fields.title,
+  returnToHome: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "`start_task`: opt in to one automatic successful-result turn in this project's Home, to reconcile and continue already authorized work. Default false. Only from that Home during a direct UI or external MCP input turn, never an automatic result turn. At most one pending return per Home input turn; a second opt-in is refused before launch. Newer direct Home input expires a pending return. A completed run does not prove fulfillment or grant new permissions. `cancel_task` also revokes a pending return.",
+  }),
   taskId: Schema.optional(BotTaskId),
   name: BotUpdateInput.fields.name,
   instructions: BotUpdateInput.fields.instructions,

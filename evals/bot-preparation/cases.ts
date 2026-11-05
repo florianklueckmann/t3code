@@ -58,6 +58,8 @@ export type PreparationCase =
       readonly trigger: "home";
       readonly prompt: string;
       readonly answerMust: ReadonlyArray<string>;
+      readonly returnToHome?: boolean;
+      readonly expectedFiles?: Readonly<Record<string, string>>;
       readonly existingRoutine?: { readonly title: string; readonly allowChanges: boolean };
       /** The routine the turn should set up, or none. */
       readonly routine: {
@@ -73,6 +75,49 @@ export type PreparationCase =
 const RESULT_SECTIONS = ["reminder", "recap", "open questions?", "proposal"];
 
 export const CASES: ReadonlyArray<PreparationCase> = [
+  // T3B-24: completion delivery continues authorized work without turning completion into authority.
+  {
+    id: "returns-task-and-continues",
+    kind: "new",
+    world: "with-records",
+    trigger: "home",
+    prompt:
+      "Use t3_bot start_task once to start a separate Bot task to read world/notes.md and report where the Sunless Gate lies. That worker must only read and report. Return its result to this Home automatically when it finishes; end your current turn after starting it, without waiting or polling. On the automatic Home result turn, continue my already authorized work by creating world/verified.md with exactly '# Verified\n\nThe Sunless Gate lies beneath the old mint.\n'. Use only this fixture project; do not use external services, create schedules, or start additional tasks.",
+    answerMust: [],
+    routine: null,
+    startsTask: true,
+    returnToHome: true,
+    expectedFiles: {
+      "world/verified.md": "# Verified\n\nThe Sunless Gate lies beneath the old mint.\n",
+    },
+  },
+  {
+    id: "returns-incomplete-task-honestly",
+    kind: "new",
+    world: "no-records",
+    trigger: "home",
+    prompt:
+      "Use t3_bot start_task once to start a separate Bot task to recap session 11 from sessions/. The worker must only read and report; if the record is absent it must say that the recap could not be completed. Return the result to this Home automatically and tell me what input is missing. End your current turn after starting it without waiting or polling. Do not invent a recap, claim my request was fulfilled just because a run ended, change files, start further tasks, access external services, or create schedules.",
+    answerMust: [
+      "(missing|no |not |couldn.t|unavailable|absent).*(log|record|session)|(log|record|session).*(missing|not |absent|unavailable)",
+    ],
+    routine: null,
+    startsTask: true,
+    returnToHome: true,
+  },
+  {
+    id: "task-without-home-return",
+    kind: "control",
+    world: "with-records",
+    trigger: "home",
+    prompt:
+      "Use t3_bot start_task once to start a separate Bot task to read world/notes.md and report where the Sunless Gate lies. End your turn after starting it; I will check the task's result myself. Do not start an automatic turn in this Home, wait, poll, change files, use external services, or create schedules.",
+    answerMust: [],
+    routine: null,
+    startsTask: true,
+    returnToHome: false,
+  },
+
   {
     id: "routine-allows-changes",
     kind: "new",

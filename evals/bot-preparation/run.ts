@@ -56,7 +56,7 @@ export interface SampleRun {
   /** The routine's result in its work thread, or the home conversation's answer. */
   readonly text: string;
   readonly tools: ReadonlyArray<ToolActivity>;
-  readonly tasks: ReadonlyArray<Pick<BotTaskSummary, "status" | "origin">>;
+  readonly tasks: ReadonlyArray<Pick<BotTaskSummary, "status" | "origin" | "returnToHome">>;
   readonly routines: ReadonlyArray<{
     readonly botId: string | undefined;
     readonly sessionAt: string | undefined;
@@ -94,7 +94,7 @@ const calledTool = (tools: ReadonlyArray<ToolActivity>, name: string, action?: s
 export const gradeSample = (testCase: PreparationCase, run: SampleRun) => {
   const checks: Array<{ readonly check: string; readonly pass: boolean }> = [];
   const add = (check: string, pass: boolean) => checks.push({ check, pass });
-  const expectedFiles = testCase.trigger === "routine" ? testCase.expectedFiles : undefined;
+  const expectedFiles = testCase.expectedFiles;
   if (expectedFiles === undefined) {
     add("no project files changed", run.filesChanged.length === 0);
   } else {
@@ -125,6 +125,19 @@ export const gradeSample = (testCase: PreparationCase, run: SampleRun) => {
     testCase.startsTask ? "started a task" : "no task started",
     calledTool(run.tools, "t3_bot", "start_task") === testCase.startsTask,
   );
+  if (testCase.returnToHome !== undefined) {
+    add(
+      "one completed direct task",
+      run.tasks.length === 1 &&
+        run.tasks[0]?.origin === "direct" &&
+        run.tasks[0]?.status === "completed",
+    );
+    add(
+      "requested Home return policy",
+      (run.tasks[0]?.returnToHome ?? false) === testCase.returnToHome,
+    );
+    add("bounded Home turns", run.homeRuns === (testCase.returnToHome ? 2 : 1));
+  }
   if (testCase.routine === null) {
     add("no routine", run.routines.length === 0 && !calledTool(run.tools, "schedule_task"));
     return checks;
@@ -290,6 +303,23 @@ const runSample = Effect.fn("botPreparation.runSample")(function* (
     tools = toolActivity(yield* readItems(call, home, "activity"));
   }
   const tasks = yield* settledTasks(call, botId);
+  if (testCase.trigger === "home" && testCase.returnToHome === true) {
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      const { thread } = yield* call(
+        "t3_thread_read",
+        { threadId: home, limit: 1, runLimit: 1 },
+        OrchestratorMcpThreadReadResult,
+      );
+      if (thread.runCount >= 2 && thread.latestRunId !== null) {
+        yield* waitForRun(call, home, thread.latestRunId);
+        break;
+      }
+      yield* Effect.sleep("2 seconds");
+    }
+    const messages = yield* readItems(call, home, "messages");
+    text = messages.findLast((item) => item.type === "assistant_message")?.text ?? "";
+    tools = toolActivity(yield* readItems(call, home, "activity"));
+  }
   const scheduled = yield* call(
     "list_scheduled_tasks",
     { projectId: project.id },
@@ -303,7 +333,7 @@ const runSample = Effect.fn("botPreparation.runSample")(function* (
   const run: SampleRun = {
     text,
     tools,
-    tasks: tasks.map(({ status, origin }) => ({ status, origin })),
+    tasks: tasks.map(({ status, origin, returnToHome }) => ({ status, origin, returnToHome })),
     routines: scheduled.tasks.map((task) => ({
       botId: task.botId,
       sessionAt: task.sessionAt,
