@@ -105,6 +105,27 @@ the card shows it as skipped. A routine also skips a run while its previous one
 is still working. You can pause, resume, run, edit or delete a routine in
 **Settings → Bots**, and cancel a running task from its card.
 
+## Working notes
+
+Each Bot keeps short working notes per project so it can pick up unfinished
+business after a restart or a compacted conversation. They sit under the
+project in **Settings → Bots** in four parts: **Open requests**, **Waiting on
+you** (its questions and proposals), **Decided** and **Context**. A proposal
+stays a proposal until you decide; only **Decided** records your choices.
+Running tasks show under **Active work** from their live status, not from the
+notes.
+
+The Bot updates the notes when unfinished business changes, not after every
+message. "3 messages since these notes were saved" tells you how much newer
+conversation the notes don't cover yet. Each item shows where it came from;
+a source that is gone or changed is marked unverified rather than dropped.
+
+**Edit** the notes one item per line. If the Bot saved in the meantime, your
+draft stays and you choose **Save mine** or **Discard mine**. **History** keeps
+recent versions, and **Restore** saves an earlier one as the newest version, so
+a restore can be undone too. An archived Bot's notes stay readable but can't be
+edited.
+
 ## Learning
 
 A Bot keeps what it learns per project by default, so a lesson from one campaign or

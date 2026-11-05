@@ -29,6 +29,7 @@ import { ThreadSettingsPickerScreen } from "../threads/ThreadSettingsSheet";
 import { reportBotFailure } from "../bots/reportBotFailure";
 import { useSelectWorkspaceDetail } from "../workspace/useSelectWorkspaceDetail";
 import { useBotEditor, startBotEditor, startNewBotEditor } from "./bot-editor";
+import { BotContinuationSection } from "./BotContinuationSection";
 import { BotLearningSection } from "./BotLearningSection";
 import { BotRoutinesSection } from "./BotRoutinesSection";
 import {
@@ -423,6 +424,7 @@ function BotForm({
   const archived = summaries.data?.bots.find((bot) => bot.id === draft.botId)?.archivedAt != null;
   const config = useEnvironmentServerConfig(environmentId);
   const routinesSupported = config?.environment.capabilities.botRoutines === true;
+  const notesSupported = config?.environment.capabilities.botContinuation === true;
   const canOperate = useAtomValue(serverEnvironment.updateBot.permissionAtom(environmentId));
   const projects = useProjects().filter((project) => project.environmentId === environmentId);
   const projectTitle = (projectId: ProjectId) =>
@@ -624,6 +626,19 @@ function BotForm({
                 setDraft((current) => detachBotProjectDraft(current, baseline, project.projectId))
               }
             />
+            {notesSupported &&
+            project.attached &&
+            baseline.projects.some(
+              (saved) => saved.projectId === project.projectId && saved.attached,
+            ) ? (
+              <BotContinuationSection
+                environmentId={environmentId}
+                botId={draft.botId}
+                projectId={project.projectId}
+                title={`${projectTitle(project.projectId)} · Working notes`}
+                disabled={readOnly}
+              />
+            ) : null}
             {routinesSupported &&
             !archived &&
             project.attached &&
