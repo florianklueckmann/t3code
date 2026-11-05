@@ -192,6 +192,18 @@ it.effect(
       const notes = yield* BotContinuation.BotContinuation;
       const initial = yield* notes.get(scope);
       assert.equal(initial.newerInputs.count, 1);
+      assert.isAtMost(initial.basis!.token.length, 64);
+      assert.isTrue(
+        yield* notes
+          .save(
+            {
+              ...userSave("altered-token", null),
+              basis: { ...initial.basis!, token: `${initial.basis!.token}x` },
+            },
+            { kind: "bot", threadId: home },
+          )
+          .pipe(Effect.isFailure),
+      );
       yield* input(2, "Also keep a Harbor checklist.");
       yield* input(3, "New queued request", {
         run: "run-2",
