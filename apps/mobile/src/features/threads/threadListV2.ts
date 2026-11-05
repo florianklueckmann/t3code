@@ -296,6 +296,33 @@ export function resolveThreadListV2Status(
   return "ready";
 }
 
+/** The state a thread row badges, or null when the row shows only its time. */
+export type ThreadListV2Attention = Exclude<ThreadListV2Status, "waiting" | "ready"> | "done";
+
+export function resolveThreadListV2Attention(
+  thread: Parameters<typeof resolveThreadListV2Status>[0] &
+    Parameters<typeof threadHasUnseenCompletion>[0],
+): ThreadListV2Attention | null {
+  const status = resolveThreadListV2Status(thread);
+  if (status === "ready") return threadHasUnseenCompletion(thread) ? "done" : null;
+  return status === "waiting" ? null : status;
+}
+
+const THREAD_LIST_V2_ATTENTION_URGENCY: Record<ThreadListV2Attention, number> = {
+  approval: 4,
+  input: 4,
+  request: 4,
+  failed: 3,
+  limited: 3,
+  done: 2,
+  working: 1,
+};
+
+/** Higher needs the user sooner: a request, then a failure, then unread work, then work. */
+export function threadListV2AttentionUrgency(attention: ThreadListV2Attention | null): number {
+  return attention === null ? 0 : THREAD_LIST_V2_ATTENTION_URGENCY[attention];
+}
+
 function parseTimestampMs(isoDate: string): number {
   const parsed = Date.parse(isoDate);
   return Number.isNaN(parsed) ? 0 : parsed;

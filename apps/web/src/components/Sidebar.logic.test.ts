@@ -8,6 +8,7 @@ import { AsyncResult } from "effect/reactivity";
 import {
   shouldCreateNewThreadInCurrentProject,
   deleteSelectedThreadEntries,
+  filterSidebarV2VisibleThreads,
   getFallbackThreadIdAfterDelete,
   hasUnseenCompletion,
   resolveSidebarRowThreadId,
@@ -192,6 +193,19 @@ function makeLatestRun(overrides?: {
       overrides?.completedAt !== undefined ? overrides.completedAt : "2026-03-09T10:05:00.000Z",
   };
 }
+
+describe("filterSidebarV2VisibleThreads", () => {
+  it("leaves Bot home conversations to the Bot rail and keeps their work threads", () => {
+    const threads = [
+      makeThreadFixture({ id: ThreadId.make("bot-home:companion:project-test") }),
+      makeThreadFixture({ id: ThreadId.make("bot-work:bot-task:1") }),
+      makeThreadFixture({ id: ThreadId.make("thread-plain") }),
+    ];
+    expect(
+      filterSidebarV2VisibleThreads(threads, null, new Set()).map((thread) => thread.id),
+    ).toEqual(["bot-work:bot-task:1", "thread-plain"]);
+  });
+});
 
 describe("orderItemsByPreferredIds", () => {
   it("resolves legacy preference aliases without materializing project state", () => {

@@ -1,5 +1,6 @@
 import {
   BOT_TASK_TERMINAL_STATUSES,
+  BOT_WORK_THREAD_ID_PREFIX,
   type BotCancelTaskInput,
   BotError,
   type BotId,
@@ -343,7 +344,8 @@ const make = Effect.gen(function* () {
     bot_id: input.botId,
     project_id: input.projectId,
     home_thread_id: input.homeThreadId,
-    work_thread_id: input.skipReason === undefined ? `bot-work:${input.taskId}` : null,
+    work_thread_id:
+      input.skipReason === undefined ? `${BOT_WORK_THREAD_ID_PREFIX}${input.taskId}` : null,
     origin: input.origin,
     title: input.title,
     prompt: input.prompt,

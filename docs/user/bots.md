@@ -17,9 +17,15 @@ The conversation title then works like any other thread's: your first message
 gives it a generated title, and you can rename it. Renaming the Bot does not
 change the title. The conversation header always shows the Bot's current name.
 
-To open a conversation, choose **Open conversation** next to the project in
-**Settings → Bots**, or search the command palette for the Bot or project name
-and pick **Open \<Bot\> in \<project\>**. Both work on web, desktop and mobile.
+Your Bots sit in a column left of the thread list, on mobile in a row above
+it. Click a Bot to open its conversation: the one that needs you, otherwise the
+one you used last. Right-click it (on mobile, long-press) to pick another
+project or open its settings. A dot shows when a conversation needs you, is
+done, failed or is working. Bot conversations live only there, not in the
+thread list; threads a Bot works on for a task show its figure in the list. A
+Bot without a project opens its settings. You can also choose **Open
+conversation** next to the project in **Settings → Bots**, or search the command
+palette for the Bot or project name and pick **Open \<Bot\> in \<project\>**.
 
 Changes to a Bot's instructions, guidance or sources apply from its next turn,
 including in conversations that are already running. Changing its model

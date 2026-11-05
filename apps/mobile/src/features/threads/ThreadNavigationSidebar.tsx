@@ -70,6 +70,7 @@ import {
 } from "./threadListV2";
 import { useSelectWorkspaceDetail } from "../layout/workspace/useSelectWorkspaceDetail";
 import { NativeScrollView } from "../../native/NativeScrollViewMarker";
+import { BotRail } from "../bots/BotRail";
 
 type SidebarListItem =
   | ThreadListV2ListItem
@@ -552,6 +553,7 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
       }}
     />
   );
+  const botRail = <BotRail threads={threads} projects={projects} pane="sidebar" />;
   const listEmpty = (
     <Text
       className={
@@ -607,6 +609,7 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
                 scrollEventThrottle={16}
                 showsVerticalScrollIndicator={false}
                 style={styles.threadList}
+                ListHeaderComponent={botRail}
                 ListEmptyComponent={listEmpty}
               />
             </GestureDetector>
@@ -631,8 +634,11 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
           overflow: "hidden",
         }}
       >
-        {listItems.length === 0 ? (
-          <View className="flex-1 items-center justify-center">{listEmpty}</View>
+        {Platform.OS === "android" && listItems.length === 0 ? (
+          <View className="flex-1 pt-1.5">
+            {botRail}
+            <View className="flex-1 items-center justify-center">{listEmpty}</View>
+          </View>
         ) : (
           <SwipeableScrollGateProvider enabled={swipeEnabled}>
             <GestureDetector gesture={sidebarScrollGesture}>
@@ -660,6 +666,7 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
                 scrollEventThrottle={16}
                 showsVerticalScrollIndicator={false}
                 style={styles.threadList}
+                ListHeaderComponent={botRail}
                 ListEmptyComponent={listEmpty}
               />
             </GestureDetector>

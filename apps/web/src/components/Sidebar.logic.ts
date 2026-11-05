@@ -18,6 +18,7 @@ import {
 import { foldSearchQuery, rankSearchItems, scoreThreadSearch } from "@t3tools/shared/paletteSearch";
 import {
   isListedThreadLineage,
+  mayBeBotHomeThreadId,
   type ContextMenuItem,
   type EnvironmentId,
   type ThreadId,
@@ -603,6 +604,8 @@ export function filterSidebarV2VisibleThreads<
   return threads.filter(
     (thread) =>
       thread.archivedAt === null &&
+      // Bot home conversations live in the Bot rail instead.
+      !mayBeBotHomeThreadId(thread.id) &&
       !isShownUnderParent(
         { environmentId: thread.environmentId, threadId: thread.id },
         thread.lineage,
