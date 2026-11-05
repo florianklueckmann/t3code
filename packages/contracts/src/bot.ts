@@ -392,6 +392,7 @@ export type BotTaskSummary = typeof BotTaskSummary.Type;
 export const BotTaskListInput = Schema.Struct({
   botId: Schema.optional(BotId),
   projectId: Schema.optional(ProjectId),
+  workThreadId: Schema.optional(ThreadId),
 });
 export type BotTaskListInput = typeof BotTaskListInput.Type;
 
