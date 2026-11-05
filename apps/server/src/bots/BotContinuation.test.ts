@@ -455,6 +455,17 @@ it.effect(
           })
           .pipe(Effect.isFailure),
       );
+      assert.isTrue(
+        yield* notes
+          .save(
+            userSave("multiline", null, {
+              ...empty(),
+              requests: [{ text: "First request\nSecond request" }],
+            }),
+            { kind: "user" },
+          )
+          .pipe(Effect.isFailure),
+      );
       const result = yield* notes.save(
         userSave("bounded", null, {
           ...empty(),
@@ -477,6 +488,25 @@ it.effect(
       assert.isAtMost(injection.length, 8000);
       assert.equal(injection.split("x".repeat(400)).length - 1, 10);
       assert.include(injection, "omitted");
+      const historical = {
+        ...extreme,
+        note: {
+          ...result.view.note,
+          requests: Array.from({ length: 20 }, () => ({
+            text: "x".repeat(200),
+            refs: [
+              {
+                kind: "task" as const,
+                taskId: BotTaskId.make("missing"),
+                status: null,
+                resultRunId: null,
+                availability: "historical_unverified" as const,
+              },
+            ],
+          })),
+        },
+      };
+      assert.isAtMost(BotContinuation.continuationInjection(historical).length, 8000);
     }).pipe(Effect.provide(services.pipe(Layer.provideMerge(database)))),
 );
 
