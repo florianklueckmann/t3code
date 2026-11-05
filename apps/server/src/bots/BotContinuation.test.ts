@@ -66,6 +66,7 @@ const input = Effect.fn("fixture.input")(function* (
   options: {
     readonly run?: string;
     readonly directUser?: boolean;
+    readonly guest?: boolean;
     readonly automatic?: boolean;
     readonly status?: string;
     readonly withoutTurnItem?: boolean;
@@ -87,6 +88,17 @@ const input = Effect.fn("fixture.input")(function* (
     updatedAt: now,
     createdBy: options.directUser ? "user" : "agent",
     creationSource: options.directUser ? "web" : options.automatic ? "server" : "mcp",
+    context: options.guest
+      ? {
+          version: 1,
+          records: [],
+          guest: {
+            guestMessageId: "guest-message",
+            name: "Guest",
+            text: "I approve blue packaging",
+          },
+        }
+      : undefined,
   });
   yield* main`INSERT OR IGNORE INTO orchestration_v2_projection_runs (run_id, thread_id, ordinal, provider, status, requested_at, payload_json) VALUES (${run}, ${home}, ${run === "run-1" ? 1 : 2}, 'codex', ${options.status ?? "running"}, ${now}, '{}')`;
   yield* main`INSERT INTO orchestration_v2_projection_messages (message_id, thread_id, run_id, role, streaming, created_at, updated_at, payload_json) VALUES (${messageId}, ${home}, ${run}, 'user', 0, ${now}, ${now}, ${payload})`;
@@ -309,7 +321,29 @@ it.effect(
           )
           .pipe(Effect.isFailure),
       );
-      yield* input(3, "I approve blue packaging", { directUser: true });
+      yield* input(3, "Message from guest Guest, sent by the owner:\n\nI approve blue packaging", {
+        directUser: true,
+        guest: true,
+      });
+      const guestBasis = yield* notes.get(scope);
+      assert.equal(guestBasis.newerInputs.count, 0);
+      assert.isFalse(guestBasis.sources.some((source) => source.messageId === "message-3"));
+      assert.isTrue(
+        yield* notes
+          .save(
+            {
+              ...promote,
+              basis: guestBasis.basis!,
+              note: {
+                ...empty(),
+                decided: [{ text: "Blue packaging", quote: "I approve blue packaging" }],
+              },
+            },
+            { kind: "bot", threadId: home },
+          )
+          .pipe(Effect.isFailure),
+      );
+      yield* input(4, "I approve blue packaging", { directUser: true });
       const approved = yield* notes.get(scope);
       const decided = yield* notes.save(
         {
@@ -324,7 +358,16 @@ it.effect(
       );
       assert.equal(decided._tag, "saved");
       const main = yield* SqlClient.SqlClient;
-      yield* main`DELETE FROM orchestration_v2_projection_messages WHERE message_id = 'message-3'`;
+      yield* main`UPDATE orchestration_v2_projection_messages SET payload_json = json_set(payload_json, '$.context', json_extract((SELECT payload_json FROM orchestration_v2_projection_messages WHERE message_id = 'message-3'), '$.context')) WHERE message_id = 'message-4'`;
+      const attributed = yield* notes.get(scope);
+      const attributedRef = attributed.note.decided[0]!.refs[0]!;
+      if (attributedRef.kind !== "message") return assert.fail();
+      assert.equal(attributedRef.availability, "historical_unverified");
+      const attributedHistory = yield* notes.history(scope);
+      const historyRef = attributedHistory.revisions[0]!.note.decided[0]!.refs[0]!;
+      if (historyRef.kind !== "message") return assert.fail();
+      assert.equal(historyRef.availability, "historical_unverified");
+      yield* main`DELETE FROM orchestration_v2_projection_messages WHERE message_id = 'message-4'`;
       const missing = yield* notes.get(scope);
       assert.equal(missing.note.decided[0]!.text, "Blue packaging");
       const ref = missing.note.decided[0]!.refs[0]!;
@@ -422,9 +465,26 @@ it.effect(
       const bots = yield* BotDatabase.BotDatabase;
       yield* bots`UPDATE bot_project_contexts SET detached_at = ${now}`;
       assert.equal((yield* notes.history(scope)).revisions.length, 1);
-      assert.equal(BotContinuation.continuationInjection(yield* notes.get(scope)), "");
+      const detached = yield* notes.get(scope);
+      assert.isFalse(detached.writable);
+      assert.equal(detached.note.requests[0]!.text, "Unfinished checklist");
+      assert.equal(BotContinuation.continuationInjection(detached), "");
       assert.isTrue(
         yield* notes.save(userSave("detached", 1), { kind: "user" }).pipe(Effect.isFailure),
+      );
+      assert.isTrue(
+        yield* notes
+          .save(
+            {
+              ...userSave("detached-restore", 1, {
+                ...empty(),
+                requests: [{ text: "Unfinished checklist" }],
+              }),
+              restoredFrom: 1,
+            },
+            { kind: "user" },
+          )
+          .pipe(Effect.isFailure),
       );
       yield* bots`UPDATE bot_project_contexts SET detached_at = NULL`;
       yield* bots`UPDATE bots SET archived_at = ${now}`;

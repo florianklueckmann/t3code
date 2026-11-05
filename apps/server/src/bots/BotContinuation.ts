@@ -177,6 +177,7 @@ const make = Effect.gen(function* () {
     AND json_extract(m.payload_json, '$.delegatedCompletion') IS NULL
     AND json_extract(m.payload_json, '$.senderThreadId') IS NULL
     AND json_extract(m.payload_json, '$.scheduledTaskId') IS NULL
+    AND json_extract(m.payload_json, '$.context.guest') IS NULL
     AND ((json_extract(m.payload_json, '$.createdBy') = 'user' AND json_extract(m.payload_json, '$.creationSource') IN ('web', 'mobile'))
       OR (json_extract(m.payload_json, '$.createdBy') = 'agent' AND json_extract(m.payload_json, '$.creationSource') = 'mcp'))
     AND (lower(trim(json_extract(m.payload_json, '$.text'))) != '/compact' OR json_array_length(json_extract(m.payload_json, '$.attachments')) > 0)
@@ -238,6 +239,7 @@ const make = Effect.gen(function* () {
         row?.run_status !== "rolled_back" &&
         !(row?.run_status === "cancelled" && row.input_intent === "queued_turn") &&
         isDirectHomeInput(source) &&
+        source.context?.guest === undefined &&
         !isCompactionCommandMessage(source) &&
         hash(source.text) === ref.digest &&
         ref.directUser === (source.createdBy === "user") &&
