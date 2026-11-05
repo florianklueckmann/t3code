@@ -35,6 +35,18 @@ describe("RPC authorization scopes", () => {
     expect(new Set(Object.keys(RPC_REQUIRED_SCOPES))).toEqual(new Set(WsRpcGroup.requests.keys()));
   });
 
+  it("allows continuation inspection with read and guards user edits with operate", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.botsGetContinuation)).toBe(
+      AuthOrchestrationReadScope,
+    );
+    expect(requiredScopeForRpcMethod(WS_METHODS.botsListContinuationRevisions)).toBe(
+      AuthOrchestrationReadScope,
+    );
+    expect(requiredScopeForRpcMethod(WS_METHODS.botsSaveContinuation)).toBe(
+      AuthOrchestrationOperateScope,
+    );
+  });
+
   it("keeps webhook delivery logs, which hold request bodies, behind operate scope", () => {
     for (const method of [
       WS_METHODS.scheduledTasksListWebhookDeliveries,
