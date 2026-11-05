@@ -1,5 +1,6 @@
 import {
   type BotContinuationScope,
+  type BotContinuationReadInput,
   type BotContinuationView,
   type BotContinuationHistory,
   type EnvironmentId,
@@ -1248,7 +1249,7 @@ export function createServerEnvironmentAtoms<R, E>(
     idleTtlMs: 0,
   });
   const botContinuationFamily = Atom.family((key: string) => {
-    const [environmentId, input] = JSON.parse(key) as [EnvironmentId, BotContinuationScope];
+    const [environmentId, input] = JSON.parse(key) as [EnvironmentId, BotContinuationReadInput];
     const query = botContinuationQuery({ environmentId, input });
     return Atom.readable(
       (get): AsyncResult.AsyncResult<BotContinuationView | null, unknown> => {
@@ -1436,7 +1437,7 @@ export function createServerEnvironmentAtoms<R, E>(
     }) => botTaskResultFamily(JSON.stringify([target.environmentId, target.input])),
     botContinuation: (target: {
       readonly environmentId: EnvironmentId;
-      readonly input: BotContinuationScope;
+      readonly input: BotContinuationReadInput;
     }) => botContinuationFamily(JSON.stringify([target.environmentId, target.input])),
     botContinuationHistory: (target: {
       readonly environmentId: EnvironmentId;
