@@ -383,6 +383,12 @@ export interface OrchestratorV2Shape {
   readonly dispatch: (
     command: OrchestrationV2ServerCommand,
   ) => Effect.Effect<OrchestratorV2DispatchResult, OrchestratorV2Error>;
+  readonly withBotResultDelivery: <A, E>(
+    command: Extract<OrchestrationV2ServerCommand, { type: "bot-task.result.deliver" }>,
+    use: (
+      commit: Effect.Effect<OrchestratorV2DispatchResult, OrchestratorV2Error>,
+    ) => Effect.Effect<A, E>,
+  ) => Effect.Effect<A, E>;
   readonly autoArmLimitRecovery: (input: {
     readonly commandId: CommandId;
     readonly threadId: ThreadId;
@@ -14473,6 +14479,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       return effectOutbox.awaitSettled(`effect:restart-continuation:${run.id}`).pipe(Effect.ignore);
     }),
     dispatch: dispatchWithReceipt,
+    withBotResultDelivery: Effect.fn("OrchestratorV2.withBotResultDelivery")(function <A, E>(
+      command: Extract<OrchestrationV2ServerCommand, { type: "bot-task.result.deliver" }>,
+      use: (
+        commit: Effect.Effect<OrchestratorV2DispatchResult, OrchestratorV2Error>,
+      ) => Effect.Effect<A, E>,
+    ) {
+      return threadDispatch.withLock(command.threadId, use(dispatchWithReceiptEffect(command)));
+    }),
     autoArmLimitRecovery: Effect.fn("OrchestratorV2.autoArmLimitRecovery")(function (input) {
       return threadDispatch.withLock(
         input.threadId,

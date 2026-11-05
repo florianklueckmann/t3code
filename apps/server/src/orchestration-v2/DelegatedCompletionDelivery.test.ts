@@ -573,7 +573,7 @@ it.layer(layerTest)("delegated completion delivery repairs", (it) => {
         messageId: MessageId.make(`bot-return-message:${state}`),
         text: "Saved work result.",
       };
-      const result = yield* orchestrator.dispatch(command);
+      const result = yield* orchestrator.withBotResultDelivery(command, (commit) => commit);
       const delivered = yield* orchestrator.getThreadProjection(threadId);
       const messages = delivered.messages.filter((message) => message.id === command.messageId);
       assert.lengthOf(messages, state === "idle" || state === "external-mcp" ? 1 : 0);
