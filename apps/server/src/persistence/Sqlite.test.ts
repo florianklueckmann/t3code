@@ -12,6 +12,7 @@ import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlError from "effect/sql/SqlError";
 import { vi } from "vite-plus/test";
@@ -20,6 +21,8 @@ import * as ServerConfig from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as ServerOwnership from "../serverOwnership.ts";
 import { migrationManifest, runMigrations } from "./Migrations.ts";
+import * as BotDatabase from "../bots/persistence/BotDatabase.ts";
+import DelegatedRecoveryIndexes from "./Migrations/079_DelegatedRecoveryIndexes.ts";
 import * as SqlitePersistence from "./Sqlite.ts";
 
 const workerData = vi.hoisted((): Array<unknown> => []);
@@ -34,6 +37,86 @@ vi.mock("node:worker_threads", async (importOriginal) => {
   }
   return { ...actual, Worker: RecordedWorker };
 });
+
+it.effect.each([0, 78, 79])(
+  "starts isolated persistence from migration %s and preserves canonical 79 across reopen",
+  (previousMigrationId) => {
+    const tempDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-sqlite-79-"));
+    const dbPath = NodePath.join(tempDir, "statev2.sqlite");
+    const persistence = () =>
+      SqlitePersistence.layerFromPath(dbPath).pipe(Layer.provide(NodeServices.layer));
+    const snapshot = Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      return {
+        history: yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`,
+        indexes: yield* sql`
+          SELECT name, sql, rootpage FROM sqlite_schema
+          WHERE name IN ('orchestration_v2_projection_threads_subagent_result_idx',
+                         'orchestration_v2_projection_runs_delegated_delivery_idx')
+          ORDER BY name
+        `,
+        data: yield* sql`SELECT * FROM migration_probe`,
+      };
+    });
+    const seed = Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`CREATE TABLE migration_probe(id TEXT PRIMARY KEY, payload TEXT NOT NULL)`;
+      yield* sql`INSERT INTO migration_probe VALUES ('preserved', 'invalid JSON')`;
+    });
+
+    return Effect.gen(function* () {
+      const before =
+        previousMigrationId === 0
+          ? undefined
+          : yield* Effect.gen(function* () {
+              yield* runMigrations({ toMigrationInclusive: 78 });
+              if (previousMigrationId === 79) {
+                yield* Migrator.make({})({
+                  loader: Migrator.fromRecord({
+                    "79_DelegatedRecoveryIndexes": DelegatedRecoveryIndexes,
+                  }),
+                });
+              }
+              yield* seed;
+              return yield* snapshot;
+            }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: dbPath })));
+
+      const first = yield* Effect.gen(function* () {
+        if (previousMigrationId === 0) yield* seed;
+        const current = yield* snapshot;
+        assert.lengthOf(current.history, migrationManifest.length);
+        assert.lengthOf(current.indexes, 2);
+        assert.deepStrictEqual(current.data, [{ id: "preserved", payload: "invalid JSON" }]);
+        if (previousMigrationId === 79) assert.deepStrictEqual(current.history.slice(0, 79), before?.history);
+        if (before)
+          assert.deepStrictEqual(current.history.slice(0, before.history.length), before.history);
+        const bots = yield* BotDatabase.BotDatabase;
+        const botHistory = yield* bots`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
+        assert.isAtLeast(botHistory.length, 8);
+        return { ...current, botHistory };
+      }).pipe(Effect.provide(persistence()));
+
+      for (let reopen = 0; reopen < 2; reopen++) {
+        yield* Effect.gen(function* () {
+          assert.deepStrictEqual(yield* runMigrations(), []);
+          const bots = yield* BotDatabase.BotDatabase;
+          assert.deepStrictEqual(
+            {
+              ...(yield* snapshot),
+              botHistory: yield* bots`SELECT * FROM effect_sql_migrations ORDER BY migration_id`,
+            },
+            first,
+          );
+          const sql = yield* SqlClient.SqlClient;
+          assert.deepStrictEqual(yield* sql`PRAGMA integrity_check`, [{ integrity_check: "ok" }]);
+          assert.deepStrictEqual(yield* bots`PRAGMA integrity_check`, [{ integrity_check: "ok" }]);
+        }).pipe(Effect.provide(persistence()));
+      }
+    }).pipe(
+      Effect.ensuring(Effect.sync(() => NodeFS.rmSync(tempDir, { recursive: true, force: true }))),
+    );
+  },
+);
 
 // Linux names an open, already-deleted file "<path> (deleted)" in /proc/self/fd.
 // SQLite names its temp files "etilqs_*" and, without TMPDIR, puts them in

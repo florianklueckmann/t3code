@@ -29,6 +29,100 @@ const v2TableCount = Effect.gen(function* () {
 });
 
 describe("runMigrations", () => {
+  it.effect.each(["fresh", 78] as const)(
+    "adds delegated recovery indexes from %s without changing projection data",
+    (previousMigrationId) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* runMigrations({
+          toMigrationInclusive: previousMigrationId === "fresh" ? undefined : previousMigrationId,
+        });
+        const beforeHistory = yield* sql`
+        SELECT * FROM effect_sql_migrations WHERE migration_id <= 78 ORDER BY migration_id
+      `;
+        const payloads = [
+          "invalid JSON",
+          "{}",
+          JSON.stringify({
+            lineage: { relationshipToParent: "subagent", parentThreadId: "parent" },
+            forkedFrom: { type: "node" },
+            delegatedCompletion: { delivery: {} },
+          }),
+          JSON.stringify({
+            lineage: { relationshipToParent: "fork", parentThreadId: "parent" },
+            forkedFrom: { type: "node" },
+            delegatedCompletion: { delivery: "pending" },
+          }),
+          JSON.stringify({
+            lineage: { relationshipToParent: "subagent" },
+            forkedFrom: { type: "node" },
+            delegatedCompletion: { delivery: null },
+          }),
+          JSON.stringify({
+            lineage: { relationshipToParent: "subagent", parentThreadId: "parent" },
+            forkedFrom: { type: "thread" },
+          }),
+        ];
+        for (const [id, payload] of payloads.entries()) {
+          yield* sql`
+          INSERT INTO orchestration_v2_projection_threads
+            (thread_id, project_id, title, default_provider, runtime_mode, interaction_mode,
+             created_at, updated_at, payload_json)
+          VALUES (${`thread-${id}`}, 'project', 'title', 'codex', 'full-access', 'default',
+                  '2026-11-05', '2026-11-05', ${payload})
+        `;
+          yield* sql`
+          INSERT INTO orchestration_v2_projection_runs
+            (run_id, thread_id, ordinal, provider, status, requested_at, payload_json)
+          VALUES (${`run-${id}`}, ${`thread-${id}`}, 1, 'codex', 'completed', '2026-11-05', ${payload})
+        `;
+        }
+        const threads =
+          yield* sql`SELECT * FROM orchestration_v2_projection_threads ORDER BY thread_id`;
+        const runs = yield* sql`SELECT * FROM orchestration_v2_projection_runs ORDER BY run_id`;
+
+        yield* runMigrations();
+        assert.deepStrictEqual(
+          yield* sql`
+          SELECT thread_id, json_extract(payload_json, '$.lineage.parentThreadId') AS parent_id
+          FROM orchestration_v2_projection_threads
+          INDEXED BY orchestration_v2_projection_threads_subagent_result_idx
+          WHERE CASE WHEN json_valid(payload_json) THEN
+            json_extract(payload_json, '$.lineage.relationshipToParent') = 'subagent'
+            AND json_extract(payload_json, '$.lineage.parentThreadId') IS NOT NULL
+            AND json_extract(payload_json, '$.forkedFrom.type') = 'node'
+            ELSE 0 END
+        `,
+          [{ thread_id: "thread-2", parent_id: "parent" }],
+        );
+        assert.deepStrictEqual(
+          yield* sql`
+          SELECT thread_id FROM orchestration_v2_projection_runs
+          INDEXED BY orchestration_v2_projection_runs_delegated_delivery_idx
+          WHERE CASE WHEN json_valid(payload_json)
+            THEN json_type(payload_json, '$.delegatedCompletion.delivery') = 'object'
+            ELSE 0 END
+        `,
+          [{ thread_id: "thread-2" }],
+        );
+        assert.deepStrictEqual(yield* history, migrationManifest);
+        assert.deepStrictEqual(
+          yield* sql`SELECT * FROM effect_sql_migrations WHERE migration_id <= 78 ORDER BY migration_id`,
+          beforeHistory,
+        );
+        assert.deepStrictEqual(yield* runMigrations(), []);
+        assert.deepStrictEqual(yield* runMigrations(), []);
+        assert.deepStrictEqual(
+          yield* sql`SELECT * FROM orchestration_v2_projection_threads ORDER BY thread_id`,
+          threads,
+        );
+        assert.deepStrictEqual(
+          yield* sql`SELECT * FROM orchestration_v2_projection_runs ORDER BY run_id`,
+          runs,
+        );
+      }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
   it.effect("keeps the real upstream migration at 78 and Bot schema out of T3", () =>
     Effect.gen(function* () {
       assert.deepStrictEqual(
@@ -47,22 +141,23 @@ describe("runMigrations", () => {
       }
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
-  it.effect("refuses to start when another migration took a V2 id", () =>
+  it.effect.each([55, 79])("refuses to start when another migration took V2 id %s", (id) =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* runMigrations({ toMigrationInclusive: 54 });
+      yield* runMigrations({ toMigrationInclusive: id - 1 });
       yield* sql`
-        INSERT INTO effect_sql_migrations (migration_id, name) VALUES (55, 'FutureMainMigration')
+        INSERT INTO effect_sql_migrations (migration_id, name) VALUES (${id}, 'FutureMainMigration')
       `;
       const before = yield* history;
 
-      assert.deepStrictEqual(yield* runMigrations({ toMigrationInclusive: 54 }), []);
+      assert.deepStrictEqual(yield* runMigrations({ toMigrationInclusive: id - 1 }), []);
       const exit = yield* Effect.exit(runMigrations());
 
       assert.isTrue(Exit.isFailure(exit));
-      assert.include(String(exit), "55_OrchestrationV2 (recorded: FutureMainMigration)");
+      const name = migrationManifest.find(([migrationId]) => migrationId === id)?.[1];
+      assert.include(String(exit), `${id}_${name} (recorded: FutureMainMigration)`);
       assert.deepStrictEqual(yield* history, before);
-      assert.strictEqual(yield* v2TableCount, 0);
+      if (id === 55) assert.strictEqual(yield* v2TableCount, 0);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 

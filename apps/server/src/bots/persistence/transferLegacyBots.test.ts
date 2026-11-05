@@ -35,7 +35,7 @@ const fixture = Effect.gen(function* () {
 });
 
 it.effect.each([78, 79, 80, 81, 82, 83])(
-  "preserves every legacy row at fork head %s and runs real upstream 078",
+  "preserves every legacy row at fork head %s and runs real upstream migrations",
   (head) =>
     Effect.gen(function* () {
       const f = yield* fixture;
@@ -93,6 +93,7 @@ it.effect.each([78, 79, 80, 81, 82, 83])(
         yield* main`CREATE INDEX IF NOT EXISTS idx_orch_events_correlation_id ON orchestration_events(correlation_id)`;
         assert.deepStrictEqual(yield* runMigrations(), [
           [78, "DropOrchestrationEventCorrelationIndex"],
+          [79, "DelegatedRecoveryIndexes"],
         ]);
         assert.deepStrictEqual(
           yield* main`SELECT name FROM sqlite_master WHERE name = 'idx_orch_events_correlation_id'`,
@@ -102,14 +103,15 @@ it.effect.each([78, 79, 80, 81, 82, 83])(
         const run = Migrator.make({});
         yield* run({
           loader: Migrator.fromRecord({
-            "79_TestLaterUpstream": main`CREATE TABLE later_upstream(value TEXT)`,
+            "80_TestLaterUpstream": main`CREATE TABLE later_upstream(value TEXT)`,
           }),
         });
         assert.deepStrictEqual(
           yield* main`SELECT migration_id, name FROM effect_sql_migrations WHERE migration_id >= 78 ORDER BY migration_id`,
           [
             { migration_id: 78, name: "DropOrchestrationEventCorrelationIndex" },
-            { migration_id: 79, name: "TestLaterUpstream" },
+            { migration_id: 79, name: "DelegatedRecoveryIndexes" },
+            { migration_id: 80, name: "TestLaterUpstream" },
           ],
         );
       }).pipe(Effect.provide(f.both));
