@@ -389,11 +389,19 @@ function webhookEndpoint(
 
 // Runs per task row; list and lookup operations already own the span.
 const decodeRow = Effect.fnUntraced(
-  function* (row: ScheduledTaskRow, origin: WebhookOrigin | null = null) {
+  function* (
+    row: ScheduledTaskRow,
+    origin: WebhookOrigin | null = null,
+    cached?: {
+      readonly routine: Effect.Success<
+        ReturnType<BotRoutineStore.BotRoutineStore["Service"]["get"]>
+      >;
+    },
+  ) {
     const schedule = yield* decodeScheduleJson(row.schedule_json);
     const webhook = schedule.type === "webhook" ? webhookEndpoint(row, origin) : undefined;
     const routines = yield* BotRoutineStore.BotRoutineStore;
-    const routine = yield* routines.get(row.task_id);
+    const routine = cached === undefined ? yield* routines.get(row.task_id) : cached.routine;
     const workspaceStrategy = yield* decodeWorkspaceStrategyJson(row.workspace_strategy_json);
     const modelSelection = yield* decodeModelSelectionJson(row.model_selection_json);
     return yield* decodeTask({
@@ -430,7 +438,7 @@ const decodeRow = Effect.fnUntraced(
           }),
     });
   },
-  (effect, row, _origin?) =>
+  (effect, row, _origin?, _cached?) =>
     effect.pipe(
       Effect.mapError((cause) => {
         const taskId = decodeTaskId(row.task_id);
@@ -480,8 +488,14 @@ export const layer = Layer.effect(
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     const routines = yield* BotRoutineStore.BotRoutineStore;
-    const decode = (row: ScheduledTaskRow, origin?: WebhookOrigin | null) =>
-      decodeRow(row, origin).pipe(Effect.provideService(BotRoutineStore.BotRoutineStore, routines));
+    const decode = (
+      row: ScheduledTaskRow,
+      origin?: WebhookOrigin | null,
+      cached?: Parameters<typeof decodeRow>[2],
+    ) =>
+      decodeRow(row, origin, cached).pipe(
+        Effect.provideService(BotRoutineStore.BotRoutineStore, routines),
+      );
     const random = yield* SecureRandom.SecureRandom;
     const digest = yield* Digest.Digest;
     const mac = yield* Mac.Mac;
@@ -1149,13 +1163,19 @@ export const layer = Layer.effect(
         const lastRunStatus = runSucceeded ? ("succeeded" as const) : ("failed" as const);
         const lastRunError = runSucceeded ? null : errorMessage(result.cause);
         const threadId = runSucceeded ? result.value : null;
-        // One transaction, so an edit cannot land between reading the schedule and
-        // writing the next run computed from it. The origin is read first: it reads
-        // files, and the transaction holds SQLite's writer lock.
+        // Read external metadata first: Bot operations acquire the Bot writer before the main writer.
         const origin = yield* readWebhookOrigin;
+        const routine = yield* routines.get(task.id).pipe(
+          Effect.mapError((cause) =>
+            taskError("Could not read schedule task routine metadata.", {
+              taskId: task.id,
+              cause,
+            }),
+          ),
+        );
         const record = Effect.gen(function* () {
           const [row] = yield* getRows(task.id);
-          const current = row === undefined ? null : yield* decode(row, origin);
+          const current = row === undefined ? null : yield* decode(row, origin, { routine });
           const scheduleSource = current ?? task;
           const completed: ScheduledTask = {
             ...scheduleSource,

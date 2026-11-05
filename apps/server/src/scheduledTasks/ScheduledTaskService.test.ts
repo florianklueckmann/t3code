@@ -16,6 +16,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Logger from "effect/Logger";
 import * as SqlClient from "effect/sql/SqlClient";
 
@@ -33,6 +34,7 @@ import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ScheduledTaskService from "./ScheduledTaskService.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
+import * as BotRoutineStore from "../bots/persistence/BotRoutineStore.ts";
 
 const isScheduledTaskError = Schema.is(ScheduledTaskError);
 
@@ -420,6 +422,8 @@ it.effect("thread cleanup notifies subscribers and a finishing run cannot recrea
 
 it.effect("a bound run follows its thread when promotion moves it mid-send", () =>
   Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const routines = yield* BotRoutineStore.BotRoutineStore;
     const scratch = ProjectId.make("project:scratch");
     const promoted = ProjectId.make("project:promoted");
     const sends = yield* Ref.make<Array<{ projectId: ProjectId; commandId: string }>>([]);
@@ -430,6 +434,17 @@ it.effect("a bound run follows its thread when promotion moves it mid-send", () 
       Layer.provide(
         Layer.mergeAll(
           ManagedPolicy.layerTest(),
+          Layer.succeed(BotRoutineStore.BotRoutineStore, {
+            ...routines,
+            get: (id) =>
+              Effect.gen(function* () {
+                assert.isTrue(
+                  Option.isNone(yield* Effect.serviceOption(sql.transactionService)),
+                  "routine metadata must be read before acquiring the main writer",
+                );
+                return yield* routines.get(id);
+              }),
+          }),
           Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
           Layer.mock(ThreadManagementService.ThreadManagementService)({
             sendToThread: (input) =>
