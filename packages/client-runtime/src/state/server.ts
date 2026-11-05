@@ -1242,11 +1242,29 @@ export function createServerEnvironmentAtoms<R, E>(
       (refresh) => refresh(query),
     ).pipe(Atom.withLabel(`environment-data:server:bots:task-result-view:${key}`));
   });
+  const botContinuationActiveFamily = Atom.family((key: string) => {
+    const [environmentId, input] = JSON.parse(key) as [EnvironmentId, BotContinuationScope];
+    return Atom.make((get) => {
+      const result = get(botsLive({ environmentId, input: {} }));
+      const list = AsyncResult.getOrElse(result, () => null);
+      if (list === null) return null;
+      const bot = list.bots.find((entry) => entry.id === input.botId);
+      return (
+        bot !== undefined &&
+        bot.archivedAt === null &&
+        bot.projects.some(
+          (project) => project.projectId === input.projectId && project.detachedAt === null,
+        )
+      );
+    });
+  });
   const botContinuationQuery = createEnvironmentRpcQueryAtomFamily(runtime, {
     label: "environment-data:server:bots:botContinuation",
     tag: WS_METHODS.botsGetContinuation,
     staleTimeMs: 0,
     idleTtlMs: 0,
+    refreshTrigger: (target) =>
+      botContinuationActiveFamily(JSON.stringify([target.environmentId, target.input])),
   });
   const botContinuationFamily = Atom.family((key: string) => {
     const [environmentId, input] = JSON.parse(key) as [EnvironmentId, BotContinuationReadInput];
@@ -1257,7 +1275,11 @@ export function createServerEnvironmentAtoms<R, E>(
         if (config === null) return AsyncResult.initial(true);
         if (config.environment.capabilities.botContinuation !== true)
           return AsyncResult.success(null);
-        return get(query);
+        const active = get(botContinuationActiveFamily(key));
+        const result = get(query);
+        return active === false
+          ? AsyncResult.map(result, (view) => (view.writable ? { ...view, writable: false } : view))
+          : result;
       },
       (refresh) => refresh(query),
     );

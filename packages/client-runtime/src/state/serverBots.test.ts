@@ -89,7 +89,8 @@ const makeHarness = Effect.gen(function* () {
             ...all,
             `get:${input.botId}:${input.projectId}`,
           ]).pipe(
-            Effect.as({
+            Effect.andThen(SubscriptionRef.get(bots)),
+            Effect.map((state) => ({
               ...input,
               homeThreadId: ThreadId.make(`home-${environmentId}`),
               revision: null,
@@ -99,13 +100,21 @@ const makeHarness = Effect.gen(function* () {
               restoredFrom: null,
               coverage: null,
               basis: null,
-              writable: true,
+              writable: state.bots.some(
+                (bot) =>
+                  bot.id === input.botId &&
+                  bot.archivedAt === null &&
+                  bot.projects.some(
+                    (project) =>
+                      project.projectId === input.projectId && project.detachedAt === null,
+                  ),
+              ),
               newerInputs: { count: 0, firstOrdinal: null, lastOrdinal: null },
               sources: [],
               moreSources: 0,
               activeTasks: [],
               moreActiveTasks: 0,
-            }),
+            })),
           ),
         [WS_METHODS.botsListContinuationRevisions]: (input: BotContinuationScope) =>
           Ref.update(continuationReads, (all) => [
@@ -343,6 +352,12 @@ it.effect("loads continuation details in the destination and never calls old-ser
         ...AVAILABLE_CONNECTION_STATE,
         phase: "connected" as const,
       });
+      if (environmentId === "first" || environmentId === "second") {
+        yield* AtomRegistry.toStream(registry, atoms.botsLive({ environmentId, input: {} })).pipe(
+          Stream.filter(AsyncResult.isSuccess),
+          Stream.runHead,
+        );
+      }
       const target = { environmentId, input };
       for (const atom of [
         Atom.map(atoms.botContinuation(target), (result) =>
@@ -371,4 +386,94 @@ it.effect("loads continuation details in the destination and never calls old-ser
       );
     }
   }).pipe(Effect.scoped),
+);
+
+it.effect(
+  "updates a mounted continuation's write availability through detach, reattach and archive",
+  () =>
+    Effect.gen(function* () {
+      const { atoms, registry, environments } = yield* makeHarness;
+      const { environmentId, supervisor, bots, continuationReads } = environments[0]!;
+      const project = {
+        projectId: ProjectId.make("project"),
+        homeThreadId: ThreadId.make("home"),
+        attachedAt: "2026-01-01T00:00:00.000Z",
+        detachedAt: null,
+      };
+      yield* SubscriptionRef.update(bots, (current) => ({
+        bots: current.bots.map((bot) => ({ ...bot, projects: [project] })),
+      }));
+      yield* SubscriptionRef.set(supervisor.state, {
+        ...AVAILABLE_CONNECTION_STATE,
+        phase: "connected" as const,
+      });
+      const live = atoms.botsLive({ environmentId, input: {} });
+      const note = atoms.botContinuation({
+        environmentId,
+        input: { botId: BotId.make("same-bot-id"), projectId: project.projectId },
+      });
+      for (const atom of [
+        Atom.map(live, AsyncResult.isSuccess),
+        Atom.map(note, AsyncResult.isSuccess),
+      ]) {
+        yield* Effect.acquireRelease(
+          Effect.sync(() => registry.mount(atom)),
+          (unmount) => Effect.sync(unmount),
+        );
+        yield* AtomRegistry.toStream(registry, atom).pipe(
+          Stream.filter((ready) => ready),
+          Stream.runHead,
+        );
+      }
+      for (const state of ["detached", "attached", "archived", "restored"] as const) {
+        const writable = state === "attached" || state === "restored";
+        const updated = yield* SubscriptionRef.updateAndGet(bots, (current) => ({
+          bots: current.bots.map((bot) => ({
+            ...bot,
+            archivedAt: state === "archived" ? "2026-01-02T00:00:00.000Z" : null,
+            projects: [
+              { ...project, detachedAt: state === "detached" ? "2026-01-02T00:00:00.000Z" : null },
+            ],
+          })),
+        }));
+        yield* AtomRegistry.toStream(registry, live).pipe(
+          Stream.filter(
+            (result) =>
+              AsyncResult.isSuccess(result) &&
+              result.value.bots[0]?.archivedAt === updated.bots[0]?.archivedAt &&
+              result.value.bots[0]?.projects[0]?.detachedAt ===
+                updated.bots[0]?.projects[0]?.detachedAt,
+          ),
+          Stream.runHead,
+        );
+        if (!writable) {
+          const cached = AsyncResult.getOrElse(registry.get(note), () => null);
+          expect(cached?.writable).toBe(false);
+        }
+        yield* AtomRegistry.toStream(registry, note).pipe(
+          Stream.filter(
+            (result) =>
+              AsyncResult.isSuccess(result) &&
+              !result.waiting &&
+              result.value?.writable === writable,
+          ),
+          Stream.runHead,
+        );
+      }
+      yield* SubscriptionRef.update(bots, (current) => ({
+        bots: current.bots.map((bot) => ({ ...bot, name: "Renamed without changing attachment" })),
+      }));
+      yield* AtomRegistry.toStream(registry, live).pipe(
+        Stream.filter(
+          (result) =>
+            AsyncResult.isSuccess(result) &&
+            result.value.bots[0]?.name === "Renamed without changing attachment",
+        ),
+        Stream.runHead,
+      );
+      expect(
+        (yield* Ref.get(continuationReads)).filter((read) => read.startsWith("get:")),
+      ).toHaveLength(5);
+      expect(yield* Ref.get(environments[1]!.continuationReads)).toEqual([]);
+    }).pipe(Effect.scoped),
 );
