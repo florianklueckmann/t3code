@@ -52,7 +52,7 @@ const StoredRevision = Schema.Struct({
 });
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const encodeRevision = Schema.encodeEffect(Schema.fromJsonString(StoredRevision));
-const decodeBasis = Schema.decodeUnknownEffect(Schema.fromJsonString(BasisPayload));
+const encodeBasis = Schema.encodeSync(Schema.fromJsonString(BasisPayload));
 const decodeRevision = Schema.decodeUnknownEffect(Schema.fromJsonString(StoredRevision));
 const decodeMessage = Schema.decodeUnknownEffect(
   Schema.fromJsonString(OrchestrationV2ConversationMessageJson),
@@ -130,12 +130,19 @@ const make = Effect.gen(function* () {
   const random = yield* SecureRandom.SecureRandom;
   // Bases expire on process restart; committed retry identities remain in SQLite.
   const key = yield* random.randomBytes(32).pipe(Effect.orDie);
+  const bases = new Map<string, typeof BasisPayload.Type>();
   const signature = (payload: string) =>
-    NodeCrypto.createHmac("sha256", key).update(payload).digest("base64url");
+    NodeCrypto.createHmac("sha256", key).update(payload).digest("hex").slice(0, 32);
   const signed = (payload: typeof BasisPayload.Type): BotContinuationBasis => {
-    const body = Buffer.from(encodeJson(payload)).toString("base64url");
+    const token = signature(encodeBasis(payload));
+    bases.delete(token);
+    bases.set(token, payload);
+    if (bases.size > 512) {
+      const oldest = bases.keys().next().value;
+      if (oldest !== undefined) bases.delete(oldest);
+    }
     return {
-      token: `${body}.${signature(body)}`,
+      token,
       fromOrdinal: payload.fromOrdinal,
       throughOrdinal: payload.throughOrdinal,
     };
@@ -143,12 +150,11 @@ const make = Effect.gen(function* () {
   const verified = Effect.fn("BotContinuation.verifyBasis")(function* (
     basis: BotContinuationBasis,
   ) {
-    const [body, mac, extra] = basis.token.split(".");
-    if (body === undefined || mac === undefined || extra !== undefined || signature(body) !== mac)
+    const payload = bases.get(basis.token);
+    if (payload === undefined)
       return yield* invalid(
         "The save basis expired or is invalid. Read the current working notes again.",
       );
-    const payload = yield* decodeBasis(Buffer.from(body, "base64url").toString("utf8"));
     if (
       payload.fromOrdinal !== basis.fromOrdinal ||
       payload.throughOrdinal !== basis.throughOrdinal
