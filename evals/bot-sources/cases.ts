@@ -107,6 +107,7 @@ export interface LearningSeed {
 /** A learning entry the Bot itself must have recorded during the turns. */
 export interface ExpectedLearning {
   readonly scope: LearningScopeKey;
+  readonly kind?: LearningSeed["kind"];
   /** Case-insensitive regex on the entry's text. */
   readonly text: string;
   readonly origin: "instruction" | "correction";
@@ -275,6 +276,38 @@ export const CASES: ReadonlyArray<BotSourcesCase> = [
     home: "a",
     turns: [{ prompt: "From now on, end every answer with the line 'Table ready.'" }],
     learningAfter: [{ scope: "a", text: "table ready", origin: "instruction", status: "active" }],
+  },
+  {
+    id: "fact-stays-in-project-by-default",
+    kind: "guard",
+    source: "User request: explicitly shared facts (synthetic)",
+    experience: "A fact the user asks the Bot to remember stays in this project by default.",
+    home: "a",
+    turns: [
+      {
+        prompt: "Remember for later: my name is Rowan.",
+        textMust: ["Rowan", "(this|the|our).{0,40}(project|campaign)"],
+      },
+    ],
+    learningAfter: [
+      { scope: "a", kind: "fact", text: "Rowan", origin: "instruction", status: "active" },
+    ],
+  },
+  {
+    id: "fact-shared-on-explicit-request",
+    kind: "bad",
+    source: "User request: explicitly shared facts (synthetic)",
+    experience: "A fact is shared across the Bot's projects only at the user's explicit request.",
+    home: "a",
+    turns: [
+      {
+        prompt: "Remember for later, across all your projects: my name is Rowan.",
+        textMust: ["Rowan", "all (your |my )?(projects|campaigns)|across.*(projects|campaigns)"],
+      },
+    ],
+    learningAfter: [
+      { scope: "all", kind: "fact", text: "Rowan", origin: "instruction", status: "active" },
+    ],
   },
   {
     id: "adopted-lesson-reaches-new-conversation",

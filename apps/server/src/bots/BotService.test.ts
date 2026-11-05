@@ -768,7 +768,7 @@ it.effect("counts a work task's lesson only once the server sees that task compl
   }).pipe(Effect.provide(layerDatabase)),
 );
 
-it.effect("keeps campaign learning apart and applies a shared preference to both", () =>
+it.effect("keeps facts in their project by default and shares them when explicitly requested", () =>
   Effect.gen(function* () {
     yield* seedProjects;
     const world = yield* makeThreadWorld;
@@ -785,24 +785,53 @@ it.effect("keeps campaign learning apart and applies a shared preference to both
         const detail = yield* bots.attachProject({ botId, projectId: campaignB });
         const [homeA, homeB] = detail.projects.map((project) => project.homeThreadId);
 
-        yield* bots.recordLearning({
+        const local = yield* bots.recordLearning({
           ...correction,
           kind: "fact",
           text: "Strahd fled to the Amber Temple.",
           botId,
           projectId: campaignA,
         });
-        const sharedFact = yield* bots
-          .recordLearning({
-            ...correction,
-            kind: "fact",
-            scope: "bot",
-            text: "Strahd is dead.",
-            botId,
-            projectId: campaignA,
-          })
-          .pipe(Effect.flip);
-        assert.include(sharedFact.message, "Facts stay");
+        const explicitLocal = yield* bots.recordLearning({
+          ...correction,
+          kind: "fact",
+          scope: "project",
+          text: "The party meets in Vallaki.",
+          botId,
+          projectId: campaignA,
+        });
+        const existingFacts = explicitLocal.bot.learning;
+        assert.equal(local.learned.status, "active");
+        assert.equal(explicitLocal.learned.status, "active");
+        assert.isTrue(existingFacts.every((entry) => entry.projectId === campaignA));
+
+        const sharedFact = yield* bots.recordLearning({
+          botId,
+          projectId: campaignA,
+          kind: "fact",
+          scope: "bot",
+          origin: "instruction",
+          text: "The user's name is Rowan.",
+          evidence: "Remember my name, Rowan, for all your projects.",
+          source: { kind: "user" },
+        });
+        assert.equal(sharedFact.learned.status, "active");
+        const sharedEntry = sharedFact.bot.learning.find(
+          (entry) => entry.id === sharedFact.learned.entryId,
+        );
+        assert.equal(sharedEntry?.kind, "fact");
+        assert.isNull(sharedEntry?.projectId);
+        assert.equal(sharedEntry?.revisions[0]?.learnedInProjectId, campaignA);
+
+        const proposedFact = yield* bots.recordLearning({
+          ...correction,
+          kind: "fact",
+          scope: "bot",
+          text: "The user's timezone is Europe/Berlin.",
+          botId,
+          projectId: campaignA,
+        });
+        assert.equal(proposedFact.learned.status, "pending");
 
         // Sharing is deliberate: an inferred lesson for every project waits for the user.
         const inferred = yield* bots.recordLearning({
@@ -827,16 +856,42 @@ it.effect("keeps campaign learning apart and applies a shared preference to both
         const b = yield* instructionsFor(turnContext, homeB ?? assert.fail());
         assert.include(a, "Amber Temple");
         assert.notInclude(b, "Amber Temple");
+        assert.include(a, "Vallaki");
+        assert.notInclude(b, "Vallaki");
+        for (const instructions of [a, b]) {
+          assert.include(
+            instructions,
+            `[${sharedFact.learned.entryId} r1; fact, all projects, standing instruction] The user's name is Rowan.`,
+          );
+          assert.notInclude(instructions, "Europe/Berlin");
+        }
         assert.include(a, "Use metric units.");
         assert.include(b, "Use metric units.");
         assert.notInclude(b, "Sign answers");
+
+        const adopted = yield* bots.decideLearning({
+          botId,
+          entryId: proposedFact.learned.entryId,
+          revision: proposedFact.learned.revision,
+          decision: "adopt",
+        });
+        for (const home of [homeA, homeB]) {
+          assert.include(
+            yield* instructionsFor(turnContext, home ?? assert.fail()),
+            `[${proposedFact.learned.entryId} r1; fact, all projects] The user's timezone is Europe/Berlin.`,
+          );
+        }
+        assert.deepEqual(
+          adopted.learning.filter((entry) => entry.projectId === campaignA),
+          existingFacts,
+        );
 
         const detached = yield* bots.detachProject({ botId, projectId: campaignB });
         const refused = yield* bots
           .recordLearning({ ...correction, botId, projectId: campaignB })
           .pipe(Effect.flip);
         assert.include(refused.message, "not attached");
-        assert.lengthOf(detached.learning, 3);
+        assert.lengthOf(detached.learning, 6);
       }),
     );
   }).pipe(Effect.provide(layerDatabase)),

@@ -89,7 +89,7 @@ is still working. You can pause, resume, run, edit or delete a routine in
 
 ## Learning
 
-A Bot keeps what it learns per project, so a lesson from one campaign or
+A Bot keeps what it learns per project by default, so a lesson from one campaign or
 codebase does not leak into another. You see it under each project in
 **Settings → Bots**, with where it came from and its earlier versions.
 
@@ -109,7 +109,9 @@ codebase does not leak into another. You see it under each project in
   would, it waits for you even when the Bot learns automatically.
 - Learning applies to the project it came from. It applies to all of the Bot's
   projects only when you say so, or when you adopt a lesson the Bot proposed
-  for all projects. Facts about a project always stay with that project.
+  for all projects. You can explicitly ask the Bot to remember a fact across
+  all its projects too. The Bot tells you where the learning applies; shared
+  entries appear under **Learning for all projects** in settings.
 - **Retire** stops an entry, and **Restore** brings back an earlier version.
   A proposal made against a version that has since changed is marked outdated
   instead of being applied. The same lesson is not recorded twice.

@@ -56,6 +56,7 @@ export interface SampleRun {
 
 export interface LearnedEntry {
   readonly scope: LearningScopeKey;
+  readonly kind: string;
   readonly text: string;
   readonly origin: string;
   readonly status: string;
@@ -117,6 +118,7 @@ export const gradeSample = (testCase: BotSourcesCase, run: SampleRun) => {
       learnedByBot.some(
         (entry) =>
           entry.scope === expected.scope &&
+          (expected.kind === undefined || entry.kind === expected.kind) &&
           entry.origin === expected.origin &&
           entry.status === expected.status &&
           new RegExp(expected.text, "i").test(entry.text),
@@ -268,6 +270,7 @@ const runSample = Effect.fn("botSources.runSample")(function* (
         : [
             {
               scope,
+              kind: entry.kind,
               text: latest.text,
               origin: latest.origin,
               status: latest.status,
