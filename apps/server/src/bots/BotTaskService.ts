@@ -466,6 +466,7 @@ const make = Effect.gen(function* () {
         SELECT * FROM bot_tasks
         WHERE (${input.botId ?? null} IS NULL OR bot_id = ${input.botId ?? null})
           AND (${input.projectId ?? null} IS NULL OR project_id = ${input.projectId ?? null})
+          AND ${input.workThreadId === undefined ? sql`1 = 1` : sql`work_thread_id = ${input.workThreadId}`}
         ORDER BY created_at DESC, task_id DESC
         LIMIT ${LIST_LIMIT}
       `.pipe(Effect.mapError(storageError));

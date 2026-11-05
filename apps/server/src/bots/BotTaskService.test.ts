@@ -4,6 +4,7 @@ import { assert, it } from "@effect/vitest";
 import {
   BotId,
   BotTaskId,
+  BotTaskListInput,
   type BotTaskStatus,
   CommandId,
   type OrchestrationV2ServerCommand,
@@ -23,6 +24,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
+import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -334,6 +336,7 @@ const routineInput = (
 });
 
 const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
+const decodeTaskListInput = Schema.decodeUnknownSync(BotTaskListInput);
 
 const statusOf = (services: Services, taskId: string) =>
   services.tasks
@@ -377,6 +380,45 @@ it.effect.each<{
     });
     assert.equal(status, expected);
   }),
+);
+
+it.effect("looks up an existing work thread outside the latest 50 environment tasks", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(START);
+    yield* seedProject;
+    const world = yield* makeThreadWorld;
+    const sql = yield* BotDatabase.BotDatabase;
+    yield* withServices(world, (services) =>
+      Effect.gen(function* () {
+        yield* attachBot(services);
+        const task = yield* services.tasks.start({
+          botId,
+          projectId: campaign,
+          prompt: "Prepare.",
+        });
+        const workThreadId = task.workThreadId ?? assert.fail("no work thread");
+        yield* sql`
+          WITH RECURSIVE newer(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM newer WHERE n < 51)
+          INSERT INTO bot_tasks (
+            task_id, bot_id, project_id, home_thread_id, work_thread_id, origin,
+            title, prompt, runtime_mode, status, created_at, updated_at
+          )
+          SELECT 'newer-' || n, bot_id, project_id, home_thread_id, 'bot-work:newer-' || n,
+            origin, title, prompt, runtime_mode, status, ${iso(START + HOUR)}, ${iso(START + HOUR)}
+          FROM bot_tasks, newer WHERE task_id = ${task.id}
+        `;
+        const recent = (yield* services.tasks.list({})).tasks;
+        assert.lengthOf(recent, 50);
+        assert.isFalse(recent.some((entry) => entry.id === task.id));
+        const lookup = (id: ThreadId) =>
+          services.tasks.list(decodeTaskListInput({ workThreadId: id }));
+        assert.deepEqual((yield* lookup(workThreadId)).tasks, [task]);
+        assert.deepEqual((yield* lookup(ThreadId.make("bot-work:missing"))).tasks, []);
+        yield* services.bots.setArchived({ botId, archived: true });
+        assert.equal((yield* lookup(workThreadId)).tasks[0]?.botId, botId);
+      }),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
 );
 
 it.effect("keeps each routine run's change permission after edits and a restart", () =>
