@@ -1,3 +1,4 @@
+import * as BotRoutineStore from "../bots/persistence/BotRoutineStore.ts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Effect's Crypto has no createHmac.
 import * as NodeCrypto from "node:crypto";
 
@@ -160,6 +161,7 @@ const withService = <A, E>(
     readonly service: ScheduledTaskService.ScheduledTaskService["Service"];
     readonly launches: Queue.Queue<LaunchInput>;
     readonly sql: SqlClient.SqlClient;
+    readonly routines: BotRoutineStore.BotRoutineStore["Service"];
     readonly secretsByRef: Map<string, string>;
   }) => Effect.Effect<A, E, never>,
   options: {
@@ -174,6 +176,7 @@ const withService = <A, E>(
     readonly gateForTask?: (input: LaunchInput) => Deferred.Deferred<void> | undefined;
     readonly relayHookBaseUrl?: string;
     readonly sql?: SqlClient.SqlClient;
+    readonly routines?: BotRoutineStore.BotRoutineStore["Service"];
     readonly workers?: Map<string, Effect.Effect<void>>;
     readonly policy?: ManagedPolicyDocument;
   } = {},
@@ -259,7 +262,8 @@ const withService = <A, E>(
     return yield* Effect.gen(function* () {
       const service = yield* ScheduledTaskService.ScheduledTaskService;
       const sql = yield* SqlClient.SqlClient;
-      return yield* body({ service, launches, sql, secretsByRef });
+      const routines = yield* BotRoutineStore.BotRoutineStore;
+      return yield* body({ service, launches, sql, secretsByRef, routines });
     }).pipe(
       Effect.provide(
         Layer.fresh(ScheduledTaskService.layer.pipe(Layer.provide(layerDependencies))),
@@ -269,7 +273,10 @@ const withService = <A, E>(
     Effect.provide(
       options.sql === undefined
         ? SqlitePersistence.layerMemory
-        : Layer.succeed(SqlClient.SqlClient, options.sql),
+        : Layer.merge(
+            Layer.succeed(SqlClient.SqlClient, options.sql),
+            Layer.succeed(BotRoutineStore.BotRoutineStore, options.routines!),
+          ),
     ),
   );
 
@@ -434,7 +441,7 @@ it.effect("checks the configured signature and keeps the secret write-only", () 
 );
 
 it.effect("a policy without webhook tasks keeps existing ones but refuses saves and requests", () =>
-  withService(({ service, sql }) =>
+  withService(({ service, sql, routines }) =>
     Effect.gen(function* () {
       const { task } = yield* service.upsert(yield* webhookTaskInput());
       const timer = yield* webhookTaskInput({
@@ -478,6 +485,7 @@ it.effect("a policy without webhook tasks keeps existing ones but refuses saves 
           }),
         {
           sql,
+          routines,
           policy: {
             schemaVersion: 1,
             organization: "Example Corp",
@@ -915,7 +923,7 @@ it.effect("a signature without any secret is refused", () =>
 
 it.effect("dedupes replay keys per task, persists them, and expires them after seven days", () =>
   withService(
-    ({ service, launches, sql }) =>
+    ({ service, launches, sql, routines }) =>
       Effect.gen(function* () {
         const schedule = { type: "webhook", dedupe: { replayKey: "{{headers.delivery-id}}" } };
         const { task } = yield* service.upsert(yield* webhookTaskInput({ schedule }));
@@ -937,7 +945,7 @@ it.effect("dedupes replay keys per task, persists them, and expires them after s
               const replay = yield* restarted.triggerWebhook(request);
               assert.equal(replay._tag === "accepted" && replay.outcome, "duplicate");
             }),
-          { sql, workers: new Map() },
+          { sql, routines, workers: new Map() },
         );
         yield* TestClock.adjust("7 days");
         const expired = yield* service.triggerWebhook(request);
@@ -1136,7 +1144,7 @@ it.effect("a coalesced window fails its delivery when the task row cannot be rea
 it.effect("recovers a persisted coalescing window after restarting the service", () => {
   const workers = new Map<string, Effect.Effect<void>>();
   return withService(
-    ({ service, sql }) =>
+    ({ service, sql, routines }) =>
       Effect.gen(function* () {
         const { task } = yield* service.upsert(
           yield* webhookTaskInput({
@@ -1161,7 +1169,7 @@ it.effect("recovers a persisted coalescing window after restarting the service",
               assert.equal(yield* Queue.size(launches), 0);
               assert.equal((yield* sql`SELECT * FROM scheduled_task_webhook_pending`).length, 0);
             }),
-          { sql, workers: restartedWorkers },
+          { sql, routines, workers: restartedWorkers },
         );
       }),
     { workers },
@@ -1320,7 +1328,7 @@ it.effect(
   () => {
     const workers = new Map<string, Effect.Effect<void>>();
     return withService(
-      ({ service, sql, launches }) =>
+      ({ service, sql, launches, routines }) =>
         Effect.gen(function* () {
           const { task } = yield* service.upsert(
             yield* webhookTaskInput({
@@ -1355,7 +1363,7 @@ it.effect(
                 assert.equal((yield* restarted.list()).tasks[0]!.runCount, 1);
                 assert.equal((yield* sql`SELECT * FROM scheduled_task_webhook_pending`).length, 0);
               }),
-            { sql, workers: restartedWorkers },
+            { sql, routines, workers: restartedWorkers },
           );
         }),
       { workers },
@@ -1723,7 +1731,7 @@ it.effect(
   () => {
     const workers = new Map<string, Effect.Effect<void>>();
     return withService(
-      ({ service, sql, launches }) =>
+      ({ service, sql, launches, routines }) =>
         Effect.gen(function* () {
           const { task } = yield* service.upsert(
             yield* webhookTaskInput({
@@ -1776,7 +1784,7 @@ it.effect(
                 yield* Queue.take(restartedLaunches);
                 assert.equal((yield* restarted.list()).tasks[0]!.runCount, 2);
               }),
-            { sql, workers: restartedWorkers },
+            { sql, routines, workers: restartedWorkers },
           );
         }),
       { workers, failLaunches: { remaining: 1 } },
@@ -1787,6 +1795,7 @@ it.effect(
 it.effect("dispatches an overdue window exactly once after its deadline passed while stopped", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+    const routines = yield* BotRoutineStore.BotRoutineStore;
     const task = yield* withService(
       ({ service, launches }) =>
         Effect.gen(function* () {
@@ -1802,7 +1811,7 @@ it.effect("dispatches an overdue window exactly once after its deadline passed w
           assert.equal(yield* Queue.size(launches), 0);
           return task;
         }),
-      { sql, workers: new Map() },
+      { sql, routines, workers: new Map() },
     );
     // The first service scope is closed before the deadline advances.
     yield* TestClock.adjust("30 seconds");
@@ -1817,7 +1826,7 @@ it.effect("dispatches an overdue window exactly once after its deadline passed w
           assert.equal((yield* service.list()).tasks[0]!.runCount, 1);
           assert.equal((yield* sql`SELECT 1 FROM scheduled_task_webhook_pending`).length, 0);
         }),
-      { sql, workers: restartedWorkers },
+      { sql, routines, workers: restartedWorkers },
     );
     const secondRestartWorkers = new Map<string, Effect.Effect<void>>();
     yield* withService(
@@ -1830,7 +1839,7 @@ it.effect("dispatches an overdue window exactly once after its deadline passed w
             1,
           );
         }),
-      { sql, workers: secondRestartWorkers },
+      { sql, routines, workers: secondRestartWorkers },
     );
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
@@ -1905,7 +1914,7 @@ it.effect.each([false, true])(
     return Effect.gen(function* () {
       const gate = yield* Deferred.make<void>();
       yield* withService(
-        ({ service, sql, launches }) =>
+        ({ service, sql, launches, routines }) =>
           Effect.gen(function* () {
             const { task } = yield* service.upsert(
               yield* webhookTaskInput({
@@ -1972,7 +1981,7 @@ it.effect.each([false, true])(
                   yield* restartedWorkers.get("webhook-coalescing")!;
                   assert.equal((yield* restarted.list()).tasks[0]!.runCount, 2);
                 }),
-              { sql, workers: restartedWorkers, completedLaunches },
+              { sql, routines, workers: restartedWorkers, completedLaunches },
             );
           }),
         {

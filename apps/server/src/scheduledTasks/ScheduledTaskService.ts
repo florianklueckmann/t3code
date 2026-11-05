@@ -50,6 +50,7 @@ import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as BotRoutineStore from "../bots/persistence/BotRoutineStore.ts";
 
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
@@ -242,10 +243,6 @@ interface ScheduledTaskRow {
   readonly run_count: number;
   readonly webhook_token: string | null;
   readonly webhook_secret: string | null;
-  readonly bot_id: string | null;
-  readonly bot_session_at: string | null;
-  readonly bot_allow_changes: number;
-  readonly schedule_revision: number;
 }
 
 interface WebhookDeliveryRow {
@@ -414,6 +411,8 @@ const decodeRow = Effect.fnUntraced(
   function* (row: ScheduledTaskRow, origin: WebhookOrigin | null = null) {
     const schedule = yield* decodeScheduleJson(row.schedule_json);
     const webhook = schedule.type === "webhook" ? webhookEndpoint(row, origin) : undefined;
+    const routines = yield* BotRoutineStore.BotRoutineStore;
+    const routine = yield* routines.get(row.task_id);
     const workspaceStrategy = yield* decodeWorkspaceStrategyJson(row.workspace_strategy_json);
     const modelSelection = yield* decodeModelSelectionJson(row.model_selection_json);
     return yield* decodeTask({
@@ -439,13 +438,13 @@ const decodeRow = Effect.fnUntraced(
       lastRunError: row.last_run_error,
       runCount: row.run_count,
       ...(webhook === undefined ? {} : { webhook }),
-      ...(row.bot_id === null
+      ...(routine?.bot_id == null
         ? {}
         : {
             bot: {
-              botId: row.bot_id,
-              sessionAt: row.bot_session_at,
-              allowChanges: row.bot_allow_changes === 1,
+              botId: routine.bot_id,
+              sessionAt: routine.bot_session_at,
+              allowChanges: routine.bot_allow_changes === 1,
             },
           }),
     });
@@ -499,6 +498,9 @@ export const layer = Layer.effect(
   ScheduledTaskService,
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+    const routines = yield* BotRoutineStore.BotRoutineStore;
+    const decode = (row: ScheduledTaskRow, origin?: WebhookOrigin | null) =>
+      decodeRow(row, origin).pipe(Effect.provideService(BotRoutineStore.BotRoutineStore, routines));
     const random = yield* SecureRandom.SecureRandom;
     const digest = yield* Digest.Digest;
     const mac = yield* Mac.Mac;
@@ -581,11 +583,7 @@ export const layer = Layer.effect(
         last_run_error,
         run_count,
         webhook_token,
-        webhook_secret,
-        bot_id,
-        bot_session_at,
-        bot_allow_changes,
-        schedule_revision
+        webhook_secret
       FROM scheduled_tasks
       -- Not updated_at: toggles, runs and edits rewrite it, and clients render
       -- this order as-is, so rows would move under the pointer.
@@ -597,7 +595,7 @@ export const layer = Layer.effect(
       const origin = yield* readWebhookOrigin;
       return yield* Effect.forEach(
         rows,
-        (row) => decodeRow(row, origin).pipe(Effect.map(withPolicy)),
+        (row) => decode(row, origin).pipe(Effect.map(withPolicy)),
         { concurrency: 1 },
       );
     });
@@ -627,11 +625,7 @@ export const layer = Layer.effect(
         last_run_error,
         run_count,
         webhook_token,
-        webhook_secret,
-        bot_id,
-        bot_session_at,
-        bot_allow_changes,
-        schedule_revision
+        webhook_secret
       FROM scheduled_tasks
       WHERE task_id = ${id}
     `.pipe(NodeSqliteClient.readOnly);
@@ -644,7 +638,7 @@ export const layer = Layer.effect(
       );
       const row = rows[0];
       if (row === undefined) return null;
-      return withPolicy(yield* decodeRow(row, yield* readWebhookOrigin));
+      return withPolicy(yield* decode(row, yield* readWebhookOrigin));
     });
 
     const findWebhookCredentials = (id: ScheduledTaskId) =>
@@ -685,7 +679,9 @@ export const layer = Layer.effect(
         readonly secretChanged: boolean;
       },
     ) =>
-      sql<{ task_id: string }>`
+      routines
+        .mutate(
+          sql<{ task_id: string }>`
         INSERT INTO scheduled_tasks (
           task_id,
           title,
@@ -709,10 +705,7 @@ export const layer = Layer.effect(
           last_run_error,
           run_count,
           webhook_token,
-          webhook_secret,
-          bot_id,
-          bot_session_at,
-          bot_allow_changes
+          webhook_secret
         )
         SELECT
           ${task.id},
@@ -737,10 +730,7 @@ export const layer = Layer.effect(
           ${task.lastRunError},
           ${task.runCount},
           ${webhook.token},
-          ${webhook.secret},
-          ${task.bot?.botId ?? null},
-          ${task.bot?.sessionAt ?? null},
-          ${task.bot?.allowChanges ? 1 : 0}
+          ${webhook.secret}
         WHERE ${requireExisting ? 0 : 1} = 1
            OR EXISTS (SELECT 1 FROM scheduled_tasks WHERE task_id = ${task.id})
         ON CONFLICT (task_id)
@@ -764,11 +754,6 @@ export const layer = Layer.effect(
           interaction_mode = excluded.interaction_mode,
           creation_source = excluded.creation_source,
           updated_at = excluded.updated_at,
-          bot_id = excluded.bot_id,
-          bot_session_at = excluded.bot_session_at,
-          bot_allow_changes = excluded.bot_allow_changes,
-          -- A new revision gives a re-armed routine new occurrence keys.
-          schedule_revision = scheduled_tasks.schedule_revision + ${keptSchedule === null ? 1 : 0},
           -- Keep a next_run_at that a finishing run moved during this save, unless
           -- another edit changed the schedule or enabled state meanwhile.
           next_run_at = CASE
@@ -792,24 +777,27 @@ export const layer = Layer.effect(
             ELSE scheduled_tasks.webhook_secret
           END
         RETURNING task_id
-      `.pipe(
-        Effect.mapError((cause) =>
-          taskError("Could not save schedule task.", { taskId: task.id, cause }),
-        ),
-        Effect.flatMap((rows) =>
-          rows.length > 0
-            ? Effect.void
-            : taskError("Schedule task not found.", { taskId: task.id }),
-        ),
-      );
+      `,
+          { taskId: task.id, target: task.bot, bump: keptSchedule === null },
+        )
+        .pipe(
+          Effect.mapError((cause) =>
+            taskError("Could not save schedule task.", { taskId: task.id, cause }),
+          ),
+          Effect.flatMap((rows) =>
+            rows.length > 0
+              ? Effect.void
+              : taskError("Schedule task not found.", { taskId: task.id }),
+          ),
+        );
 
     const deleteRow = (id: ScheduledTaskId) =>
-      sql
-        .withTransaction(
-          sql`DELETE FROM scheduled_task_webhook_deliveries WHERE task_id = ${id}`.pipe(
-            Effect.andThen(sql`DELETE FROM scheduled_tasks WHERE task_id = ${id}`),
-          ),
-        )
+      routines
+        .mutate(sql`DELETE FROM scheduled_tasks WHERE task_id = ${id}`, {
+          taskId: id,
+          bump: false,
+          removing: true,
+        })
         .pipe(
           Effect.mapError((cause) =>
             taskError("Could not delete schedule task.", { taskId: id, cause }),
@@ -949,13 +937,13 @@ export const layer = Layer.effect(
         readonly dueAt: DateTime.DateTime;
       },
     ) {
-      const [revision] = yield* sql<{ readonly schedule_revision: number }>`
-        SELECT schedule_revision FROM scheduled_tasks WHERE task_id = ${task.id}
-      `.pipe(
-        Effect.mapError((cause) =>
-          taskError("Could not load schedule task.", { taskId: task.id, cause }),
-        ),
-      );
+      const revision = yield* routines
+        .get(task.id)
+        .pipe(
+          Effect.mapError((cause) =>
+            taskError("Could not load schedule task.", { taskId: task.id, cause }),
+          ),
+        );
       const occurrenceKey =
         occurrence.trigger === "scheduled"
           ? `${task.id}:${revision?.schedule_revision ?? 0}:${DateTime.toEpochMillis(occurrence.dueAt)}`
@@ -992,17 +980,28 @@ export const layer = Layer.effect(
       const taskId = "taskId" in target ? target.taskId : null;
       const botId = "botId" in target ? target.botId : null;
       const projectId = "botId" in target ? (target.projectId ?? null) : null;
-      const paused = yield* sql<{ readonly task_id: string }>`
-        UPDATE scheduled_tasks
-        SET enabled = 0, next_run_at = NULL, schedule_revision = schedule_revision + 1,
-            updated_at = ${now}
-        WHERE bot_id IS NOT NULL AND enabled = 1
-          AND (${taskId} IS NULL OR task_id = ${taskId})
-          AND (${botId} IS NULL OR bot_id = ${botId})
-          AND (${projectId} IS NULL OR project_id = ${projectId})
-        RETURNING task_id
-      `.pipe(
-        Effect.mapError((cause) => taskError("Could not pause the Bot's routines.", { cause })),
+      const matching = (yield* listRows().pipe(
+        Effect.mapError((cause) => taskError("Could not list Bot routines.", { cause })),
+      )).filter(
+        (task) =>
+          task.bot !== undefined &&
+          task.enabled &&
+          (taskId === null || task.id === taskId) &&
+          (botId === null || task.bot.botId === botId) &&
+          (projectId === null || task.projectId === projectId),
+      );
+      const paused = yield* Effect.forEach(matching, (task) =>
+        routines
+          .mutate(
+            sql<{ readonly task_id: string }>`
+        UPDATE scheduled_tasks SET enabled = 0, next_run_at = NULL, updated_at = ${now}
+        WHERE task_id = ${task.id} RETURNING task_id
+      `,
+            { taskId: task.id, target: task.bot, bump: true },
+          )
+          .pipe(
+            Effect.mapError((cause) => taskError("Could not pause the Bot's routines.", { cause })),
+          ),
       );
       if (paused.length > 0) yield* notifyChanged;
     });
@@ -1253,7 +1252,7 @@ export const layer = Layer.effect(
         const origin = yield* readWebhookOrigin;
         const record = Effect.gen(function* () {
           const [row] = yield* getRows(task.id);
-          const current = row === undefined ? null : yield* decodeRow(row, origin);
+          const current = row === undefined ? null : yield* decode(row, origin);
           const scheduleSource = current ?? task;
           const completed: ScheduledTask = {
             ...scheduleSource,
@@ -1411,6 +1410,7 @@ export const layer = Layer.effect(
         return;
       }
       const tasks = yield* listDueTasks(now).pipe(
+        Effect.provideService(BotRoutineStore.BotRoutineStore, routines),
         Effect.mapError((cause) => taskError("Could not list schedule tasks.", { cause })),
       );
       // In the environment's zone, so walking missed fixed-time runs keeps their local time.
@@ -1459,7 +1459,7 @@ export const layer = Layer.effect(
         stuck,
         (row) =>
           Effect.gen(function* () {
-            const decoded = yield* Effect.result(decodeRow(row));
+            const decoded = yield* Effect.result(decode(row));
             if (Result.isSuccess(decoded)) {
               // A routine keeps its due time: running it again reaches the same idempotent
               // admission, so an occurrence the crash cut short is not lost.
@@ -1795,19 +1795,23 @@ export const layer = Layer.effect(
       const next = nextRunAt({ enabled: input.enabled, schedule: existing.schedule }, now);
       // RETURNING so a task deleted between the load and this UPDATE is a
       // visible not-found error, not a false success.
-      const updated = yield* sql<{ task_id: string }>`
+      const updated = yield* routines
+        .mutate(
+          sql<{ task_id: string }>`
           UPDATE scheduled_tasks
           SET enabled = ${input.enabled ? 1 : 0},
               next_run_at = ${next},
-              updated_at = ${iso(now)},
-              schedule_revision = schedule_revision + 1
+              updated_at = ${iso(now)}
           WHERE task_id = ${input.id}
           RETURNING task_id
-        `.pipe(
-        Effect.mapError((cause) =>
-          taskError("Could not update schedule task.", { taskId: input.id, cause }),
-        ),
-      );
+        `,
+          { taskId: input.id, target: existing.bot, bump: true },
+        )
+        .pipe(
+          Effect.mapError((cause) =>
+            taskError("Could not update schedule task.", { taskId: input.id, cause }),
+          ),
+        );
       if (updated.length === 0) {
         return yield* taskError("Schedule task not found.", { taskId: input.id });
       }
@@ -2349,7 +2353,7 @@ export const layer = Layer.effect(
       ) {
         return yield* notFound;
       }
-      const task = yield* decodeRow(row);
+      const task = yield* decode(row);
       yield* Effect.annotateCurrentSpan({ "scheduled_task.id": task.id });
       const schedule = task.schedule;
       if (schedule.type !== "webhook") return yield* notFound;

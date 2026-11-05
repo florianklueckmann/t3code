@@ -29,6 +29,24 @@ const v2TableCount = Effect.gen(function* () {
 });
 
 describe("runMigrations", () => {
+  it.effect("keeps the real upstream migration at 78 and Bot schema out of T3", () =>
+    Effect.gen(function* () {
+      assert.deepStrictEqual(
+        migrationManifest.find(([id]) => id === 78),
+        [78, "DropOrchestrationEventCorrelationIndex"],
+      );
+      yield* runMigrations();
+      const sql = yield* SqlClient.SqlClient;
+      assert.deepStrictEqual(yield* sql`SELECT name FROM sqlite_master WHERE name LIKE 'bot%'`, []);
+      const columns = yield* sql<{ readonly name: string }>`PRAGMA table_info(scheduled_tasks)`;
+      for (const name of ["bot_id", "bot_session_at", "schedule_revision", "bot_allow_changes"]) {
+        assert.notInclude(
+          columns.map((column) => column.name),
+          name,
+        );
+      }
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
   it.effect("refuses to start when another migration took a V2 id", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;

@@ -8,6 +8,11 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlError from "effect/sql/SqlError";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
+import * as BotDatabase from "../bots/persistence/BotDatabase.ts";
+import * as BotMigrations from "../bots/persistence/Migrations.ts";
+import * as BotRoutineStore from "../bots/persistence/BotRoutineStore.ts";
+import { transferLegacyBots } from "../bots/persistence/transferLegacyBots.ts";
+
 import { hasPendingMigrations, runMigrations } from "./Migrations.ts";
 import { initializeV2Database } from "./initializeV2Database.ts";
 import * as ServerConfig from "../config.ts";
@@ -61,6 +66,7 @@ const runMigrationsAsOwner = Effect.fn("SqlitePersistence.runMigrationsAsOwner")
         Effect.fail(new ServerOwnsDatabaseError({ stateDir })),
     }),
   );
+  yield* transferLegacyBots();
   yield* runMigrations();
 }, Effect.scoped);
 
@@ -77,9 +83,8 @@ const makeLayerSetup = <E, R>(migrate: Effect.Effect<unknown, E, R>) =>
       }>`SELECT COUNT(*) AS count FROM sqlite_schema WHERE type = 'table'`;
       if (tables[0]?.count === 0) yield* sql`PRAGMA auto_vacuum = INCREMENTAL;`;
       yield* sql`PRAGMA journal_mode = WAL;`;
-      // FULL fsyncs every event commit; NORMAL syncs only at WAL checkpoints.
-      // App crashes lose nothing; OS crashes or power loss can roll back post-checkpoint commits without corruption.
-      yield* sql`PRAGMA synchronous = NORMAL;`;
+      // Legacy Bot transfer must commit durably before either database accepts new writes.
+      yield* sql`PRAGMA synchronous = FULL;`;
       // macOS fsync misses drive caches; F_FULLFSYNC flushes them at checkpoints and is ignored elsewhere.
       yield* sql`PRAGMA checkpoint_fullfsync = ON;`;
       // Keep statement journals and sort spills off the disk.
@@ -88,6 +93,7 @@ const makeLayerSetup = <E, R>(migrate: Effect.Effect<unknown, E, R>) =>
       // PASSIVE checkpoints retain peak WAL size until the last connection closes.
       yield* sql.unsafe(`PRAGMA journal_size_limit = ${WAL_SIZE_LIMIT_BYTES};`);
       yield* migrate;
+      yield* sql`PRAGMA synchronous = NORMAL;`;
       // Collecting stats scans every page, and stale small-table stats cause scans after growth; use indexes by default.
       // Connections cache stats; reload after deleting them.
       const statTables = yield* sql`SELECT 1 FROM sqlite_schema WHERE name = 'sqlite_stat1'`;
@@ -98,7 +104,23 @@ const makeLayerSetup = <E, R>(migrate: Effect.Effect<unknown, E, R>) =>
     }).pipe(Effect.withSpan("Sqlite.setup")),
   );
 
-const layerSetup = makeLayerSetup(runMigrations());
+const layerSetup = makeLayerSetup(Effect.andThen(transferLegacyBots(), runMigrations()));
+
+const botLayer = (filename: string) =>
+  Layer.effect(
+    BotDatabase.BotDatabase,
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`PRAGMA busy_timeout = 5000`;
+      yield* sql`PRAGMA foreign_keys = ON`;
+      yield* sql`PRAGMA journal_mode = WAL`;
+      yield* sql`PRAGMA synchronous = FULL`;
+      yield* BotMigrations.runMigrations();
+      return sql;
+    }),
+  ).pipe(Layer.provide(NodeSqliteClient.layer({ filename })));
+
+
 
 const makeLayerFromPath = <E, R>(makeSetup: (dbPath: string) => Layer.Layer<never, E, R>) =>
   Effect.fn("makeSqlitePersistenceLive")(function* (dbPath: string) {
@@ -106,9 +128,9 @@ const makeLayerFromPath = <E, R>(makeSetup: (dbPath: string) => Layer.Layer<neve
     const path = yield* Path.Path;
     yield* fs.makeDirectory(path.dirname(dbPath), { recursive: true });
 
-    return Layer.provideMerge(
+    const databases = Layer.provideMerge(
       makeSetup(dbPath),
-      NodeSqliteClient.layer({
+      Layer.merge(botLayer(path.join(path.dirname(dbPath), "bots.sqlite")), NodeSqliteClient.layer({
         filename: dbPath,
         readerWorker: true,
         // A slow disk then delays writes instead of freezing every client.
@@ -117,8 +139,9 @@ const makeLayerFromPath = <E, R>(makeSetup: (dbPath: string) => Layer.Layer<neve
           "db.name": path.basename(dbPath),
           "service.name": "t3code-server",
         },
-      }),
-    ).pipe(
+      })),
+    );
+    return BotRoutineStore.layer.pipe(Layer.provideMerge(databases),
       Layer.catchTag("SqlError", (error) =>
         Layer.effect(
           SqlClient.SqlClient,
@@ -134,13 +157,14 @@ const makeLayerFromPath = <E, R>(makeSetup: (dbPath: string) => Layer.Layer<neve
 
 export const layerFromPath = makeLayerFromPath(() => layerSetup);
 
-export const layerMemory = Layer.provideMerge(
-  layerSetup,
-  NodeSqliteClient.layer({ filename: ":memory:" }),
+export const layerMemory = BotRoutineStore.layer.pipe(
+  Layer.provideMerge(Layer.provideMerge(layerSetup, Layer.merge(
+    NodeSqliteClient.layer({ filename: ":memory:" }), botLayer(":memory:")
+  )))
 );
 
 const makeLayerConfig = <E, R>(
-  fromPath: (dbPath: string) => Layer.Layer<SqlClient.SqlClient, E, R>,
+  fromPath: (dbPath: string) => Layer.Layer<SqlClient.SqlClient | BotDatabase.BotDatabase | BotRoutineStore.BotRoutineStore, E, R>,
 ) =>
   Layer.unwrap(
     Effect.gen(function* () {

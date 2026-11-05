@@ -12,6 +12,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as BotDatabase from "./persistence/BotDatabase.ts";
 
 import * as BotLearning from "./BotLearning.ts";
 import * as BotStore from "./BotStore.ts";
@@ -168,7 +169,8 @@ const decodeSources = Schema.decodeUnknownEffect(
 export const layer = Layer.effect(
   BotTurnContext,
   Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
+    const sql = yield* BotDatabase.BotDatabase;
+    const main = yield* SqlClient.SqlClient;
     const store = yield* BotStore.BotStore;
 
     /** A task's work thread, resolved to the home conversation it belongs to. */
@@ -220,7 +222,7 @@ export const layer = Layer.effect(
           message: `${bot.name} is detached from this project. Reattach it to continue this conversation.`,
         } as const;
       }
-      const project = yield* sql<{ readonly title: string }>`
+      const project = yield* main<{ readonly title: string }>`
         SELECT title FROM projection_projects WHERE project_id = ${context.project_id}
       `.pipe(
         Effect.mapError(

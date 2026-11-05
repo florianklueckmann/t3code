@@ -35,7 +35,7 @@ import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
-import * as SqlClient from "effect/sql/SqlClient";
+import * as BotDatabase from "./persistence/BotDatabase.ts";
 
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
@@ -121,7 +121,7 @@ const errorMessage = (cause: unknown): string =>
   cause instanceof Error && cause.message !== "" ? cause.message : String(cause);
 
 const make = Effect.gen(function* () {
-  const sql = yield* SqlClient.SqlClient;
+  const sql = yield* BotDatabase.BotDatabase;
   const store = yield* BotStore.BotStore;
   const guard = yield* BotProjectGuard.BotProjectGuard;
   const projects = yield* ProjectService.ProjectService;

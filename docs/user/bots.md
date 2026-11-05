@@ -167,3 +167,10 @@ This is also what lets a Bot record a preferred source from its own conversation
 In the app, changing Bots needs the `orchestration:operate` permission, the same
 one that starts and messages threads. See [Remote access](./remote-access.md)
 for choosing a client's permissions.
+
+## Back up or move Bots
+
+Bots belong to the connected environment. To back up or move them, stop its
+server and copy the whole T3 home, including both `userdata/bots.sqlite` and
+`userdata/statev2.sqlite`. Keep the two databases from the same backup: Bot
+conversations, work threads and schedules refer to records in both.

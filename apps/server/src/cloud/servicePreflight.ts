@@ -1,3 +1,4 @@
+import { legacyBotMigrationHead } from "../bots/persistence/legacyBotHistory.ts";
 import packageJson from "../../package.json" with { type: "json" };
 import { BUILD_MIGRATION_HEAD, recordedMigrations } from "../persistence/databaseMigrationHead.ts";
 import { skippedV2Migrations } from "../persistence/Migrations.ts";
@@ -50,6 +51,9 @@ export function runServicePreflight(input: {
       version,
       reason: `Could not read this database to confirm t3@${version} supports it.`,
     };
+  }
+  if (legacyBotMigrationHead(recorded) !== undefined) {
+    return { status: "ready", version, launcherProtocol };
   }
   const newer = recorded
     .filter(({ id }) => id > BUILD_MIGRATION_HEAD)

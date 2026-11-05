@@ -15,7 +15,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
-import * as SqlClient from "effect/sql/SqlClient";
+import * as BotDatabase from "./persistence/BotDatabase.ts";
 
 /** A pending archive or unarchive of a home thread, recorded before the thread command runs. */
 export type BotThreadSync = "archive" | "unarchive";
@@ -233,7 +233,7 @@ export function botRow(input: {
 export const layer = Layer.effect(
   BotStore,
   Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
+    const sql = yield* BotDatabase.BotDatabase;
     const fail = (operation: string) => (cause: unknown) => new BotStoreError({ operation, cause });
 
     const getBot = Effect.fn("BotStore.getBot")(
