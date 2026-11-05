@@ -11,12 +11,19 @@ import {
   type OrchestrationV2ThreadShell,
   type Project,
   ProjectId,
+  RunId,
+  MessageId,
+  NodeId,
+  TurnItemId,
+  type OrchestrationV2ThreadProjection,
+  type OrchestrationV2Run,
   ProviderDriverKind,
   ProviderInstanceId,
   type RuntimeMode,
   type ScheduledTaskUpsertInput,
   ThreadId,
 } from "@t3tools/contracts";
+import { makeSubagentConversationArtifacts } from "@t3tools/provider-core/server/subagentProjection";
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -72,6 +79,13 @@ interface FakeThread {
 
 /** Stands in for the orchestrator: launches are idempotent per command id, like receipts. */
 const makeThreadWorld = Effect.gen(function* () {
+  const records = yield* Ref.make(
+    new Map<
+      ThreadId,
+      Pick<OrchestrationV2ThreadProjection, "thread" | "runs" | "messages" | "turnItems">
+    >(),
+  );
+  const reads = yield* Ref.make<ReadonlyArray<unknown>>([]);
   const threads = yield* Ref.make(new Map<ThreadId, FakeThread>());
   const launchedCommands = yield* Ref.make(new Set<string>());
   const commands = yield* Ref.make<ReadonlyArray<string>>([]);
@@ -199,7 +213,19 @@ const makeThreadWorld = Effect.gen(function* () {
   });
 
   const threadLayer = Layer.mergeAll(
-    Layer.mock(ThreadManagementService.ThreadManagementService)({ dispatch, getThreadShell }),
+    Layer.mock(ThreadManagementService.ThreadManagementService)({
+      dispatch,
+      getThreadShell,
+      getProjectThreadRecords: (input, fields, filter) =>
+        Effect.gen(function* () {
+          yield* Ref.update(reads, (all) => [...all, { input, fields, filter }]);
+          const record = (yield* Ref.get(records)).get(input.threadId);
+          if (record === undefined || record.thread.projectId !== input.projectId) {
+            return yield* new ThreadManagementService.ThreadManagementThreadNotFoundError(input);
+          }
+          return record as never;
+        }),
+    }),
     Layer.mock(ThreadLaunchService.ThreadLaunchService)({ launch }),
   );
 
@@ -215,6 +241,8 @@ const makeThreadWorld = Effect.gen(function* () {
 
   return {
     threads,
+    records,
+    reads,
     update,
     threadLayer,
     nextLaunch,
@@ -420,6 +448,171 @@ it.effect("looks up an existing work thread outside the latest 50 environment ta
       }),
     );
   }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect(
+  "reads only the task's saved result run and reports missing or unfinished results honestly",
+  () =>
+    Effect.gen(function* () {
+      yield* seedProject;
+      const world = yield* makeThreadWorld;
+      const sql = yield* BotDatabase.BotDatabase;
+      yield* withServices(world, (services) =>
+        Effect.gen(function* () {
+          yield* attachBot(services);
+          const task = yield* services.tasks.start({
+            botId,
+            projectId: campaign,
+            prompt: "Prepare.",
+          });
+          const workThreadId = task.workThreadId ?? assert.fail("no work thread");
+          assert.equal(
+            (yield* services.tasks.getResult({ taskId: task.id })).result.state,
+            "not_completed",
+          );
+          assert.lengthOf(yield* Ref.get(world.reads), 0);
+          yield* world.update(workThreadId, { status: "completed" });
+          yield* services.tasks.reconcile;
+          const runId = RunId.make(`run:${workThreadId}`);
+          const laterRunId = RunId.make("later-follow-up");
+          const output = (id: string, run: RunId, text: string, ordinal: number) => {
+            const artifacts = makeSubagentConversationArtifacts({
+              messageId: MessageId.make(id),
+              turnItemId: TurnItemId.make(id),
+              threadId: workThreadId,
+              rootNodeId: NodeId.make("root"),
+              providerThreadId: null,
+              providerTurnId: null,
+              nativeItemRef: null,
+              role: "assistant",
+              text,
+              ordinal,
+              now: DateTime.makeUnsafe(START),
+            });
+            if (artifacts.turnItem.type !== "assistant_message")
+              return assert.fail("no assistant item");
+            return {
+              message: { ...artifacts.message, runId: run },
+              turnItem: { ...artifacts.turnItem, runId: run },
+            };
+          };
+          const progress = output("progress", runId, "Starting.", 1);
+          const final = output("final", runId, "The saved result.", 2);
+          const later = output("later", laterRunId, "Different follow-up answer.", 3);
+          const run = {
+            id: runId,
+            threadId: workThreadId,
+            status: "completed",
+          } as OrchestrationV2Run;
+          const record = {
+            thread: {
+              id: workThreadId,
+              projectId: campaign,
+              deletedAt: null,
+            } as OrchestrationV2ThreadProjection["thread"],
+            runs: [run, { ...run, id: laterRunId }],
+            messages: [progress.message, final.message, later.message],
+            turnItems: [
+              later.turnItem,
+              final.turnItem,
+              progress.turnItem,
+              {
+                ...final.turnItem,
+                type: "reasoning",
+                text: "Hidden reasoning",
+                ordinal: 99,
+              } as OrchestrationV2ThreadProjection["turnItems"][number],
+            ],
+          };
+          yield* Ref.update(world.records, (all) => new Map(all).set(workThreadId, record));
+          yield* world.update(workThreadId, { runId: laterRunId });
+          const saved = yield* services.tasks.getResult({ taskId: task.id });
+          assert.equal(saved.task.id, task.id);
+          assert.deepEqual(saved.result, { state: "available", runId, text: "The saved result." });
+          assert.deepEqual((yield* Ref.get(world.reads))[0], {
+            input: { projectId: campaign, threadId: workThreadId },
+            fields: ["runs", "messages", "turnItems"],
+            filter: {
+              runIds: [runId],
+              messageRoles: ["assistant"],
+              messageRunIds: [runId],
+              turnItemRunIds: [runId],
+              turnItemTypes: ["assistant_message"],
+            },
+          });
+          for (const change of [
+            { runs: [] },
+            { runs: [{ ...run, threadId: ThreadId.make("other-task") }] },
+            { runs: [{ ...run, status: "running" as const }] },
+            { thread: { ...record.thread, projectId: ProjectId.make("other-project") } },
+          ]) {
+            yield* Ref.update(world.records, (all) =>
+              new Map(all).set(workThreadId, { ...record, ...change }),
+            );
+            assert.equal(
+              (yield* services.tasks.getResult({ taskId: task.id })).result.state,
+              "unavailable",
+            );
+          }
+          yield* Ref.update(world.records, (all) =>
+            new Map(all).set(workThreadId, {
+              ...record,
+              messages: [],
+              turnItems: [later.turnItem],
+            }),
+          );
+          assert.deepEqual((yield* services.tasks.getResult({ taskId: task.id })).result, {
+            state: "empty",
+            runId,
+          });
+          yield* Ref.update(world.records, (all) => {
+            const next = new Map(all);
+            next.delete(workThreadId);
+            return next;
+          });
+          assert.equal(
+            (yield* services.tasks.getResult({ taskId: task.id })).result.state,
+            "unavailable",
+          );
+          for (const text of ["", "   "]) {
+            yield* Ref.update(world.records, (all) =>
+              new Map(all).set(workThreadId, {
+                ...record,
+                messages: [progress.message, { ...final.message, text }],
+                turnItems: [progress.turnItem, final.turnItem],
+              }),
+            );
+            assert.deepEqual((yield* services.tasks.getResult({ taskId: task.id })).result, {
+              state: "empty",
+              runId,
+            });
+          }
+          yield* Ref.update(world.records, (all) => new Map(all).set(workThreadId, record));
+          yield* sql`UPDATE bot_tasks SET result_run_id = NULL WHERE task_id = ${task.id}`;
+          assert.equal(
+            (yield* services.tasks.getResult({ taskId: task.id })).result.state,
+            "unavailable",
+          );
+          const missing = yield* services.tasks
+            .getResult({ taskId: BotTaskId.make("missing") })
+            .pipe(Effect.flip);
+          assert.equal(missing.message, "Bot task not found.");
+          for (const status of [
+            "running",
+            "waiting",
+            "failed",
+            "interrupted",
+            "cancelled",
+            "skipped",
+          ] as const) {
+            yield* sql`UPDATE bot_tasks SET status = ${status} WHERE task_id = ${task.id}`;
+            const result = yield* services.tasks.getResult({ taskId: task.id });
+            assert.equal(result.task.status, status);
+            assert.equal(result.result.state, "not_completed");
+          }
+        }),
+      );
+    }).pipe(Effect.provide(layerDatabase)),
 );
 
 it.effect("does not refresh a work-thread subscription for unrelated task changes", () =>

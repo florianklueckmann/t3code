@@ -6,6 +6,8 @@ import {
   type BotId,
   type BotStartTaskInput,
   BotTaskId,
+  type BotTaskResult,
+  type BotTaskResultInput,
   type BotTaskListInput,
   type BotTaskListResult,
   type BotTaskOrigin,
@@ -16,9 +18,11 @@ import {
   MessageId,
   type ModelSelection,
   type OrchestrationV2ThreadShell,
+  type OrchestrationV2TurnItem,
   type ProjectId,
   type RuntimeMode,
   ThreadId,
+  RunId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -130,6 +134,7 @@ export class BotTaskService extends Context.Service<
       readonly projectId: ProjectId;
     }) => Effect.Effect<{ readonly modelSelection: ModelSelection }, BotError>;
     readonly get: (taskId: BotTaskId) => Effect.Effect<BotTaskSummary, BotError>;
+    readonly getResult: (input: BotTaskResultInput) => Effect.Effect<BotTaskResult, BotError>;
     readonly list: (input: BotTaskListInput) => Effect.Effect<BotTaskListResult, BotError>;
     readonly subscribeList: (input: BotTaskListInput) => Stream.Stream<BotTaskListResult, BotError>;
     readonly cancel: (input: BotCancelTaskInput) => Effect.Effect<BotTaskSummary, BotError>;
@@ -466,6 +471,84 @@ const make = Effect.gen(function* () {
     return yield* toSummary(row);
   });
 
+  const getResult: BotTaskService["Service"]["getResult"] = Effect.fn("BotTaskService.getResult")(
+    function* (input) {
+      const row = yield* readRow(input.taskId);
+      if (row === undefined) return yield* botError("Bot task not found.")();
+      const task = yield* toSummary(row);
+      if (task.status !== "completed") return { task, result: { state: "not_completed" } };
+      const unavailable = { task, result: { state: "unavailable" } } as const;
+      if (row.result_run_id === null || task.workThreadId === null) return unavailable;
+      const shell = yield* threads
+        .getThreadShell(task.workThreadId)
+        .pipe(Effect.mapError(botError("Failed to read the Bot task's work thread.")));
+      if (shell === null || shell.deletedAt !== null) return unavailable;
+      const runId = RunId.make(row.result_run_id);
+      const records = yield* threads
+        .getProjectThreadRecords(
+          { projectId: task.projectId, threadId: task.workThreadId },
+          ["runs", "messages", "turnItems"],
+          {
+            runIds: [runId],
+            messageRoles: ["assistant"],
+            messageRunIds: [runId],
+            turnItemRunIds: [runId],
+            turnItemTypes: ["assistant_message"],
+          },
+        )
+        .pipe(
+          Effect.catchTags({ ThreadManagementThreadNotFoundError: () => Effect.succeed(null) }),
+          Effect.mapError(botError("Failed to read the Bot task's saved result.")),
+        );
+      if (
+        records === null ||
+        records.thread.id !== task.workThreadId ||
+        records.thread.projectId !== task.projectId ||
+        records.thread.deletedAt !== null
+      )
+        return unavailable;
+      const run = records.runs.find(
+        (candidate) => candidate.id === runId && candidate.threadId === task.workThreadId,
+      );
+      if (run === undefined || run.status !== "completed") return unavailable;
+      const finalItem = records.turnItems
+        .filter(
+          (item): item is Extract<OrchestrationV2TurnItem, { type: "assistant_message" }> =>
+            item.threadId === task.workThreadId &&
+            item.runId === runId &&
+            item.type === "assistant_message",
+        )
+        .toSorted((left, right) => right.ordinal - left.ordinal)[0];
+      const messages = records.messages.filter(
+        (message) =>
+          message.threadId === task.workThreadId &&
+          message.runId === runId &&
+          message.role === "assistant",
+      );
+      // Turn item order survives providers finalizing several messages at the same timestamp.
+      const message =
+        finalItem === undefined
+          ? messages.toSorted(
+              (left, right) =>
+                DateTime.toEpochMillis(right.updatedAt) - DateTime.toEpochMillis(left.updatedAt) ||
+                DateTime.toEpochMillis(right.createdAt) - DateTime.toEpochMillis(left.createdAt),
+            )[0]
+          : messages.find((candidate) => candidate.id === finalItem.messageId);
+      if (
+        message?.streaming ||
+        (finalItem !== undefined && (finalItem.streaming || finalItem.status !== "completed"))
+      )
+        return unavailable;
+      if (message === undefined && finalItem?.textOmitted === true) return unavailable;
+      const text = message?.text ?? finalItem?.text ?? "";
+      return {
+        task,
+        result:
+          text.trim() === "" ? { state: "empty", runId } : { state: "available", runId, text },
+      };
+    },
+  );
+
   const list: BotTaskService["Service"]["list"] = Effect.fn("BotTaskService.list")(
     function* (input) {
       const rows = yield* sql<BotTaskRow>`
@@ -642,6 +725,7 @@ const make = Effect.gen(function* () {
     admitRoutine,
     requireRunnable,
     get,
+    getResult,
     list,
     subscribeList,
     cancel,
