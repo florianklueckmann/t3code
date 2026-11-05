@@ -7,6 +7,7 @@ import Appearance from "./Migrations/002_BotAppearance.ts";
 import Tasks from "./Migrations/003_BotTasks.ts";
 import Learning from "./Migrations/004_BotLearning.ts";
 import RoutineChanges from "./Migrations/006_BotRoutineChanges.ts";
+import Continuation from "./Migrations/009_BotContinuation.ts";
 import HomeInput from "./Migrations/008_BotTaskHomeInput.ts";
 import HomeReturn from "./Migrations/007_BotTaskHomeReturn.ts";
 
@@ -40,6 +41,7 @@ const entries = [
   [6, "BotRoutineChanges", RoutineChanges],
   [7, "BotTaskHomeReturn", HomeReturn],
   [8, "BotTaskHomeInput", HomeInput],
+  [9, "BotContinuation", Continuation],
 ] as const;
 const run = Migrator.make({});
 export const runMigrations = Effect.fn("BotDatabase.runMigrations")(function* () {

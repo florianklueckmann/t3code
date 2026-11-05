@@ -1147,6 +1147,7 @@ it.effect("runs a dated preparation once and publishes its result to the home co
           taskId: task?.id ?? null,
         });
         assert.include(context.instructions, "scheduled routine");
+        assert.notInclude(context.instructions, "Working notes");
         assert.include(context.instructions, iso(sessionAt));
         assert.include(context.instructions, "No changes");
         assert.notInclude(context.instructions, "recorded play");

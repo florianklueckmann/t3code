@@ -1,3 +1,4 @@
+import * as BotContinuation from "./BotContinuation.ts";
 import {
   type BotId,
   BotSourcePreference,
@@ -61,6 +62,7 @@ function buildBotInstructions(input: {
   readonly sources: ReadonlyArray<BotSourcePreference>;
   readonly task: WorkTask | null;
   readonly learningPolicy: string;
+  readonly continuation: string;
   readonly activeLearning: ReturnType<typeof BotLearning.activeLearningLines>;
 }): string {
   const place =
@@ -69,6 +71,7 @@ function buildBotInstructions(input: {
       : `This thread is a work thread for one task (taskId "${input.task.taskId}") of your home conversation for the project "${input.projectTitle}" (projectId "${input.projectId}").`;
   const { lines, omitted } = input.activeLearning;
   const sections = [
+    input.continuation === "" ? null : input.continuation,
     `You are "${input.botName}" (botId "${input.botId}"), a Bot the user configured in T3 Code. ${place} Apply the project guidance and sources below only to this project; your other projects have their own. Names can repeat across Bots and projects, so identify them by these ids.`,
     input.botInstructions === ""
       ? null
@@ -172,6 +175,7 @@ export const layer = Layer.effect(
     const sql = yield* BotDatabase.BotDatabase;
     const main = yield* SqlClient.SqlClient;
     const store = yield* BotStore.BotStore;
+    const continuation = yield* BotContinuation.BotContinuation;
 
     /** A task's work thread, resolved to the home conversation it belongs to. */
     const findWorkTask = Effect.fn("BotTurnContext.findWorkTask")(function* (threadId: ThreadId) {
@@ -248,6 +252,19 @@ export const layer = Layer.effect(
           task,
           learningPolicy: bot.learning_policy,
           activeLearning: BotLearning.activeLearningLines(learning, context.project_id),
+          continuation:
+            task !== null
+              ? ""
+              : BotContinuation.continuationInjection(
+                  yield* continuation
+                    .get({ botId: bot.bot_id as BotId, projectId: context.project_id as ProjectId })
+                    .pipe(
+                      Effect.mapError(
+                        (cause) =>
+                          new BotStore.BotStoreError({ operation: "read-continuation", cause }),
+                      ),
+                    ),
+                ),
         }),
         scope: {
           botId: bot.bot_id as BotId,
@@ -260,7 +277,7 @@ export const layer = Layer.effect(
 
     return BotTurnContext.of({ forThread });
   }),
-).pipe(Layer.provide(BotStore.layer));
+).pipe(Layer.provide(Layer.merge(BotStore.layer, BotContinuation.layer)));
 
 export const layerEmpty = Layer.succeed(
   BotTurnContext,
