@@ -590,20 +590,11 @@ const make = Effect.gen(function* () {
     }
     // The result stays in the work thread; the home conversation shows its card and turns unread.
     if (current.status !== "cancelled") {
-      yield* threads
-        .dispatch({
-          type: "thread.mark-unread",
-          commandId: CommandId.make(`bot-task-notify:${current.task_id}`),
-          threadId: ThreadId.make(current.home_thread_id),
-        })
-        .pipe(
-          Effect.catchCause((cause) =>
-            Effect.logWarning("Could not mark the Bot conversation unread", {
-              taskId: current.task_id,
-              cause,
-            }),
-          ),
-        );
+      yield* threads.dispatch({
+        type: "thread.mark-unread",
+        commandId: CommandId.make(`bot-task-notify:${current.task_id}`),
+        threadId: ThreadId.make(current.home_thread_id),
+      });
     }
     const now = yield* nowIso;
     yield* sql`
