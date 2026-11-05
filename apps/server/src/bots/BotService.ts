@@ -211,6 +211,15 @@ const make = Effect.gen(function* () {
     yield* store.clearThreadSync({ homeThreadId, revision: context.revision });
   });
 
+  const revokeHomeReturns = Effect.fn("BotService.revokeHomeReturns")(function* (
+    botId: BotId,
+    projectId?: ProjectId,
+  ) {
+    yield* sql`UPDATE bot_tasks SET return_home_run_id = NULL
+      WHERE bot_id = ${botId} AND return_finished_at IS NULL
+        AND (${projectId ?? null} IS NULL OR project_id = ${projectId ?? null})`;
+  });
+
   /**
    * Archive and detach pause routines before stopping unfinished work, so nothing new starts
    * meanwhile. Restore and reattach leave routines paused until the user resumes them.
@@ -365,6 +374,7 @@ const make = Effect.gen(function* () {
             const contexts = (yield* store.listContexts(input.botId)).filter(
               (context) => context.detached_at === null,
             );
+            if (input.archived) yield* revokeHomeReturns(input.botId);
             if (!changed) return contexts;
             yield* store.updateBot({
               ...bot,
@@ -559,10 +569,15 @@ const make = Effect.gen(function* () {
             detached_at: now,
             updated_at: now,
           };
-    if (next !== existing) {
-      yield* store.upsertContext(next).pipe(Effect.mapError(storeError(input.botId)));
-      yield* notifyChanged;
-    }
+    yield* sql
+      .withTransaction(
+        Effect.gen(function* () {
+          if (next !== existing) yield* store.upsertContext(next);
+          yield* revokeHomeReturns(input.botId, input.projectId);
+        }),
+      )
+      .pipe(Effect.mapError(storeError(input.botId)));
+    if (next !== existing) yield* notifyChanged;
     yield* stopWork(input.botId, input.projectId);
     yield* syncThreads(input.botId, [next]);
     return yield* readDetail(input.botId);

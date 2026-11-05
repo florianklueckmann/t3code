@@ -10,6 +10,7 @@ export function isDirectHomeInput(message: OrchestrationV2ConversationMessage | 
     message.notification === undefined &&
     message.delegatedCompletion === undefined &&
     message.senderThreadId === undefined &&
+    message.scheduledTaskId === undefined &&
     ((message.createdBy === "user" &&
       (message.creationSource === "web" || message.creationSource === "mobile")) ||
       (message.createdBy === "agent" && message.creationSource === "mcp"))

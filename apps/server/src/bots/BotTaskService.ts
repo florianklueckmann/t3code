@@ -482,8 +482,8 @@ const make = Effect.gen(function* () {
                   input.botId,
                 )();
               const pending = yield* sql`SELECT task_id FROM bot_tasks
-            WHERE home_thread_id = ${row.home_thread_id} AND return_home_run_id = ${returnHomeRunId}
-              AND return_finished_at IS NULL AND task_id <> ${row.task_id} LIMIT 1`;
+            WHERE home_thread_id = ${row.home_thread_id} AND return_home_message_id = ${returnHomeMessageId}
+              AND return_home_run_id IS NOT NULL AND return_finished_at IS NULL AND task_id <> ${row.task_id} LIMIT 1`;
               if (pending.length > 0)
                 return yield* botError(
                   "This Home input turn already has a pending task return. Cancel it before starting another.",

@@ -21,6 +21,8 @@ import {
   ProviderInstanceId,
   type RuntimeMode,
   type ScheduledTaskUpsertInput,
+  ScheduledTaskId,
+  ScheduledTaskError,
   ThreadId,
 } from "@t3tools/contracts";
 import { makeSubagentConversationArtifacts } from "@t3tools/provider-core/server/subagentProjection";
@@ -649,7 +651,15 @@ it.effect(
 const seedHomeRun = Effect.fn("BotTaskServiceTest.seedHomeRun")(function* (
   world: ThreadWorld,
   home: ThreadId,
-  provenance: "ui" | "external-mcp" | "server" | "provider" | "forwarded" | "automatic" = "ui",
+  provenance:
+    | "ui"
+    | "external-mcp"
+    | "server"
+    | "provider"
+    | "forwarded"
+    | "automatic"
+    | "scheduled-ui"
+    | "scheduled-mcp" = "ui",
 ) {
   const runId = RunId.make(`user-run:${home}`);
   const messageId = MessageId.make(`user-message:${home}`);
@@ -688,15 +698,18 @@ const seedHomeRun = Effect.fn("BotTaskServiceTest.seedHomeRun")(function* (
         {
           ...input.message,
           runId,
-          createdBy: provenance === "ui" ? "user" : "agent",
+          createdBy: provenance === "ui" || provenance === "scheduled-ui" ? "user" : "agent",
           creationSource:
-            provenance === "ui"
+            provenance === "ui" || provenance === "scheduled-ui"
               ? "web"
               : provenance === "server"
                 ? "server"
                 : provenance === "provider"
                   ? "provider"
                   : "mcp",
+          ...(provenance.startsWith("scheduled-")
+            ? { scheduledTaskId: ScheduledTaskId.make("scheduled-home") }
+            : {}),
           ...(provenance === "forwarded" ? { senderThreadId: ThreadId.make("sender") } : {}),
           ...(provenance === "automatic"
             ? {
@@ -806,90 +819,121 @@ it.effect("returns only opted-in saved results to Home once across retry and res
   }).pipe(Effect.provide(layerDatabase)),
 );
 
-it.effect.each(["foreign-home", "automatic-home", "server", "provider", "forwarded"] as const)(
-  "refuses return-to-Home from %s before launching work",
-  (caller) =>
-    Effect.gen(function* () {
-      yield* seedProject;
-      const world = yield* makeThreadWorld;
-      yield* withServices(world, (services) =>
-        Effect.gen(function* () {
-          const home = yield* attachBot(services);
-          yield* seedHomeRun(
-            world,
-            home,
-            caller === "automatic-home" ? "automatic" : caller === "foreign-home" ? "ui" : caller,
-          );
-          const started = yield* services.tasks
-            .start(
-              { botId, projectId: campaign, prompt: "Prepare." },
-              { returnToHomeFrom: caller === "foreign-home" ? ThreadId.make("other") : home },
-            )
-            .pipe(Effect.exit);
-          assert.equal(started._tag, "Failure");
-          assert.lengthOf((yield* services.tasks.list({ botId })).tasks, 0);
-        }),
-      );
-    }).pipe(Effect.provide(layerDatabase)),
+it.effect.each([
+  "foreign-home",
+  "automatic-home",
+  "server",
+  "provider",
+  "forwarded",
+  "scheduled-ui",
+  "scheduled-mcp",
+] as const)("refuses return-to-Home from %s before launching work", (caller) =>
+  Effect.gen(function* () {
+    yield* seedProject;
+    const world = yield* makeThreadWorld;
+    yield* withServices(world, (services) =>
+      Effect.gen(function* () {
+        const home = yield* attachBot(services);
+        yield* seedHomeRun(
+          world,
+          home,
+          caller === "automatic-home" ? "automatic" : caller === "foreign-home" ? "ui" : caller,
+        );
+        const started = yield* services.tasks
+          .start(
+            { botId, projectId: campaign, prompt: "Prepare." },
+            { returnToHomeFrom: caller === "foreign-home" ? ThreadId.make("other") : home },
+          )
+          .pipe(Effect.exit);
+        assert.equal(started._tag, "Failure");
+        assert.lengthOf((yield* services.tasks.list({ botId })).tasks, 0);
+      }),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
 );
 
-it.effect.each(["failed", "cancelled", "detach", "archive", "revoke"] as const)(
-  "revokes or retires an opted-in return after %s",
-  (state) =>
-    Effect.gen(function* () {
-      yield* seedProject;
-      const world = yield* makeThreadWorld;
-      yield* withServices(world, (services) =>
-        Effect.gen(function* () {
-          const home = yield* attachBot(services);
-          yield* seedHomeRun(world, home);
-          const task = yield* services.tasks.start(
-            { botId, projectId: campaign, prompt: "Prepare." },
-            { returnToHomeFrom: home },
-          );
-          if (state === "cancelled") yield* services.tasks.cancel({ taskId: task.id });
-          else
-            yield* world.update(task.workThreadId!, {
-              status: state === "failed" ? "failed" : "completed",
-            });
-          yield* services.tasks.reconcile;
-          const runId = RunId.make(`run:${task.workThreadId}`);
-          yield* Ref.update(world.records, (all) =>
-            new Map(all).set(task.workThreadId!, {
-              thread: {
-                id: task.workThreadId!,
-                projectId: campaign,
-                deletedAt: null,
-              } as OrchestrationV2ThreadProjection["thread"],
-              runs: [
-                {
-                  id: runId,
-                  threadId: task.workThreadId!,
-                  status: "completed",
-                } as OrchestrationV2Run,
-              ],
-              messages: [],
-              turnItems: [],
-            }),
-          );
-          if (state === "detach") {
-            yield* services.bots.detachProject({ botId, projectId: campaign });
-            yield* services.bots.attachProject({ botId, projectId: campaign });
-          } else if (state === "archive") {
-            yield* services.bots.setArchived({ botId, archived: true });
-            yield* services.bots.setArchived({ botId, archived: false });
-          } else if (state === "revoke") yield* services.tasks.cancel({ taskId: task.id });
-          yield* world.update(home, { status: "completed" });
-          yield* services.tasks.reconcile;
-          assert.lengthOf(yield* world.commandsMatching("bot-task.result.deliver"), 0);
-          if (state === "failed" || state === "cancelled")
-            assert.equal(
-              (yield* services.tasks.getResult({ taskId: task.id })).result.state,
-              "not_completed",
+it.effect.each([
+  "failed",
+  "cancelled",
+  "detach",
+  "archive",
+  "revoke",
+  "detach-interrupted",
+  "archive-interrupted",
+] as const)("revokes or retires an opted-in return after %s", (state) =>
+  Effect.gen(function* () {
+    yield* seedProject;
+    const world = yield* makeThreadWorld;
+    const sql = yield* BotDatabase.BotDatabase;
+    yield* withServices(world, (services) =>
+      Effect.gen(function* () {
+        const home = yield* attachBot(services);
+        yield* seedHomeRun(world, home);
+        const task = yield* services.tasks.start(
+          { botId, projectId: campaign, prompt: "Prepare." },
+          { returnToHomeFrom: home },
+        );
+        if (state === "cancelled") yield* services.tasks.cancel({ taskId: task.id });
+        else
+          yield* world.update(task.workThreadId!, {
+            status: state === "failed" ? "failed" : "completed",
+          });
+        yield* services.tasks.reconcile;
+        const runId = RunId.make(`run:${task.workThreadId}`);
+        yield* Ref.update(world.records, (all) =>
+          new Map(all).set(task.workThreadId!, {
+            thread: {
+              id: task.workThreadId!,
+              projectId: campaign,
+              deletedAt: null,
+            } as OrchestrationV2ThreadProjection["thread"],
+            runs: [
+              {
+                id: runId,
+                threadId: task.workThreadId!,
+                status: "completed",
+              } as OrchestrationV2Run,
+            ],
+            messages: [],
+            turnItems: [],
+          }),
+        );
+        if (state === "detach-interrupted" || state === "archive-interrupted") {
+          using _pause = vi
+            .spyOn(services.routines, "pauseBotRoutines")
+            .mockImplementation(() =>
+              Effect.fail(new ScheduledTaskError({ message: "Injected pause failure." })),
             );
-        }),
-      );
-    }).pipe(Effect.provide(layerDatabase)),
+          const transition = yield* (
+            state === "detach-interrupted"
+              ? services.bots.detachProject({ botId, projectId: campaign })
+              : services.bots.setArchived({ botId, archived: true })
+          ).pipe(Effect.exit);
+          assert.equal(transition._tag, "Failure");
+          const [revoked] =
+            yield* sql`SELECT return_home_run_id FROM bot_tasks WHERE task_id = ${task.id}`;
+          assert.isNull(revoked?.return_home_run_id);
+          if (state === "detach-interrupted")
+            yield* services.bots.attachProject({ botId, projectId: campaign });
+          else yield* services.bots.setArchived({ botId, archived: false });
+        } else if (state === "detach") {
+          yield* services.bots.detachProject({ botId, projectId: campaign });
+          yield* services.bots.attachProject({ botId, projectId: campaign });
+        } else if (state === "archive") {
+          yield* services.bots.setArchived({ botId, archived: true });
+          yield* services.bots.setArchived({ botId, archived: false });
+        } else if (state === "revoke") yield* services.tasks.cancel({ taskId: task.id });
+        yield* world.update(home, { status: "completed" });
+        yield* services.tasks.reconcile;
+        assert.lengthOf(yield* world.commandsMatching("bot-task.result.deliver"), 0);
+        if (state === "failed" || state === "cancelled")
+          assert.equal(
+            (yield* services.tasks.getResult({ taskId: task.id })).result.state,
+            "not_completed",
+          );
+      }),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
 );
 
 it.effect(
@@ -920,6 +964,30 @@ it.effect(
           );
           assert.isTrue(replacement.returnToHome);
           assert.lengthOf((yield* services.tasks.list({ botId })).tasks, 2);
+          yield* Ref.update(world.records, (all) => {
+            const records = all.get(home)!;
+            const messageId = MessageId.make("steered-home-input");
+            const firstMessage = records.messages[0]!;
+            const firstItem = records.turnItems[0]!;
+            if (firstItem.type !== "user_message") return assert.fail("missing Home input");
+            return new Map(all).set(home, {
+              ...records,
+              messages: [
+                ...records.messages,
+                { ...firstMessage, id: messageId, text: "New request." },
+              ],
+              turnItems: [
+                ...records.turnItems,
+                { ...firstItem, id: TurnItemId.make("steered-input"), messageId, ordinal: 2 },
+              ],
+            });
+          });
+          const steered = yield* services.tasks.start(
+            { botId, projectId: campaign, prompt: "Steered request." },
+            { returnToHomeFrom: home },
+          );
+          assert.isTrue(steered.returnToHome);
+          assert.lengthOf((yield* services.tasks.list({ botId })).tasks, 3);
         }),
       );
     }).pipe(Effect.provide(layerDatabase)),
