@@ -17,6 +17,9 @@ import { Command, Flag } from "effect/cli";
 
 import * as ProjectionStore from "../src/orchestration-v2/ProjectionStore.ts";
 import { rebuildMessageSearch } from "../src/orchestration-v2/messageSearchIndex.ts";
+import * as BotDatabase from "../src/bots/persistence/BotDatabase.ts";
+import * as BotMigrations from "../src/bots/persistence/Migrations.ts";
+import { transferLegacyBots } from "../src/bots/persistence/transferLegacyBots.ts";
 import { runMigrations } from "../src/persistence/Migrations.ts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
@@ -211,9 +214,17 @@ const rootIsVisible = (sql: SqlClient.SqlClient) => sql`
   AND json_extract(root.payload_json, '$.archivedAt') IS NULL`;
 
 // A single read transaction keeps the copy consistent with concurrent server writes.
-const copySourceSlice = Effect.fn("copyDevDbSourceSlice")(function* (sourcePath: string) {
+const copySourceSlice = Effect.fn("copyDevDbSourceSlice")(function* (
+  sourcePath: string,
+  botSnapshotPath: string,
+  botSourcePath?: string,
+) {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`ATTACH DATABASE ${`${NodeURL.pathToFileURL(sourcePath).href}?mode=ro`} AS src`;
+  if (botSourcePath) {
+    yield* sql`ATTACH DATABASE ${`${NodeURL.pathToFileURL(botSourcePath).href}?mode=ro`} AS bot_src`;
+    yield* sql`ATTACH DATABASE ${botSnapshotPath} AS bot_seed`;
+  }
   const schema = yield* sql<{ type: string; name: string; sql: string }>`
     SELECT type, name, sql FROM src.sqlite_master
     WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%'`;
@@ -238,7 +249,7 @@ const copySourceSlice = Effect.fn("copyDevDbSourceSlice")(function* (sourcePath:
   const references = yield* sql<{ name: string; parent: string }>`
     SELECT m.name, f."table" AS parent FROM src.sqlite_master m, pragma_foreign_key_list(m.name, 'src') f
     WHERE m.type = 'table'`;
-  const cleared = new Set(CLEARED_TABLES);
+  const cleared = new Set([...CLEARED_TABLES, "bot_tasks", "bot_routines", "bot_routine_intent"]);
   for (let grew = true; grew;) {
     grew = false;
     for (const { name, parent } of references) {
@@ -281,9 +292,31 @@ const copySourceSlice = Effect.fn("copyDevDbSourceSlice")(function* (sourcePath:
         if (entry.type !== "table") yield* sql.unsafe(entry.sql).unprepared;
       }
       yield* rebuildMessageSearch(sql);
+      if (botSourcePath) {
+        const botSchema = yield* sql<{ type: string; name: string; sql: string }>`
+          SELECT type, name, sql FROM bot_src.sqlite_master
+          WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%'`;
+        for (const entry of botSchema.filter((entry) => entry.type === "table")) {
+          yield* sql.unsafe(
+            entry.sql.replace(/^(CREATE TABLE (?:IF NOT EXISTS )?)/i, "$1bot_seed."),
+          ).unprepared;
+          if (!cleared.has(entry.name))
+            yield* sql.unsafe(
+              `INSERT INTO bot_seed."${entry.name}" SELECT * FROM bot_src."${entry.name}"`,
+            ).unprepared;
+        }
+        for (const entry of botSchema.filter((entry) => entry.type === "index"))
+          yield* sql.unsafe(
+            entry.sql.replace(/^(CREATE (?:UNIQUE )?INDEX (?:IF NOT EXISTS )?)/i, "$1bot_seed."),
+          ).unprepared;
+      }
     }),
   );
   yield* sql`DETACH DATABASE src`;
+  if (botSourcePath) {
+    yield* sql`DETACH DATABASE bot_src`;
+    yield* sql`DETACH DATABASE bot_seed`;
+  }
 });
 
 const pruneSnapshot = Effect.fn("pruneDevDbSnapshot")(function* (input: RunMigrateDevDbInput) {
@@ -387,6 +420,25 @@ const pruneSnapshot = Effect.fn("pruneDevDbSnapshot")(function* (input: RunMigra
     }),
   );
 
+  const bots = yield* BotDatabase.BotDatabase;
+  const projectIds = (yield* sql<{ project_id: string }>`SELECT project_id FROM kept_projects`).map(
+    (row) => row.project_id,
+  );
+  const threadIds = (yield* sql<{ thread_id: string }>`SELECT thread_id FROM kept_threads`).map(
+    (row) => row.thread_id,
+  );
+  yield* bots.withTransaction(
+    Effect.gen(function* () {
+      yield* bots`DELETE FROM bot_project_contexts
+      WHERE NOT ${bots.in("project_id", projectIds)} OR NOT ${bots.in("home_thread_id", threadIds)}`;
+      yield* bots`DELETE FROM bot_learning_revisions
+      WHERE project_id IS NOT NULL AND NOT ${bots.in("project_id", projectIds)}`;
+      yield* bots`UPDATE bot_project_contexts SET thread_sync = NULL`;
+      for (const table of ["bot_tasks", "bot_routines", "bot_routine_intent"])
+        yield* bots`DELETE FROM ${bots(table)}`;
+    }),
+  );
+
   const keptProjects = yield* sql<{ title: string; threads: number }>`
     SELECT
       p.title,
@@ -429,6 +481,10 @@ export const runMigrateDevDb = Effect.fn("runMigrateDevDb")(function* (
   const stateDir = path.join(baseDir, "userdata");
   const databasePath = path.join(stateDir, "statev2.sqlite");
   const snapshotPath = `${databasePath}.migrate-dev-db-tmp`;
+  const botDatabasePath = path.join(stateDir, "bots.sqlite");
+  const botSnapshotPath = `${botDatabasePath}.migrate-dev-db-tmp`;
+  const botSourcePath = path.join(path.dirname(sourcePath), "bots.sqlite");
+  const hasBotSource = yield* fs.exists(botSourcePath);
 
   if (!(yield* fs.exists(sourcePath))) {
     return yield* new MigrateDevDbSourceMissingError({ sourcePath });
@@ -441,20 +497,21 @@ export const runMigrateDevDb = Effect.fn("runMigrateDevDb")(function* (
     return yield* new MigrateDevDbSharedHomeError();
   }
   // Both destination and snapshot are deleted below; reject sources resolving to either.
-  const canonicalSourcePath = yield* fs
-    .realPath(sourcePath)
-    .pipe(Effect.orElseSucceed(() => sourcePath));
-  for (const destination of [databasePath, snapshotPath]) {
-    const canonicalDestination = yield* fs
-      .realPath(destination)
-      .pipe(Effect.orElseSucceed(() => destination));
-    if (canonicalSourcePath === canonicalDestination) {
-      return yield* new MigrateDevDbSourceIsDestinationError({ sourcePath });
+  const destinations = [databasePath, snapshotPath, botDatabasePath, botSnapshotPath];
+  for (const source of [sourcePath, ...(hasBotSource ? [botSourcePath] : [])]) {
+    const canonicalSourcePath = yield* fs.realPath(source).pipe(Effect.orElseSucceed(() => source));
+    for (const destination of destinations.flatMap((name) => [name, `${name}.compact`])) {
+      const canonicalDestination = yield* fs
+        .realPath(destination)
+        .pipe(Effect.orElseSucceed(() => destination));
+      if (canonicalSourcePath === canonicalDestination)
+        return yield* new MigrateDevDbSourceIsDestinationError({ sourcePath: source });
     }
   }
 
   yield* fs.makeDirectory(stateDir, { recursive: true });
   yield* ensureNotInUse(databasePath);
+  yield* ensureNotInUse(botDatabasePath);
 
   const wrapPhase =
     (phase: MigrateDevDbPhaseError["phase"], phaseDatabasePath: string) =>
@@ -466,9 +523,21 @@ export const runMigrateDevDb = Effect.fn("runMigrateDevDb")(function* (
       );
 
   yield* removeDatabaseFiles(snapshotPath);
+  yield* removeDatabaseFiles(botSnapshotPath);
+  const botLayer = Layer.effect(
+    BotDatabase.BotDatabase,
+    Effect.gen(function* () {
+      yield* BotMigrations.runMigrations();
+      return yield* SqlClient.SqlClient;
+    }),
+  ).pipe(Layer.provide(NodeSqliteClient.layer({ filename: botSnapshotPath })));
   const { executedMigrations, pruned } = yield* Effect.gen(function* () {
     yield* Console.log(`Copying visible threads from ${sourcePath} (read-only)...`);
-    yield* copySourceSlice(sourcePath).pipe(
+    yield* copySourceSlice(
+      sourcePath,
+      botSnapshotPath,
+      hasBotSource ? botSourcePath : undefined,
+    ).pipe(
       Effect.provide(NodeSqliteClient.layer({ filename: snapshotPath })),
       wrapPhase("snapshot", sourcePath),
     );
@@ -478,9 +547,10 @@ export const runMigrateDevDb = Effect.fn("runMigrateDevDb")(function* (
     const executed = yield* Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* sql.unsafe("PRAGMA foreign_keys = ON").unprepared;
+      yield* transferLegacyBots();
       return yield* runMigrations();
     }).pipe(
-      Effect.provide(NodeSqliteClient.layer({ filename: snapshotPath })),
+      Effect.provide(Layer.merge(NodeSqliteClient.layer({ filename: snapshotPath }), botLayer)),
       wrapPhase("migrate", snapshotPath),
     );
 
@@ -490,35 +560,56 @@ export const runMigrateDevDb = Effect.fn("runMigrateDevDb")(function* (
     const result = yield* pruneSnapshot(input).pipe(
       Effect.provide(
         ProjectionStore.layer.pipe(
-          Layer.provideMerge(NodeSqliteClient.layer({ filename: snapshotPath })),
+          Layer.provideMerge(
+            Layer.merge(NodeSqliteClient.layer({ filename: snapshotPath }), botLayer),
+          ),
         ),
       ),
       wrapPhase("prune", snapshotPath),
     );
 
     yield* Console.log(`Compacting into ${databasePath}...`);
-    // A server may have started during pruning; re-check before replacing its database.
-    yield* ensureNotInUse(databasePath);
-    yield* removeDatabaseFiles(databasePath);
+    const pair = [
+      [snapshotPath, databasePath],
+      [botSnapshotPath, botDatabasePath],
+    ] as const;
+    for (const [snapshot, destination] of pair) {
+      yield* removeDatabaseFiles(`${snapshot}.compact`);
+      yield* Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`VACUUM INTO ${`${snapshot}.compact`}`;
+      }).pipe(
+        Effect.provide(NodeSqliteClient.layer({ filename: snapshot })),
+        wrapPhase("compact", destination),
+      );
+    }
+    // A server may have started during pruning; re-check both before replacing the set.
+    for (const [, destination] of pair) yield* ensureNotInUse(destination);
+    for (const [snapshot, destination] of pair) {
+      yield* removeDatabaseFiles(destination);
+      yield* fs.rename(`${snapshot}.compact`, destination);
+    }
+    return { executedMigrations: executed, pruned: result };
+  }).pipe(
+    Effect.ensuring(
+      Effect.forEach(
+        [snapshotPath, botSnapshotPath, `${snapshotPath}.compact`, `${botSnapshotPath}.compact`],
+        removeDatabaseFiles,
+        { discard: true },
+      ),
+    ),
+  );
+  for (const destination of [databasePath, botDatabasePath]) {
+    yield* fs.chmod(destination, 0o600);
     yield* Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* sql`VACUUM INTO ${databasePath}`;
+      // VACUUM INTO loses WAL mode; restore the server boot setting.
+      yield* sql.unsafe("PRAGMA journal_mode = WAL").unprepared;
     }).pipe(
-      Effect.provide(NodeSqliteClient.layer({ filename: snapshotPath })),
-      wrapPhase("compact", databasePath),
+      Effect.provide(NodeSqliteClient.layer({ filename: destination })),
+      wrapPhase("compact", destination),
     );
-    return { executedMigrations: executed, pruned: result };
-  }).pipe(Effect.ensuring(removeDatabaseFiles(snapshotPath)));
-  yield* fs.chmod(databasePath, 0o600);
-
-  yield* Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    // VACUUM INTO loses WAL mode; restore the server boot setting.
-    yield* sql.unsafe("PRAGMA journal_mode = WAL").unprepared;
-  }).pipe(
-    Effect.provide(NodeSqliteClient.layer({ filename: databasePath })),
-    wrapPhase("compact", databasePath),
-  );
+  }
 
   const size = (yield* fs.stat(databasePath)).size;
   return {

@@ -4,12 +4,6 @@ import * as SqlClient from "effect/sql/SqlClient";
 export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
 
-  // A routine is a scheduled task with a Bot target. The revision changes with the schedule or
-  // enabled state, so a re-armed routine gets new occurrence keys.
-  yield* sql`ALTER TABLE scheduled_tasks ADD COLUMN bot_id TEXT`;
-  yield* sql`ALTER TABLE scheduled_tasks ADD COLUMN bot_session_at TEXT`;
-  yield* sql`ALTER TABLE scheduled_tasks ADD COLUMN schedule_revision INTEGER NOT NULL DEFAULT 0`;
-
   yield* sql`
     CREATE TABLE IF NOT EXISTS bot_tasks (
       task_id TEXT PRIMARY KEY,

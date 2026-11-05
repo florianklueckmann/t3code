@@ -32,6 +32,7 @@ import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as BotProjectGuard from "./BotProjectGuard.ts";
 import * as BotService from "./BotService.ts";
+import * as BotDatabase from "./persistence/BotDatabase.ts";
 import * as BotTaskService from "./BotTaskService.ts";
 import * as BotTurnContext from "./BotTurnContext.ts";
 
@@ -661,7 +662,7 @@ it.effect("counts a work task's lesson only once the server sees that task compl
   Effect.gen(function* () {
     yield* seedProjects;
     const world = yield* makeThreadWorld;
-    const sql = yield* SqlClient.SqlClient;
+    const sql = yield* BotDatabase.BotDatabase;
     // Task rows as BotTaskService persists them, with the status it derived from the work thread.
     const insertTask = (taskId: string, homeThreadId: ThreadId) =>
       sql`

@@ -70,7 +70,10 @@ The first start in a worktree seeds its empty database from a read-only copy of
 `~/.t3/userdata/statev2.sqlite` if the source is at most 500 MiB. Larger sources warn
 and dev starts with an empty database. `--no-seed` or `T3CODE_DEV_SEED=0` skips seeding.
 To copy a larger source, run `vp run migrate-dev-db` with dev stopped. It may use
-substantial disk space before pruning.
+substantial disk space before pruning. Seeding also reads a sibling `bots.sqlite` when
+present, keeps Bot identities, retained project contexts and learning, and replaces
+both dev databases. It drops Bot tasks, routines and pending changes along with
+scheduled work, auth sessions and environment links.
 Never run a development server against the live `~/.t3/userdata`.
 See [test data](../../AGENTS.md#test-data) for copying a consistent database snapshot.
 

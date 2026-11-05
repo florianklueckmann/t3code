@@ -5,13 +5,16 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { seedLegacy } from "../src/bots/persistence/legacyBotTestFixture.ts";
+import * as SqlitePersistence from "../src/persistence/Sqlite.ts";
+import * as BotDatabase from "../src/bots/persistence/BotDatabase.ts";
 import { runMigrations } from "../src/persistence/Migrations.ts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import { runMigrateDevDb } from "./migrate-dev-db.ts";
 
-const withDatabase = <A, E>(
+const withDatabase = <A, E, R>(
   databasePath: string,
-  effect: Effect.Effect<A, E, SqlClient.SqlClient>,
+  effect: Effect.Effect<A, E, R | SqlClient.SqlClient>,
 ) => effect.pipe(Effect.provide(NodeSqliteClient.layer({ filename: databasePath })));
 
 const createFixtureSource = Effect.fn("createMigrateDevDbFixtureSource")(function* (
@@ -105,6 +108,96 @@ const createFixtureSource = Effect.fn("createMigrateDevDbFixtureSource")(functio
 });
 
 it.layer(NodeServices.layer)("migrate-dev-db", (it) => {
+  it.effect.each(["legacy", "separated"] as const)(
+    "refreshes both dev databases from %s data without importing runnable Bot work",
+    (sourceKind) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const sourceDir = yield* fs.makeTempDirectoryScoped({ prefix: "migrate-dev-bots-src-" });
+        const destDir = yield* fs.makeTempDirectoryScoped({ prefix: "migrate-dev-bots-dest-" });
+        const source = path.join(sourceDir, "userdata", "statev2.sqlite");
+        yield* fs.makeDirectory(path.dirname(source), { recursive: true });
+        yield* withDatabase(source, seedLegacy(83));
+        // Add ordinary stopped history so the Bot home can survive the normal seed pruning.
+        yield* withDatabase(
+          source,
+          Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient;
+            yield* sql`INSERT INTO projection_projects
+          (project_id, title, workspace_root, scripts_json, created_at, updated_at)
+          VALUES ('project', 'Campaign', '/synthetic/campaign', '[]', '2026-08-01', '2026-08-01')`;
+            yield* sql`INSERT INTO orchestration_v2_projection_threads
+          (thread_id, project_id, title, default_provider, runtime_mode, interaction_mode, created_at, updated_at, payload_json)
+          VALUES ('home', 'project', 'Home', 'codex', 'full-access', 'default', '2026-08-01', '2026-08-01', '{}')`;
+            yield* sql`INSERT INTO auth_sessions (session_id, subject, scopes, method, issued_at, expires_at)
+          VALUES ('secret-session', 'user', '[]', 'pairing', '2026-08-01', '2027-08-01')`;
+            yield* sql`INSERT INTO bot_project_contexts
+          SELECT 'missing-home', bot_id, 'discarded-project', guidance, sources_json, revision, NULL, attached_at, detached_at, updated_at
+          FROM bot_project_contexts WHERE home_thread_id = 'home'`;
+            yield* sql`INSERT INTO bot_learning_revisions
+          SELECT 'shared-fact', revision, bot_id, NULL, 'fact', text, normalized_text, rationale, evidence,
+            origin, source_json, 'discarded-project', status, base_revision, conflicts_with_instruction, created_at, decided_at
+          FROM bot_learning_revisions WHERE revision = 1`;
+            yield* sql`INSERT INTO bot_learning_revisions
+          SELECT 'discarded-fact', revision, bot_id, 'discarded-project', 'fact', text, normalized_text, rationale, evidence,
+            origin, source_json, 'discarded-project', status, base_revision, conflicts_with_instruction, created_at, decided_at
+          FROM bot_learning_revisions WHERE entry_id = 'lesson' AND revision = 1`;
+          }),
+        );
+        if (sourceKind === "separated") {
+          yield* Effect.gen(function* () {
+            const bots = yield* BotDatabase.BotDatabase;
+            // A source journal must never be replayed into a dev seed.
+            yield* bots`INSERT INTO bot_routine_intent
+            (singleton, task_id, query, parameters_json, bot_id, bot_session_at, schedule_revision, removing)
+            VALUES (1, 'routine', 'DELETE FROM projection_projects', '[]', 'bot', NULL, 10, 0)`;
+          }).pipe(Effect.provide(SqlitePersistence.layerFromPath(source)));
+        }
+        const sourceBytes = yield* fs.readFile(source);
+        const sourceBots = path.join(path.dirname(source), "bots.sqlite");
+        const botBytes = sourceKind === "separated" ? yield* fs.readFile(sourceBots) : undefined;
+        const destination = path.join(destDir, "userdata", "statev2.sqlite");
+        // Refresh must replace stale target Bot state as well as the main database.
+        yield* Effect.gen(function* () {
+          const bots = yield* BotDatabase.BotDatabase;
+          yield* bots`INSERT INTO bots (bot_id, name, instructions, model_selection_json, learning_policy, created_at, updated_at)
+          VALUES ('stale', 'Stale', '', '{}', 'automatic', 'created', 'updated')`;
+        }).pipe(Effect.provide(SqlitePersistence.layerFromPath(destination)));
+        for (let refresh = 0; refresh < 2; refresh++) {
+          yield* runMigrateDevDb(
+            { baseDir: destDir, source, projects: 5, threadsPerProject: 10 },
+            { sharedHome: sourceDir },
+          );
+          yield* Effect.gen(function* () {
+            const main = yield* SqlClient.SqlClient;
+            const bots = yield* BotDatabase.BotDatabase;
+            assert.deepStrictEqual(yield* bots`SELECT bot_id FROM bots`, [{ bot_id: "bot" }]);
+            assert.lengthOf(yield* bots`SELECT * FROM bot_project_contexts`, 1);
+            assert.lengthOf(yield* bots`SELECT * FROM bot_learning_revisions`, 6);
+            assert.lengthOf(
+              yield* bots`SELECT * FROM bot_learning_revisions WHERE project_id IS NULL`,
+              1,
+            );
+            assert.deepStrictEqual(yield* bots`SELECT thread_sync FROM bot_project_contexts`, [
+              { thread_sync: null },
+            ]);
+            for (const table of ["bot_tasks", "bot_routines", "bot_routine_intent"])
+              assert.lengthOf(yield* bots`SELECT * FROM ${bots(table)}`, 0);
+            assert.lengthOf(yield* main`SELECT * FROM scheduled_tasks`, 0);
+            assert.lengthOf(yield* main`SELECT * FROM auth_sessions`, 0);
+            assert.lengthOf(yield* main`SELECT * FROM peer_environment_links`, 0);
+            assert.deepStrictEqual(
+              yield* main`SELECT thread_id FROM orchestration_v2_projection_threads`,
+              [{ thread_id: "home" }],
+            );
+          }).pipe(Effect.provide(SqlitePersistence.layerFromPath(destination)));
+        }
+        assert.deepStrictEqual(yield* fs.readFile(source), sourceBytes);
+        if (botBytes) assert.deepStrictEqual(yield* fs.readFile(sourceBots), botBytes);
+      }),
+  );
+
   it.effect("keeps stopped and settled thread families and clears pending work", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -345,13 +438,51 @@ it.layer(NodeServices.layer)("migrate-dev-db", (it) => {
     }),
   );
 
-  it.effect("refuses a source that resolves to a destination path", () =>
+  it.effect.each(["statev2.sqlite", "bots.sqlite"])(
+    "refuses to refresh while target %s is write-locked",
+    (name) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const sourceDir = yield* fs.makeTempDirectoryScoped({
+          prefix: "migrate-dev-db-locked-src-",
+        });
+        const destDir = yield* fs.makeTempDirectoryScoped({
+          prefix: "migrate-dev-db-locked-dest-",
+        });
+        const source = yield* createFixtureSource(sourceDir);
+        const destination = path.join(destDir, "userdata", "statev2.sqlite");
+        yield* Effect.void.pipe(Effect.provide(SqlitePersistence.layerFromPath(destination)));
+        yield* withDatabase(
+          path.join(path.dirname(destination), name),
+          Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient;
+            yield* sql.unsafe("BEGIN IMMEDIATE").unprepared;
+            try {
+              const error = yield* runMigrateDevDb(
+                { baseDir: destDir, source, projects: 5, threadsPerProject: 10 },
+                { sharedHome: sourceDir },
+              ).pipe(Effect.flip);
+              assert.equal(error._tag, "MigrateDevDbDestinationBusyError");
+            } finally {
+              yield* sql.unsafe("ROLLBACK").unprepared;
+            }
+          }),
+        );
+      }),
+  );
+
+  it.effect.each([
+    "statev2.sqlite.migrate-dev-db-tmp",
+    "bots.sqlite",
+    "bots.sqlite.migrate-dev-db-tmp",
+  ])("refuses a source that resolves to destination %s", (name) =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const sharedDir = yield* fs.makeTempDirectoryScoped({ prefix: "migrate-dev-db-overlap-" });
       const destDir = yield* fs.makeTempDirectoryScoped({ prefix: "migrate-dev-db-overlap-dest-" });
-      const leftoverSnapshot = path.join(destDir, "userdata", "statev2.sqlite.migrate-dev-db-tmp");
+      const leftoverSnapshot = path.join(destDir, "userdata", name);
       yield* fs.makeDirectory(path.dirname(leftoverSnapshot), { recursive: true });
       yield* fs.writeFileString(leftoverSnapshot, "not a real db");
 
