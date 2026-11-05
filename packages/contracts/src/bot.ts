@@ -6,6 +6,7 @@ import {
   NonNegativeInt,
   PositiveInt,
   ProjectId,
+  RunId,
   ScheduledTaskId,
   ThreadId,
   TrimmedNonEmptyString,
@@ -413,3 +414,17 @@ export type BotStartTaskInput = typeof BotStartTaskInput.Type;
 
 export const BotCancelTaskInput = Schema.Struct({ taskId: BotTaskId });
 export type BotCancelTaskInput = typeof BotCancelTaskInput.Type;
+
+export const BotTaskResultInput = Schema.Struct({ taskId: BotTaskId });
+export type BotTaskResultInput = typeof BotTaskResultInput.Type;
+
+export const BotTaskResult = Schema.Struct({
+  task: BotTaskSummary,
+  result: Schema.Union([
+    Schema.Struct({ state: Schema.Literal("available"), runId: RunId, text: Schema.String }),
+    Schema.Struct({ state: Schema.Literal("empty"), runId: RunId }),
+    Schema.Struct({ state: Schema.Literal("unavailable") }),
+    Schema.Struct({ state: Schema.Literal("not_completed") }),
+  ]),
+});
+export type BotTaskResult = typeof BotTaskResult.Type;

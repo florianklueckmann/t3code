@@ -64,9 +64,13 @@ A Bot can work on something in its own **work thread** instead of in its
 conversation. Ask the Bot to do it as a separate task, or start a routine. The
 work thread runs in the Bot's project with its instructions, guidance and
 sources. When it finishes, its card in the Bot's conversation shows the
-outcome, the conversation is marked unread, and **Open** takes you to the
-result. Cards also show tasks that are still working, waiting for your answer,
-failed, were cancelled, or were skipped.
+run status and the conversation is marked unread. **View result** reads the saved
+final response without opening the conversation; **Open thread** opens the work
+thread for context or follow-up. The saved result stays tied to the task's run,
+even after a follow-up in that thread. Completed means the run ended, not that
+its answer proves the goal was achieved. Older tasks may have no saved result.
+Cards also show tasks that are still working, waiting for your answer, failed,
+were interrupted or cancelled, or were skipped.
 
 A **routine** runs a task on a schedule. In **Settings → Bots**, edit
 the Bot and choose **Add routine** under the project. Describe what the Bot should do,

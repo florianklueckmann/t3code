@@ -2359,6 +2359,7 @@ export const layerWsRpc = (
         [WS_METHODS.botsUpdateProjectContext]: (input) => bots.updateProjectContext(input),
         [WS_METHODS.botsDetachProject]: (input) => bots.detachProject(input),
         [WS_METHODS.botsSubscribeTasks]: (input) => botTasks.subscribeList(input),
+        [WS_METHODS.botsGetTaskResult]: (input) => botTasks.getResult(input),
         [WS_METHODS.botsStartTask]: (input) => botTasks.start(input),
         [WS_METHODS.botsCancelTask]: (input) => botTasks.cancel(input),
         // The app's user records directly, so it is a standing instruction.

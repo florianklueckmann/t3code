@@ -3,6 +3,9 @@ import {
   BotId,
   type BotListResult,
   type BotTaskListInput,
+  type BotTaskResult,
+  type BotTaskResultInput,
+  RunId,
   EnvironmentId,
   ThreadId,
   BotTaskId,
@@ -14,9 +17,10 @@ import {
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
-import { Atom, AtomRegistry } from "effect/reactivity";
+import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 
 import {
   AVAILABLE_CONNECTION_STATE,
@@ -33,26 +37,31 @@ import type { RpcSession } from "../rpc/session.ts";
 import { createServerEnvironmentAtoms } from "./server.ts";
 
 const CONFIG = {
-  environment: { capabilities: { bots: true } },
+  environment: { capabilities: { bots: true, botTaskResults: true } },
   providers: [],
 } as unknown as ServerConfig;
 
 const THREAD = "bot-work:same-id";
 
 const makeHarness = Effect.gen(function* () {
-  const environments = yield* Effect.forEach(["first", "second", "unsupported"], (name) =>
+  const environments = yield* Effect.forEach(["first", "second", "unsupported", "legacy"], (name) =>
     Effect.gen(function* () {
       const environmentId = EnvironmentId.make(name);
-      const config =
-        name === "unsupported"
+      const config: ServerConfig =
+        name === "unsupported" || name === "legacy"
           ? {
               ...CONFIG,
               environment: {
                 ...CONFIG.environment,
-                capabilities: { ...CONFIG.environment.capabilities, bots: false },
+                capabilities: (() => {
+                  const { botTaskResults: _resultSupport, ...capabilities } =
+                    CONFIG.environment.capabilities;
+                  return { ...capabilities, bots: name !== "unsupported" };
+                })(),
               },
             }
           : CONFIG;
+      const resultReads = yield* Ref.make<ReadonlyArray<BotTaskResultInput>>([]);
       const bots = yield* SubscriptionRef.make<BotListResult>({
         bots: [
           {
@@ -69,6 +78,14 @@ const makeHarness = Effect.gen(function* () {
         ],
       });
       const client = {
+        [WS_METHODS.botsGetTaskResult]: (input: BotTaskResultInput) =>
+          Effect.gen(function* () {
+            yield* Ref.update(resultReads, (all) => [...all, input]);
+            return {
+              task: { id: input.taskId },
+              result: { state: "available", runId: RunId.make("saved-run"), text: name },
+            } as BotTaskResult;
+          }),
         [WS_METHODS.botsSubscribe]: () => {
           if (name === "unsupported") throw new Error("Unsupported Bot lookup");
           return SubscriptionRef.changes(bots);
@@ -125,7 +142,7 @@ const makeHarness = Effect.gen(function* () {
         disconnect: Effect.void,
         retryNow: Effect.void,
       });
-      return { environmentId, bots, supervisor, config };
+      return { environmentId, bots, supervisor, config, resultReads };
     }),
   );
   const environment = (id: EnvironmentId) => {
@@ -217,6 +234,47 @@ describe("work-thread Bot identity", () => {
           atoms.workThreadBot({ environmentId: EnvironmentId.make("unsupported"), id: THREAD }),
         ),
       ).toBeNull();
+    }).pipe(Effect.scoped),
+  );
+});
+
+describe("saved Bot task results", () => {
+  it.effect("reads lazily in the destination environment and skips older servers", () =>
+    Effect.gen(function* () {
+      const { atoms, registry, environments } = yield* makeHarness;
+      const input = { taskId: BotTaskId.make("same-task-id") };
+      for (const environment of environments) {
+        const { environmentId, supervisor, resultReads } = environment;
+        const atom = atoms.botTaskResult({ environmentId, input });
+        expect(yield* Ref.get(resultReads)).toEqual([]);
+        const supported = environmentId === "first" || environmentId === "second";
+        if (supported) {
+          yield* SubscriptionRef.set(supervisor.state, {
+            ...AVAILABLE_CONNECTION_STATE,
+            phase: "connected" as const,
+          });
+        }
+        yield* Effect.acquireRelease(
+          Effect.sync(() => registry.mount(atom)),
+          (unmount) => Effect.sync(unmount),
+        );
+        const answer = yield* AtomRegistry.toStream(registry, atom).pipe(
+          Stream.filter(AsyncResult.isSuccess),
+          Stream.runHead,
+        );
+        const result = Option.getOrThrow(answer).value;
+        if (!supported) {
+          expect(result).toBeNull();
+          expect(yield* Ref.get(resultReads)).toEqual([]);
+        } else {
+          expect(result?.result).toEqual({
+            state: "available",
+            runId: "saved-run",
+            text: environmentId,
+          });
+          expect(yield* Ref.get(resultReads)).toEqual([input]);
+        }
+      }
     }).pipe(Effect.scoped),
   );
 });

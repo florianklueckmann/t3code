@@ -395,6 +395,8 @@ import {
   BotUpdateProjectContextInput,
   BotCancelTaskInput,
   BotStartTaskInput,
+  BotTaskResultInput,
+  BotTaskResult,
   BotTaskListInput,
   BotTaskListResult,
   BotTaskSummary,
@@ -581,6 +583,7 @@ export const WS_METHODS = {
   botsUpdateProjectContext: "bots.updateProjectContext",
   botsDetachProject: "bots.detachProject",
   botsSubscribeTasks: "bots.subscribeTasks",
+  botsGetTaskResult: "bots.getTaskResult",
   botsStartTask: "bots.startTask",
   botsCancelTask: "bots.cancelTask",
   botsRecordLearning: "bots.recordLearning",
@@ -2076,6 +2079,12 @@ const WsBotsSubscribeTasksRpc = Rpc.make(WS_METHODS.botsSubscribeTasks, {
   stream: true,
 });
 
+const WsBotsGetTaskResultRpc = Rpc.make(WS_METHODS.botsGetTaskResult, {
+  payload: BotTaskResultInput,
+  success: BotTaskResult,
+  error: BotRpcError,
+});
+
 const WsBotsStartTaskRpc = Rpc.make(WS_METHODS.botsStartTask, {
   payload: BotStartTaskInput,
   success: BotTaskSummary,
@@ -2206,6 +2215,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsBotsUpdateProjectContextRpc,
   WsBotsDetachProjectRpc,
   WsBotsSubscribeTasksRpc,
+  WsBotsGetTaskResultRpc,
   WsBotsStartTaskRpc,
   WsBotsCancelTaskRpc,
   WsBotsRecordLearningRpc,
