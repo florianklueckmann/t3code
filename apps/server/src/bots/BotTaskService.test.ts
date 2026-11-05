@@ -26,6 +26,7 @@ import * as Ref from "effect/Ref";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as BotDatabase from "./persistence/BotDatabase.ts";
 import * as TestClock from "effect/testing/TestClock";
 import { afterEach, vi } from "vite-plus/test";
 
@@ -84,6 +85,7 @@ const makeThreadWorld = Effect.gen(function* () {
     readonly release: Deferred.Deferred<void>;
   } | null>(null);
   const receipts = yield* Ref.make(new Set<string>());
+  const notificationAttempts = yield* Ref.make<ReadonlyArray<CommandId>>([]);
   /** The next command of this type fails before it is recorded. */
   const failNext = yield* Ref.make<OrchestrationV2ServerCommand["type"] | null>(null);
 
@@ -98,6 +100,9 @@ const makeThreadWorld = Effect.gen(function* () {
   const dispatch = Effect.fn("FakeThreads.dispatch")(function* (
     command: OrchestrationV2ServerCommand,
   ) {
+    if (command.type === "thread.mark-unread") {
+      yield* Ref.update(notificationAttempts, (current) => [...current, command.commandId]);
+    }
     if ((yield* Ref.get(failNext)) === command.type) {
       yield* Ref.set(failNext, null);
       return yield* Effect.die(`injected ${command.type} failure`);
@@ -213,6 +218,7 @@ const makeThreadWorld = Effect.gen(function* () {
     hangLaunches,
     launchGate,
     failNext,
+    notificationAttempts,
     commandsMatching,
   };
 });
@@ -466,6 +472,10 @@ it.effect("runs a dated preparation once and publishes its result to the home co
         return { home, taskId: task?.id ?? assert.fail(), workThreadId };
       }),
     );
+    const sql = yield* BotDatabase.BotDatabase;
+    const notification = sql<{ readonly notified_at: string | null }>`
+      SELECT notified_at FROM bot_tasks WHERE task_id = ${taskId}
+    `;
 
     // A restart in the middle of the run neither starts nor publishes it twice.
     yield* withServices(world, (services) =>
@@ -479,7 +489,13 @@ it.effect("runs a dated preparation once and publishes its result to the home co
         yield* services.tasks.reconcile;
         assert.equal(yield* statusOf(services, taskId), "waiting");
         yield* world.update(workThreadId, { blockingRequest: false, status: "completed" });
+        yield* Ref.set(world.failNext, "thread.mark-unread");
         yield* services.tasks.reconcile;
+        assert.equal(yield* statusOf(services, taskId), "completed");
+        assert.isNull((yield* notification)[0]?.notified_at);
+        assert.lengthOf(yield* world.commandsMatching("thread.mark-unread"), 0);
+        yield* services.tasks.reconcile;
+        assert.isNotNull((yield* notification)[0]?.notified_at);
         yield* services.tasks.reconcile;
         const task = yield* services.tasks.get(taskId);
         assert.equal(task.status, "completed");
@@ -491,6 +507,10 @@ it.effect("runs a dated preparation once and publishes its result to the home co
     assert.lengthOf(yield* world.commandsMatching(`launch ${workThreadId}`), 1);
     assert.deepEqual(yield* world.commandsMatching("thread.mark-unread"), [
       `thread.mark-unread ${home} bot-task-notify:${taskId}`,
+    ]);
+    assert.deepEqual(yield* Ref.get(world.notificationAttempts), [
+      CommandId.make(`bot-task-notify:${taskId}`),
+      CommandId.make(`bot-task-notify:${taskId}`),
     ]);
   }).pipe(Effect.provide(layerDatabase)),
 );
