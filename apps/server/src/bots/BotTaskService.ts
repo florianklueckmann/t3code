@@ -167,7 +167,10 @@ const make = Effect.gen(function* () {
   const threads = yield* ThreadManagementService.ThreadManagementService;
   const scheduler = yield* Scheduler.Scheduler;
   const random = yield* SecureRandom.SecureRandom;
-  const changes = yield* PubSub.sliding<BotTaskId>(1024);
+  const changes = yield* PubSub.sliding<{
+    readonly taskId: BotTaskId;
+    readonly workThreadId: string | null;
+  }>(1024);
 
   const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
   const storageError = botError("Bot task storage failed.");
@@ -198,8 +201,11 @@ const make = Effect.gen(function* () {
       Effect.mapError(storageError),
     );
 
-  const publish = (taskId: string) =>
-    PubSub.publish(changes, BotTaskId.make(taskId)).pipe(Effect.asVoid);
+  const publish = (row: Pick<BotTaskRow, "task_id" | "work_thread_id">) =>
+    PubSub.publish(changes, {
+      taskId: BotTaskId.make(row.task_id),
+      workThreadId: row.work_thread_id,
+    }).pipe(Effect.asVoid);
 
   /** The attached, unarchived context, or a reason the Bot cannot work there. */
   const activeContext = Effect.fn("BotTaskService.activeContext")(function* (
@@ -306,7 +312,7 @@ const make = Effect.gen(function* () {
         WHERE task_id = ${row.task_id} AND completed_at IS NULL
       `.pipe(Effect.mapError(storageError));
     }
-    yield* publish(row.task_id);
+    yield* publish(row);
   });
 
   const insertTask = (row: BotTaskRow) =>
@@ -446,7 +452,7 @@ const make = Effect.gen(function* () {
     const { row, fresh } = decided;
     if (fresh) {
       if (row.work_thread_id !== null) yield* dispatch(row);
-      else yield* publish(row.task_id);
+      else yield* publish(row);
     }
     if (row.work_thread_id === null) {
       return { _tag: "skipped", reason: row.detail ?? "Skipped." } as const;
@@ -481,7 +487,13 @@ const make = Effect.gen(function* () {
         const subscription = yield* PubSub.subscribe(changes);
         return Stream.concat(
           Stream.fromEffect(list(input)),
-          Stream.fromSubscription(subscription).pipe(Stream.mapEffect(() => list(input))),
+          Stream.fromSubscription(subscription).pipe(
+            Stream.filter(
+              (change) =>
+                input.workThreadId === undefined || change.workThreadId === input.workThreadId,
+            ),
+            Stream.mapEffect(() => list(input)),
+          ),
         );
       }),
     );
@@ -521,7 +533,7 @@ const make = Effect.gen(function* () {
         WHERE task_id = ${row.task_id} AND completed_at IS NULL
       `.pipe(Effect.mapError(storageError));
     }
-    yield* publish(row.task_id);
+    yield* publish(row);
   });
 
   const cancel: BotTaskService["Service"]["cancel"] = Effect.fn("BotTaskService.cancel")(
@@ -584,7 +596,7 @@ const make = Effect.gen(function* () {
             updated_at = ${now}
         WHERE task_id = ${row.task_id} AND completed_at IS NULL
       `.pipe(Effect.mapError(storageError));
-      yield* publish(row.task_id);
+      yield* publish(row);
       if (!terminal) return;
     }
     const current = yield* readRow(row.task_id);
@@ -635,7 +647,11 @@ const make = Effect.gen(function* () {
     cancel,
     cancelForContext,
     reconcile,
-    changes: PubSub.subscribe(changes).pipe(Effect.map(Stream.fromSubscription)),
+    changes: PubSub.subscribe(changes).pipe(
+      Effect.map((subscription) =>
+        Stream.fromSubscription(subscription).pipe(Stream.map((change) => change.taskId)),
+      ),
+    ),
   });
 });
 
