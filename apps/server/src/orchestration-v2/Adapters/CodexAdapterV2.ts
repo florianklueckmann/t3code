@@ -3364,6 +3364,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           context: ActiveCodexTurnContext,
           item: { readonly id: string; readonly text: string },
           completed: boolean,
+          responseKind?: "intermediate" | "final",
         ) {
           const updatedAt = yield* DateTime.now;
           const completedAt = completed ? updatedAt : null;
@@ -3428,6 +3429,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             updatedAt,
             type: "assistant_message",
             messageId,
+            ...(responseKind === undefined ? {} : { responseKind }),
             text: item.text,
             streaming: !completed,
           };
@@ -3560,6 +3562,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 context,
                 { id: update.itemId, text: update.text },
                 update.completed,
+                finalAnswerItem ? "final" : "intermediate",
               );
               yield* emitProviderEvent({
                 type: "node.updated",
@@ -6104,7 +6107,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             }
             const message = { id: finalAnswer?.id ?? firstImageItemId, text };
             state.answer = message;
-            const artifacts = yield* buildAgentMessageArtifacts(context, message, true);
+            const artifacts = yield* buildAgentMessageArtifacts(context, message, true, "final");
             yield* emitProviderEvent({
               type: "node.updated",
               driver: CODEX_PROVIDER,
@@ -6661,6 +6664,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               context,
               { id: nativeId, text: reply },
               true,
+              "final",
             );
             yield* emitProviderEvent({
               type: "node.updated",
