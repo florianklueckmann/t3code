@@ -1,9 +1,12 @@
+import { makeSubagentConversationArtifacts } from "@t3tools/provider-core/server/subagentProjection";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it, vi } from "@effect/vitest";
 import {
+  BotId,
+  BotTaskId,
   CheckpointId,
   CommandId,
   EventId,
@@ -322,6 +325,337 @@ const seedParentWithTerminalTask = (input: {
   });
 
 it.layer(layerTest)("delegated completion delivery repairs", (it) => {
+  it.effect.each([
+    "idle",
+    "external-mcp",
+    "server",
+    "provider",
+    "forwarded",
+    "automatic",
+    "active",
+    "queued",
+    "child",
+    "background",
+    "stale",
+    "steered",
+    "archived",
+    "wrong-project",
+    "failed-source",
+    "source-active",
+  ] as const)("admits a Bot Home result only while safe: %s", (state) =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const sink = yield* EventSink.EventSinkV2;
+      const now = yield* DateTime.now;
+      const projectId = ProjectId.make(`bot-return-project:${state}`);
+      const botId = BotId.make(`return-bot-${state}`);
+      const taskId = BotTaskId.make(`bot-task:return-${state}`);
+      const threadId = ThreadId.make(`bot-home:${botId}:${projectId}`);
+      const runId = RunId.make(`bot-home-user:${state}`);
+      const sourceThreadId = ThreadId.make(`bot-work:${taskId}`);
+      const resultRunId = RunId.make(`bot-work-result:${state}`);
+      yield* seedParentWithTerminalTask({
+        threadId,
+        projectId,
+        runId,
+        rootNodeId: NodeId.make(`bot-home-root:${state}`),
+        taskId: NodeId.make(`bot-home-child:${state}`),
+        deliveryState: "delivered",
+        parentRunStatus: state === "active" ? "running" : "completed",
+        now,
+      });
+      const before = yield* orchestrator.getThreadProjection(threadId);
+      const run = before.runs[0]!;
+      const input = makeSubagentConversationArtifacts({
+        messageId: run.userMessageId,
+        turnItemId: TurnItemId.make(`home-input:${state}`),
+        threadId,
+        rootNodeId: run.rootNodeId!,
+        providerThreadId: null,
+        providerTurnId: null,
+        nativeItemRef: null,
+        role: "user",
+        text: "Do the authorized work.",
+        ordinal: 1,
+        now,
+      });
+      const homeMessage = {
+        ...input.message,
+        runId,
+        createdBy:
+          state === "external-mcp" ||
+          state === "server" ||
+          state === "provider" ||
+          state === "forwarded" ||
+          state === "automatic"
+            ? ("agent" as const)
+            : ("user" as const),
+        creationSource:
+          state === "external-mcp" || state === "forwarded"
+            ? ("mcp" as const)
+            : state === "server"
+              ? ("server" as const)
+              : state === "provider"
+                ? ("provider" as const)
+                : ("web" as const),
+        ...(state === "forwarded" ? { senderThreadId: ThreadId.make("forwarding-agent") } : {}),
+        ...(state === "automatic"
+          ? {
+              notification: {
+                source: { kind: "system" as const },
+                outcome: "completed" as const,
+                summary: "Automatic result",
+              },
+            }
+          : {}),
+      };
+      yield* sink.write({
+        events: [
+          {
+            id: EventId.make(`home-user-message:${state}`),
+            type: "message.updated",
+            threadId,
+            runId,
+            occurredAt: now,
+            payload: homeMessage,
+          },
+          {
+            id: EventId.make(`home-user-item:${state}`),
+            type: "turn-item.updated",
+            threadId,
+            runId,
+            occurredAt: now,
+            payload: { ...input.turnItem, runId },
+          },
+        ],
+      });
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make(`create-bot-work:${state}`),
+        threadId: sourceThreadId,
+        projectId,
+        title: "Bot work",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "server",
+      });
+      yield* sink.write({
+        events: [
+          runEvent({
+            threadId: sourceThreadId,
+            runId: resultRunId,
+            ordinal: 1,
+            status: state === "failed-source" ? "failed" : "completed",
+            now,
+          }),
+        ],
+      });
+      if (state === "queued" || state === "stale" || state === "steered") {
+        const newerRunId = state === "steered" ? runId : RunId.make(`newer-user-run:${state}`);
+        const newerInput = makeSubagentConversationArtifacts({
+          messageId: MessageId.make(`newer-message:${state}`),
+          turnItemId: TurnItemId.make(`newer-input:${state}`),
+          threadId,
+          rootNodeId: run.rootNodeId!,
+          providerThreadId: null,
+          providerTurnId: null,
+          nativeItemRef: null,
+          role: "user",
+          text: "New instructions.",
+          ordinal: 2,
+          now,
+        });
+        yield* sink.write({
+          events: [
+            ...(state === "steered"
+              ? []
+              : [
+                  runEvent({
+                    threadId,
+                    runId: newerRunId,
+                    ordinal: 2,
+                    status: state === "queued" ? "queued" : "completed",
+                    now,
+                  }),
+                ]),
+            {
+              id: EventId.make(`newer-message-event:${state}`),
+              type: "message.updated",
+              threadId,
+              runId: newerRunId,
+              occurredAt: now,
+              payload: {
+                ...newerInput.message,
+                runId: newerRunId,
+                createdBy: "user",
+                creationSource: "web",
+              },
+            },
+            {
+              id: EventId.make(`newer-item-event:${state}`),
+              type: "turn-item.updated",
+              threadId,
+              runId: newerRunId,
+              occurredAt: now,
+              payload: { ...newerInput.turnItem, runId: newerRunId },
+            },
+          ],
+        });
+      }
+      if (state === "child") {
+        const child = before.subagents[0]!;
+        yield* sink.write({
+          events: [
+            {
+              id: EventId.make(`pending-child-result:${state}`),
+              type: "subagent.updated",
+              threadId,
+              runId,
+              occurredAt: now,
+              payload: {
+                ...child,
+                completionDelivery: { state: "pending", observedByRunId: null },
+              },
+            },
+          ],
+        });
+      }
+      if (state === "background") {
+        const providerThread = before.providerThreads[0]!;
+        yield* sink.write({
+          events: [
+            {
+              id: EventId.make(`pending-background:${state}`),
+              type: "provider-thread.updated",
+              threadId,
+              occurredAt: now,
+              payload: {
+                ...providerThread,
+                pendingBackgroundTasks: [{ kind: "command", taskId: "background", awaited: true }],
+              },
+            },
+          ],
+        });
+      }
+      if (state === "source-active")
+        yield* sink.write({
+          events: [
+            runEvent({
+              threadId: sourceThreadId,
+              runId: RunId.make(`source-followup:${state}`),
+              ordinal: 2,
+              status: "running",
+              now,
+            }),
+          ],
+        });
+      if (state === "archived")
+        yield* orchestrator.dispatch({
+          type: "thread.archive",
+          commandId: CommandId.make(`archive-bot-home:${state}`),
+          threadId,
+        });
+      const command = {
+        type: "bot-task.result.deliver" as const,
+        commandId: CommandId.make(`bot-task-return:${taskId}:${resultRunId}`),
+        threadId,
+        projectId: state === "wrong-project" ? ProjectId.make(`other-project:${state}`) : projectId,
+        botId,
+        taskId,
+        sourceThreadId,
+        resultRunId,
+        homeRunId: runId,
+        homeMessageId: run.userMessageId,
+        messageId: MessageId.make(`bot-return-message:${state}`),
+        text: "Saved work result.",
+      };
+      const result = yield* orchestrator.dispatch(command);
+      const delivered = yield* orchestrator.getThreadProjection(threadId);
+      const messages = delivered.messages.filter((message) => message.id === command.messageId);
+      assert.lengthOf(messages, state === "idle" || state === "external-mcp" ? 1 : 0);
+      if (["active", "child", "background", "source-active"].includes(state)) {
+        assert.isTrue(result.deferred);
+        // A deferred admission must not consume its eventual delivery receipt.
+        const current = yield* orchestrator.getThreadProjection(threadId);
+        yield* sink.write({
+          events: [
+            {
+              ...runEvent({ threadId, runId, ordinal: 1, status: "completed", now }),
+              payload: { ...run, status: "completed", completedAt: now },
+            },
+            {
+              id: EventId.make(`child-settled:${state}`),
+              type: "subagent.updated",
+              threadId,
+              runId,
+              occurredAt: now,
+              payload: {
+                ...current.subagents[0]!,
+                completionDelivery: { state: "delivered", observedByRunId: null },
+              },
+            },
+            {
+              id: EventId.make(`background-settled:${state}`),
+              type: "provider-thread.updated",
+              threadId,
+              occurredAt: now,
+              payload: { ...current.providerThreads[0]!, pendingBackgroundTasks: [] },
+            },
+          ],
+        });
+        if (state === "source-active")
+          yield* sink.write({
+            events: [
+              runEvent({
+                threadId: sourceThreadId,
+                runId: RunId.make(`source-followup:${state}`),
+                ordinal: 2,
+                status: "completed",
+                now,
+              }),
+            ],
+          });
+        if (state === "child") {
+          const continuation = RunId.make(`child-continuation:${state}`);
+          yield* sink.write({
+            events: [
+              runEvent({ threadId, runId: continuation, ordinal: 2, status: "running", now }),
+            ],
+          });
+          assert.isTrue((yield* orchestrator.dispatch(command)).deferred);
+          yield* sink.write({
+            events: [
+              runEvent({ threadId, runId: continuation, ordinal: 2, status: "completed", now }),
+            ],
+          });
+        }
+        yield* orchestrator.dispatch(command);
+        assert.lengthOf(
+          (yield* orchestrator.getThreadProjection(threadId)).messages.filter(
+            (message) => message.id === command.messageId,
+          ),
+          1,
+        );
+      }
+      const replay = yield* orchestrator.dispatch(command);
+      assert.isTrue(replay.replayed);
+      assert.lengthOf(
+        (yield* orchestrator.getThreadProjection(threadId)).messages.filter(
+          (message) => message.id === command.messageId,
+        ),
+        state === "idle" ||
+          state === "external-mcp" ||
+          ["active", "child", "background", "source-active"].includes(state)
+          ? 1
+          : 0,
+      );
+    }),
+  );
+
   it.effect(
     "interrupting a completion wake disposes both cohorts without reviving them on late results",
     () =>

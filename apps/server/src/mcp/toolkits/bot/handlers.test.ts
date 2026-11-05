@@ -215,7 +215,10 @@ it.effect("lets read-only clients read Bots but not change them", () =>
     expect(attach.calls).toEqual([]);
     const tasks = yield* callTool({ action: "list_tasks", botId }, "read-only");
     expect(tasks.calls).toEqual(["list_tasks"]);
-    const start = yield* callTool({ action: "start_task", botId, task: "Prepare." }, "read-only");
+    const start = yield* callTool(
+      { action: "start_task", botId, task: "Prepare.", returnToHome: true },
+      "read-only",
+    );
     expect(start.result).toMatchObject({ code: "capability_denied" });
     expect(start.calls).toEqual([]);
   }),

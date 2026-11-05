@@ -58,6 +58,13 @@ it.effect.each([78, 79, 80, 81, 82, 83])(
               ...row,
               ...(table === "bots" && head === 78 ? { appearance_json: null } : {}),
               ...(table === "bot_tasks" && head < 83 ? { allow_changes: 0 } : {}),
+              ...(table === "bot_tasks"
+                ? {
+                    return_home_run_id: null,
+                    return_home_message_id: null,
+                    return_finished_at: null,
+                  }
+                : {}),
             })),
           );
         }
