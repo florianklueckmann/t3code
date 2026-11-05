@@ -25,12 +25,20 @@ import {
   withTools,
 } from "../shared/devServerTools.ts";
 import { CASES, type ContinuationCase } from "./cases.ts";
-import { gradeSample, type Observation } from "./grade.ts";
+import { gradeSample, isMissingContinuationApi, type Observation } from "./grade.ts";
 
 // Wire-only subset: never import candidate continuation decoders into the old-server harness.
-const Ref = Schema.Struct({ kind: Schema.String });
+const Ref = Schema.Struct({
+  kind: Schema.String,
+  messageId: Schema.optional(Schema.String),
+  quote: Schema.optional(Schema.String),
+  digest: Schema.optional(Schema.String),
+});
 const Item = Schema.Struct({ text: Schema.String, refs: Schema.Array(Ref) });
 const Note = Schema.Struct({
+  botId: Schema.String,
+  projectId: Schema.String,
+  homeThreadId: Schema.String,
   revision: Schema.NullOr(Schema.Number),
   note: Schema.Struct({
     requests: Schema.Array(Item),
@@ -55,6 +63,12 @@ const Capture = Schema.Struct({
   projectId: Schema.String,
   homeThreadId: Schema.String,
   captured: Schema.NullOr(Note),
+  seed: Schema.NullOr(Note),
+  captureRunId: Schema.String,
+  seedRunId: Schema.NullOr(Schema.String),
+  filesBefore: Schema.String,
+  filesCaptured: Schema.String,
+  filesSeed: Schema.String,
   errors: Schema.Array(Schema.String),
   settled: Schema.Boolean,
   settingsBefore: Schema.String,
@@ -77,6 +91,25 @@ const decodeCall = Schema.decodeUnknownSync(
   }),
 );
 type Captured = typeof Capture.Type;
+const files = (root: string): string =>
+  encodeJson(
+    NodeFS.readdirSync(root, { recursive: true, withFileTypes: true })
+      .flatMap((entry) => {
+        const path = NodePath.relative(root, NodePath.join(entry.parentPath, entry.name));
+        if (path.split(NodePath.sep).includes(".git") || entry.isDirectory()) return [];
+        return [
+          [
+            path,
+            entry.isSymbolicLink()
+              ? NodeFS.readlinkSync(NodePath.join(root, path))
+              : NodeCrypto.createHash("sha256")
+                  .update(NodeFS.readFileSync(NodePath.join(root, path)))
+                  .digest("hex"),
+          ],
+        ];
+      })
+      .sort((left, right) => left[0]!.localeCompare(right[0]!)),
+  );
 const settings = (bot: BotDetail) =>
   encodeJson({
     instructions: bot.instructions,
@@ -98,7 +131,10 @@ const inspect = Effect.fn("botContinuationEval.inspect")(function* (
     Schema.Struct({ continuation: Note }),
   ).pipe(
     Effect.map((result) => ({ view: result.continuation, error: null })),
-    Effect.catch((error) => Effect.succeed({ view: null, error: error.message })),
+    Effect.catchIf(
+      (error) => isMissingContinuationApi(error.message),
+      (error) => Effect.succeed({ view: null, error: error.message }),
+    ),
   );
 });
 const turn = Effect.fn("botContinuationEval.turn")(function* (
@@ -173,9 +209,18 @@ const capture = Effect.fn("botContinuationEval.capture")(function* (
   if (homeThreadId === undefined) return yield* Effect.die(new Error("fixture Home missing"));
   const errors: string[] = [];
   let settled = true;
+  const filesBefore = files(root);
+  let seedView: typeof Note.Type | null = null;
+  let seedRunId: string | null = null;
+  let filesSeed = filesBefore;
   if (testCase.id === "correction-wins") {
     const seed = yield* turn(call, homeThreadId, CASES[0]!.capture);
     settled &&= seed.settled;
+    seedRunId = seed.runId;
+    const observedSeed = yield* inspect(call, { botId: tag, projectId: project.id });
+    seedView = observedSeed.view;
+    if (observedSeed.error !== null) errors.push(observedSeed.error);
+    filesSeed = files(root);
     if (seed.error !== null) errors.push(seed.error);
   }
   const capturedTurn = yield* turn(call, homeThreadId, testCase.capture);
@@ -191,6 +236,12 @@ const capture = Effect.fn("botContinuationEval.capture")(function* (
     projectId: project.id,
     homeThreadId,
     captured: result.view,
+    seed: seedView,
+    seedRunId,
+    captureRunId: capturedTurn.runId,
+    filesBefore,
+    filesSeed,
+    filesCaptured: files(root),
     errors,
     settled,
     settingsBefore: settings(attached.bot),
@@ -212,6 +263,7 @@ const resume = Effect.fn("botContinuationEval.resume")(function* (
       const result = decodeCall(decoded);
       return [
         {
+          runId: item.runId,
           ...result.input,
           action: result.toolName.endsWith("t3_bot")
             ? (result.input.action ?? "")
@@ -240,6 +292,30 @@ const resume = Effect.fn("botContinuationEval.resume")(function* (
   const run: Observation = {
     supported: captured.captured !== null && before.view !== null && after.view !== null,
     capture: captured.captured,
+    seed: captured.seed,
+    seedRunId: captured.seedRunId,
+    captureRunId: captured.captureRunId,
+    unchangedFiles:
+      captured.filesBefore === captured.filesSeed &&
+      captured.filesBefore === captured.filesCaptured &&
+      captured.filesBefore === files(captured.root),
+    directInputs: items
+      .filter((item) => item.type === "user_message" && item.messageId !== null)
+      .map((item) => ({
+        messageId: item.messageId!,
+        threadId: item.sourceThreadId,
+        text: item.text ?? "",
+        digest: NodeCrypto.createHash("sha256")
+          .update(item.text ?? "")
+          .digest("hex"),
+        direct:
+          item.sourceThreadId === captured.homeThreadId &&
+          item.senderThreadId == null &&
+          ((item.createdBy === "user" &&
+            (item.creationSource === "web" || item.creationSource === "mobile")) ||
+            (item.createdBy === "agent" && item.creationSource === "mcp")) &&
+          item.title === null,
+      })),
     resumed: before.view,
     answer: items
       .filter((item) => item.runId === continued.runId && item.type === "assistant_message")
