@@ -62,6 +62,7 @@ const makeHarness = Effect.gen(function* () {
             }
           : CONFIG;
       const resultReads = yield* Ref.make<ReadonlyArray<BotTaskResultInput>>([]);
+      const failResults = yield* Ref.make(false);
       const bots = yield* SubscriptionRef.make<BotListResult>({
         bots: [
           {
@@ -81,6 +82,8 @@ const makeHarness = Effect.gen(function* () {
         [WS_METHODS.botsGetTaskResult]: (input: BotTaskResultInput) =>
           Effect.gen(function* () {
             yield* Ref.update(resultReads, (all) => [...all, input]);
+            if (yield* Ref.get(failResults))
+              return yield* Effect.fail({ _tag: "ResultUnavailable" as const });
             return {
               task: { id: input.taskId },
               result: { state: "available", runId: RunId.make("saved-run"), text: name },
@@ -142,7 +145,7 @@ const makeHarness = Effect.gen(function* () {
         disconnect: Effect.void,
         retryNow: Effect.void,
       });
-      return { environmentId, bots, supervisor, config, resultReads };
+      return { environmentId, bots, supervisor, config, resultReads, failResults };
     }),
   );
   const environment = (id: EnvironmentId) => {
@@ -244,11 +247,12 @@ describe("saved Bot task results", () => {
       const { atoms, registry, environments } = yield* makeHarness;
       const input = { taskId: BotTaskId.make("same-task-id") };
       for (const environment of environments) {
-        const { environmentId, supervisor, resultReads } = environment;
+        const { environmentId, supervisor, resultReads, failResults } = environment;
         const atom = atoms.botTaskResult({ environmentId, input });
         expect(yield* Ref.get(resultReads)).toEqual([]);
         const supported = environmentId === "first" || environmentId === "second";
         if (supported) {
+          yield* Ref.set(failResults, true);
           yield* SubscriptionRef.set(supervisor.state, {
             ...AVAILABLE_CONNECTION_STATE,
             phase: "connected" as const,
@@ -258,6 +262,16 @@ describe("saved Bot task results", () => {
           Effect.sync(() => registry.mount(atom)),
           (unmount) => Effect.sync(unmount),
         );
+        if (supported) {
+          yield* AtomRegistry.toStream(registry, atom).pipe(
+            Stream.filter((result) => AsyncResult.isFailure(result) && !result.waiting),
+            Stream.runHead,
+          );
+          yield* Ref.set(failResults, false);
+          registry.refresh(atom);
+          const refreshed = registry.get(atom);
+          expect(AsyncResult.isFailure(refreshed) && !refreshed.waiting).toBe(false);
+        }
         const answer = yield* AtomRegistry.toStream(registry, atom).pipe(
           Stream.filter(AsyncResult.isSuccess),
           Stream.runHead,
@@ -272,7 +286,7 @@ describe("saved Bot task results", () => {
             runId: "saved-run",
             text: environmentId,
           });
-          expect(yield* Ref.get(resultReads)).toEqual([input]);
+          expect(yield* Ref.get(resultReads)).toEqual([input, input]);
         }
       }
     }).pipe(Effect.scoped),

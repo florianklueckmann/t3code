@@ -511,13 +511,16 @@ const make = Effect.gen(function* () {
         (candidate) => candidate.id === runId && candidate.threadId === task.workThreadId,
       );
       if (run === undefined || run.status !== "completed") return unavailable;
-      const finalItem = records.turnItems
-        .filter(
-          (item): item is Extract<OrchestrationV2TurnItem, { type: "assistant_message" }> =>
-            item.threadId === task.workThreadId &&
-            item.runId === runId &&
-            item.type === "assistant_message",
-        )
+      const assistantItems = records.turnItems.filter(
+        (item): item is Extract<OrchestrationV2TurnItem, { type: "assistant_message" }> =>
+          item.threadId === task.workThreadId &&
+          item.runId === runId &&
+          item.type === "assistant_message",
+      );
+      // Older adapters did not distinguish final answers from intermediate messages.
+      const classified = assistantItems.some((item) => item.responseKind !== undefined);
+      const finalItem = assistantItems
+        .filter((item) => !classified || item.responseKind === "final")
         .toSorted((left, right) => right.ordinal - left.ordinal)[0];
       const messages = records.messages.filter(
         (message) =>
@@ -527,13 +530,13 @@ const make = Effect.gen(function* () {
       );
       // Turn item order survives providers finalizing several messages at the same timestamp.
       const message =
-        finalItem === undefined
+        finalItem === undefined && assistantItems.length === 0
           ? messages.toSorted(
               (left, right) =>
                 DateTime.toEpochMillis(right.updatedAt) - DateTime.toEpochMillis(left.updatedAt) ||
                 DateTime.toEpochMillis(right.createdAt) - DateTime.toEpochMillis(left.createdAt),
             )[0]
-          : messages.find((candidate) => candidate.id === finalItem.messageId);
+          : messages.find((candidate) => candidate.id === finalItem?.messageId);
       if (
         message?.streaming ||
         (finalItem !== undefined && (finalItem.streaming || finalItem.status !== "completed"))

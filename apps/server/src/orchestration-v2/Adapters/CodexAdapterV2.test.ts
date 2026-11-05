@@ -5401,6 +5401,8 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           assert.isTrue(matching.some((item) => !item.streaming));
           if (streamed) assert.isTrue(matching.some((item) => item.streaming));
         }
+        const responses = updates.filter((item) => !item.streaming).map((item) => item.responseKind);
+        assert.deepEqual(responses, ["intermediate", "intermediate", "final"]);
       }).pipe(
         Effect.provide(
           Layer.mergeAll(
