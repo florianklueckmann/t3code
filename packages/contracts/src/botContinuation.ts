@@ -19,10 +19,11 @@ export const BOT_CONTINUATION_LIMITS = {
   revisions: 20,
   injectionChars: 8000,
 } as const;
-const Text = TrimmedNonEmptyString.check(Schema.isMaxLength(BOT_CONTINUATION_LIMITS.itemChars));
+const Quote = TrimmedNonEmptyString.check(Schema.isMaxLength(BOT_CONTINUATION_LIMITS.itemChars));
+const Text = Quote.check(Schema.isPattern(/^[^\r\n]+$/));
 const InputItem = Schema.Struct({
   text: Text,
-  quote: Schema.optional(Text),
+  quote: Schema.optional(Quote),
   taskIds: Schema.optional(Schema.Array(BotTaskId).check(Schema.isMaxLength(2))),
 });
 const sectionFields = <S extends Schema.Top>(item: S) => ({

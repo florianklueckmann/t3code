@@ -20,6 +20,7 @@ import {
   type BotContinuationRevision,
   type BotContinuationView,
   type BotId,
+  type BotTaskId,
   type BotSaveContinuationInput,
   type BotSaveContinuationResult,
   type EnvironmentId,
@@ -187,8 +188,9 @@ function NoteSections({ note, captions }: { note: BotContinuationNote; captions:
           <div key={section} className="space-y-1">
             <p className="text-xs font-medium text-muted-foreground">{SECTION_LABELS[section]}</p>
             <ul className="space-y-1.5">
-              {note[section].map((item) => (
-                <li key={item.text} className="space-y-0.5">
+              {note[section].map((item, index) => (
+                // oxlint-disable-next-line react/no-array-index-key -- Note entries have no IDs, and these rows have no local state.
+                <li key={`${section}:${index}`} className="space-y-0.5">
                   <p className="text-sm wrap-anywhere">{item.text}</p>
                   {captions
                     ? item.refs.map((ref) => (
@@ -227,6 +229,13 @@ export function BotContinuationNotes({
   const query = useEnvironmentQuery(
     serverEnvironment.botContinuation({ environmentId, input: scope }),
   );
+  const [taskPages, setTaskPages] = useState<BotTaskId[]>([]);
+  const afterTaskId = taskPages.at(-1);
+  const taskPage = useEnvironmentQuery(
+    afterTaskId === undefined
+      ? null
+      : serverEnvironment.botContinuation({ environmentId, input: { ...scope, afterTaskId } }),
+  );
   const [historyOpen, setHistoryOpen] = useState(false);
   const history = useEnvironmentQuery(
     historyOpen ? serverEnvironment.botContinuationHistory({ environmentId, input: scope }) : null,
@@ -236,10 +245,12 @@ export function BotContinuationNotes({
   const [editing, setEditing] = useState<Editing | null>(null);
   const [busy, setBusy] = useState(false);
   const view = query.data;
+  const activeView = afterTaskId === undefined ? view : taskPage.data;
   const canWrite = view !== null && view.writable && canSave && !disabled && !busy;
 
   const refresh = () => {
     query.refresh();
+    if (afterTaskId !== undefined) taskPage.refresh();
     if (historyOpen) history.refresh();
   };
   const openThread = (threadId: ThreadId) =>
@@ -472,11 +483,19 @@ export function BotContinuationNotes({
           )}
         </div>
       )}
-      {view === null || view.activeTasks.length === 0 ? null : (
+      {view === null || (view.activeTasks.length === 0 && taskPages.length === 0) ? null : (
         <div className="space-y-2">
           <Label>Active work</Label>
+          {taskPage.error === null ? null : (
+            <p className="text-xs text-destructive">{taskPage.error}</p>
+          )}
+          {taskPage.isPending ? (
+            <p className="text-xs text-muted-foreground" role="status">
+              Loading active work…
+            </p>
+          ) : null}
           <ul className="space-y-2 text-xs">
-            {view.activeTasks.map((task) => (
+            {(activeView?.activeTasks ?? []).map((task) => (
               <li key={task.taskId} className="flex flex-wrap items-center justify-between gap-2">
                 <span className="flex min-w-0 flex-1 basis-48 flex-wrap items-center gap-2">
                   <span className="font-medium wrap-anywhere">{task.title}</span>
@@ -496,11 +515,36 @@ export function BotContinuationNotes({
               </li>
             ))}
           </ul>
-          {view.moreActiveTasks === 0 ? null : (
+          {activeView === null || activeView.moreActiveTasks === 0 ? null : (
             <p className="text-xs text-muted-foreground">
-              {view.moreActiveTasks} more active {view.moreActiveTasks === 1 ? "task" : "tasks"}.
+              {activeView.moreActiveTasks} more active{" "}
+              {activeView.moreActiveTasks === 1 ? "task" : "tasks"}.
             </p>
           )}
+          <div className="flex flex-wrap gap-2">
+            {taskPages.length === 0 ? null : (
+              <Button
+                size="xs"
+                variant="outline"
+                onClick={() => setTaskPages((pages) => pages.slice(0, -1))}
+              >
+                Previous tasks
+              </Button>
+            )}
+            {activeView?.nextActiveTaskId == null ? null : (
+              <Button
+                size="xs"
+                variant="outline"
+                disabled={taskPage.isPending}
+                onClick={() => {
+                  const cursor = activeView.nextActiveTaskId;
+                  if (cursor != null) setTaskPages((pages) => [...pages, cursor]);
+                }}
+              >
+                More active tasks
+              </Button>
+            )}
+          </div>
         </div>
       )}
       {view === null ? null : (

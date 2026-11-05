@@ -10,10 +10,12 @@ import {
   BOT_CONTINUATION_SECTIONS,
   type BotContinuationNote,
   type BotId,
+  type BotTaskId,
   type EnvironmentId,
   type ProjectId,
 } from "@t3tools/contracts";
 import { Pressable, View } from "react-native";
+import { useState } from "react";
 
 import { AppText as Text } from "../../components/ui/AppText";
 import { SymbolView } from "../../components/ui/AppSymbol";
@@ -61,8 +63,9 @@ export function BotNoteSections({
         <Text textRole="footnote" className="font-t3-medium text-foreground-muted">
           {BOT_NOTE_SECTION_LABELS[section]}
         </Text>
-        {note[section].map((item) => (
-          <View key={item.text} className="gap-0.5">
+        {note[section].map((item, index) => (
+          // oxlint-disable-next-line react/no-array-index-key -- Note entries have no IDs, and these rows have no local state.
+          <View key={`${section}:${index}`} className="gap-0.5">
             <Text textRole="body" className="text-foreground">
               {item.text}
             </Text>
@@ -98,8 +101,19 @@ export function BotContinuationSection(props: {
   const query = useEnvironmentQuery(
     serverEnvironment.botContinuation({ environmentId, input: { botId, projectId } }),
   );
+  const [taskPages, setTaskPages] = useState<BotTaskId[]>([]);
+  const afterTaskId = taskPages.at(-1);
+  const taskPage = useEnvironmentQuery(
+    afterTaskId === undefined
+      ? null
+      : serverEnvironment.botContinuation({
+          environmentId,
+          input: { botId, projectId, afterTaskId },
+        }),
+  );
   const canSave = useAtomValue(serverEnvironment.saveBotContinuation.permissionAtom(environmentId));
   const view = query.data;
+  const activeView = afterTaskId === undefined ? view : taskPage.data;
   const canWrite = view !== null && view.writable && canSave && !props.disabled;
   const openThread = (threadId: string) =>
     selectDetail({ name: "Thread", params: { environmentId: String(environmentId), threadId } });
@@ -139,7 +153,13 @@ export function BotContinuationSection(props: {
               <BotNoteSections note={view.note} captions />
             )}
           </View>
-          {view.activeTasks.map((task) => (
+          {taskPage.error === null ? null : (
+            <Text className="px-4 py-2 text-sm text-danger-foreground">{taskPage.error}</Text>
+          )}
+          {taskPage.isPending ? (
+            <Text className="px-4 py-2 text-sm text-foreground-muted">Loading active work…</Text>
+          ) : null}
+          {(activeView?.activeTasks ?? []).map((task) => (
             <Pressable
               key={task.taskId}
               accessibilityRole="button"
@@ -159,10 +179,38 @@ export function BotContinuationSection(props: {
               {task.workThreadId === null ? null : <Chevron />}
             </Pressable>
           ))}
-          {view.moreActiveTasks === 0 ? null : (
+          {activeView === null || activeView.moreActiveTasks === 0 ? null : (
             <Text className="border-t border-border-subtle px-4 py-3 text-sm text-foreground-muted">
-              {view.moreActiveTasks} more active {view.moreActiveTasks === 1 ? "task" : "tasks"}.
+              {activeView.moreActiveTasks} more active{" "}
+              {activeView.moreActiveTasks === 1 ? "task" : "tasks"}.
             </Text>
+          )}
+          {taskPages.length === 0 ? null : (
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => setTaskPages((pages) => pages.slice(0, -1))}
+              className="min-h-14 justify-center border-t border-border-subtle px-4 py-3 active:opacity-70"
+            >
+              <Text textRole="body" className="text-primary-text">
+                Previous tasks
+              </Text>
+            </Pressable>
+          )}
+          {activeView?.nextActiveTaskId == null ? null : (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityState={{ disabled: taskPage.isPending }}
+              disabled={taskPage.isPending}
+              onPress={() => {
+                const cursor = activeView.nextActiveTaskId;
+                if (cursor != null) setTaskPages((pages) => [...pages, cursor]);
+              }}
+              className="min-h-14 justify-center border-t border-border-subtle px-4 py-3 active:opacity-70"
+            >
+              <Text textRole="body" className="text-primary-text">
+                More active tasks
+              </Text>
+            </Pressable>
           )}
           <Pressable
             accessibilityRole="button"
