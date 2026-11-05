@@ -286,7 +286,7 @@ export const ChatHeader = memo(function ChatHeader({
       ref={breadcrumbContainerRef}
       className={cn(
         "flex min-w-0 flex-1 items-center gap-2 sm:gap-3",
-        rightPanelOpen ? "pr-10" : "pr-24",
+        rightPanelOpen ? "pr-10" : "pr-28",
       )}
       onContextMenu={handleHeaderContextMenu}
     >
@@ -355,7 +355,7 @@ export const ChatHeader = memo(function ChatHeader({
             </WorkspaceBreadcrumbSeparator>
           </>
         ) : null}
-        <WorkspaceBreadcrumbItem current className="min-w-10 flex-1">
+        <WorkspaceBreadcrumbItem current className="@container/thread-title min-w-10 flex-1 gap-1">
           {renamingTitle !== null ? (
             <input
               autoFocus
