@@ -45,6 +45,7 @@ it("credits only learning the Bot recorded itself, in the expected scope and sta
   const waits = CASES.find((testCase) => testCase.id === "correction-waits-for-adoption")!;
   const lesson = {
     scope: "a" as const,
+    kind: "preference",
     text: "Answer in a single sentence.",
     origin: "correction",
     status: "pending",
@@ -57,6 +58,21 @@ it("credits only learning the Bot recorded itself, in the expected scope and sta
   expect(learningCheck([{ ...lesson, status: "active" }])).toBe(false);
   expect(learningCheck([{ ...lesson, scope: "b" }])).toBe(false);
   expect(learningCheck([{ ...lesson, byBot: false }])).toBe(false);
+  const fact = CASES.find((testCase) => testCase.id === "fact-shared-on-explicit-request")!;
+  const shared = {
+    ...lesson,
+    scope: "all" as const,
+    kind: "fact",
+    text: "The user's name is Rowan.",
+    origin: "instruction",
+    status: "active",
+  };
+  const factCheck = (learning: SampleRun["learning"]) =>
+    gradeSample(fact, { ...run([]), learning }).find((check) => check.check.startsWith("learning"))
+      ?.pass;
+  expect(factCheck([shared])).toBe(true);
+  expect(factCheck([{ ...shared, kind: "preference" }])).toBe(false);
+  expect(factCheck([{ ...shared, scope: "a" }])).toBe(false);
   // Source cases must not turn a source change into learning.
   const learnedToo = gradeSample(standing, {
     ...run([update("bs-1", "project-a")]),

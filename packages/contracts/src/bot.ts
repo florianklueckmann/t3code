@@ -122,7 +122,7 @@ export const BotLearningEntryId = TrimmedNonEmptyString.check(
 export type BotLearningEntryId = typeof BotLearningEntryId.Type;
 
 /**
- * fact: something true about the project, refreshed when it changes. preference: how the user
+ * fact: factual knowledge, refreshed when it changes. preference: how the user
  * wants work done. procedure: reusable steps for later work.
  */
 export const BotLearningKind = Schema.Literals(["fact", "preference", "procedure"]);
