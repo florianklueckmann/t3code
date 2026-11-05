@@ -23,6 +23,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
@@ -416,6 +417,55 @@ it.effect("looks up an existing work thread outside the latest 50 environment ta
         assert.deepEqual((yield* lookup(ThreadId.make("bot-work:missing"))).tasks, []);
         yield* services.bots.setArchived({ botId, archived: true });
         assert.equal((yield* lookup(workThreadId)).tasks[0]?.botId, botId);
+      }),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect("does not refresh a work-thread subscription for unrelated task changes", () =>
+  Effect.gen(function* () {
+    yield* seedProject;
+    const world = yield* makeThreadWorld;
+    yield* withServices(world, (services) =>
+      Effect.gen(function* () {
+        yield* attachBot(services);
+        const task = yield* services.tasks.start({
+          botId,
+          projectId: campaign,
+          prompt: "Prepare.",
+        });
+        const workThreadId = task.workThreadId ?? assert.fail("no work thread");
+        const initial = yield* Deferred.make<void>();
+        const running = yield* Deferred.make<void>();
+        const statuses = yield* Ref.make<ReadonlyArray<BotTaskStatus | undefined>>([]);
+        const subscription = yield* services.tasks.subscribeList({ workThreadId }).pipe(
+          Stream.runForEach((result) =>
+            Effect.gen(function* () {
+              const status = result.tasks[0]?.status;
+              yield* Ref.update(statuses, (current) => [...current, status]);
+              yield* Deferred.succeed(initial, undefined);
+              if (status === "running") yield* Deferred.succeed(running, undefined);
+            }),
+          ),
+          Effect.forkScoped,
+        );
+        yield* Deferred.await(initial);
+        const recentCounts = yield* Queue.unbounded<number>();
+        yield* services.tasks.subscribeList({}).pipe(
+          Stream.runForEach((result) => Queue.offer(recentCounts, result.tasks.length)),
+          Effect.forkScoped,
+        );
+        assert.equal(yield* Queue.take(recentCounts), 1);
+        let count = 1;
+        for (const prompt of ["Unrelated one.", "Unrelated two.", "Unrelated three."]) {
+          yield* services.tasks.start({ botId, projectId: campaign, prompt });
+          assert.equal(yield* Queue.take(recentCounts), ++count);
+        }
+        yield* world.update(workThreadId, { status: "running" });
+        yield* services.tasks.reconcile;
+        yield* Deferred.await(running);
+        yield* Fiber.interrupt(subscription);
+        assert.deepEqual(yield* Ref.get(statuses), ["accepted", "running"]);
       }),
     );
   }).pipe(Effect.provide(layerDatabase)),
