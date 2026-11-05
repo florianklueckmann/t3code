@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import { useLocation, useRouter, type AnyRouter } from "@tanstack/react-router";
+import type { EnvironmentId } from "@t3tools/contracts";
 
 import { moveWorkspaceFocus, workspaceAreaProps } from "../lib/workspaceFocus";
 import { isCommandPaletteOpen } from "../commandPaletteBus";
@@ -38,6 +39,7 @@ import {
   usePanelNavigationSuppression,
 } from "../panelAnimations";
 import { BackgroundThreadAnnouncer } from "./BackgroundThreadAnnouncer";
+import { BotRail, useBotEnvironmentIds } from "./BotRail";
 import { HistorySwipeNavigation } from "./HistorySwipeNavigation";
 import ThreadSidebar from "./Sidebar";
 import { SidebarBrandWidthProbe } from "./sidebar/SidebarChrome";
@@ -411,6 +413,28 @@ function SidebarControl({ showSidebar }: { readonly showSidebar: boolean }) {
   );
 }
 
+/** On phones the sidebar is a sheet, so the Bot rail moves into it beside the threads. */
+function ThreadSidebarWithBotRail({
+  routeReveal,
+  botEnvironmentIds,
+}: {
+  routeReveal: SidebarRouteReveal;
+  botEnvironmentIds: ReadonlyArray<EnvironmentId>;
+}) {
+  const { isMobile } = useSidebar();
+  if (!isMobile || botEnvironmentIds.length === 0) {
+    return <ThreadSidebar routeReveal={routeReveal} />;
+  }
+  return (
+    <div className="flex min-h-0 flex-1">
+      <BotRail environmentIds={botEnvironmentIds} />
+      <div className="flex min-w-0 flex-1 flex-col">
+        <ThreadSidebar routeReveal={routeReveal} />
+      </div>
+    </div>
+  );
+}
+
 export function AppSidebarLayout({
   children,
   showSidebar = true,
@@ -419,6 +443,7 @@ export function AppSidebarLayout({
   showSidebar?: boolean;
 }) {
   const sidebarArea = workspaceAreaProps("sidebar", 0, "Threads");
+  const botEnvironmentIds = useBotEnvironmentIds();
   const [sidebarRouteReveal] = useState<SidebarRouteReveal>(() => ({
     observedKey: null,
     pendingKey: null,
@@ -461,35 +486,52 @@ export function AppSidebarLayout({
   return (
     <PanelAnimationSuppressionProvider value={panelAnimationsSuppressed}>
       <SidebarProvider
-        className="h-dvh! min-h-0!"
+        className={cn(
+          "h-dvh! min-h-0!",
+          // The Bot rail's width (w-13).
+          botEnvironmentIds.length > 0 && "md:[--sidebar-offset-left:3.25rem]",
+        )}
         data-panel-animations={routePanelAnimationsActive ? "true" : "false"}
         storageKey="chat_thread_sidebar_open"
         style={sidebarProviderStyle}
       >
         {showSidebar ? (
           <>
-            <SidebarBrandWidthProbe isElectron={isElectron} onWidthChange={setBrandWidth} />
-            <Sidebar
-              side="left"
-              collapsible="offcanvas"
-              data-app-sidebar=""
-              {...sidebarArea}
-              role="navigation"
-              aria-label="Threads"
-              resizable={{
-                maxWidth: sidebarMaximumWidth,
-                minWidth: sidebarMinimumWidth,
-                shouldAcceptWidth: ({ currentWidth, nextWidth, wrapper }) =>
-                  nextWidth <= currentWidth ||
-                  wrapper.clientWidth - nextWidth >= THREAD_MAIN_CONTENT_MIN_WIDTH,
-                storageKey: THREAD_SIDEBAR_WIDTH_STORAGE_KEY,
-                onResize: setSidebarWidth,
-              }}
-              style={windowControlsInsetStyle}
-            >
-              <ThreadSidebar routeReveal={sidebarRouteReveal} />
-              <SidebarRail onDoubleClick={resetSidebarWidth} />
-            </Sidebar>
+        <SidebarBrandWidthProbe isElectron={isElectron} onWidthChange={setBrandWidth} />
+        {botEnvironmentIds.length > 0 ? (
+          // Outside the offcanvas sidebar, so Bots stay one click away while it is collapsed.
+          <BotRail environmentIds={botEnvironmentIds} className="relative z-20 max-md:hidden" />
+        ) : null}
+        <Sidebar
+          side="left"
+          collapsible="offcanvas"
+          data-app-sidebar=""
+          {...sidebarArea}
+          role="navigation"
+          aria-label="Threads"
+          resizable={{
+            maxWidth: sidebarMaximumWidth,
+            minWidth: sidebarMinimumWidth,
+            shouldAcceptWidth: ({ currentWidth, nextWidth, wrapper, sidebarRoot }) =>
+              nextWidth <= currentWidth ||
+              wrapper.clientWidth -
+                // The Bot rail, when shown, sits left of the sidebar.
+                (sidebarRoot
+                  .querySelector("[data-slot='sidebar-container']")
+                  ?.getBoundingClientRect().left ?? 0) -
+                nextWidth >=
+                THREAD_MAIN_CONTENT_MIN_WIDTH,
+            storageKey: THREAD_SIDEBAR_WIDTH_STORAGE_KEY,
+            onResize: setSidebarWidth,
+          }}
+          style={windowControlsInsetStyle}
+        >
+          <ThreadSidebarWithBotRail
+            routeReveal={sidebarRouteReveal}
+            botEnvironmentIds={botEnvironmentIds}
+          />
+          <SidebarRail onDoubleClick={resetSidebarWidth} />
+        </Sidebar>
           </>
         ) : null}
         {children}

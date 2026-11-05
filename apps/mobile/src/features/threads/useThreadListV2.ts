@@ -1,5 +1,5 @@
 import type { OlderSettledScope } from "@t3tools/client-runtime/state/threads";
-import type { EnvironmentId } from "@t3tools/contracts";
+import { mayBeBotHomeThreadId, type EnvironmentId } from "@t3tools/contracts";
 import { useMemo, useSyncExternalStore } from "react";
 
 import { scopedProjectKey } from "../../lib/scopedEntities";
@@ -66,7 +66,12 @@ export function useThreadListV2(input: {
   readonly settledShelfExpanded: boolean;
   readonly selectedThreadKey: string | null;
 }) {
-  const { threads, workingShelfEnabled } = input;
+  const { threads: allThreads, workingShelfEnabled } = input;
+  // Bot home conversations open from the Bot row above the list instead.
+  const threads = useMemo(
+    () => allThreads.filter((thread) => !mayBeBotHomeThreadId(thread.id)),
+    [allThreads],
+  );
   const layoutTime = useMemo(
     () => threadListV2LayoutTime({ threads, now: input.now, searchQuery: input.searchQuery }),
     [threads, input.now, input.searchQuery],

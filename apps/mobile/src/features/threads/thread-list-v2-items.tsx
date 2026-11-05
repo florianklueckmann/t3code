@@ -27,9 +27,12 @@ import {
 } from "@t3tools/client-runtime/state/models";
 import {
   AuthOrchestrationOperateScope,
+  mayBeBotWorkThreadId,
+  type BotSummary,
   type EnvironmentId,
   type EnvironmentMachineKind,
 } from "@t3tools/contracts";
+import { resolveBotAppearance } from "@t3tools/client-runtime/bot-appearance";
 import { toServerClock } from "@t3tools/client-runtime/clock";
 import type { SnoozePresetSetting } from "@t3tools/contracts/settings";
 import { canSnooze } from "@t3tools/client-runtime/state/thread-settled";
@@ -50,6 +53,8 @@ import {
   ProviderInstanceIcon,
   providerInstanceNameLabel,
 } from "../../components/ProviderIcon";
+import { BotAvatar } from "../../components/BotAvatar";
+import { useWorkThreadBot } from "../bots/useWorkThreadBot";
 import { useNowAfter } from "../../lib/clock";
 import { cn } from "../../lib/cn";
 import { copyTextWithHaptic } from "../../lib/copyTextWithHaptic";
@@ -649,7 +654,7 @@ export const ThreadListV2PendingRow = memo(function ThreadListV2PendingRow(props
   );
 });
 
-export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
+interface ThreadListV2RowProps {
   readonly thread: EnvironmentThreadShell;
   readonly variant: "card" | "slim";
   readonly hasQueuedMessages?: boolean;
@@ -704,7 +709,23 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   readonly searchMatch?: EnvironmentThreadSearchMatch;
   readonly searchQuery?: string;
   readonly simultaneousSwipeGesture?: ComponentProps<typeof ThreadSwipeable>["simultaneousWith"];
-}) {
+}
+
+/** Only `bot-work:` rows read Bot data; every other row renders without it. */
+export const ThreadListV2Row = memo(function ThreadListV2Row(props: ThreadListV2RowProps) {
+  return mayBeBotWorkThreadId(props.thread.id) ? (
+    <BotWorkThreadListV2Row {...props} />
+  ) : (
+    <ThreadListV2RowContent {...props} bot={null} />
+  );
+});
+
+function BotWorkThreadListV2Row(props: ThreadListV2RowProps) {
+  const bot = useWorkThreadBot(props.thread);
+  return <ThreadListV2RowContent {...props} bot={bot} />;
+}
+
+function ThreadListV2RowContent(props: ThreadListV2RowProps & { readonly bot: BotSummary | null }) {
   const { width: windowWidth, fontScale } = useWindowDimensions();
   const titleTypography = useScaledTextRole("body");
   const metadataTypography = useScaledTextRole("label");
@@ -785,7 +806,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   const isRegeneratingTitle = thread.titleRegeneration != null;
   const timeLabel = props.timeLabel;
   const rowAccessibilityLabel = threadListV2RowAccessibilityLabel({
-    title: thread.title,
+    title: `${thread.title}${props.bot ? `, by ${props.bot.name}` : ""}`,
     variant,
     woke: showsWoke,
     // Working and waiting rows show only an icon and a duration, so name them for speech.
@@ -1182,11 +1203,15 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       ? `Opens the thread. Swipe left to ${primaryAction.label.toLowerCase()}.`
       : `Opens the thread. Swipe left for ${primaryAction.label.toLowerCase()} and snooze actions.`;
 
-  const titleTextInset = props.project ? projectIconSize + 8 : 0;
+  const titleTextInset = props.bot || props.project ? projectIconSize + 8 : 0;
   const cardContent = (
     <>
       <View className="flex-row items-start gap-2">
-        {props.project ? (
+        {props.bot ? (
+          <View className="justify-center" style={{ height: titleLineHeight }}>
+            <BotAvatar appearance={resolveBotAppearance(props.bot)} size={projectIconSize} />
+          </View>
+        ) : props.project ? (
           <View className="justify-center" style={{ height: titleLineHeight }}>
             <ProjectFavicon
               environmentId={thread.environmentId}
@@ -1334,9 +1359,23 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
           >
             {thread.runtime.lastError}
           </Text>
-        ) : props.environmentLabel ? (
+        ) : props.bot || props.environmentLabel ? (
           <View className="min-w-0 flex-1 flex-row items-center gap-1">
-            {props.environmentMachine ? (
+            {props.bot ? (
+              <Text
+                className={cn(
+                  "shrink text-xs",
+                  selected
+                    ? selectedThreadRowColors.mutedForegroundClassName
+                    : rowAppearance.tertiaryForegroundClassName,
+                )}
+                numberOfLines={1}
+              >
+                {[props.bot.name, props.project?.title].filter(Boolean).join(" · ")}
+                {props.environmentLabel ? " · " : ""}
+              </Text>
+            ) : null}
+            {props.environmentLabel && props.environmentMachine ? (
               <EnvironmentMachineSymbol
                 kind={props.environmentMachine}
                 size={machineIconSize}
@@ -1347,17 +1386,19 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
                 }
               />
             ) : null}
-            <Text
-              className={cn(
-                "shrink text-xs",
-                selected
-                  ? selectedThreadRowColors.mutedForegroundClassName
-                  : rowAppearance.tertiaryForegroundClassName,
-              )}
-              numberOfLines={1}
-            >
-              {props.environmentLabel}
-            </Text>
+            {props.environmentLabel ? (
+              <Text
+                className={cn(
+                  "shrink text-xs",
+                  selected
+                    ? selectedThreadRowColors.mutedForegroundClassName
+                    : rowAppearance.tertiaryForegroundClassName,
+                )}
+                numberOfLines={1}
+              >
+                {props.environmentLabel}
+              </Text>
+            ) : null}
           </View>
         ) : (
           <View className="flex-1" />
@@ -1506,7 +1547,11 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
             sidebarPane && "px-3",
           )}
         >
-          {props.project ? (
+          {props.bot ? (
+            <View className="opacity-40">
+              <BotAvatar appearance={resolveBotAppearance(props.bot)} size={projectIconSize} />
+            </View>
+          ) : props.project ? (
             <View className="opacity-40">
               <ProjectFavicon
                 environmentId={thread.environmentId}
@@ -1613,4 +1658,4 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       </ThreadSwipeable>
     </View>
   );
-});
+}
