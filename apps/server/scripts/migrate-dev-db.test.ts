@@ -148,6 +148,7 @@ it.layer(NodeServices.layer)("migrate-dev-db", (it) => {
         if (sourceKind === "separated") {
           yield* Effect.gen(function* () {
             const bots = yield* BotDatabase.BotDatabase;
+            yield* bots`INSERT INTO bot_continuation_revisions (home_thread_id, revision, update_id, request_hash, revision_json) VALUES ('home', 1, 'synthetic-note', 'hash', '{}')`;
             // A source journal must never be replayed into a dev seed.
             yield* bots`INSERT INTO bot_routine_intent
             (singleton, task_id, query, parameters_json, bot_id, bot_session_at, schedule_revision, removing)
@@ -182,7 +183,12 @@ it.layer(NodeServices.layer)("migrate-dev-db", (it) => {
             assert.deepStrictEqual(yield* bots`SELECT thread_sync FROM bot_project_contexts`, [
               { thread_sync: null },
             ]);
-            for (const table of ["bot_tasks", "bot_routines", "bot_routine_intent"])
+            for (const table of [
+              "bot_continuation_revisions",
+              "bot_tasks",
+              "bot_routines",
+              "bot_routine_intent",
+            ])
               assert.lengthOf(yield* bots`SELECT * FROM ${bots(table)}`, 0);
             assert.lengthOf(yield* main`SELECT * FROM scheduled_tasks`, 0);
             assert.lengthOf(yield* main`SELECT * FROM auth_sessions`, 0);

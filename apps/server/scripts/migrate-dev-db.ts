@@ -434,7 +434,12 @@ const pruneSnapshot = Effect.fn("pruneDevDbSnapshot")(function* (input: RunMigra
       yield* bots`DELETE FROM bot_learning_revisions
       WHERE project_id IS NOT NULL AND NOT ${bots.in("project_id", projectIds)}`;
       yield* bots`UPDATE bot_project_contexts SET thread_sync = NULL`;
-      for (const table of ["bot_tasks", "bot_routines", "bot_routine_intent"])
+      for (const table of [
+        "bot_continuation_revisions",
+        "bot_tasks",
+        "bot_routines",
+        "bot_routine_intent",
+      ])
         yield* bots`DELETE FROM ${bots(table)}`;
     }),
   );
