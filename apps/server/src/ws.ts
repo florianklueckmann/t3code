@@ -1,3 +1,4 @@
+import * as BotContinuation from "./bots/BotContinuation.ts";
 import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- A synchronous digest inside the pure provider mapping.
 import * as NodeCrypto from "node:crypto";
@@ -1475,6 +1476,7 @@ export const layerWsRpc = (
       const scheduledTasks = yield* ScheduledTasks.ScheduledTaskService;
       const bots = yield* BotService.BotService;
       const botTasks = yield* BotTaskService.BotTaskService;
+      const botContinuation = yield* BotContinuation.BotContinuation;
       const secretRequests = yield* SecretRequests.SecretRequests;
       const guestShares = yield* GuestShareService.GuestShareService;
       const pullRequests = yield* PullRequestService.PullRequestService;
@@ -2318,6 +2320,9 @@ export const layerWsRpc = (
           ),
         [WS_METHODS.botsSubscribe]: (_input) => bots.subscribeList(),
         [WS_METHODS.botsGet]: (input) => bots.get(input),
+        [WS_METHODS.botsGetContinuation]: (input) => botContinuation.get(input),
+        [WS_METHODS.botsListContinuationRevisions]: (input) => botContinuation.history(input),
+        [WS_METHODS.botsSaveContinuation]: (input) => botContinuation.save(input, { kind: "user" }),
         [WS_METHODS.botsCreate]: (input) => bots.create(input),
         [WS_METHODS.botsUpdate]: (input) => bots.update(input),
         [WS_METHODS.botsSetArchived]: (input) => bots.setArchived(input),
