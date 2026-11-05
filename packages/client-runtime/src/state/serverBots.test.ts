@@ -5,6 +5,7 @@ import {
   type BotTaskListInput,
   type BotTaskResult,
   type BotTaskResultInput,
+  type BotContinuationScope,
   RunId,
   EnvironmentId,
   ThreadId,
@@ -37,7 +38,7 @@ import type { RpcSession } from "../rpc/session.ts";
 import { createServerEnvironmentAtoms } from "./server.ts";
 
 const CONFIG = {
-  environment: { capabilities: { bots: true, botTaskResults: true } },
+  environment: { capabilities: { bots: true, botTaskResults: true, botContinuation: true } },
   providers: [],
 } as unknown as ServerConfig;
 
@@ -54,8 +55,11 @@ const makeHarness = Effect.gen(function* () {
               environment: {
                 ...CONFIG.environment,
                 capabilities: (() => {
-                  const { botTaskResults: _resultSupport, ...capabilities } =
-                    CONFIG.environment.capabilities;
+                  const {
+                    botTaskResults: _resultSupport,
+                    botContinuation: _noteSupport,
+                    ...capabilities
+                  } = CONFIG.environment.capabilities;
                   return { ...capabilities, bots: name !== "unsupported" };
                 })(),
               },
@@ -63,6 +67,7 @@ const makeHarness = Effect.gen(function* () {
           : CONFIG;
       const resultReads = yield* Ref.make<ReadonlyArray<BotTaskResultInput>>([]);
       const failResults = yield* Ref.make(false);
+      const continuationReads = yield* Ref.make<ReadonlyArray<string>>([]);
       const bots = yield* SubscriptionRef.make<BotListResult>({
         bots: [
           {
@@ -79,6 +84,34 @@ const makeHarness = Effect.gen(function* () {
         ],
       });
       const client = {
+        [WS_METHODS.botsGetContinuation]: (input: BotContinuationScope) =>
+          Ref.update(continuationReads, (all) => [
+            ...all,
+            `get:${input.botId}:${input.projectId}`,
+          ]).pipe(
+            Effect.as({
+              ...input,
+              homeThreadId: ThreadId.make(`home-${environmentId}`),
+              revision: null,
+              note: { requests: [], waiting: [], decided: [], context: [] },
+              updatedBy: null,
+              updatedAt: null,
+              restoredFrom: null,
+              coverage: null,
+              basis: null,
+              writable: true,
+              newerInputs: { count: 0, firstOrdinal: null, lastOrdinal: null },
+              sources: [],
+              moreSources: 0,
+              activeTasks: [],
+              moreActiveTasks: 0,
+            }),
+          ),
+        [WS_METHODS.botsListContinuationRevisions]: (input: BotContinuationScope) =>
+          Ref.update(continuationReads, (all) => [
+            ...all,
+            `history:${input.botId}:${input.projectId}`,
+          ]).pipe(Effect.as({ revisions: [] })),
         [WS_METHODS.botsGetTaskResult]: (input: BotTaskResultInput) =>
           Effect.gen(function* () {
             yield* Ref.update(resultReads, (all) => [...all, input]);
@@ -145,7 +178,15 @@ const makeHarness = Effect.gen(function* () {
         disconnect: Effect.void,
         retryNow: Effect.void,
       });
-      return { environmentId, bots, supervisor, config, resultReads, failResults };
+      return {
+        environmentId,
+        bots,
+        supervisor,
+        config,
+        resultReads,
+        failResults,
+        continuationReads,
+      };
     }),
   );
   const environment = (id: EnvironmentId) => {
@@ -292,3 +333,42 @@ describe("saved Bot task results", () => {
     }).pipe(Effect.scoped),
   );
 });
+
+it.effect("loads continuation details in the destination and never calls old-server APIs", () =>
+  Effect.gen(function* () {
+    const { atoms, registry, environments } = yield* makeHarness;
+    const input = { botId: BotId.make("same-bot"), projectId: ProjectId.make("same-project") };
+    for (const { environmentId, supervisor, continuationReads } of environments) {
+      yield* SubscriptionRef.set(supervisor.state, {
+        ...AVAILABLE_CONNECTION_STATE,
+        phase: "connected" as const,
+      });
+      const target = { environmentId, input };
+      for (const atom of [
+        Atom.map(atoms.botContinuation(target), (result) =>
+          AsyncResult.map(result, (value) => value !== null),
+        ),
+        Atom.map(atoms.botContinuationHistory(target), (result) =>
+          AsyncResult.map(result, (value) => value !== null),
+        ),
+      ]) {
+        yield* Effect.acquireRelease(
+          Effect.sync(() => registry.mount(atom)),
+          (unmount) => Effect.sync(unmount),
+        );
+        const result = Option.getOrThrow(
+          yield* AtomRegistry.toStream(registry, atom).pipe(
+            Stream.filter(AsyncResult.isSuccess),
+            Stream.runHead,
+          ),
+        ).value;
+        expect(result).toBe(environmentId === "first" || environmentId === "second");
+      }
+      expect(yield* Ref.get(continuationReads)).toEqual(
+        environmentId === "first" || environmentId === "second"
+          ? ["get:same-bot:same-project", "history:same-bot:same-project"]
+          : [],
+      );
+    }
+  }).pipe(Effect.scoped),
+);
