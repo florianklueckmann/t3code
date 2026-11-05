@@ -744,44 +744,43 @@ const make = Effect.gen(function* () {
     yield* Effect.forEach(rows, (row) => requestCancel(row, reason), { discard: true });
   });
 
-  // The Bot transaction keeps cancel/detach serialized until the orchestration receipt commits.
-  const deliverResult = Effect.fn("BotTaskService.deliverResult")(
-    function* (taskId: string) {
-      const row = yield* readRow(taskId);
-      if (row === undefined) return;
-      if (
-        row.return_home_run_id === null ||
-        row.return_home_message_id === null ||
-        row.return_finished_at !== null ||
-        row.completed_at === null
-      )
-        return;
-      const finish = sql`UPDATE bot_tasks SET return_finished_at = ${yield* nowIso}
+  // Acquire Home before the Bot writer: Home policy resolution reads Bot state.
+  const deliverResult = Effect.fn("BotTaskService.deliverResult")(function* (taskId: string) {
+    const row = yield* readRow(taskId);
+    if (row === undefined) return;
+    if (
+      row.return_home_run_id === null ||
+      row.return_home_message_id === null ||
+      row.return_finished_at !== null ||
+      row.completed_at === null
+    )
+      return;
+    const finish = sql`UPDATE bot_tasks SET return_finished_at = ${yield* nowIso}
       WHERE task_id = ${row.task_id} AND return_finished_at IS NULL`.pipe(
-        Effect.mapError(storageError),
-      );
-      const context = yield* activeContext(row.bot_id as BotId, row.project_id as ProjectId);
-      if (
-        row.status !== "completed" ||
-        row.result_run_id === null ||
-        row.work_thread_id === null ||
-        context._tag === "inactive" ||
-        context.context.home_thread_id !== row.home_thread_id
-      ) {
-        yield* finish;
-        return;
-      }
-      const otherWork = yield* sql`SELECT task_id FROM bot_tasks
+      Effect.mapError(storageError),
+    );
+    const context = yield* activeContext(row.bot_id as BotId, row.project_id as ProjectId);
+    if (
+      row.status !== "completed" ||
+      row.result_run_id === null ||
+      row.work_thread_id === null ||
+      context._tag === "inactive" ||
+      context.context.home_thread_id !== row.home_thread_id
+    ) {
+      yield* finish;
+      return;
+    }
+    const otherWork = yield* sql`SELECT task_id FROM bot_tasks
       WHERE home_thread_id = ${row.home_thread_id} AND task_id <> ${row.task_id} AND completed_at IS NULL LIMIT 1`.pipe(
-        Effect.mapError(storageError),
-      );
-      if (otherWork.length > 0) return;
-      const { result } = yield* getResult({ taskId: BotTaskId.make(row.task_id) });
-      if (result.state === "unavailable" || result.state === "not_completed") return;
-      const text =
-        result.state === "available" ? result.text : "The saved run has no final answer.";
-      const delivery = yield* threads
-        .dispatch({
+      Effect.mapError(storageError),
+    );
+    if (otherWork.length > 0) return;
+    const { result } = yield* getResult({ taskId: BotTaskId.make(row.task_id) });
+    if (result.state === "unavailable" || result.state === "not_completed") return;
+    const text = result.state === "available" ? result.text : "The saved run has no final answer.";
+    yield* threads
+      .withBotResultDelivery(
+        {
           type: "bot-task.result.deliver",
           commandId: CommandId.make(`bot-task-return:${row.task_id}:${row.result_run_id}`),
           threadId: ThreadId.make(row.home_thread_id),
@@ -794,15 +793,52 @@ const make = Effect.gen(function* () {
           homeMessageId: MessageId.make(row.return_home_message_id),
           messageId: MessageId.make(`bot-task-return:${row.task_id}:${row.result_run_id}`),
           text: `Bot work run completed. Task fulfillment is unverified; existing user instructions and permissions still apply.\nTask: ${row.task_id}\nWork thread: ${row.work_thread_id}\nSaved run: ${row.result_run_id}\n\n${text.slice(0, 16000)}${text.length > 16000 ? "\n[Result truncated; the full saved result remains available on the task.]" : ""}`,
-        })
-        .pipe(Effect.mapError(botError("Failed to return the Bot task result to Home.")));
-      if (delivery.deferred !== true) yield* finish;
-    },
-    (effect) =>
-      sql
-        .withTransaction(effect)
-        .pipe(Effect.mapError((cause) => (isBotError(cause) ? cause : storageError(cause)))),
-  );
+        },
+        (commit) =>
+          sql
+            .withTransaction(
+              Effect.gen(function* () {
+                const current = yield* readRow(taskId);
+                if (
+                  current === undefined ||
+                  current.return_finished_at !== null ||
+                  current.return_home_run_id !== row.return_home_run_id ||
+                  current.return_home_message_id !== row.return_home_message_id
+                )
+                  return;
+                const attached = yield* activeContext(
+                  row.bot_id as BotId,
+                  row.project_id as ProjectId,
+                );
+                if (
+                  attached._tag === "inactive" ||
+                  attached.context.home_thread_id !== row.home_thread_id
+                ) {
+                  yield* finish;
+                  return;
+                }
+                const pending =
+                  yield* sql`SELECT task_id FROM bot_tasks WHERE home_thread_id = ${row.home_thread_id}
+            AND task_id <> ${row.task_id} AND completed_at IS NULL LIMIT 1`.pipe(
+                    Effect.mapError(storageError),
+                  );
+                if (pending.length > 0) return;
+                const delivery = yield* commit.pipe(
+                  Effect.mapError(botError("Failed to return the Bot task result to Home.")),
+                );
+                if (delivery.deferred !== true) yield* finish;
+              }),
+            )
+            .pipe(Effect.mapError((cause) => (isBotError(cause) ? cause : storageError(cause)))),
+      )
+      .pipe(
+        Effect.mapError((cause) =>
+          isBotError(cause)
+            ? cause
+            : botError("Failed to return the Bot task result to Home.")(cause),
+        ),
+      );
+  });
 
   /** One step of the reconcile loop for one task; failures stay with that task. */
   const reconcileTask = Effect.fn("BotTaskService.reconcileTask")(function* (row: BotTaskRow) {

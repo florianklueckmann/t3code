@@ -402,6 +402,18 @@ export interface ThreadManagementServiceShape {
     Orchestrator.OrchestratorV2DispatchResult,
     Orchestrator.OrchestratorV2Error | ThreadManagementProviderInstanceDisabledError
   >;
+  readonly withBotResultDelivery: <A, E>(
+    command: Extract<OrchestrationV2ServerCommand, { type: "bot-task.result.deliver" }>,
+    use: (
+      commit: Effect.Effect<
+        Orchestrator.OrchestratorV2DispatchResult,
+        Orchestrator.OrchestratorV2Error
+      >,
+    ) => Effect.Effect<A, E>,
+  ) => Effect.Effect<
+    A,
+    E | Orchestrator.OrchestratorV2Error | ThreadManagementProviderInstanceDisabledError
+  >;
   readonly getThreadHistoryPage: Orchestrator.OrchestratorV2["Service"]["getThreadHistoryPage"];
   readonly getTimelinePage: Orchestrator.OrchestratorV2["Service"]["getTimelinePage"];
   readonly getMessageCount: Orchestrator.OrchestratorV2["Service"]["getMessageCount"];
@@ -816,6 +828,15 @@ const make = Effect.gen(function* () {
     ensureCommandTranscripts(command).pipe(
       Effect.andThen(assertDispatchTargetEnabled(command)),
       Effect.andThen(orchestrator.dispatch(command)),
+    );
+
+  const withBotResultDelivery: ThreadManagementServiceShape["withBotResultDelivery"] = (
+    command,
+    use,
+  ) =>
+    ensureCommandTranscripts(command).pipe(
+      Effect.andThen(assertDispatchTargetEnabled(command)),
+      Effect.andThen(orchestrator.withBotResultDelivery(command, use)),
     );
 
   const getProjectThreadRecords: ThreadManagementServiceShape["getProjectThreadRecords"] = (
@@ -1697,6 +1718,7 @@ const make = Effect.gen(function* () {
       );
     }),
     dispatch,
+    withBotResultDelivery,
     getThreadHistoryPage: Effect.fn("ThreadManagementService.getThreadHistoryPage")(
       function (threadId, cursor, throughEntryId, conversationOnly, workMode) {
         return ensureProjectionTranscript(threadId).pipe(

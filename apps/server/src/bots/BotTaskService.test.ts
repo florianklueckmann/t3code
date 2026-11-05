@@ -33,6 +33,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
@@ -81,6 +82,8 @@ interface FakeThread {
 
 /** Stands in for the orchestrator: launches are idempotent per command id, like receipts. */
 const makeThreadWorld = Effect.gen(function* () {
+  const botSql = yield* BotDatabase.BotDatabase;
+  const deliveryLockTransactions = yield* Ref.make<ReadonlyArray<boolean>>([]);
   const records = yield* Ref.make(
     new Map<
       ThreadId,
@@ -116,7 +119,7 @@ const makeThreadWorld = Effect.gen(function* () {
         : new Map(current).set(threadId, { ...thread, ...change });
     });
 
-  const dispatch = Effect.fn("FakeThreads.dispatch")(function* (
+  const dispatchLocked = Effect.fn("FakeThreads.dispatch")(function* (
     command: OrchestrationV2ServerCommand,
   ) {
     if (command.type === "thread.mark-unread") {
@@ -145,6 +148,15 @@ const makeThreadWorld = Effect.gen(function* () {
     }
     return { storedEvents: [] } as never;
   });
+
+  const beforeDeliveryLock = Effect.gen(function* () {
+    const transaction = yield* Effect.serviceOption(botSql.transactionService);
+    yield* Ref.update(deliveryLockTransactions, (all) => [...all, Option.isSome(transaction)]);
+  });
+  const dispatch = (command: OrchestrationV2ServerCommand) =>
+    (command.type === "bot-task.result.deliver" ? beforeDeliveryLock : Effect.void).pipe(
+      Effect.andThen(dispatchLocked(command)),
+    );
 
   const getThreadShell = Effect.fn("FakeThreads.getThreadShell")(function* (threadId: ThreadId) {
     const thread = (yield* Ref.get(threads)).get(threadId);
@@ -223,6 +235,8 @@ const makeThreadWorld = Effect.gen(function* () {
   const threadLayer = Layer.mergeAll(
     Layer.mock(ThreadManagementService.ThreadManagementService)({
       dispatch,
+      withBotResultDelivery: (command, use) =>
+        beforeDeliveryLock.pipe(Effect.andThen(use(dispatchLocked(command)))),
       getThreadShell,
       getProjectThreadRecords: (input, fields, filter) =>
         Effect.gen(function* () {
@@ -258,6 +272,7 @@ const makeThreadWorld = Effect.gen(function* () {
     launchGate,
     failNext,
     notificationAttempts,
+    deliveryLockTransactions,
     commandsMatching,
   };
 });
@@ -816,6 +831,12 @@ it.effect("returns only opted-in saved results to Home once across retry and res
     }>`SELECT return_home_run_id, return_finished_at FROM bot_tasks WHERE task_id = ${task.id}`;
     assert.equal(saved?.return_home_run_id, anchor);
     assert.isNotNull(saved?.return_finished_at);
+    const acquisitions = yield* Ref.get(world.deliveryLockTransactions);
+    assert.isAbove(acquisitions.length, 0);
+    assert.isTrue(
+      acquisitions.every((held) => !held),
+      "waiting for Home must not hold the Bot writer",
+    );
   }).pipe(Effect.provide(layerDatabase)),
 );
 
