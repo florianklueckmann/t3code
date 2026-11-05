@@ -1,4 +1,7 @@
 import {
+  type BotContinuationScope,
+  type BotContinuationView,
+  type BotContinuationHistory,
   type EnvironmentId,
   type BotSummary,
   type BotTaskResult,
@@ -1238,6 +1241,46 @@ export function createServerEnvironmentAtoms<R, E>(
       (refresh) => refresh(query),
     ).pipe(Atom.withLabel(`environment-data:server:bots:task-result-view:${key}`));
   });
+  const botContinuationQuery = createEnvironmentRpcQueryAtomFamily(runtime, {
+    label: "environment-data:server:bots:botContinuation",
+    tag: WS_METHODS.botsGetContinuation,
+    staleTimeMs: 0,
+    idleTtlMs: 0,
+  });
+  const botContinuationFamily = Atom.family((key: string) => {
+    const [environmentId, input] = JSON.parse(key) as [EnvironmentId, BotContinuationScope];
+    const query = botContinuationQuery({ environmentId, input });
+    return Atom.readable(
+      (get): AsyncResult.AsyncResult<BotContinuationView | null, unknown> => {
+        const config = get(configValueAtom(environmentId));
+        if (config === null) return AsyncResult.initial(true);
+        if (config.environment.capabilities.botContinuation !== true)
+          return AsyncResult.success(null);
+        return get(query);
+      },
+      (refresh) => refresh(query),
+    );
+  });
+  const botContinuationHistoryQuery = createEnvironmentRpcQueryAtomFamily(runtime, {
+    label: "environment-data:server:bots:botContinuationHistory",
+    tag: WS_METHODS.botsListContinuationRevisions,
+    staleTimeMs: 0,
+    idleTtlMs: 0,
+  });
+  const botContinuationHistoryFamily = Atom.family((key: string) => {
+    const [environmentId, input] = JSON.parse(key) as [EnvironmentId, BotContinuationScope];
+    const query = botContinuationHistoryQuery({ environmentId, input });
+    return Atom.readable(
+      (get): AsyncResult.AsyncResult<BotContinuationHistory | null, unknown> => {
+        const config = get(configValueAtom(environmentId));
+        if (config === null) return AsyncResult.initial(true);
+        if (config.environment.capabilities.botContinuation !== true)
+          return AsyncResult.success(null);
+        return get(query);
+      },
+      (refresh) => refresh(query),
+    );
+  });
   const workThreadBotFamily = Atom.family((key: string) => {
     const [environmentId, threadId] = JSON.parse(key) as [EnvironmentId, string];
     return Atom.make((get): BotSummary | null => {
@@ -1391,6 +1434,14 @@ export function createServerEnvironmentAtoms<R, E>(
       readonly environmentId: EnvironmentId;
       readonly input: BotTaskResultInput;
     }) => botTaskResultFamily(JSON.stringify([target.environmentId, target.input])),
+    botContinuation: (target: {
+      readonly environmentId: EnvironmentId;
+      readonly input: BotContinuationScope;
+    }) => botContinuationFamily(JSON.stringify([target.environmentId, target.input])),
+    botContinuationHistory: (target: {
+      readonly environmentId: EnvironmentId;
+      readonly input: BotContinuationScope;
+    }) => botContinuationHistoryFamily(JSON.stringify([target.environmentId, target.input])),
     botDetail: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:server:bots:detail",
       tag: WS_METHODS.botsGet,
@@ -1689,6 +1740,12 @@ export function createServerEnvironmentAtoms<R, E>(
     cancelBotTask: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:bots:cancel-task",
       tag: WS_METHODS.botsCancelTask,
+    }),
+    saveBotContinuation: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bots:save-continuation",
+      tag: WS_METHODS.botsSaveContinuation,
+      scheduler: configScheduler,
+      concurrency: configConcurrency,
     }),
     recordBotLearning: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:bots:record-learning",

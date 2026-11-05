@@ -1,3 +1,12 @@
+import {
+  BOT_CONTINUATION_SECTIONS,
+  BotContinuationNoteInput,
+  type BotContinuationNote,
+  type BotContinuationRef,
+  type BotContinuationRevision,
+} from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
+import * as Option from "effect/Option";
 import type {
   BotId,
   BotLearningEntry,
@@ -456,4 +465,47 @@ export function describeBotRoutineTiming(
     case "webhook":
       return "On webhook";
   }
+}
+
+export type BotContinuationDraft = Readonly<
+  Record<(typeof BOT_CONTINUATION_SECTIONS)[number], string>
+>;
+export function botContinuationDraft(note: BotContinuationNote): BotContinuationDraft {
+  return {
+    requests: note.requests.map((item) => item.text).join("\n"),
+    waiting: note.waiting.map((item) => item.text).join("\n"),
+    decided: note.decided.map((item) => item.text).join("\n"),
+    context: note.context.map((item) => item.text).join("\n"),
+  };
+}
+const decodeContinuationDraft = Schema.decodeUnknownOption(BotContinuationNoteInput);
+export function parseBotContinuationDraft(
+  draft: BotContinuationDraft,
+): { readonly note: BotContinuationNoteInput } | { readonly error: string } {
+  const entries = (section: (typeof BOT_CONTINUATION_SECTIONS)[number]) =>
+    draft[section]
+      .split("\n")
+      .map((text) => text.trim())
+      .filter(Boolean)
+      .map((text) => ({ text }));
+  const decoded = decodeContinuationDraft({
+    requests: entries("requests"),
+    waiting: entries("waiting"),
+    decided: entries("decided"),
+    context: entries("context"),
+  });
+  return Option.isSome(decoded)
+    ? { note: decoded.value }
+    : { error: "Use at most 20 lines, 400 characters per line and 4000 characters in total." };
+}
+export function botContinuationWriterLabel(writer: BotContinuationRevision["updatedBy"]): string {
+  return writer.kind === "user" ? "Updated by you" : "Updated by the Bot";
+}
+export function botContinuationRefCaption(ref: BotContinuationRef): string {
+  if (ref.kind === "user") return `You · revision ${ref.revision}`;
+  if (ref.availability === "historical_unverified")
+    return "Source unavailable or changed · historical/unverified";
+  if (ref.kind === "task")
+    return `Task · ${ref.status === null ? "Unavailable" : BOT_TASK_STATUS_LABELS[ref.status]}`;
+  return `${ref.directUser ? "Your words" : "Home input"}: “${ref.quote}”`;
 }
