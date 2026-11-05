@@ -3,7 +3,7 @@ export interface ContinuationCase {
   readonly capture: string;
   readonly resume: string;
   readonly request: string | null;
-  readonly waiting: string | null;
+  readonly waiting: readonly string[];
   readonly absent: string | null;
   readonly answer: readonly string[];
 }
@@ -17,9 +17,13 @@ export const CASES: readonly ContinuationCase[] = [
     resume:
       "What remains unfinished for Lantern, and what decision still needs me? Do not do the work yet.",
     request: "Lantern",
-    waiting: "(date|packaging|Blue)",
+    waiting: ["date", "(?=.*blue)(?=.*(propos|unapproved|not approved|pending|undecided))"],
     absent: null,
-    answer: ["Lantern", "date", "(propos|unapproved|not approved|undecided|pending)"],
+    answer: [
+      "Lantern",
+      "date",
+      "(?=.*blue)(?=.*(propos|unapproved|not approved|undecided|pending))",
+    ],
   },
   {
     id: "correction-wins",
@@ -28,7 +32,7 @@ export const CASES: readonly ContinuationCase[] = [
     resume:
       "Which checklist request remains open? Has the resolved Lantern request or discarded blue proposal returned?",
     request: "Harbor",
-    waiting: null,
+    waiting: [],
     absent: "(Lantern|blue packaging)",
     answer: ["Harbor", "(resolved|discarded|no longer|removed|closed)"],
   },
@@ -39,7 +43,7 @@ export const CASES: readonly ContinuationCase[] = [
     resume:
       "What is 8 plus 9? Answer completely in one short sentence. I am asking for nothing else.",
     request: null,
-    waiting: null,
+    waiting: [],
     absent: null,
     answer: ["17|seventeen"],
   },
