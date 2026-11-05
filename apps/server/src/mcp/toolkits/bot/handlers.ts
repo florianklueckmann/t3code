@@ -1,3 +1,4 @@
+import * as BotContinuation from "../../../bots/BotContinuation.ts";
 import { type BotError, OrchestratorMcpFailure } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
@@ -32,6 +33,14 @@ const requireProjectId = (input: BotToolInput) =>
 
 const read = Effect.fn("mcp.bot.read")(function* (input: BotToolInput) {
   const bots = yield* BotService.BotService;
+  if (input.action === "read_continuation") {
+    const continuation = yield* BotContinuation.BotContinuation;
+    const botId = yield* requireBotId(input);
+    const projectId = yield* requireProjectId(input);
+    return {
+      continuation: yield* continuation.get({ botId, projectId }).pipe(Effect.mapError(botFailure)),
+    };
+  }
   if (input.action === "list_tasks") {
     const tasks = yield* BotTaskService.BotTaskService;
     const listed = tasks.list({
@@ -122,6 +131,28 @@ const changeLearning = Effect.fn("mcp.bot.changeLearning")(function* (input: Bot
 const write = Effect.fn("mcp.bot.write")(function* (input: BotToolInput) {
   const bots = yield* BotService.BotService;
   const tasks = yield* BotTaskService.BotTaskService;
+  if (input.action === "save_continuation") {
+    const continuation = yield* BotContinuation.BotContinuation;
+    const caller = yield* McpInvocationContext.McpInvocationContext;
+    if (caller.thread === undefined || caller.thread.subagent === true)
+      return yield* invalid(
+        "Working-note writes require this project's active Home thread credential.",
+      );
+    const botId = yield* requireBotId(input);
+    const projectId = yield* requireProjectId(input);
+    if (input.continuation === undefined)
+      return yield* invalid(
+        "save_continuation needs continuation with baseRevision, updateId, note and the exact supplied basis.",
+      );
+    return {
+      savedContinuation: yield* continuation
+        .save(
+          { ...input.continuation, botId, projectId },
+          { kind: "bot", threadId: caller.thread.threadId },
+        )
+        .pipe(Effect.mapError(botFailure)),
+    };
+  }
   if (input.action === "cancel_task") {
     if (input.taskId === undefined) {
       return yield* new OrchestratorMcpFailure({
@@ -211,7 +242,11 @@ const write = Effect.fn("mcp.bot.write")(function* (input: BotToolInput) {
 
 export const layer = McpToolAccess.toLayer(BotToolkit, {
   t3_bot: McpToolAccess.either(
-    (input) => input.action === "list" || input.action === "read" || input.action === "list_tasks",
+    (input) =>
+      input.action === "list" ||
+      input.action === "read" ||
+      input.action === "list_tasks" ||
+      input.action === "read_continuation",
     McpToolAccess.reads(read),
     McpToolAccess.writesEnvironment((input) => write(input)),
   ),

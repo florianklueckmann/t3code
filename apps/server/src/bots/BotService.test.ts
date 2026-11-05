@@ -1,3 +1,4 @@
+import * as BotContinuation from "./BotContinuation.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -167,15 +168,17 @@ const withServices = <A, E>(
   body: (services: {
     readonly bots: BotService.BotService["Service"];
     readonly turnContext: BotTurnContext.BotTurnContext["Service"];
+    readonly continuation: BotContinuation.BotContinuation["Service"];
   }) => Effect.Effect<A, E>,
 ) =>
   Effect.gen(function* () {
     const bots = yield* BotService.BotService;
     const turnContext = yield* BotTurnContext.BotTurnContext;
-    return yield* body({ bots, turnContext });
+    const continuation = yield* BotContinuation.BotContinuation;
+    return yield* body({ bots, turnContext, continuation });
   }).pipe(
     Effect.provide(
-      Layer.merge(BotService.layer, BotTurnContext.layer).pipe(
+      Layer.mergeAll(BotService.layer, BotTurnContext.layer, BotContinuation.layer).pipe(
         Layer.provide(BotTaskService.layer),
         Layer.provide(Layer.merge(threadLayer, layerSupport)),
       ),
@@ -208,7 +211,7 @@ it.effect(
       const world = yield* makeThreadWorld;
       const twinId = BotId.make("faerun-companion-twin");
       const vault = { label: "Campaign A vault", location: "/vaults/a" };
-      const homes = yield* withServices(world.threadLayer, ({ bots }) =>
+      const homes = yield* withServices(world.threadLayer, ({ bots, continuation }) =>
         Effect.gen(function* () {
           yield* createCampaignBot(bots);
           yield* bots.attachProject({
@@ -222,6 +225,21 @@ it.effect(
             projectId: campaignB,
             guidance: "Strahd was defeated in this campaign.",
           });
+          yield* continuation.save(
+            {
+              botId,
+              projectId: campaignA,
+              baseRevision: null,
+              updateId: "campaign-note",
+              note: {
+                requests: [{ text: "Prepare the Amber Temple encounter after a date is chosen." }],
+                waiting: [],
+                decided: [],
+                context: [],
+              },
+            },
+            { kind: "user" },
+          );
           const [a, b] = detail.projects;
           assert.notEqual(a?.homeThreadId, b?.homeThreadId);
           // Same name as the first Bot, attached to the same project.
@@ -239,6 +257,9 @@ it.effect(
         Effect.gen(function* () {
           const a = yield* instructionsFor(turnContext, homes.a);
           assert.include(a, "Strahd is alive");
+          assert.include(a, "Working notes");
+          assert.include(a, "save_continuation");
+          assert.include(a, "Prepare the Amber Temple encounter");
           assert.include(a, `botId "${botId}"`);
           assert.include(a, `projectId "${campaignA}"`);
           assert.include(a, "- Campaign A vault: /vaults/a");
@@ -247,9 +268,11 @@ it.effect(
           assert.include(b, "Strahd was defeated");
           assert.include(b, `projectId "${campaignB}"`);
           assert.notInclude(b, "Strahd is alive");
+          assert.notInclude(b, "Prepare the Amber Temple encounter");
           const twin = yield* instructionsFor(turnContext, homes.twin);
           assert.include(twin, `botId "${twinId}"`);
           assert.notInclude(twin, `botId "${botId}"`);
+          assert.notInclude(twin, "Prepare the Amber Temple encounter");
           assert.equal(yield* instructionsFor(turnContext, ThreadId.make("plain")), "none");
 
           // A standing change through the ids, as the t3_bot tool makes it.
