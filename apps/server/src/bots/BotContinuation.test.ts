@@ -68,6 +68,7 @@ const input = Effect.fn("fixture.input")(function* (
     readonly directUser?: boolean;
     readonly automatic?: boolean;
     readonly status?: string;
+    readonly withoutTurnItem?: boolean;
   } = {},
 ) {
   const main = yield* SqlClient.SqlClient;
@@ -89,7 +90,8 @@ const input = Effect.fn("fixture.input")(function* (
   });
   yield* main`INSERT OR IGNORE INTO orchestration_v2_projection_runs (run_id, thread_id, ordinal, provider, status, requested_at, payload_json) VALUES (${run}, ${home}, ${run === "run-1" ? 1 : 2}, 'codex', ${options.status ?? "running"}, ${now}, '{}')`;
   yield* main`INSERT INTO orchestration_v2_projection_messages (message_id, thread_id, run_id, role, streaming, created_at, updated_at, payload_json) VALUES (${messageId}, ${home}, ${run}, 'user', 0, ${now}, ${now}, ${payload})`;
-  yield* main`INSERT INTO orchestration_v2_projection_turn_items (turn_item_id, thread_id, run_id, ordinal, type, status, updated_at, payload_json) VALUES (${`item-${ordinal}`}, ${home}, ${run}, ${ordinal}, 'user_message', 'completed', ${now}, ${JSON.stringify({ messageId })})`;
+  if (!options.withoutTurnItem)
+    yield* main`INSERT INTO orchestration_v2_projection_turn_items (turn_item_id, thread_id, run_id, ordinal, type, status, updated_at, payload_json) VALUES (${`item-${ordinal}`}, ${home}, ${run}, ${ordinal}, 'user_message', 'completed', ${now}, ${JSON.stringify({ messageId })})`;
 });
 const task = Effect.fn("fixture.task")(function* (
   index: number,
@@ -179,7 +181,11 @@ it.effect(
       const initial = yield* notes.get(scope);
       assert.equal(initial.newerInputs.count, 1);
       yield* input(2, "Also keep a Harbor checklist.");
-      yield* input(3, "New queued request", { run: "run-2", status: "queued" });
+      yield* input(3, "New queued request", {
+        run: "run-2",
+        status: "queued",
+        withoutTurnItem: true,
+      });
       const saved = yield* notes.save(
         {
           ...userSave("capture", null, { ...empty(), requests: [{ text: "Lantern checklist" }] }),
@@ -342,18 +348,26 @@ it.effect(
   () =>
     Effect.gen(function* () {
       yield* seed;
-      yield* task(0, "running");
-      for (let index = 1; index <= 55; index += 1) yield* task(index, "completed");
-      yield* task(56, "waiting", true);
+      for (let index = 0; index < 9; index += 1) yield* task(index, "running");
+      for (let index = 9; index <= 63; index += 1) yield* task(index, "completed");
+      yield* task(64, "waiting", true);
       for (const [index, status] of ["failed", "interrupted", "cancelled", "skipped"].entries())
-        yield* task(57 + index, status);
+        yield* task(65 + index, status);
       const notes = yield* BotContinuation.BotContinuation;
       const view = yield* notes.get(scope);
+      assert.lengthOf(view.activeTasks, 8);
+      assert.equal(view.moreActiveTasks, 1);
+      const afterInput = { ...scope, afterTaskId: view.activeTasks.at(-1)!.taskId };
+      const next = yield* notes.get(afterInput);
       assert.deepEqual(
-        view.activeTasks.map((row) => row.taskId),
-        ["task-0"],
+        [...view.activeTasks, ...next.activeTasks].map((row) => row.taskId),
+        Array.from({ length: 9 }, (_, index) => `task-${index}`),
       );
-      assert.equal(view.moreActiveTasks, 0);
+      assert.equal(next.moreActiveTasks, 0);
+      assert.equal(view.nextActiveTaskId, "task-7");
+      assert.isNull(next.nextActiveTaskId);
+      const foreignPage = { ...scope, afterTaskId: BotTaskId.make("foreign-task") };
+      assert.isTrue(yield* notes.get(foreignPage).pipe(Effect.isFailure));
       yield* notes.save(
         userSave("task-request", null, {
           ...empty(),
@@ -369,7 +383,11 @@ it.effect(
       const bots = yield* BotDatabase.BotDatabase;
       yield* bots`UPDATE bot_tasks SET status = 'completed', result_run_id = 'saved-result', cancel_requested_at = ${now} WHERE task_id = 'task-0'`;
       const completed = yield* notes.get(scope);
-      assert.lengthOf(completed.activeTasks, 0);
+      assert.lengthOf(completed.activeTasks, 8);
+      assert.notInclude(
+        completed.activeTasks.map((row) => row.taskId),
+        BotTaskId.make("task-0"),
+      );
       assert.lengthOf(completed.note.requests, 1);
       const taskRef = completed.note.requests[0]!.refs.find((ref) => ref.kind === "task")!;
       if (taskRef.kind !== "task") return assert.fail();
@@ -483,7 +501,7 @@ it.effect(
       const connection = services.pipe(Layer.provideMerge(db));
       const savedInput = yield* Effect.gen(function* () {
         yield* seed;
-        yield* input(1, "Draft Lantern after the date is supplied.");
+        yield* input(202, "Draft Lantern after the date is supplied.");
         const notes = yield* BotContinuation.BotContinuation;
         const initial = yield* notes.get(scope);
         const saveInput = {
@@ -494,8 +512,20 @@ it.effect(
           basis: initial.basis!,
         };
         yield* notes.save(saveInput, { kind: "bot", threadId: home });
-        yield* input(2, "Harbor also remains unfinished.");
         const main = yield* SqlClient.SqlClient;
+        yield* input(201, "A queued input promoted into the same running turn.");
+        yield* main`UPDATE orchestration_v2_projection_turn_items SET payload_json = json_set(payload_json, '$.inputIntent', 'promoted_queued_to_steer') WHERE turn_item_id = 'item-201'`;
+        assert.equal((yield* notes.get(scope)).newerInputs.count, 1);
+        yield* main`UPDATE orchestration_v2_projection_runs SET status = 'completed' WHERE run_id = 'run-1'`;
+        yield* input(200, "Harbor also remains unfinished.", { run: "run-2" });
+        const queuedStart = yield* notes.get(scope);
+        assert.equal(queuedStart.newerInputs.count, 2);
+        const sourceChecked = yield* notes.save(
+          { ...userSave("queued-source-check", 999), basis: queuedStart.basis! },
+          { kind: "bot", threadId: home },
+        );
+        if (sourceChecked._tag !== "conflict") return assert.fail();
+        assert.equal(sourceChecked.reason, "revision");
         yield* main`UPDATE orchestration_v2_projection_runs SET status = 'completed'`;
         return saveInput;
       }).pipe(Effect.provide(connection), Effect.scoped);
@@ -503,7 +533,7 @@ it.effect(
         const notes = yield* BotContinuation.BotContinuation;
         const view = yield* notes.get(scope);
         assert.equal(view.note.requests[0]!.text, "Lantern checklist");
-        assert.equal(view.newerInputs.count, 1);
+        assert.equal(view.newerInputs.count, 2);
         const retry = yield* notes.save(savedInput, { kind: "bot", threadId: home });
         if (retry._tag !== "saved") return assert.fail();
         assert.isTrue(retry.duplicate);
