@@ -1,8 +1,8 @@
 import { useAtomValue } from "@effect/atom-react";
-import { BOT_TASK_STATUS_LABELS, isBotTaskOpen } from "@t3tools/client-runtime/bots";
+import { isBotTaskOpen } from "@t3tools/client-runtime/bots";
 import type { BotTaskSummary, EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { useState } from "react";
-import { Pressable, View } from "react-native";
+import { View } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";
 import * as Dialog from "../../components/ui/Dialog";
@@ -10,10 +10,11 @@ import { cn } from "../../lib/cn";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { formatBotInstant } from "../settings/botRoutineDraft";
+import { BotTaskAction, BotTaskStatusLine } from "./BotTaskPresentation";
 import { BotTaskResultSheet } from "./BotTaskResultSheet";
 import { reportBotFailure } from "./reportBotFailure";
 
-/** One Bot task: its status, when it ran, and links to its work thread. */
+/** One Bot task: its status, when it ran, its result and a link to its work thread. */
 export function BotTaskRow(props: {
   readonly environmentId: EnvironmentId;
   readonly task: BotTaskSummary;
@@ -29,6 +30,10 @@ export function BotTaskRow(props: {
   const [resultOpen, setResultOpen] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const workThreadId = task.workThreadId;
+  const when = formatBotInstant(task.completedAt ?? task.createdAt);
+  const canView = task.status === "completed";
+  const showCancel = isBotTaskOpen(task) && canCancel;
+  const hasActions = canView || workThreadId !== null || showCancel;
   const confirmCancel = () =>
     Dialog.alert("Cancel task?", task.title, [
       { text: "Keep working", style: "cancel" },
@@ -48,70 +53,60 @@ export function BotTaskRow(props: {
     ]);
 
   return (
-    <View className={cn("gap-2 px-4 py-3", props.borderTop && "border-t border-border-subtle")}>
-      <View className="min-w-0 gap-1">
-        <Text className="text-sm text-foreground" numberOfLines={2}>
-          {task.title}
+    <View
+      className={cn(
+        // Actions carry their own touch height, so the row only needs a little padding below them.
+        "gap-1 px-4 pt-3",
+        hasActions ? "pb-1" : "pb-3",
+        props.borderTop && "border-t border-border-subtle",
+      )}
+    >
+      <Text className="text-sm text-foreground" numberOfLines={3}>
+        {task.title}
+      </Text>
+      <BotTaskStatusLine status={task.status} trailing={when} numberOfLines={1} />
+      {props.showDetail && task.detail ? (
+        <Text className="text-xs text-foreground-muted" numberOfLines={2}>
+          {task.detail}
         </Text>
-        <Text
-          className={cn(
-            "text-xs",
-            task.status === "failed"
-              ? "text-danger-foreground"
-              : task.status === "completed"
-                ? "font-t3-semibold text-foreground"
-                : "text-foreground-muted",
+      ) : null}
+      {hasActions ? (
+        <View className="flex-row flex-wrap items-center gap-x-5">
+          {canView ? (
+            <BotTaskAction
+              label="View result"
+              icon="doc.text"
+              tone="primary"
+              accessibilityLabel={`View result for ${task.title}`}
+              onPress={() => setResultOpen(true)}
+            />
+          ) : null}
+          {workThreadId === null ? null : (
+            <BotTaskAction
+              label="Open thread"
+              icon="bubble.left"
+              tone="neutral"
+              accessibilityLabel={`Open thread for ${task.title}`}
+              onPress={() => props.onOpen(workThreadId)}
+            />
           )}
-          numberOfLines={1}
-        >
-          {BOT_TASK_STATUS_LABELS[task.status]} ·{" "}
-          {formatBotInstant(task.completedAt ?? task.createdAt)}
-        </Text>
-        {props.showDetail && task.detail ? (
-          <Text className="text-xs text-foreground-muted" numberOfLines={2}>
-            {task.detail}
-          </Text>
-        ) : null}
-      </View>
-      <View className="flex-row flex-wrap items-center gap-x-5 gap-y-1">
-        {task.status === "completed" ? (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={`View result for ${task.title}`}
-            onPress={() => setResultOpen(true)}
-            className="py-2 active:opacity-70"
-          >
-            <Text className="font-t3-semibold text-sm text-primary-text">View result</Text>
-          </Pressable>
-        ) : null}
-        {isBotTaskOpen(task) && canCancel ? (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={`Cancel ${task.title}`}
-            disabled={cancelling}
-            hitSlop={8}
-            onPress={confirmCancel}
-            className="active:opacity-70 disabled:opacity-50"
-          >
-            <Text className="text-sm text-danger-foreground">Cancel</Text>
-          </Pressable>
-        ) : null}
-        {workThreadId === null ? null : (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={`Open thread for ${task.title}`}
-            hitSlop={8}
-            onPress={() => props.onOpen(workThreadId)}
-            className="py-2 active:opacity-70"
-          >
-            <Text className="text-sm text-primary-text">Open thread</Text>
-          </Pressable>
-        )}
-      </View>
+          {showCancel ? (
+            <BotTaskAction
+              label="Cancel"
+              icon="xmark"
+              tone="danger"
+              accessibilityLabel={`Cancel ${task.title}`}
+              disabled={cancelling}
+              onPress={confirmCancel}
+            />
+          ) : null}
+        </View>
+      ) : null}
       {resultOpen ? (
         <BotTaskResultSheet
           environmentId={props.environmentId}
           task={task}
+          when={when}
           onClose={() => setResultOpen(false)}
           onOpenThread={props.onOpen}
         />
