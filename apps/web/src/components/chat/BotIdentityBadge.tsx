@@ -40,8 +40,10 @@ export function BotIdentityBadge(props: {
           size={14}
           className="size-3.5 opacity-100"
         />
-        <span className="sr-only">Bot </span>
-        {bot.name}
+        <span className="sr-only">Bot {bot.name}</span>
+        <span aria-hidden className="hidden max-w-32 truncate @min-[16rem]/thread-title:block">
+          {bot.name}
+        </span>
       </TooltipTrigger>
       <TooltipPopup side="top">Home conversation of the Bot {bot.name}</TooltipPopup>
     </Tooltip>
