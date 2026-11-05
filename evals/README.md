@@ -15,6 +15,8 @@ Write or run an eval when a change affects what a model sees or does: agent inst
 
 | [bot-preparation](bot-preparation/) | Whether Bot preparation routines give grounded results and Bots set up routines when asked. |
 
+| [bot-continuation](bot-continuation/) | Whether Home captures and resumes unfinished business without promoting proposals or inventing work. |
+
 ## Run an eval
 
 1. Run `vp i` at the repo root.

@@ -1,4 +1,11 @@
 import {
+  BotContinuationScope,
+  BotContinuationView,
+  BotContinuationHistory,
+  BotSaveContinuationInput,
+  BotSaveContinuationResult,
+} from "./botContinuation.ts";
+import {
   OrchestrationV2SearchThreadError,
   OrchestrationV2SearchThreadInput,
   OrchestrationV2SearchThreadResult,
@@ -581,6 +588,9 @@ export const WS_METHODS = {
 
   botsSubscribe: "bots.subscribe",
   botsGet: "bots.get",
+  botsGetContinuation: "bots.getContinuation",
+  botsListContinuationRevisions: "bots.listContinuationRevisions",
+  botsSaveContinuation: "bots.saveContinuation",
   botsCreate: "bots.create",
   botsUpdate: "bots.update",
   botsSetArchived: "bots.setArchived",
@@ -2086,6 +2096,22 @@ const WsBotsGetRpc = Rpc.make(WS_METHODS.botsGet, {
   error: BotRpcError,
 });
 
+const WsBotsGetContinuationRpc = Rpc.make(WS_METHODS.botsGetContinuation, {
+  payload: BotContinuationScope,
+  success: BotContinuationView,
+  error: BotRpcError,
+});
+const WsBotsListContinuationRevisionsRpc = Rpc.make(WS_METHODS.botsListContinuationRevisions, {
+  payload: BotContinuationScope,
+  success: BotContinuationHistory,
+  error: BotRpcError,
+});
+const WsBotsSaveContinuationRpc = Rpc.make(WS_METHODS.botsSaveContinuation, {
+  payload: BotSaveContinuationInput,
+  success: BotSaveContinuationResult,
+  error: BotRpcError,
+});
+
 const WsBotsCreateRpc = Rpc.make(WS_METHODS.botsCreate, {
   payload: BotCreateInput,
   success: BotDetail,
@@ -2260,6 +2286,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsScheduledTasksGetWebhookDeliveryRpc,
   WsBotsSubscribeRpc,
   WsBotsGetRpc,
+  WsBotsGetContinuationRpc,
+  WsBotsListContinuationRevisionsRpc,
+  WsBotsSaveContinuationRpc,
   WsBotsCreateRpc,
   WsBotsUpdateRpc,
   WsBotsSetArchivedRpc,
