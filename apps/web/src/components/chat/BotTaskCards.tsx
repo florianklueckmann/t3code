@@ -1,15 +1,11 @@
 import { useAtomValue } from "@effect/atom-react";
-import {
-  BOT_TASK_STATUS_LABELS,
-  botConversationForThread,
-  isBotTaskOpen,
-} from "@t3tools/client-runtime/bots";
+import { botConversationForThread, isBotTaskOpen } from "@t3tools/client-runtime/bots";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import type { BotTaskStatus, BotTaskSummary, EnvironmentId, ThreadId } from "@t3tools/contracts";
+import type { BotTaskSummary, EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
 import { MessageSquareIcon, XIcon } from "lucide-react";
 import { useState } from "react";
@@ -22,23 +18,11 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { buildThreadRouteParams } from "../../threadRoutes";
 import { formatUpcomingTimestamp } from "../../timestampFormat";
 import { BotTaskResultDialog } from "./BotTaskResultDialog";
-import { Badge } from "../ui/badge";
+import { BotTaskStatusBadge } from "./BotTaskStatusBadge";
 import { Button } from "../ui/button";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 
 const HOME_TASK_CARD_LIMIT = 3;
-
-const STATUS_VARIANTS: Record<BotTaskStatus, "info" | "warning" | "success" | "error" | "outline"> =
-  {
-    accepted: "info",
-    running: "info",
-    waiting: "warning",
-    completed: "success",
-    failed: "error",
-    interrupted: "outline",
-    cancelled: "outline",
-    skipped: "outline",
-  };
 
 /** Formats instants in the user's timestamp format, refreshed each minute. */
 export function useUpcomingInstantFormatter(): (iso: string) => string {
@@ -61,6 +45,7 @@ export function BotTaskRow({
   const cancelTask = useAtomCommand(serverEnvironment.cancelBotTask, { label: "bot task cancel" });
   const [cancelling, setCancelling] = useState(false);
   const workThreadId = task.workThreadId;
+  const when = formatInstant(task.completedAt ?? task.occurrenceDueAt ?? task.createdAt);
   const openThread = () => {
     if (workThreadId === null) return;
     void navigate({
@@ -86,30 +71,34 @@ export function BotTaskRow({
   return (
     <li className="flex flex-wrap items-start justify-between gap-2">
       <div className="min-w-0 flex-1 basis-48 space-y-0.5">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="min-w-0 font-medium wrap-anywhere">{task.title}</span>
-          <Badge variant={STATUS_VARIANTS[task.status]}>
-            {BOT_TASK_STATUS_LABELS[task.status]}
-          </Badge>
+        <p className="font-medium wrap-anywhere">{task.title}</p>
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-muted-foreground">
+          <BotTaskStatusBadge status={task.status} />
+          <span>
+            {when}
+            {task.sessionAt === null ? null : ` · session ${formatInstant(task.sessionAt)}`}
+          </span>
         </div>
-        <p className="text-muted-foreground">
-          {formatInstant(task.completedAt ?? task.occurrenceDueAt ?? task.createdAt)}
-          {task.sessionAt === null ? null : ` · session ${formatInstant(task.sessionAt)}`}
-        </p>
         {task.detail === null ? null : (
           <p className="text-muted-foreground wrap-anywhere">{task.detail}</p>
         )}
       </div>
-      <div className="flex shrink-0 flex-wrap items-center gap-1">
+      <div className="flex flex-wrap items-center gap-1">
         {task.status === "completed" ? (
           <BotTaskResultDialog
             environmentId={environmentId}
             task={task}
-            onOpenThread={openThread}
+            when={when}
+            onOpenThread={workThreadId === null ? null : openThread}
           />
         ) : null}
         {workThreadId === null ? null : (
-          <Button size="xs" variant="ghost-muted" onClick={openThread}>
+          <Button
+            size="xs"
+            variant="ghost-muted"
+            aria-label={`Open thread for ${task.title}`}
+            onClick={openThread}
+          >
             <MessageSquareIcon aria-hidden />
             Open thread
           </Button>
@@ -118,6 +107,7 @@ export function BotTaskRow({
           <Button
             size="xs"
             variant="ghost-destructive"
+            aria-label={`Cancel ${task.title}`}
             disabled={!canCancel || cancelling}
             onClick={() => void cancel()}
           >
