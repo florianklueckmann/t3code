@@ -91,6 +91,7 @@ import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../
 import { Textarea } from "../ui/textarea";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { BotAppearancePicker } from "./BotAppearancePicker";
+import { BotContinuationNotes } from "./BotContinuationNotes";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import {
   ScheduledRelativeLabel,
@@ -782,6 +783,7 @@ function BotProjectContexts({
   // An archived Bot's routines stay paused, so it shows none to manage.
   const routinesSupported =
     descriptor?.capabilities.botRoutines === true && bot.archivedAt === null;
+  const notesSupported = descriptor?.capabilities.botContinuation === true;
 
   const run = async (
     title: string,
@@ -820,6 +822,14 @@ function BotProjectContexts({
           onDetach={() => void detach(context.projectId)}
           onReattach={() => void attach(context.projectId, "Could not reattach project")}
         >
+          {notesSupported ? (
+            <BotContinuationNotes
+              environmentId={environmentId}
+              botId={bot.id}
+              projectId={context.projectId}
+              disabled={disabled}
+            />
+          ) : null}
           {routinesSupported ? (
             <BotRoutines
               environmentId={environmentId}
