@@ -1,5 +1,6 @@
 import {
   BotContinuationScope,
+  BotContinuationReadInput,
   BotContinuationView,
   BotContinuationHistory,
   BotSaveContinuationInput,
@@ -2097,7 +2098,7 @@ const WsBotsGetRpc = Rpc.make(WS_METHODS.botsGet, {
 });
 
 const WsBotsGetContinuationRpc = Rpc.make(WS_METHODS.botsGetContinuation, {
-  payload: BotContinuationScope,
+  payload: BotContinuationReadInput,
   success: BotContinuationView,
   error: BotRpcError,
 });
