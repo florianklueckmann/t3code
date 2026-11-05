@@ -8,6 +8,7 @@ import type {
   BotProjectContextSummary,
   BotSourcePreference,
   BotSummary,
+  BotTaskResult,
   BotTaskStatus,
   BotTaskSummary,
   CommandId,
@@ -249,12 +250,45 @@ export const BOT_TASK_STATUS_LABELS: Readonly<Record<BotTaskStatus, string>> = {
   accepted: "Queued",
   running: "Working",
   waiting: "Needs input",
-  completed: "Done",
+  completed: "Completed",
   failed: "Failed",
   interrupted: "Interrupted",
   cancelled: "Cancelled",
   skipped: "Skipped",
 };
+
+export function botTaskResultNotice(result: BotTaskResult): string | null {
+  switch (result.result.state) {
+    case "available":
+      return null;
+    case "empty":
+      return "This run completed without a saved final response.";
+    case "unavailable":
+      return "The saved result is unavailable. Older tasks may have no result reference, or their run may no longer be stored.";
+    case "not_completed":
+      switch (result.task.status) {
+        case "accepted":
+          return "This task is queued. There is no final result yet.";
+        case "running":
+          return "This task is still working. There is no final result yet.";
+        case "waiting":
+          return "This task needs input. Open the thread to continue.";
+        case "failed":
+          return "This task failed. Open the thread for details.";
+        case "interrupted":
+          return "This task was interrupted before it completed.";
+        case "cancelled":
+          return "This task was cancelled before it completed.";
+        case "skipped":
+          return "This task was skipped and has no result.";
+        case "completed":
+          return "The saved final response is unavailable.";
+      }
+  }
+}
+
+export const BOT_TASK_RESULT_UNSUPPORTED =
+  "This server does not support saved Bot results. Open the thread to read the conversation.";
 
 export function isBotTaskOpen(task: Pick<BotTaskSummary, "status">): boolean {
   return task.status === "accepted" || task.status === "running" || task.status === "waiting";

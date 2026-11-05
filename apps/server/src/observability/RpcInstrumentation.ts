@@ -110,6 +110,7 @@ const RPC_AGGREGATES = {
   [WS_METHODS.botsUpdateProjectContext]: "bots",
   [WS_METHODS.botsDetachProject]: "bots",
   [WS_METHODS.botsSubscribeTasks]: "bots",
+  [WS_METHODS.botsGetTaskResult]: "bots",
   [WS_METHODS.botsStartTask]: "bots",
   [WS_METHODS.botsCancelTask]: "bots",
   [WS_METHODS.botsRecordLearning]: "bots",

@@ -184,6 +184,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   botAppearance: Schema.optionalKey(Schema.Boolean),
   /** Server runs Bot tasks and routines (`bots.*Task*`, scheduled tasks with a `bot` target). */
   botRoutines: Schema.optionalKey(Schema.Boolean),
+  /** Server reads a Bot task's saved final result on demand. */
+  botTaskResults: Schema.optionalKey(Schema.Boolean),
 });
 export type ExecutionEnvironmentCapabilities = typeof ExecutionEnvironmentCapabilities.Type;
 

@@ -21,6 +21,7 @@ import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { buildThreadRouteParams } from "../../threadRoutes";
 import { formatUpcomingTimestamp } from "../../timestampFormat";
+import { BotTaskResultDialog } from "./BotTaskResultDialog";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { stackedThreadToast, toastManager } from "../ui/toast";
@@ -60,6 +61,13 @@ export function BotTaskRow({
   const cancelTask = useAtomCommand(serverEnvironment.cancelBotTask, { label: "bot task cancel" });
   const [cancelling, setCancelling] = useState(false);
   const workThreadId = task.workThreadId;
+  const openThread = () => {
+    if (workThreadId === null) return;
+    void navigate({
+      to: "/$environmentId/$threadId",
+      params: buildThreadRouteParams(scopeThreadRef(environmentId, workThreadId)),
+    });
+  };
   const cancel = async () => {
     setCancelling(true);
     const result = await cancelTask({ environmentId, input: { taskId: task.id } });
@@ -76,8 +84,8 @@ export function BotTaskRow({
     }
   };
   return (
-    <li className="flex items-start justify-between gap-2">
-      <div className="min-w-0 space-y-0.5">
+    <li className="flex flex-wrap items-start justify-between gap-2">
+      <div className="min-w-0 flex-1 basis-48 space-y-0.5">
         <div className="flex flex-wrap items-center gap-2">
           <span className="min-w-0 font-medium wrap-anywhere">{task.title}</span>
           <Badge variant={STATUS_VARIANTS[task.status]}>
@@ -85,27 +93,25 @@ export function BotTaskRow({
           </Badge>
         </div>
         <p className="text-muted-foreground">
-          {formatInstant(task.occurrenceDueAt ?? task.createdAt)}
+          {formatInstant(task.completedAt ?? task.occurrenceDueAt ?? task.createdAt)}
           {task.sessionAt === null ? null : ` · session ${formatInstant(task.sessionAt)}`}
         </p>
         {task.detail === null ? null : (
           <p className="text-muted-foreground wrap-anywhere">{task.detail}</p>
         )}
       </div>
-      <div className="flex shrink-0 items-center gap-1">
+      <div className="flex shrink-0 flex-wrap items-center gap-1">
+        {task.status === "completed" ? (
+          <BotTaskResultDialog
+            environmentId={environmentId}
+            task={task}
+            onOpenThread={openThread}
+          />
+        ) : null}
         {workThreadId === null ? null : (
-          <Button
-            size="xs"
-            variant="ghost-muted"
-            onClick={() =>
-              void navigate({
-                to: "/$environmentId/$threadId",
-                params: buildThreadRouteParams(scopeThreadRef(environmentId, workThreadId)),
-              })
-            }
-          >
+          <Button size="xs" variant="ghost-muted" onClick={openThread}>
             <MessageSquareIcon aria-hidden />
-            Open
+            Open thread
           </Button>
         )}
         {isBotTaskOpen(task) ? (
@@ -124,7 +130,7 @@ export function BotTaskRow({
   );
 }
 
-/** The newest tasks a Bot runs from this home conversation; each result stays in its work thread. */
+/** The newest tasks a Bot runs from this home conversation. */
 export function BotTaskCards({
   environmentId,
   threadId,

@@ -1,6 +1,8 @@
 import {
   type EnvironmentId,
   type BotSummary,
+  type BotTaskResult,
+  type BotTaskResultInput,
   type ProviderInstanceId,
   type ServerConfig,
   type ServerConfigStreamEvent,
@@ -1215,6 +1217,21 @@ export function createServerEnvironmentAtoms<R, E>(
     label: "environment-data:server:bots:tasks:live",
     tag: WS_METHODS.botsSubscribeTasks,
   });
+  const botTaskResultQuery = createEnvironmentRpcQueryAtomFamily(runtime, {
+    label: "environment-data:server:bots:task-result",
+    tag: WS_METHODS.botsGetTaskResult,
+    staleTimeMs: 0,
+    idleTtlMs: 0,
+  });
+  const botTaskResultFamily = Atom.family((key: string) => {
+    const [environmentId, input] = JSON.parse(key) as [EnvironmentId, BotTaskResultInput];
+    return Atom.make((get): AsyncResult.AsyncResult<BotTaskResult | null, unknown> => {
+      const config = get(configValueAtom(environmentId));
+      if (config === null) return AsyncResult.initial(true);
+      if (config.environment.capabilities.botTaskResults !== true) return AsyncResult.success(null);
+      return get(botTaskResultQuery({ environmentId, input }));
+    }).pipe(Atom.withLabel(`environment-data:server:bots:task-result-view:${key}`));
+  });
   const workThreadBotFamily = Atom.family((key: string) => {
     const [environmentId, threadId] = JSON.parse(key) as [EnvironmentId, string];
     return Atom.make((get): BotSummary | null => {
@@ -1373,6 +1390,10 @@ export function createServerEnvironmentAtoms<R, E>(
     botsLive,
     // The 50 newest tasks for the filter; statuses update as their work threads run.
     botTasksLive,
+    botTaskResult: (target: {
+      readonly environmentId: EnvironmentId;
+      readonly input: BotTaskResultInput;
+    }) => botTaskResultFamily(JSON.stringify([target.environmentId, target.input])),
     botDetail: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:server:bots:detail",
       tag: WS_METHODS.botsGet,
