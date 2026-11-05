@@ -5,6 +5,11 @@ import * as Path from "effect/Path";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
+import * as BotDatabase from "../bots/persistence/BotDatabase.ts";
+import * as BotMigrations from "../bots/persistence/Migrations.ts";
+import * as BotRoutineStore from "../bots/persistence/BotRoutineStore.ts";
+import { transferLegacyBots } from "../bots/persistence/transferLegacyBots.ts";
+
 import { runMigrations } from "./Migrations.ts";
 import { initializeV2Database } from "./initializeV2Database.ts";
 import * as ServerConfig from "../config.ts";
@@ -23,9 +28,8 @@ const layerSetup = Layer.effectDiscard(
     }>`SELECT COUNT(*) AS count FROM sqlite_schema WHERE type = 'table'`;
     if (tables[0]?.count === 0) yield* sql`PRAGMA auto_vacuum = INCREMENTAL;`;
     yield* sql`PRAGMA journal_mode = WAL;`;
-    // FULL fsyncs every event commit on the main thread; NORMAL syncs only at WAL checkpoints.
-    // App crashes lose nothing; OS crashes or power loss can roll back post-checkpoint commits without corruption.
-    yield* sql`PRAGMA synchronous = NORMAL;`;
+    // Source cleanup must be durable before Bot services can change the transferred rows.
+    yield* sql`PRAGMA synchronous = FULL;`;
     // macOS fsync misses drive caches; F_FULLFSYNC flushes them at checkpoints and is ignored elsewhere.
     yield* sql`PRAGMA checkpoint_fullfsync = ON;`;
     // Keep statement journals and sort spills off the main thread's disk path.
@@ -33,7 +37,10 @@ const layerSetup = Layer.effectDiscard(
     yield* sql`PRAGMA temp_store = MEMORY;`;
     // PASSIVE checkpoints retain peak WAL size until the last connection closes.
     yield* sql.unsafe(`PRAGMA journal_size_limit = ${WAL_SIZE_LIMIT_BYTES};`);
+    yield* transferLegacyBots();
     yield* runMigrations();
+    // Event commits use NORMAL; Bot routine writes checkpoint before clearing their journal.
+    yield* sql`PRAGMA synchronous = NORMAL;`;
     // Collecting stats scans every page, and stale small-table stats cause scans after growth; use indexes by default.
     // Connections cache stats; reload after deleting them.
     const statTables = yield* sql`SELECT 1 FROM sqlite_schema WHERE name = 'sqlite_stat1'`;
@@ -44,13 +51,34 @@ const layerSetup = Layer.effectDiscard(
   }).pipe(Effect.withSpan("Sqlite.setup")),
 );
 
+const botLayer = (filename: string) =>
+  Layer.effect(
+    BotDatabase.BotDatabase,
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`PRAGMA busy_timeout = 5000`;
+      yield* sql`PRAGMA foreign_keys = ON`;
+      yield* sql`PRAGMA journal_mode = WAL`;
+      yield* sql`PRAGMA synchronous = FULL`;
+      yield* BotMigrations.runMigrations();
+      return sql;
+    }),
+  ).pipe(Layer.provide(NodeSqliteClient.layer({ filename })));
+
+const persistenceLayer = (
+  main: ReturnType<typeof NodeSqliteClient.layer>,
+  bots: ReturnType<typeof botLayer>,
+) => {
+  const databases = layerSetup.pipe(Layer.provideMerge(Layer.merge(main, bots)));
+  return BotRoutineStore.layer.pipe(Layer.provideMerge(databases));
+};
+
 export const layerFromPath = Effect.fn("makeSqlitePersistenceLive")(function* (dbPath: string) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   yield* fs.makeDirectory(path.dirname(dbPath), { recursive: true });
 
-  return Layer.provideMerge(
-    layerSetup,
+  return persistenceLayer(
     NodeSqliteClient.layer({
       filename: dbPath,
       readerWorker: true,
@@ -61,12 +89,13 @@ export const layerFromPath = Effect.fn("makeSqlitePersistenceLive")(function* (d
         "service.name": "t3code-server",
       },
     }),
+    botLayer(path.join(path.dirname(dbPath), "bots.sqlite")),
   );
 }, Layer.unwrap);
 
-export const layerMemory = Layer.provideMerge(
-  layerSetup,
+export const layerMemory = persistenceLayer(
   NodeSqliteClient.layer({ filename: ":memory:" }),
+  botLayer(":memory:"),
 );
 
 export const layerConfig = Layer.unwrap(

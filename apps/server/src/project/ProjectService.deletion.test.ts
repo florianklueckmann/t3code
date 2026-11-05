@@ -1,3 +1,4 @@
+import * as BotDatabase from "../bots/persistence/BotDatabase.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
@@ -533,7 +534,7 @@ it.effect(
 
 it.effect("rejects deleting a project while a Bot is attached and forgets it once detached", () =>
   Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
+    const sql = yield* BotDatabase.BotDatabase;
     const projectId = ProjectId.make("project:bot-attached");
     yield* seedProject(projectId);
     yield* sql`

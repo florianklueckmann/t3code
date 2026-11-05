@@ -1,4 +1,6 @@
+import { legacyBotMigrationHead } from "../bots/persistence/legacyBotHistory.ts";
 import packageJson from "../../package.json" with { type: "json" };
+import { migrationManifest } from "../persistence/Migrations.ts";
 import { BUILD_MIGRATION_HEAD, recordedMigrations } from "../persistence/databaseMigrationHead.ts";
 import { SERVICE_LAUNCHER_PROTOCOL } from "./serviceProtocol.ts";
 
@@ -60,7 +62,18 @@ function newerRecordedMigrations(databasePath: string): ReadonlyArray<string> | 
   const recorded = recordedMigrations(databasePath);
   return recorded === null
     ? null
-    : recorded.filter(({ id }) => id > BUILD_MIGRATION_HEAD).map(({ id, name }) => `${id}_${name}`);
+    : legacyBotMigrationHead(recorded) !== undefined
+      ? []
+      : recorded
+          .filter(
+            ({ id, name }) =>
+              id > BUILD_MIGRATION_HEAD ||
+              (id >= 78 &&
+                !migrationManifest.some(
+                  ([knownId, knownName]) => id === knownId && name === knownName,
+                )),
+          )
+          .map(({ id, name }) => `${id}_${name}`);
 }
 
 export function decodeServicePreflightResult(value: unknown): ServicePreflightResult | undefined {

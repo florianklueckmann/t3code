@@ -51,6 +51,25 @@ it.layer(NodeServices.layer)("service preflight database", (it) => {
 
       expect(preflight().status).toBe("ready");
       expect(databaseMigrationHead(databasePath)).toBe(BUILD_MIGRATION_HEAD);
+      db.exec("DELETE FROM effect_sql_migrations WHERE migration_id >= 78");
+      for (const [index, name] of [
+        "Bots",
+        "BotAppearance",
+        "BotTasks",
+        "BotLearning",
+        "DropOrchestrationEventCorrelationIndex",
+        "BotRoutineChanges",
+      ].entries()) {
+        insert.run(78 + index, name);
+        expect(preflight().status).toBe("ready");
+      }
+      db.exec("UPDATE effect_sql_migrations SET name = 'Unknown' WHERE migration_id = 80");
+      expect(preflight().status).toBe("blocked");
+      db.exec("DELETE FROM effect_sql_migrations WHERE migration_id >= 78");
+      insert.run(78, "UnknownFork");
+      expect(preflight().status).toBe("blocked");
+      db.exec("DELETE FROM effect_sql_migrations WHERE migration_id = 78");
+      insert.run(78, "DropOrchestrationEventCorrelationIndex");
 
       const newerId = Math.max(...migrationManifest.map(([id]) => id)) + 1;
       insert.run(newerId, "FromNightly");
