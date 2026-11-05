@@ -38,7 +38,13 @@ const read = Effect.fn("mcp.bot.read")(function* (input: BotToolInput) {
     const botId = yield* requireBotId(input);
     const projectId = yield* requireProjectId(input);
     return {
-      continuation: yield* continuation.get({ botId, projectId }).pipe(Effect.mapError(botFailure)),
+      continuation: yield* continuation
+        .get({
+          botId,
+          projectId,
+          ...(input.afterTaskId === undefined ? {} : { afterTaskId: input.afterTaskId }),
+        })
+        .pipe(Effect.mapError(botFailure)),
     };
   }
   if (input.action === "list_tasks") {

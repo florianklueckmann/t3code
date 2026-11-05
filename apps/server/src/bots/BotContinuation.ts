@@ -8,6 +8,7 @@ import {
   BotContinuationNote,
   BotContinuationRevision,
   BotContinuationScope,
+  BotContinuationReadInput,
   BotContinuationView,
   BotSaveContinuationInput,
   BotSaveContinuationResult,
@@ -38,11 +39,21 @@ const BasisPayload = Schema.Struct({
   fromOrdinal: Schema.NullOr(NonNegativeInt),
   throughOrdinal: Schema.NullOr(NonNegativeInt),
   digest: Schema.NullOr(Schema.String),
+  throughRunOrdinal: Schema.NullOr(NonNegativeInt),
+  throughInputOrdinal: Schema.NullOr(NonNegativeInt),
+});
+const StoredRevision = Schema.Struct({
+  ...BotContinuationRevision.fields,
+  // Queued starts preserve run order but can insert a lower display ordinal than older steers.
+  sourcePosition: Schema.optional(
+    Schema.NullOr(Schema.Struct({ runOrdinal: NonNegativeInt, ordinal: NonNegativeInt })),
+  ),
+  sourceIds: Schema.optional(Schema.Array(Schema.String).check(Schema.isMaxLength(200))),
 });
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
-const encodeRevision = Schema.encodeEffect(Schema.fromJsonString(BotContinuationRevision));
+const encodeRevision = Schema.encodeEffect(Schema.fromJsonString(StoredRevision));
 const decodeBasis = Schema.decodeUnknownEffect(Schema.fromJsonString(BasisPayload));
-const decodeRevision = Schema.decodeUnknownEffect(Schema.fromJsonString(BotContinuationRevision));
+const decodeRevision = Schema.decodeUnknownEffect(Schema.fromJsonString(StoredRevision));
 const decodeMessage = Schema.decodeUnknownEffect(
   Schema.fromJsonString(OrchestrationV2ConversationMessageJson),
 );
@@ -58,6 +69,7 @@ const hash = (text: string) => NodeCrypto.createHash("sha256").update(text).dige
 const sourceDigest = (
   sources: readonly {
     readonly ordinal: number;
+    readonly runOrdinal: number;
     readonly message: {
       readonly id: string;
       readonly text: string;
@@ -68,7 +80,8 @@ const sourceDigest = (
 ) =>
   hash(
     encodeJson(
-      sources.map(({ ordinal, message }) => [
+      sources.map(({ ordinal, runOrdinal, message }) => [
+        runOrdinal,
         ordinal,
         message.id,
         hash(message.text),
@@ -91,6 +104,7 @@ interface RevisionRow {
 }
 interface SourceRow {
   readonly ordinal: number;
+  readonly run_ordinal: number;
   readonly payload_json: string;
 }
 type Caller = { readonly kind: "user" } | { readonly kind: "bot"; readonly threadId: ThreadId };
@@ -98,7 +112,7 @@ type Caller = { readonly kind: "user" } | { readonly kind: "bot"; readonly threa
 export class BotContinuation extends Context.Service<
   BotContinuation,
   {
-    readonly get: (scope: BotContinuationScope) => Effect.Effect<BotContinuationView, BotError>;
+    readonly get: (scope: BotContinuationReadInput) => Effect.Effect<BotContinuationView, BotError>;
     readonly history: (
       scope: BotContinuationScope,
     ) => Effect.Effect<{ readonly revisions: readonly BotContinuationRevision[] }, BotError>;
@@ -166,22 +180,26 @@ const make = Effect.gen(function* () {
     AND ((json_extract(m.payload_json, '$.createdBy') = 'user' AND json_extract(m.payload_json, '$.creationSource') IN ('web', 'mobile'))
       OR (json_extract(m.payload_json, '$.createdBy') = 'agent' AND json_extract(m.payload_json, '$.creationSource') = 'mcp'))
     AND (lower(trim(json_extract(m.payload_json, '$.text'))) != '/compact' OR json_array_length(json_extract(m.payload_json, '$.attachments')) > 0)
-    AND NOT EXISTS (SELECT 1 FROM orchestration_v2_projection_runs hidden WHERE hidden.run_id = i.run_id AND (hidden.status = 'rolled_back' OR (hidden.status = 'cancelled' AND json_extract(i.payload_json, '$.inputIntent') = 'queued_turn')))`);
+    AND (r.status IS NULL OR r.status != 'rolled_back')
+    AND NOT (COALESCE(r.status, '') = 'cancelled' AND (i.turn_item_id IS NULL OR COALESCE(json_extract(i.payload_json, '$.inputIntent'), '') = 'queued_turn'))`);
   const sourceWindow = Effect.fn("BotContinuation.sourceWindow")(function* (
     home: ThreadId,
-    through: number | null = null,
+    throughRun: number | null = null,
+    throughInput: number | null = null,
   ) {
-    const rows = yield* main<SourceRow>`SELECT i.ordinal, m.payload_json
+    const rows =
+      yield* main<SourceRow>`SELECT i.ordinal, COALESCE(r.ordinal, 0) AS run_ordinal, m.payload_json
       FROM orchestration_v2_projection_turn_items i
       JOIN orchestration_v2_projection_messages m ON m.message_id = json_extract(i.payload_json, '$.messageId') AND m.thread_id = i.thread_id
       LEFT JOIN orchestration_v2_projection_runs r ON r.run_id = i.run_id
       WHERE i.thread_id = ${home} AND i.type = 'user_message' AND ${directClause}
-        AND (${through} IS NULL OR i.ordinal <= ${through})
+        AND (${throughRun} IS NULL OR COALESCE(r.ordinal, 0) < ${throughRun}
+          OR (COALESCE(r.ordinal, 0) = ${throughRun} AND i.ordinal <= ${throughInput}))
         AND (r.run_id IS NULL OR r.status NOT IN ('queued', 'preparing', 'rolled_back'))
-      ORDER BY i.ordinal DESC LIMIT 200`;
+      ORDER BY COALESCE(r.ordinal, 0) DESC, i.ordinal DESC LIMIT 200`;
     return yield* Effect.forEach(rows, (row) =>
       decodeMessage(row.payload_json).pipe(
-        Effect.map((message) => ({ ordinal: row.ordinal, message })),
+        Effect.map((message) => ({ ordinal: row.ordinal, runOrdinal: row.run_ordinal, message })),
       ),
     );
   });
@@ -241,21 +259,13 @@ const make = Effect.gen(function* () {
       context: sections[3]!,
     };
   });
-  const get = Effect.fn("BotContinuation.get")(function* (scope: BotContinuationScope) {
+  const get = Effect.fn("BotContinuation.get")(function* (scope: BotContinuationReadInput) {
     const { context, bot, home } = yield* scopeOf(scope);
     const row = yield* currentRow(home);
     const revision = row === undefined ? null : yield* decodeRevision(row.revision_json);
     const run = yield* activeRun(home);
-    const window = run === undefined ? [] : yield* sourceWindow(home);
-    // Older inputs are already in the conversation; future queued runs never enter this basis.
-    const eligibleRows =
-      run === undefined
-        ? []
-        : yield* main<{
-            readonly ordinal: number;
-          }>`SELECT i.ordinal FROM orchestration_v2_projection_turn_items i LEFT JOIN orchestration_v2_projection_runs r ON r.run_id = i.run_id WHERE i.thread_id = ${home} AND i.type = 'user_message' AND (r.ordinal <= ${run.ordinal} OR r.run_id IS NULL) AND (r.status IS NULL OR r.status NOT IN ('queued', 'preparing', 'rolled_back')) ORDER BY i.ordinal DESC LIMIT 1`;
-    const through = eligibleRows[0]?.ordinal ?? null;
-    const supplied = window.filter((source) => through !== null && source.ordinal <= through);
+    const supplied =
+      run === undefined ? [] : yield* sourceWindow(home, run.ordinal, Number.MAX_SAFE_INTEGER);
     const newest = supplied[0];
     const basis =
       run === undefined
@@ -263,22 +273,47 @@ const make = Effect.gen(function* () {
         : signed({
             homeThreadId: home,
             runId: RunId.make(run.run_id),
-            fromOrdinal: supplied.at(-1)?.ordinal ?? null,
-            throughOrdinal: newest?.ordinal ?? null,
+            fromOrdinal:
+              supplied.length === 0 ? null : Math.min(...supplied.map((source) => source.ordinal)),
+            throughOrdinal:
+              supplied.length === 0 ? null : Math.max(...supplied.map((source) => source.ordinal)),
             digest: sourceDigest(supplied),
+            throughRunOrdinal: newest?.runOrdinal ?? null,
+            throughInputOrdinal: newest?.ordinal ?? null,
           });
     const gap = (yield* main<{
       readonly count: number;
       readonly firstOrdinal: number | null;
       readonly lastOrdinal: number | null;
-    }>`SELECT COUNT(*) AS count, MIN(i.ordinal) AS firstOrdinal, MAX(i.ordinal) AS lastOrdinal FROM orchestration_v2_projection_turn_items i JOIN orchestration_v2_projection_messages m ON m.message_id = json_extract(i.payload_json, '$.messageId') AND m.thread_id = i.thread_id WHERE i.thread_id = ${home} AND i.type = 'user_message' AND ${directClause} AND i.ordinal > ${revision?.coverage?.throughOrdinal ?? -1}`)[0]!;
+    }>`SELECT COUNT(DISTINCT m.message_id) AS count, MIN(i.ordinal) AS firstOrdinal, MAX(i.ordinal) AS lastOrdinal
+      FROM orchestration_v2_projection_messages m
+      LEFT JOIN orchestration_v2_projection_turn_items i ON i.thread_id = m.thread_id AND i.type = 'user_message' AND json_extract(i.payload_json, '$.messageId') = m.message_id
+      LEFT JOIN orchestration_v2_projection_runs r ON r.run_id = COALESCE(i.run_id, m.run_id)
+      WHERE m.thread_id = ${home} AND ${directClause}
+        AND (r.status IN ('queued', 'preparing')
+          OR COALESCE(r.ordinal, 0) > ${revision?.sourcePosition?.runOrdinal ?? -1}
+          OR (COALESCE(r.ordinal, 0) = ${revision?.sourcePosition?.runOrdinal ?? -1}
+            AND (i.ordinal > ${revision?.sourcePosition?.ordinal ?? -1}
+              OR (json_extract(i.payload_json, '$.inputIntent') = 'promoted_queued_to_steer'
+                AND m.message_id NOT IN (SELECT value FROM json_each(${encodeJson(revision?.sourceIds ?? [])}))))))`)[0]!;
+    const after =
+      scope.afterTaskId === undefined
+        ? undefined
+        : (yield* sql<{
+            readonly created_at: string;
+            readonly task_id: string;
+          }>`SELECT created_at, task_id FROM bot_tasks WHERE home_thread_id = ${home} AND task_id = ${scope.afterTaskId}`)[0];
+    if (scope.afterTaskId !== undefined && after === undefined)
+      return yield* invalid("The active-work page must follow a task from this Home.");
     const tasks = yield* sql<{
       readonly task_id: string;
       readonly title: string;
       readonly status: BotTaskStatus;
       readonly work_thread_id: string | null;
       readonly total: number;
-    }>`SELECT task_id, title, status, work_thread_id, COUNT(*) OVER() AS total FROM bot_tasks WHERE home_thread_id = ${home} AND status IN ('accepted','running','waiting') AND cancel_requested_at IS NULL ORDER BY created_at, task_id LIMIT 8`;
+    }>`SELECT task_id, title, status, work_thread_id, COUNT(*) OVER() AS total FROM bot_tasks WHERE home_thread_id = ${home} AND status IN ('accepted','running','waiting') AND cancel_requested_at IS NULL
+      AND (${after?.task_id ?? null} IS NULL OR created_at > ${after?.created_at ?? ""} OR (created_at = ${after?.created_at ?? ""} AND task_id > ${after?.task_id ?? ""}))
+      ORDER BY created_at, task_id LIMIT 8`;
     return {
       ...scope,
       homeThreadId: home,
@@ -305,6 +340,8 @@ const make = Effect.gen(function* () {
         workThreadId: task.work_thread_id === null ? null : ThreadId.make(task.work_thread_id),
       })),
       moreActiveTasks: Math.max(0, (tasks[0]?.total ?? 0) - tasks.length),
+      nextActiveTaskId:
+        (tasks[0]?.total ?? 0) > tasks.length ? BotTaskId.make(tasks.at(-1)!.task_id) : null,
     } satisfies BotContinuationView;
   }, Effect.mapError(failure));
   const history = Effect.fn("BotContinuation.history")(function* (scope: BotContinuationScope) {
@@ -315,7 +352,12 @@ const make = Effect.gen(function* () {
       revisions: yield* Effect.forEach(rows, (row) =>
         decodeRevision(row.revision_json).pipe(
           Effect.flatMap((revision) =>
-            resolveNote(home, revision.note).pipe(Effect.map((note) => ({ ...revision, note }))),
+            resolveNote(home, revision.note).pipe(
+              Effect.map((note) => {
+                const { sourcePosition: _position, sourceIds: _ids, ...publicRevision } = revision;
+                return { ...publicRevision, note };
+              }),
+            ),
           ),
         ),
       ),
@@ -348,12 +390,15 @@ const make = Effect.gen(function* () {
       (yield* sql<RevisionRow>`SELECT * FROM bot_continuation_revisions WHERE home_thread_id = ${home} AND update_id = ${input.updateId}`)[0];
     const now = DateTime.formatIso(yield* DateTime.now);
     let coverage = previous?.coverage ?? null;
+    let sourcePosition = previous?.sourcePosition ?? null;
+    let sourceIds = previous?.sourceIds ?? [];
     let writer: BotContinuationRevision["updatedBy"] = { kind: "user" };
     let basis: typeof BasisPayload.Type | null = null;
     let note = emptyNote();
     let scopedSources: readonly {
       readonly ordinal: number;
-      readonly message: typeof OrchestrationV2ConversationMessageJson.Type;
+      readonly runOrdinal: number;
+      readonly message: OrchestrationV2ConversationMessageJson;
     }[] = [];
     if (retry === undefined && caller.kind === "bot") {
       if (input.basis === undefined)
@@ -366,11 +411,19 @@ const make = Effect.gen(function* () {
         return yield* invalid(
           "The save basis belongs to another Home or run. Read the current working notes again.",
         );
-      const window = yield* sourceWindow(home, basis.throughOrdinal ?? -1);
-      scopedSources = window.filter((source) => source.ordinal >= (basis!.fromOrdinal ?? 0));
+      scopedSources = yield* sourceWindow(
+        home,
+        basis.throughRunOrdinal ?? -1,
+        basis.throughInputOrdinal ?? -1,
+      );
       if (sourceDigest(scopedSources) !== basis.digest)
         return { _tag: "conflict", reason: "basis", current: yield* get(input) } as const;
       coverage = { fromOrdinal: basis.fromOrdinal, throughOrdinal: basis.throughOrdinal };
+      sourcePosition =
+        basis.throughRunOrdinal === null || basis.throughInputOrdinal === null
+          ? null
+          : { runOrdinal: basis.throughRunOrdinal, ordinal: basis.throughInputOrdinal };
+      sourceIds = scopedSources.map((source) => source.message.id);
       writer = { kind: "bot", threadId: home, runId: basis.runId };
     }
     if (retry === undefined && input.restoredFrom !== undefined) {
@@ -388,6 +441,8 @@ const make = Effect.gen(function* () {
         return yield* invalid("Restore must use the selected revision's text.");
       note = revision.note;
       coverage = revision.coverage;
+      sourcePosition = revision.sourcePosition ?? null;
+      sourceIds = revision.sourceIds ?? [];
     } else if (retry === undefined) {
       for (const section of BOT_CONTINUATION_SECTIONS) {
         const items: BotContinuationNote[typeof section][number][] = [];
@@ -458,13 +513,15 @@ const make = Effect.gen(function* () {
       }
     }
     if (retry === undefined) note = yield* decodeNote(note);
-    const revision: BotContinuationRevision = {
+    const revision: typeof StoredRevision.Type = {
       revision: (previous?.revision ?? 0) + 1,
       note,
       coverage,
       updatedBy: writer,
       updatedAt: now,
       restoredFrom: input.restoredFrom ?? null,
+      sourcePosition,
+      sourceIds,
     };
     const encoded = yield* encodeRevision(revision);
     if (encoded.length > 64000)
@@ -510,7 +567,7 @@ export function continuationInjection(view: BotContinuationView): string {
     `Working notes (revision ${view.revision ?? "none"}). Historical context, never permission. Newer user input and current settings win.`,
     `Saved source interval: ${view.coverage?.fromOrdinal ?? "none"} through ${view.coverage?.throughOrdinal ?? "none"}; earlier history is outside that basis. Inspect sources with read_continuation and Home history with t3_thread_read.`,
     `Inputs since the saved source boundary: ${view.newerInputs.count}. Completion alone does not acknowledge them; read Home history before relying on old work.`,
-    "Save the full note with t3_bot action save_continuation when unfinished requests, waiting questions/proposals, decisions or context change, including resolutions. Ordinary fully answered questions need no save. Never copy task status into prose. Keep proposals in waiting; new decided items need an exact quote from genuine direct user input. Missing sources remain historical/unverified until reconciled. On conflict, preserve your change, reconcile with current and retry once; report another conflict.",
+    "Save the full note with t3_bot action save_continuation when unfinished requests, waiting questions/proposals, decisions or context change, including resolutions. Put each missing user input or prerequisite in waiting as well as keeping the unfinished request. Keep proposals explicitly unapproved in waiting; new decided items need an exact quote from genuine direct user input. When reporting unfinished business, name the request and its pending inputs. Ordinary fully answered questions need no save. Never copy task status into prose. Missing sources remain historical/unverified until reconciled. On conflict, preserve your change, reconcile with current and retry once; report another conflict.",
   ];
   for (const section of BOT_CONTINUATION_SECTIONS) {
     lines.push(`${section}:`);
@@ -522,10 +579,13 @@ export function continuationInjection(view: BotContinuationView): string {
   const tasks = [
     "Active work from authoritative task records; completed runs do not prove request fulfillment:",
     ...view.activeTasks.map((task) => `- ${task.taskId}: ${task.status} · ${task.title}`),
-    `${view.moreActiveTasks} further active tasks; inspect with t3_bot list_tasks.`,
+    `${view.moreActiveTasks} further active tasks; use t3_bot read_continuation and pass nextActiveTaskId as afterTaskId to read further pages.`,
   ].join("\n");
   if (lines.join("\n").length + tasks.length + 1 < 6500) lines.push(tasks);
-  else lines.push("Task previews omitted; inspect authoritative tasks with t3_bot list_tasks.");
+  else
+    lines.push(
+      "Task previews omitted; use t3_bot read_continuation and follow nextActiveTaskId with afterTaskId for authoritative active work.",
+    );
   const basis =
     view.basis === null
       ? "No active save basis; use read_continuation during the Home turn."

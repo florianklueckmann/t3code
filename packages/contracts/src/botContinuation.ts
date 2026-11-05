@@ -79,6 +79,11 @@ export const BotContinuationNote = Schema.Struct(
 export type BotContinuationNote = typeof BotContinuationNote.Type;
 export const BotContinuationScope = Schema.Struct({ botId: BotId, projectId: ProjectId });
 export type BotContinuationScope = typeof BotContinuationScope.Type;
+export const BotContinuationReadInput = Schema.Struct({
+  ...BotContinuationScope.fields,
+  afterTaskId: Schema.optional(BotTaskId),
+});
+export type BotContinuationReadInput = typeof BotContinuationReadInput.Type;
 export const BotContinuationBasis = Schema.Struct({
   token: Schema.String.check(Schema.isMaxLength(4096)),
   fromOrdinal: Schema.NullOr(NonNegativeInt),
@@ -137,6 +142,7 @@ export const BotContinuationView = Schema.Struct({
     }),
   ),
   moreActiveTasks: NonNegativeInt,
+  nextActiveTaskId: Schema.optional(Schema.NullOr(BotTaskId)),
 });
 export type BotContinuationView = typeof BotContinuationView.Type;
 export const BotContinuationHistory = Schema.Struct({
