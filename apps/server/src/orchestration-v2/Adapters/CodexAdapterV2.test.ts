@@ -4103,6 +4103,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       Effect.scoped(
         Effect.gen(function* () {
           const transcript = finalAnswerTranscript("codex-partial-then-final", [
+            { id: "progress", text: "Working.", phase: "commentary", streamed },
             { id: "partial", text: "CODEX_RECOVERY_OK", phase: "partial_answer", streamed },
             { id: "final", text: "CODEX_RECOVERY_OK", phase: "final_answer", streamed },
           ]);
@@ -4120,8 +4121,16 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           yield* harness.awaitTerminal(1);
           assert.deepEqual(
             assistantMessages(harness.events).map((event) => event.message.text),
-            ["CODEX_RECOVERY_OK", "CODEX_RECOVERY_OK"],
+            ["Working.", "CODEX_RECOVERY_OK", "CODEX_RECOVERY_OK"],
           );
+          const responses = harness.events.flatMap((event) =>
+            event.type === "turn_item.updated" &&
+            event.turnItem.type === "assistant_message" &&
+            !event.turnItem.streaming
+              ? [event.turnItem.responseKind]
+              : [],
+          );
+          assert.deepEqual(responses, ["intermediate", "intermediate", "final"]);
         }).pipe(
           Effect.provide(
             Layer.mergeAll(

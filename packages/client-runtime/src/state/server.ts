@@ -1225,12 +1225,17 @@ export function createServerEnvironmentAtoms<R, E>(
   });
   const botTaskResultFamily = Atom.family((key: string) => {
     const [environmentId, input] = JSON.parse(key) as [EnvironmentId, BotTaskResultInput];
-    return Atom.make((get): AsyncResult.AsyncResult<BotTaskResult | null, unknown> => {
-      const config = get(configValueAtom(environmentId));
-      if (config === null) return AsyncResult.initial(true);
-      if (config.environment.capabilities.botTaskResults !== true) return AsyncResult.success(null);
-      return get(botTaskResultQuery({ environmentId, input }));
-    }).pipe(Atom.withLabel(`environment-data:server:bots:task-result-view:${key}`));
+    const query = botTaskResultQuery({ environmentId, input });
+    return Atom.readable(
+      (get): AsyncResult.AsyncResult<BotTaskResult | null, unknown> => {
+        const config = get(configValueAtom(environmentId));
+        if (config === null) return AsyncResult.initial(true);
+        if (config.environment.capabilities.botTaskResults !== true)
+          return AsyncResult.success(null);
+        return get(query);
+      },
+      (refresh) => refresh(query),
+    ).pipe(Atom.withLabel(`environment-data:server:bots:task-result-view:${key}`));
   });
   const workThreadBotFamily = Atom.family((key: string) => {
     const [environmentId, threadId] = JSON.parse(key) as [EnvironmentId, string];

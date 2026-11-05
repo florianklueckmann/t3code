@@ -529,6 +529,31 @@ it.effect(
           const saved = yield* services.tasks.getResult({ taskId: task.id });
           assert.equal(saved.task.id, task.id);
           assert.deepEqual(saved.result, { state: "available", runId, text: "The saved result." });
+          yield* Ref.update(world.records, (all) =>
+            new Map(all).set(workThreadId, {
+              ...record,
+              messages: [progress.message],
+              turnItems: [{ ...progress.turnItem, responseKind: "intermediate" }],
+            }),
+          );
+          assert.deepEqual((yield* services.tasks.getResult({ taskId: task.id })).result, {
+            state: "empty",
+            runId,
+          });
+          yield* Ref.update(world.records, (all) =>
+            new Map(all).set(workThreadId, {
+              ...record,
+              turnItems: [
+                { ...final.turnItem, responseKind: "final" },
+                { ...progress.turnItem, responseKind: "intermediate", ordinal: 3 },
+              ],
+            }),
+          );
+          assert.deepEqual((yield* services.tasks.getResult({ taskId: task.id })).result, {
+            state: "available",
+            runId,
+            text: "The saved result.",
+          });
           assert.deepEqual((yield* Ref.get(world.reads))[0], {
             input: { projectId: campaign, threadId: workThreadId },
             fields: ["runs", "messages", "turnItems"],
