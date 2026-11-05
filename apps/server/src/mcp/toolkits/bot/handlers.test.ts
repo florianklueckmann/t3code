@@ -1,3 +1,4 @@
+import * as BotContinuation from "../../../bots/BotContinuation.ts";
 import { expect, it } from "@effect/vitest";
 import {
   BotId,
@@ -49,6 +50,7 @@ const callTool = (
   access: "read-only" | undefined,
   /** The Bot conversation the calling thread is, if any. */
   callerBot?: { readonly botId: BotId; readonly projectId: ProjectId; readonly taskId?: BotTaskId },
+  external = false,
 ) =>
   Effect.gen(function* () {
     const calls = yield* Ref.make<ReadonlyArray<string>>([]);
@@ -68,20 +70,23 @@ const callTool = (
               Layer.succeed(McpInvocationContext.McpInvocationContext, {
                 environmentId,
                 requestNamespace: "provider:bots",
-                thread: {
+                thread: external ? undefined : {
                   threadId,
                   providerSessionId: "provider:bots",
                   providerInstanceId: ProviderInstanceId.make("codex"),
                 },
                 client:
-                  access === undefined
+                  access === undefined && !external
                     ? undefined
-                    : { sessionId: "session:bots", label: "Read-only client", access },
+                    : { sessionId: "session:bots", label: "Test client", access: access ?? "full-access" },
                 capabilities: new Set(["orchestration" as const]),
                 issuedAt: 0,
               }),
               Layer.mock(ThreadManagement.ThreadManagementService)({
                 getThreadShell: () => Effect.succeed(liveThreadShell(threadId)),
+              }),
+              Layer.mock(BotContinuation.BotContinuation)({
+                get: (input) => Effect.succeed({ ...input, homeThreadId: threadId, revision: null, note: { requests: [], waiting: [], decided: [], context: [] }, updatedBy: null, updatedAt: null, restoredFrom: null, coverage: null, basis: null, writable: true, newerInputs: { count: 0, firstOrdinal: null, lastOrdinal: null }, sources: [], moreSources: 0, activeTasks: [], moreActiveTasks: 0 }),
               }),
               Layer.mock(BotService.BotService)({
                 list: Effect.succeed({ bots: [] }),
@@ -238,3 +243,10 @@ it.effect("reports missing fields and service refusals as request errors", () =>
     });
   }),
 );
+
+it.effect("allows external inspection but refuses an external continuation writer before reaching the service", () => Effect.gen(function* () {
+  const read = yield* callTool({ action: "read_continuation", botId, projectId: campaignA }, undefined, undefined, true);
+  expect(read.result).toMatchObject({ continuation: { revision: null, homeThreadId: threadId } });
+  const save = yield* callTool({ action: "save_continuation", botId, projectId: campaignA, continuation: { baseRevision: null, updateId: "external", note: { requests: [], waiting: [], decided: [], context: [] } } }, undefined, undefined, true);
+  expect(save.result).toMatchObject({ code: "invalid_request", message: "Working-note writes require this project's active Home thread credential." });
+}));

@@ -1,3 +1,10 @@
+import { MessageId } from "@t3tools/contracts";
+import {
+  botContinuationDraft,
+  parseBotContinuationDraft,
+  botContinuationWriterLabel,
+  botContinuationRefCaption,
+} from "./bots.ts";
 import {
   BotId,
   type BotSummary,
@@ -229,4 +236,38 @@ describe("botRoutineUpsertInput", () => {
       },
     });
   });
+});
+
+it("keeps working-note lines separate and rejects oversized drafts without truncation", () => {
+  const note = {
+    requests: [{ text: "Draft launch checklist", refs: [{ kind: "user" as const, revision: 1 }] }],
+    waiting: [{ text: "Proposal: blue packaging", refs: [] }],
+    decided: [],
+    context: [],
+  };
+  const draft = botContinuationDraft(note);
+  expect(draft.waiting).toBe("Proposal: blue packaging");
+  expect(parseBotContinuationDraft(draft)).toEqual({
+    note: {
+      requests: [{ text: "Draft launch checklist" }],
+      waiting: [{ text: "Proposal: blue packaging" }],
+      decided: [],
+      context: [],
+    },
+  });
+  expect(parseBotContinuationDraft({ ...draft, requests: "a".repeat(401) })).toHaveProperty(
+    "error",
+  );
+  expect(botContinuationWriterLabel({ kind: "user" })).toBe("Updated by you");
+  expect(
+    botContinuationRefCaption({
+      kind: "message",
+      messageId: MessageId.make("source"),
+      ordinal: 1,
+      digest: "digest",
+      quote: "original",
+      directUser: true,
+      availability: "historical_unverified",
+    }),
+  ).toContain("historical/unverified");
 });
