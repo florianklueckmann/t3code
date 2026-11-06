@@ -82,7 +82,6 @@ function HomeTaskCards(props: {
                         current.hiddenBotTaskCards ?? [],
                         props.environmentId,
                         task,
-                        loadedTasks,
                       ),
                     }),
                   })
