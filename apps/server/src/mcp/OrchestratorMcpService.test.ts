@@ -3851,6 +3851,7 @@ describe("OrchestratorMcpService provider resolution", () => {
         const storedRoutine: ScheduledTask = {
           ...existing,
           runtimeMode: "full-access",
+          threadMode: "new_thread",
           bot: { botId: BotId.make("campaign-companion"), allowChanges: true },
         };
         const mcp = yield* OrchestratorMcpService.OrchestratorMcpService.pipe(
@@ -3917,6 +3918,20 @@ describe("OrchestratorMcpService provider resolution", () => {
           allowChanges: true,
         });
         assert.isNull(input?.threadId);
+        assert.equal(input?.threadMode, "new_thread");
+        for (const mode of [{ freshSession: true }, { bindToCurrentThread: true }]) {
+          const invalidCreate = yield* mcp
+            .scheduleTask(fullAccess as McpInvocationScope, { ...routine, ...mode })
+            .pipe(Effect.flip);
+          assert.include(invalidCreate.message, "new thread");
+          const invalidUpdate = yield* mcp
+            .updateScheduledTask(fullAccess as McpInvocationScope, {
+              scheduledTaskId: storedRoutine.id,
+              ...mode,
+            })
+            .pipe(Effect.flip);
+          assert.include(invalidUpdate.message, "new thread");
+        }
         const rejectedUpdate = yield* mcp
           .updateScheduledTask(client, {
             scheduledTaskId: storedRoutine.id,
@@ -3930,6 +3945,8 @@ describe("OrchestratorMcpService provider resolution", () => {
           title: "Renamed routine",
         });
         assert.isTrue(summary.allowChanges);
+        assert.isFalse(summary.freshSession);
+        assert.equal((yield* Ref.get(saved)).at(-1)?.threadMode, "new_thread");
         assert.isTrue((yield* Ref.get(saved)).at(-1)?.bot?.allowChanges);
         yield* mcp.updateScheduledTask(fullScope, {
           scheduledTaskId: storedRoutine.id,

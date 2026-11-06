@@ -1504,6 +1504,13 @@ it.effect("keeps a routine's Bot when an editor saves it without one", () =>
         assert.isTrue(saved.task.bot?.allowChanges);
         const partial = yield* services.routines.upsert({ ...input, id: task.id, bot: { botId } });
         assert.isTrue(partial.task.bot?.allowChanges);
+        assert.equal(saved.task.threadMode, "new_thread");
+        for (const threadMode of ["continue", "fresh_session"] as const) {
+          const refused = yield* services.routines
+            .upsert({ ...input, id: task.id, threadMode })
+            .pipe(Effect.flip);
+          assert.include(refused.message, "new thread");
+        }
         assert.isNull(saved.task.threadId);
         assert.equal(saved.task.runtimeMode, "full-access");
         const webhook = yield* services.routines

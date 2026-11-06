@@ -7,9 +7,16 @@ import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import * as BotDatabase from "./BotDatabase.ts";
 import * as BotRoutineStore from "./BotRoutineStore.ts";
 
-it.effect.each(["before-main", "after-main"])(
-  "recovers a routine mutation interrupted %s without incrementing its revision twice",
-  (stage) =>
+it.effect.each([
+  ["before-main", "bot"],
+  ["after-main", "bot"],
+  ["before-main", "generic"],
+  ["after-main", "generic"],
+  ["before-main", "fresh_session"],
+  ["after-main", "fresh_session"],
+] as const)(
+  "recovers a routine mutation interrupted %s for %s without incrementing its revision twice",
+  ([stage, target]) =>
     Effect.gen(function* () {
       const main = yield* SqlClient.SqlClient;
       const bots = yield* BotDatabase.BotDatabase;
@@ -50,6 +57,43 @@ it.effect.each(["before-main", "after-main"])(
           assert.equal((yield* recovered.get("routine"))?.schedule_revision, 10);
           assert.equal((yield* recovered.get("routine"))?.bot_allow_changes, 1);
           assert.deepStrictEqual(yield* main`SELECT enabled FROM routine_probe`, [{ enabled: 0 }]);
+          assert.lengthOf(yield* bots`SELECT * FROM bot_routine_intent`, 0);
+        }).pipe(Effect.provide(Layer.fresh(BotRoutineStore.layer)));
+      }
+      const legacy = main`INSERT INTO scheduled_tasks (
+        task_id, title, prompt, enabled, schedule_json, project_id, thread_id,
+        workspace_strategy_json, model_selection_json, runtime_mode, interaction_mode,
+        created_by, creation_source, created_at, updated_at, last_run_status, run_count
+      ) VALUES ('legacy', 'Legacy', 'brief', 0, '{}', 'project', 'bound',
+        '{}', '{}', 'full-access', 'default', 'user', 'mcp', 'created', 'updated', 'never', 0)
+      ON CONFLICT(task_id) DO UPDATE SET title = excluded.title RETURNING task_id`;
+      const [query, params] = legacy.compile();
+      if (stage === "after-main" || target === "fresh_session") yield* legacy;
+      if (target === "fresh_session")
+        yield* main`UPDATE scheduled_tasks SET thread_mode = 'fresh_session' WHERE task_id = 'legacy'`;
+      yield* bots`INSERT INTO bot_routine_intent
+        (singleton, task_id, query, parameters_json, bot_id, bot_session_at,
+         bot_allow_changes, schedule_revision, removing)
+        VALUES (1, 'legacy', ${query}, ${JSON.stringify(params)},
+                ${target === "bot" ? "bot" : null}, NULL, 1, 7, 0)`;
+      for (let restart = 0; restart < 2; restart++) {
+        yield* Effect.gen(function* () {
+          const recovered = yield* BotRoutineStore.BotRoutineStore;
+          assert.equal((yield* recovered.get("legacy"))?.schedule_revision, 7);
+          assert.deepStrictEqual(
+            yield* main`SELECT thread_id, thread_mode FROM scheduled_tasks WHERE task_id = 'legacy'`,
+            [
+              {
+                thread_id: target === "bot" ? null : "bound",
+                thread_mode:
+                  target === "bot"
+                    ? "new_thread"
+                    : target === "generic"
+                      ? "continue"
+                      : "fresh_session",
+              },
+            ],
+          );
           assert.lengthOf(yield* bots`SELECT * FROM bot_routine_intent`, 0);
         }).pipe(Effect.provide(Layer.fresh(BotRoutineStore.layer)));
       }
