@@ -665,30 +665,50 @@ it.effect("deleting a project through MCP also discards its clone record", () =>
   }),
 );
 
-it.effect("an update the project refuses tells the agent why", () =>
-  Effect.gen(function* () {
-    const harness = clientLaunchHarness({ runtimeModeCeiling: "full-access", launched: [] });
-    const detail = "Project monograms must contain at most two characters.";
-    const dependencies = Layer.merge(
-      harness.dependencies,
-      Layer.mock(Project.ProjectService)({
-        update: (input) =>
-          Effect.fail(new Project.ProjectInvalidError({ projectId: input.projectId, detail })),
-      }),
-    );
-    const toolkit = yield* ProjectToolkit.pipe(
-      Effect.provide(
-        McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(Layer.provide(dependencies)),
-      ),
-    );
-
-    const refused = yield* toolkit
-      .handle("t3_project_update", {
-        projectId: harness.projectId,
-        projectIcon: { kind: "monogram", text: "ABC", color: "blue" },
-      })
-      .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
-
-    expect(refused.at(-1)?.result).toMatchObject({ code: "invalid_request", message: detail });
-  }),
+it.effect.each(["invalid-input", "attached-bot"] as const)(
+  "a project mutation refused for %s tells the agent why",
+  (reason) =>
+    Effect.gen(function* () {
+      const harness = clientLaunchHarness({ runtimeModeCeiling: "full-access", launched: [] });
+      const rejection =
+        reason === "invalid-input"
+          ? new Project.ProjectInvalidError({
+              projectId: harness.projectId,
+              detail: "Project monograms must contain at most two characters.",
+            })
+          : new Project.ProjectBotAttachedError({
+              projectId: harness.projectId,
+              botNames: ["Companion"],
+            });
+      const dependencies = Layer.mergeAll(
+        harness.dependencies,
+        Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({ discard: () => Effect.void }),
+        Layer.mock(Project.ProjectService)({
+          update: () => Effect.fail(rejection),
+          delete: () => Effect.fail(rejection),
+        }),
+      );
+      const toolkit = yield* ProjectToolkit.pipe(
+        Effect.provide(
+          McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(
+            Layer.provide(dependencies),
+          ),
+        ),
+      );
+      const refused =
+        reason === "invalid-input"
+          ? yield* toolkit
+              .handle("t3_project_update", {
+                projectId: harness.projectId,
+                projectIcon: { kind: "monogram", text: "ABC", color: "blue" },
+              })
+              .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies))
+          : yield* toolkit
+              .handle("t3_project_delete", { projectId: harness.projectId })
+              .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
+      expect(refused.at(-1)?.result).toMatchObject({
+        code: "invalid_request",
+        message: rejection.message,
+      });
+    }),
 );
