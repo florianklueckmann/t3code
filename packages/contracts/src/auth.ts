@@ -493,6 +493,7 @@ export const AuthMcpAuthorizationRequest = Schema.Struct({
   code_challenge_method: Schema.optionalKey(Schema.String),
   state: Schema.optionalKey(Schema.RedactedFromValue(Schema.String)),
   resource: Schema.optionalKey(Schema.String),
+  consent_context: Schema.optionalKey(Schema.RedactedFromValue(Schema.String)),
 });
 export type AuthMcpAuthorizationRequest = typeof AuthMcpAuthorizationRequest.Type;
 

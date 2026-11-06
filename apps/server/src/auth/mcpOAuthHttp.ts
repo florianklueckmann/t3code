@@ -46,7 +46,9 @@ const forwardedAuthorization =
     oauth: McpOAuth.McpOAuth["Service"],
     request: AuthMcpAuthorizationRequest,
   ) {
-    const urls = yield* requestUrls;
+    const urls = yield* oauth
+      .resolveConsentUrls({ urls: yield* requestUrls, request })
+      .pipe(Effect.mapError((error) => new AuthMcpApprovalError({ message: error.description })));
     return yield* oauth.validateAuthorization({ urls, request }).pipe(
       Effect.catchTags({
         McpOAuthPageError: (error) =>
@@ -96,6 +98,13 @@ export const layer = HttpApiBuilder.group(
             .pipe(Effect.result);
           const headers = { "cache-control": "no-store", "referrer-policy": "no-referrer" };
           if (Result.isSuccess(authorization)) {
+            const consentContext = yield* oauth.createConsentContext({
+              urls,
+              request: authorizationRequest,
+            });
+            if (consentContext !== undefined)
+              url.searchParams.set("consent_context", consentContext);
+            else url.searchParams.delete("consent_context");
             return HttpServerResponse.redirect(`${APPROVAL_PAGE_PATH}${url.search}`, { headers });
           }
           const error = authorization.failure;
@@ -114,13 +123,12 @@ export const layer = HttpApiBuilder.group(
         Effect.gen(function* () {
           const resolved = yield* forwardedAuthorization(oauth, payload);
           if ("redirectTo" in resolved) return resolved;
-          const urls = yield* requestUrls;
           const session = yield* oauth.approvingBrowserSession(request, resolved);
           yield* noStore;
           return {
             clientName: resolved.client.name,
             redirectHost: new URL(resolved.redirectUri).host,
-            environmentHost: new URL(urls.issuer).host,
+            environmentHost: new URL(resolved.issuer).host,
             ...(oauth.runtimeModeCeiling === undefined
               ? {}
               : { runtimeModeCeiling: oauth.runtimeModeCeiling }),
