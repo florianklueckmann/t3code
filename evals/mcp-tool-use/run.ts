@@ -93,6 +93,7 @@ const MODELS = {
   "claude-sonnet-5-5": "Sonnet 5.5",
   "claude-opus-5-5": "Opus 5.5",
   "gpt-6.1-sol": "GPT-6.1 Sol",
+  "gpt-6-luna": "GPT-6 Luna",
   "gpt-6-astra": "GPT-6 Astra",
 } as const;
 type Model = keyof typeof MODELS;
