@@ -15,7 +15,8 @@ import {
   type ProjectId,
 } from "@t3tools/contracts";
 import { useRef, useState, type ReactNode } from "react";
-import { Pressable, View } from "react-native";
+import { Platform, Pressable, View } from "react-native";
+import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AppText as Text } from "../../components/ui/AppText";
@@ -86,17 +87,26 @@ function BotNotesScreen(props: { readonly children: ReactNode; readonly guardBac
   const insets = useSafeAreaInsets();
   return (
     <SettingsScreen title="Working notes" guardBack={props.guardBack}>
-      <ScrollView
-        keyboardShouldPersistTaps="handled"
-        keyboardDismissMode="on-drag"
-        contentInsetAdjustmentBehavior="automatic"
-        showsVerticalScrollIndicator={false}
+      {/* The edge-to-edge Android window does not resize for the keyboard; iOS insets the scroll view instead. */}
+      <KeyboardAvoidingView
+        automaticOffset
+        behavior="padding"
+        enabled={Platform.OS === "android"}
         className="flex-1"
-        contentContainerClassName="gap-5 px-5 pt-4"
-        contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 18) + 18 }}
       >
-        {props.children}
-      </ScrollView>
+        <ScrollView
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
+          contentInsetAdjustmentBehavior="automatic"
+          automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
+          showsVerticalScrollIndicator={false}
+          className="flex-1"
+          contentContainerClassName="gap-5 px-5 pt-4"
+          contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 18) + 18 }}
+        >
+          {props.children}
+        </ScrollView>
+      </KeyboardAvoidingView>
     </SettingsScreen>
   );
 }
