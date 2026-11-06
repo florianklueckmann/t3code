@@ -784,10 +784,7 @@ export function HomeScreen(props: HomeScreenProps) {
   if (Platform.OS === "android" && threadListV2Items.length === 0) {
     return (
       <ScreenContent surface="screen">
-        <View
-          className="flex-1"
-          style={{ paddingBottom: insets.bottom }}
-        >
+        <View className="flex-1" style={{ paddingBottom: insets.bottom }}>
           <View style={{ paddingHorizontal: androidListGutter }}>
             <HomeTopContentSpacer />
             {botRail}

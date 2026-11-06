@@ -24,7 +24,7 @@ import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { BotTaskRow } from "../bots/BotTaskRow";
 import { reportBotFailure } from "../bots/reportBotFailure";
-import { useSelectWorkspaceDetail } from "../workspace/useSelectWorkspaceDetail";
+import { useSelectWorkspaceDetail } from "../layout/workspace/useSelectWorkspaceDetail";
 import { formatBotInstant } from "./botRoutineDraft";
 import { SettingsSection } from "./components/SettingsSection";
 

@@ -322,37 +322,31 @@ const SETTINGS_SCREENS = {
   SettingsBots: createNativeStackScreen({
     screen: SettingsBotsRouteScreen,
     linking: "settings/bots",
-    options: { ...SETTINGS_PAGE_OPTIONS, title: "Bots" },
+    options: settingsPage("Bots"),
   }),
   SettingsBotNew: createNativeStackScreen({
     screen: SettingsBotNewRouteScreen,
-    options: { ...SETTINGS_PAGE_OPTIONS, title: "New Bot" },
+    options: settingsPage("New Bot"),
   }),
   SettingsBotEdit: createNativeStackScreen({
     screen: SettingsBotEditRouteScreen,
-    options: { ...SETTINGS_PAGE_OPTIONS, title: "Edit Bot" },
+    options: settingsPage("Edit Bot"),
   }),
   SettingsBotRoutine: createNativeStackScreen({
     screen: SettingsBotRoutineRouteScreen,
-    options: { ...SETTINGS_PAGE_OPTIONS, title: "Routine" },
+    options: settingsPage("Routine"),
   }),
   SettingsBotNotes: createNativeStackScreen({
     screen: SettingsBotNotesRouteScreen,
-    options: { ...SETTINGS_PAGE_OPTIONS, title: "Working notes" },
+    options: settingsPage("Working notes"),
   }),
   SettingsBotModel: createNativeStackScreen({
     screen: BotModelPickerRouteScreen,
-    options: {
-      ...SETTINGS_PAGE_OPTIONS,
-      headerShown: false,
-      ...(Platform.OS === "android"
-        ? { presentation: "card" as const }
-        : THREAD_SETTINGS_SHEET_OPTIONS),
-    },
+    options: THREAD_SETTINGS_ROUTE,
   }),
   SettingsBotLook: createNativeStackScreen({
     screen: BotLookRouteScreen,
-    options: { ...SETTINGS_PAGE_OPTIONS, title: "Look" },
+    options: settingsPage("Look"),
   }),
   SettingsClientStorage: createNativeStackScreen({
     screen: SettingsClientStorageRouteScreen,
