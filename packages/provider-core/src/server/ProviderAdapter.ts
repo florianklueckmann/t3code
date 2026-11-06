@@ -555,6 +555,7 @@ export interface ProviderAdapterV2TurnInput {
   readonly providerTurnOrdinal: number;
   readonly restartContinuationOfRunId?: RunId;
   readonly resume?: true;
+  readonly shouldStartProviderTurn?: () => Effect.Effect<boolean>;
   readonly attemptId: RunAttemptId;
   readonly rootNodeId: NodeId;
   readonly providerThread: OrchestrationV2ProviderThread;
