@@ -47,7 +47,7 @@ it.effect.each([78, 79, 80, 81, 82, 83])(
           snapshot[table] = yield* sql`SELECT * FROM ${sql(table)}`;
         return snapshot;
       }).pipe(Effect.provide(f.main));
-      yield* Effect.gen(function* () {
+      const transferred = yield* Effect.gen(function* () {
         const main = yield* SqlClient.SqlClient;
         const bots = yield* BotDatabase.BotDatabase;
         yield* transferLegacyBots();
@@ -94,6 +94,7 @@ it.effect.each([78, 79, 80, 81, 82, 83])(
         assert.deepStrictEqual(yield* runMigrations(), [
           [78, "DropOrchestrationEventCorrelationIndex"],
           [79, "DelegatedRecoveryIndexes"],
+          [80, "ScheduledTaskThreadMode"],
         ]);
         assert.deepStrictEqual(
           yield* main`SELECT name FROM sqlite_master WHERE name = 'idx_orch_events_correlation_id'`,
@@ -103,7 +104,7 @@ it.effect.each([78, 79, 80, 81, 82, 83])(
         const run = Migrator.make({});
         yield* run({
           loader: Migrator.fromRecord({
-            "80_TestLaterUpstream": main`CREATE TABLE later_upstream(value TEXT)`,
+            "81_TestLaterUpstream": main`CREATE TABLE later_upstream(value TEXT)`,
           }),
         });
         assert.deepStrictEqual(
@@ -111,15 +112,38 @@ it.effect.each([78, 79, 80, 81, 82, 83])(
           [
             { migration_id: 78, name: "DropOrchestrationEventCorrelationIndex" },
             { migration_id: 79, name: "DelegatedRecoveryIndexes" },
-            { migration_id: 80, name: "TestLaterUpstream" },
+            { migration_id: 80, name: "ScheduledTaskThreadMode" },
+            { migration_id: 81, name: "TestLaterUpstream" },
           ],
         );
+        const copied: Record<string, ReadonlyArray<object>> = {};
+        for (const table of [...tables, "bot_routines"])
+          copied[table] = yield* bots`SELECT * FROM ${bots(table)}`;
+        return { copied, schedules: yield* main`SELECT * FROM scheduled_tasks ORDER BY task_id` };
       }).pipe(Effect.provide(f.both));
       for (let startup = 0; startup < 2; startup++) {
         yield* Effect.gen(function* () {
           const bots = yield* BotDatabase.BotDatabase;
           const main = yield* SqlClient.SqlClient;
-          assert.lengthOf(yield* bots`SELECT * FROM bots`, 1);
+          for (const [table, rows] of Object.entries(transferred.copied)) {
+            assert.deepStrictEqual(yield* bots`SELECT * FROM ${bots(table)}`, rows);
+          }
+          assert.deepStrictEqual(
+            yield* main`SELECT * FROM scheduled_tasks ORDER BY task_id`,
+            transferred.schedules,
+          );
+          assert.deepStrictEqual(yield* main`SELECT * FROM later_upstream`, []);
+          assert.deepStrictEqual(
+            yield* main`SELECT migration_id, name FROM effect_sql_migrations ORDER BY migration_id`,
+            [
+              ...migrationManifest.map(([migration_id, name]) => ({ migration_id, name })),
+              { migration_id: 81, name: "TestLaterUpstream" },
+            ],
+          );
+          assert.deepStrictEqual(yield* main`PRAGMA integrity_check`, [{ integrity_check: "ok" }]);
+          assert.deepStrictEqual(yield* bots`PRAGMA integrity_check`, [{ integrity_check: "ok" }]);
+          assert.deepStrictEqual(yield* main`PRAGMA foreign_key_check`, []);
+          assert.deepStrictEqual(yield* bots`PRAGMA foreign_key_check`, []);
           assert.deepStrictEqual(
             yield* main`SELECT name FROM sqlite_master WHERE name LIKE 'bot%'`,
             [],

@@ -678,7 +678,7 @@ export const OrchestratorMcpScheduleTaskInput = Schema.Struct({
   botId: Schema.optional(
     BotId.annotate({
       description:
-        "Run as this Bot's routine: each run is a Bot task in a new work thread, in full access. Not with a webhook.",
+        "Run as this Bot's routine: each run is a Bot task in a new work thread, in full access. Not with a webhook, freshSession or bindToCurrentThread: true.",
     }),
   ),
   sessionAt: Schema.optional(
