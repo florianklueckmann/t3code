@@ -70,7 +70,9 @@ thread for context or follow-up. The saved result stays tied to the task's run,
 even after a follow-up in that thread. Completed means the run ended, not that
 its answer proves the goal was achieved. Older tasks may have no saved result.
 Cards also show tasks that are still working, waiting for your answer, failed,
-were interrupted or cancelled, or were skipped.
+were interrupted or cancelled, or were skipped. **Hide** removes a finished card
+from the conversation on this device only, and **Show hidden** brings it back;
+the task and its result stay in **Settings → Bots**.
 
 For a direct task, you can ask the Bot to return its result here automatically
 and continue the work you already authorized. This is off by default and allows

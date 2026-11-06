@@ -304,6 +304,85 @@ export function isBotTaskOpen(task: Pick<BotTaskSummary, "status">): boolean {
 }
 
 /**
+ * Finished task cards hidden from a Bot's Home on this device. Display state only: the task,
+ * its result and its work thread stay untouched, and other devices keep showing the card.
+ */
+export const HiddenBotTaskCards = Schema.Array(Schema.String);
+export type HiddenBotTaskCards = typeof HiddenBotTaskCards.Type;
+
+const HOME_BOT_TASK_CARD_LIMIT = 3;
+const HIDDEN_BOT_TASK_CARDS_MAX = 200;
+
+type HideableTask = Pick<BotTaskSummary, "id" | "botId" | "projectId" | "status" | "completedAt">;
+
+const botTaskCardScope = (
+  environmentId: string,
+  task: Pick<BotTaskSummary, "botId" | "projectId">,
+) => JSON.stringify([environmentId, task.botId, task.projectId]);
+
+/**
+ * The hidden-card key of a finished task, or null while it is still open. The key carries the
+ * completion time, so a task that runs and finishes again shows up again.
+ */
+export function botTaskCardKey(environmentId: string, task: HideableTask): string | null {
+  if (isBotTaskOpen(task) || task.completedAt === null) return null;
+  return botTaskCardScope(environmentId, task) + JSON.stringify([task.id, task.completedAt]);
+}
+
+/** The newest tasks of one Home conversation, split into the cards shown and those hidden. */
+export function homeBotTaskCards<Task extends HideableTask & Pick<BotTaskSummary, "homeThreadId">>(
+  environmentId: string,
+  tasks: ReadonlyArray<Task>,
+  homeThreadId: ThreadId,
+  hidden: HiddenBotTaskCards,
+): { readonly visible: ReadonlyArray<Task>; readonly hiddenKeys: ReadonlyArray<string> } {
+  const hiddenSet = new Set(hidden);
+  const visible: Task[] = [];
+  const hiddenKeys: string[] = [];
+  for (const task of tasks
+    .filter((candidate) => candidate.homeThreadId === homeThreadId)
+    .slice(0, HOME_BOT_TASK_CARD_LIMIT)) {
+    const key = botTaskCardKey(environmentId, task);
+    if (key !== null && hiddenSet.has(key)) hiddenKeys.push(key);
+    else visible.push(task);
+  }
+  return { visible, hiddenKeys };
+}
+
+/**
+ * Hides a finished task's card. Keys of the same Bot and project whose task left the loaded
+ * list are dropped, since the list holds the newest tasks and those can never return to Home.
+ */
+export function hideBotTaskCard(
+  hidden: HiddenBotTaskCards,
+  environmentId: string,
+  task: HideableTask,
+  loadedTasks: ReadonlyArray<HideableTask>,
+): HiddenBotTaskCards {
+  const key = botTaskCardKey(environmentId, task);
+  if (key === null) return hidden;
+  const scope = botTaskCardScope(environmentId, task);
+  const loadedKeys = new Set(
+    loadedTasks.flatMap((loaded) => botTaskCardKey(environmentId, loaded) ?? []),
+  );
+  return [
+    ...hidden.filter(
+      (candidate) =>
+        candidate !== key && (!candidate.startsWith(scope) || loadedKeys.has(candidate)),
+    ),
+    key,
+  ].slice(-HIDDEN_BOT_TASK_CARDS_MAX);
+}
+
+export function showBotTaskCards(
+  hidden: HiddenBotTaskCards,
+  keys: ReadonlyArray<string>,
+): HiddenBotTaskCards {
+  const shown = new Set(keys);
+  return hidden.filter((key) => !shown.has(key));
+}
+
+/**
  * How a routine is set up in the Bot settings: before a dated session (a one-time run a lead
  * time ahead of it), or at a fixed time on chosen weekdays.
  */

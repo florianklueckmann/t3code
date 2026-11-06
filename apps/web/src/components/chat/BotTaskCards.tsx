@@ -1,5 +1,13 @@
 import { useAtomValue } from "@effect/atom-react";
-import { botConversationForThread, isBotTaskOpen } from "@t3tools/client-runtime/bots";
+import {
+  botConversationForThread,
+  botTaskCardKey,
+  HiddenBotTaskCards,
+  hideBotTaskCard,
+  homeBotTaskCards,
+  isBotTaskOpen,
+  showBotTaskCards,
+} from "@t3tools/client-runtime/bots";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
   isAtomCommandInterrupted,
@@ -7,9 +15,10 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import type { BotTaskSummary, EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
-import { MessageSquareIcon, XIcon } from "lucide-react";
+import { EyeIcon, EyeOffIcon, MessageSquareIcon, XIcon } from "lucide-react";
 import { useState } from "react";
 
+import { useLocalStorage } from "../../hooks/useLocalStorage";
 import { useClientSettings } from "../../hooks/useSettings";
 import { useNowMinute } from "../../hooks/useNowMinute";
 import { useEnvironmentQuery } from "../../state/query";
@@ -22,8 +31,6 @@ import { BotTaskStatusBadge } from "./BotTaskStatusBadge";
 import { Button } from "../ui/button";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 
-const HOME_TASK_CARD_LIMIT = 3;
-
 /** Formats instants in the user's timestamp format, refreshed each minute. */
 export function useUpcomingInstantFormatter(): (iso: string) => string {
   const timestampFormat = useClientSettings((settings) => settings.timestampFormat);
@@ -35,9 +42,12 @@ export function useUpcomingInstantFormatter(): (iso: string) => string {
 export function BotTaskRow({
   environmentId,
   task,
+  onHide,
 }: {
   readonly environmentId: EnvironmentId;
   readonly task: BotTaskSummary;
+  /** Home passes it for finished tasks only; history rows leave it out. */
+  readonly onHide?: (() => void) | undefined;
 }) {
   const navigate = useNavigate();
   const formatInstant = useUpcomingInstantFormatter();
@@ -115,10 +125,23 @@ export function BotTaskRow({
             Cancel
           </Button>
         ) : null}
+        {onHide === undefined ? null : (
+          <Button
+            size="xs"
+            variant="ghost-muted"
+            aria-label={`Hide ${task.title} from Home`}
+            onClick={onHide}
+          >
+            <EyeOffIcon aria-hidden />
+            Hide
+          </Button>
+        )}
       </div>
     </li>
   );
 }
+
+const HIDDEN_BOT_TASK_CARDS_STORAGE_KEY = "t3code:hidden-bot-task-cards:v1";
 
 /** The newest tasks a Bot runs from this home conversation. */
 export function BotTaskCards({
@@ -139,20 +162,49 @@ export function BotTaskCards({
           input: { botId: conversation.bot.id, projectId: conversation.context.projectId },
         }),
   );
-  const tasks = (tasksQuery.data?.tasks ?? [])
-    .filter((task) => task.homeThreadId === threadId)
-    .slice(0, HOME_TASK_CARD_LIMIT);
-  if (tasks.length === 0) return null;
+  const [hidden, setHidden] = useLocalStorage(
+    HIDDEN_BOT_TASK_CARDS_STORAGE_KEY,
+    [],
+    HiddenBotTaskCards,
+  );
+  const loadedTasks = tasksQuery.data?.tasks ?? [];
+  const { visible, hiddenKeys } = homeBotTaskCards(environmentId, loadedTasks, threadId, hidden);
+  if (visible.length === 0 && hiddenKeys.length === 0) return null;
   return (
     <section
       aria-label="Bot tasks"
-      className="mb-2 rounded-lg border border-border bg-background px-3 py-2 text-xs"
+      className="mb-2 space-y-1.5 rounded-lg border border-border bg-background px-3 py-2 text-xs"
     >
-      <ul className="space-y-2">
-        {tasks.map((task) => (
-          <BotTaskRow key={task.id} environmentId={environmentId} task={task} />
-        ))}
-      </ul>
+      {visible.length === 0 ? null : (
+        <ul className="space-y-2">
+          {visible.map((task) => (
+            <BotTaskRow
+              key={task.id}
+              environmentId={environmentId}
+              task={task}
+              onHide={
+                botTaskCardKey(environmentId, task) === null
+                  ? undefined
+                  : () =>
+                      setHidden((current) =>
+                        hideBotTaskCard(current, environmentId, task, loadedTasks),
+                      )
+              }
+            />
+          ))}
+        </ul>
+      )}
+      {hiddenKeys.length === 0 ? null : (
+        <Button
+          size="xs"
+          variant="ghost-muted"
+          aria-label={`Show ${hiddenKeys.length} hidden finished ${hiddenKeys.length === 1 ? "task" : "tasks"}`}
+          onClick={() => setHidden((current) => showBotTaskCards(current, hiddenKeys))}
+        >
+          <EyeIcon aria-hidden />
+          {`Show ${hiddenKeys.length} hidden`}
+        </Button>
+      )}
     </section>
   );
 }
