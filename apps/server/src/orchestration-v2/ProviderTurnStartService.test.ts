@@ -413,6 +413,7 @@ function makeLocalCommandHarness(input: {
   readonly failReadsAfterRunning?: boolean;
   readonly missingProviderSession?: boolean;
   readonly recoveryReadFailure?: string;
+  readonly failInterruptReadsAfterRunning?: boolean;
   readonly previousTurn?: {
     readonly runStatus: "failed" | "completed" | "interrupted";
     readonly turnStatus: "running" | "completed" | "interrupted";
@@ -1106,7 +1107,9 @@ function makeLocalCommandHarness(input: {
                     ),
                   ),
                 )
-              : input.failReadsAfterRunning === true || input.previousTurn !== undefined
+              : input.failReadsAfterRunning === true ||
+                  input.failInterruptReadsAfterRunning === true ||
+                  input.previousTurn !== undefined
                 ? Effect.succeed({
                     driver: providerThread.driver,
                     providerSession,
@@ -1128,7 +1131,7 @@ function makeLocalCommandHarness(input: {
             } as never)
           : runInput.session.startTurn(runInput as never)
         ).pipe(Effect.orDie)
-      : input.failReadsAfterRunning === true || input.previousTurn !== undefined
+      : input.failReadsAfterRunning === true || input.failInterruptReadsAfterRunning === true || input.previousTurn !== undefined
         ? Effect.suspend(() =>
             providerBusy ? Effect.die("The previous provider turn is still running.") : Effect.void,
           )
@@ -1278,6 +1281,15 @@ function makeLocalCommandHarness(input: {
           getTurnStartContext,
           getRuntimeRecoveryProjection,
           getRun,
+          hasUnpairedRunInterruptRequest: () =>
+            input.failInterruptReadsAfterRunning === true
+              ? Effect.fail(
+                  new ProjectionStore.ProjectionStoreReadError({
+                    threadId,
+                    cause: "interrupt lookup unavailable",
+                  }),
+                )
+              : Effect.succeed(false),
           getTurnStartHistory: () =>
             input.sideChat !== undefined
               ? Effect.succeed([])
@@ -2898,21 +2910,31 @@ effectIt.effect("fails the run instead of replacing a native thread another clie
   }),
 );
 
-effectIt.effect("does not mistake a failed state read for a superseded run", () =>
-  Effect.gen(function* () {
-    const harness = makeLocalCommandHarness({ text: "Continue", failReadsAfterRunning: true });
+effectIt.effect.each(["state", "interrupt"] as const)(
+  "does not mistake a failed %s read for permission to retry",
+  (failure) =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({
+        text: "Continue",
+        failReadsAfterRunning: failure === "state",
+        failInterruptReadsAfterRunning: failure === "interrupt",
+      });
 
-    yield* harness.start;
+      yield* harness.start;
 
-    expect(harness.projection().runs.at(-1)?.status).toBe("running");
-    const controls = harness.startRootRun.mock.calls[0]?.[0];
-    expect(controls).toBeDefined();
-    if (controls === undefined) return;
-    const startCheck = yield* Effect.flip(controls.shouldStartProviderTurn!());
-    const finalizeCheck = yield* Effect.flip(controls.shouldFinalizeRun!());
-    expect(startCheck._tag).toBe("ProjectionStoreReadError");
-    expect(finalizeCheck._tag).toBe("ProjectionStoreReadError");
-  }),
+      expect(harness.projection().runs.at(-1)?.status).toBe("running");
+      const controls = harness.startRootRun.mock.calls[0]?.[0];
+      expect(controls).toBeDefined();
+      if (controls === undefined) return;
+      const startCheck = yield* Effect.flip(
+        controls.shouldStartProviderTurn!({ checkInterruptRequest: true }),
+      );
+      expect(startCheck._tag).toBe("ProjectionStoreReadError");
+      if (failure === "state") {
+        const finalizeCheck = yield* Effect.flip(controls.shouldFinalizeRun!());
+        expect(finalizeCheck._tag).toBe("ProjectionStoreReadError");
+      }
+    }),
 );
 
 effectIt.effect(

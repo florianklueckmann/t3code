@@ -652,7 +652,9 @@ export interface RunExecutionServiceV2StartRootRunInput {
   >;
   readonly relatedThreadIds?: ReadonlyArray<ThreadId>;
   readonly relatedProviderThreadIds?: ReadonlyArray<ProviderThreadId>;
-  readonly shouldStartProviderTurn?: () => Effect.Effect<boolean, ProjectionStoreV2Error>;
+  readonly shouldStartProviderTurn?: (options?: {
+    readonly checkInterruptRequest?: boolean;
+  }) => Effect.Effect<boolean, ProjectionStoreV2Error>;
   readonly shouldFinalizeRun?: () => Effect.Effect<boolean, ProjectionStoreV2Error>;
   readonly hasUnpairedRunInterruptRequest?: () => Effect.Effect<boolean, never>;
   readonly loadRunInterruptReason?: () => Effect.Effect<string | undefined, never>;
@@ -2210,7 +2212,7 @@ export const layer: Layer.Layer<
             function* () {
               if (
                 input.shouldStartProviderTurn !== undefined &&
-                !(yield* input.shouldStartProviderTurn())
+                !(yield* input.shouldStartProviderTurn({ checkInterruptRequest: true }))
               )
                 return false;
               return (

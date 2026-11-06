@@ -222,6 +222,17 @@ export const layer: Layer.Layer<
           );
       const isCurrentAttemptInStatus = (expectedStatus: OrchestrationV2Run["status"]) =>
         isCurrentAttemptIn([expectedStatus]);
+      const unpairedRunInterruptRequest = projectionStore.hasUnpairedRunInterruptRequest(
+        input.threadId,
+        idAllocator.derive.runSignalTurnItem({
+          runId: input.runId,
+          signal: "interrupt-request",
+        }),
+        idAllocator.derive.runSignalTurnItem({
+          runId: input.runId,
+          signal: "interrupt-result",
+        }),
+      );
       return {
         isCurrentAttemptInStatus,
         loadInheritedBackgroundTurnItems: () =>
@@ -237,7 +248,12 @@ export const layer: Layer.Layer<
             ),
             Effect.catchCause(() => Effect.succeed(input.inheritedBackgroundTurnItems)),
           ),
-        shouldStartProviderTurn: () => isCurrentAttemptInStatus("running"),
+        shouldStartProviderTurn: Effect.fn("ProviderTurnStartService.shouldStartProviderTurn")(
+          function* (options?: { readonly checkInterruptRequest?: boolean }) {
+            if (!(yield* isCurrentAttemptInStatus("running"))) return false;
+            return options?.checkInterruptRequest !== true || !(yield* unpairedRunInterruptRequest);
+          },
+        ),
         shouldFinalizeRun: () => isCurrentAttemptIn(["starting", "running"]),
         hasUnpairedRunInterruptRequest: () =>
           projectionStore
