@@ -1726,6 +1726,20 @@ export const layer: Layer.Layer<
           attemptId: input.attemptId,
           rootNodeId: input.rootNode.id,
           providerThread: input.providerThread,
+          shouldStartProviderTurn: Effect.fn("RunExecutionService.shouldStartProviderTurn")(
+            function* () {
+              if (
+                input.shouldStartProviderTurn !== undefined &&
+                !(yield* input.shouldStartProviderTurn())
+              )
+                return false;
+              return (
+                input.hasUnpairedRunInterruptRequest === undefined ||
+                !(yield* input.hasUnpairedRunInterruptRequest())
+              );
+            },
+            Effect.orElseSucceed(() => false),
+          ),
           message: input.message,
           modelSelection: input.modelSelection,
           runtimePolicy: input.runtimePolicy,

@@ -7341,11 +7341,46 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 : null;
             if (goalCommand !== null) return runGoalCommand(turnInput, goalCommand);
             return Effect.gen(function* () {
-              yield* startNativeTurn(
-                turnInput,
-                turnInput.restartContinuationOfRunId === undefined
+              const input =
+                turnInput.restartContinuationOfRunId === undefined ||
+                turnInput.nativeThreadHasTurns === false
                   ? yield* toCodexInput(turnInput)
-                  : [],
+                  : [];
+              yield* startNativeTurn(turnInput, input).pipe(
+                Effect.catchTags({
+                  CodexAppServerRequestError: Effect.fn("CodexAdapterV2.retryRestartContinuation")(
+                    function* (cause) {
+                      // EmptyInput rejects before acceptance; other failures can leave delivery ambiguous.
+                      if (
+                        input.length !== 0 ||
+                        turnInput.restartContinuationOfRunId === undefined ||
+                        cause.method !== "turn/start" ||
+                        cause.operation !== "receive-response" ||
+                        cause.code !== -32603 ||
+                        cause.errorMessage !== "failed to submit turn input: EmptyInput"
+                      )
+                        return yield* cause;
+                      const accepted = [
+                        ...(yield* Ref.get(activeTurns)).values(),
+                        ...(yield* Ref.get(settledTurns)).values(),
+                      ].some((context) => context.input === turnInput);
+                      if (accepted) return yield* cause;
+                      const current = yield* client
+                        .request("thread/goal/get", {
+                          threadId: yield* getNativeThreadId(turnInput.providerThread),
+                        })
+                        .pipe(Effect.orElseSucceed(() => null));
+                      if (current?.goal?.status !== "active") return yield* cause;
+                      const recoveryInput = yield* toCodexInput(turnInput);
+                      if (
+                        turnInput.shouldStartProviderTurn !== undefined &&
+                        !(yield* turnInput.shouldStartProviderTurn())
+                      )
+                        return yield* cause;
+                      yield* startNativeTurn(turnInput, recoveryInput);
+                    },
+                  ),
+                }),
               );
             }).pipe(
               Effect.mapError(
