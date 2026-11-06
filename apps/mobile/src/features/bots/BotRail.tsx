@@ -22,7 +22,7 @@ import {
   threadListV2AttentionUrgency,
   type ThreadListV2Attention,
 } from "../threads/threadListV2";
-import { useSelectWorkspaceDetail } from "../workspace/useSelectWorkspaceDetail";
+import { useSelectWorkspaceDetail } from "../layout/workspace/useSelectWorkspaceDetail";
 import { useConnectedBots } from "./bots-across-environments";
 
 // Same colors as the thread row's status labels.

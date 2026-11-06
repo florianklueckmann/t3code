@@ -20,7 +20,7 @@ const { Children, state } = vi.hoisted(() => ({
     fields: new Map<string, Field>(),
     preventRemove: false,
     onPrevent: (_event: { data: { action: { type: string } } }) => {},
-    header: { gestureEnabled: true },
+    header: { gestureEnabled: true, headerBackVisible: true },
     dispatch: vi.fn(),
     save: vi.fn(),
     alert: vi.fn<(title: string, message: string, buttons?: DialogButton[]) => void>(),
@@ -28,15 +28,21 @@ const { Children, state } = vi.hoisted(() => ({
 }));
 vi.mock("react-native", () => ({ Platform: { OS: "ios" }, View: Children, Pressable: Children }));
 vi.mock("@effect/atom-react", () => ({ useAtomValue: () => state.allowed }));
-vi.mock("@react-navigation/native", () => ({
-  useNavigation: () => ({ isFocused: () => true, dispatch: state.dispatch, goBack: () => {} }),
-  usePreventRemove: (enabled: boolean, callback: typeof state.onPrevent) => {
-    state.preventRemove = enabled;
-    state.onPrevent = callback;
-  },
-}));
+vi.mock("@react-navigation/native", async () => {
+  const { createContext } = await import("react");
+  return {
+    NavigationContext: createContext(null),
+    useRoute: () => ({ name: "SettingsBotNotes" }),
+    useNavigation: () => ({ isFocused: () => true, dispatch: state.dispatch, goBack: () => {} }),
+    usePreventRemove: (enabled: boolean, callback: typeof state.onPrevent) => {
+      state.preventRemove = enabled;
+      state.onPrevent = callback;
+    },
+  };
+});
 vi.mock("react-native-safe-area-context", () => ({ useSafeAreaInsets: () => ({ bottom: 0 }) }));
 vi.mock("../../native/StackHeader", () => ({
+  useScreenOptionsWriter: () => null,
   NativeStackScreenOptions: ({ options }: { options: typeof state.header }) => {
     state.header = options;
     return null;
@@ -61,12 +67,59 @@ vi.mock("../../state/server", () => ({
 vi.mock("../../state/use-atom-command", () => ({ useAtomCommand: () => state.save }));
 vi.mock("../../lib/uuid", () => ({ uuidv4: () => "save-id" }));
 vi.mock("../bots/reportBotFailure", () => ({ reportBotFailure: vi.fn() }));
-vi.mock("../workspace/useSelectWorkspaceDetail", () => ({
+vi.mock("../layout/workspace/useSelectWorkspaceDetail", () => ({
   useSelectWorkspaceDetail: () => () => {},
 }));
 vi.mock("../../components/ui/AppText", () => ({ AppText: Children }));
-vi.mock("../../components/ui/ScreenScrollView", () => ({ ScreenScrollView: Children }));
-vi.mock("./components/SettingsScreen", () => ({ SettingsScreen: Children }));
+vi.mock("../../components/ui/ScreenScrollView", () => ({
+  ScreenScrollView: Children,
+  ScreenScrollViewBottomInset: Children,
+  ScreenScrollViewSurface: Children,
+}));
+vi.mock("../layout/workspace/WorkspaceTabsContext", () => ({ useWorkspaceTabs: () => null }));
+vi.mock("../../native/native-layout-metrics", () => ({ useDeviceType: () => "phone" }));
+vi.mock("../layout/workspace/useSystemWorkspaceTabBar", () => ({
+  useCompactWorkspaceTabs: () => false,
+}));
+vi.mock("./useSettingsPageBack", () => ({
+  useSettingsPageBack: () => () => state.onPrevent({ data: { action: { type: "GO_BACK" } } }),
+}));
+vi.mock("../../components/ui/ScreenContent", () => ({ ScreenContent: Children }));
+vi.mock("../../components/ui/Toolbar", () => ({ Toolbar: Children }));
+vi.mock("../../components/ui/ScreenHeaderButton", () => ({
+  ScreenHeaderButton: ({
+    accessibilityLabel,
+    onPress,
+  }: {
+    accessibilityLabel: string;
+    onPress: () => void;
+  }) => <button onClick={onPress}>{accessibilityLabel}</button>,
+}));
+vi.mock("../../components/ui/AppActivityIndicator", () => ({ AppActivityIndicator: () => null }));
+vi.mock("../../components/ui/nativeHeaderMenu.ios", () => ({ createNativeHeaderMenu: () => null }));
+vi.mock("../../native/NativeWorkspaceColumns", () => ({
+  useNativeWorkspaceColumnsSupported: () => false,
+}));
+vi.mock("../../lib/device-type", () => ({ isDuoDevice: () => false }));
+vi.mock("../layout/AdaptiveWorkspaceLayout", () => ({
+  useAdaptiveWorkspaceLayout: () => ({ layout: { usesSplitView: false } }),
+}));
+vi.mock("../layout/useSidebarToggle", () => ({ useSidebarToggle: () => null }));
+vi.mock("../layout/inspector-bar-store", async () => {
+  const { createContext } = await import("react");
+  return { InspectorCloseContext: createContext(null) };
+});
+vi.mock("../layout/native-mail-search-toolbar", () => ({
+  NATIVE_MAIL_SEARCH_TOOLBAR_SUPPORTED: false,
+  createNativeMailSearchToolbarItem: () => null,
+}));
+vi.mock("../../native/use-native-mail-search-toolbar", () => ({
+  useNativeMailSearchToolbar: () => false,
+}));
+vi.mock("./appearance/AppearancePreferencesProvider", () => ({
+  useAppearancePreferences: () => ({ themeVariables: {} }),
+}));
+vi.mock("../../components/ui/useControlTheme", () => ({ useControlTheme: () => ({ colors: {} }) }));
 vi.mock("./components/SettingsSection", () => ({ SettingsSection: Children }));
 vi.mock("./BotContinuationSection", () => ({ BotNoteSections: () => null }));
 vi.mock("../../components/ui/Dialog", () => ({ alert: state.alert }));
@@ -131,6 +184,7 @@ function setup() {
   state.allowed = true;
   state.fields.clear();
   state.preventRemove = false;
+  state.header = { gestureEnabled: true, headerBackVisible: true };
   state.dispatch.mockReset();
   state.save.mockReset();
   state.alert.mockReset();
@@ -169,8 +223,15 @@ it("keeps a dirty draft protected and inspectable when live activity or write pe
   screen.render();
   expect(state.preventRemove).toBe(true);
   expect(state.header.gestureEnabled).toBe(false);
+  expect(state.header.headerBackVisible).toBe(false);
   expect(state.fields.get("Context")).toMatchObject({ value: "Unsaved draft", disabled: true });
-  act(() => state.onPrevent({ data: { action: { type: "GO_BACK" } } }));
+  act(() => {
+    const back = [...screen.container.querySelectorAll("button")].find(
+      (button) => button.textContent === "Back",
+    );
+    expect(back).toBeDefined();
+    back!.click();
+  });
   expect(state.alert).toHaveBeenLastCalledWith(
     "Discard changes?",
     expect.any(String),
@@ -203,7 +264,13 @@ it("keeps a dirty draft protected and inspectable when live activity or write pe
   screen.render();
   expect(state.preventRemove).toBe(true);
   expect(state.fields.get("Context")).toMatchObject({ value: "Unsaved draft", disabled: true });
-  act(() => state.onPrevent({ data: { action: { type: "GO_BACK" } } }));
+  act(() => {
+    const back = [...screen.container.querySelectorAll("button")].find(
+      (button) => button.textContent === "Back",
+    );
+    expect(back).toBeDefined();
+    back!.click();
+  });
   const discard = state.alert.mock.calls
     .at(-1)?.[2]
     ?.find((button) => button.text === "Discard changes");

@@ -19,15 +19,13 @@ import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScroll
 import { groupByProvider } from "../../lib/modelOptions";
 import { resolveProviderOptionDescriptors } from "../../lib/providerOptions";
 import { uuidv4 } from "../../lib/uuid";
-import { NativeStackScreenOptions } from "../../native/StackHeader";
 import { useEnvironmentServerConfig, useProjects } from "../../state/entities";
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
-import { withNativeGlassHeaderItem } from "../layout/native-glass-header-items";
 import { ThreadSettingsPickerScreen } from "../threads/ThreadSettingsSheet";
 import { reportBotFailure } from "../bots/reportBotFailure";
-import { useSelectWorkspaceDetail } from "../workspace/useSelectWorkspaceDetail";
+import { useSelectWorkspaceDetail } from "../layout/workspace/useSelectWorkspaceDetail";
 import { useBotEditor, startBotEditor, startNewBotEditor } from "./bot-editor";
 import { BotContinuationSection } from "./BotContinuationSection";
 import { BotLearningSection } from "./BotLearningSection";
@@ -48,10 +46,7 @@ import {
   type BotProjectDraft,
   type BotSaveStep,
 } from "./botDraft";
-import {
-  AndroidSettingsEnvironmentFilter,
-  SettingsEnvironmentFilterHeader,
-} from "./components/SettingsEnvironmentFilterHeader";
+import { useSettingsEnvironmentMenu } from "./components/SettingsEnvironmentFilterHeader";
 import { FormField, PickerRow, SelectRow } from "./components/SettingsFormRows";
 import { SettingsScreen } from "./components/SettingsScreen";
 import { SettingsSection } from "./components/SettingsSection";
@@ -86,6 +81,7 @@ function modelLabel(
 }
 
 export function SettingsBotsRouteScreen() {
+  const environmentMenu = useSettingsEnvironmentMenu();
   const { availableTargets, selectedTargets, selectedProjectKey, projectGroups } =
     useSettingsEnvironmentFilter();
   const selectedGroup = projectGroups.find((group) => group.key === selectedProjectKey);
@@ -97,8 +93,7 @@ export function SettingsBotsRouteScreen() {
 
   return (
     <>
-      <SettingsEnvironmentFilterHeader />
-      <SettingsScreen title="Bots" trailing={<AndroidSettingsEnvironmentFilter />}>
+      <SettingsScreen title="Bots" menus={[environmentMenu]}>
         <ScrollView
           keyboardShouldPersistTaps="handled"
           contentInsetAdjustmentBehavior="automatic"
@@ -338,25 +333,7 @@ function BotEditorScreen({ title }: { readonly title: string }) {
   const target = availableTargets.find((entry) => entry.environmentId === editor.environmentId);
 
   return (
-    <SettingsScreen title={title}>
-      {Platform.OS === "ios" ? (
-        <NativeStackScreenOptions
-          options={{
-            headerBackVisible: false,
-            gestureEnabled: !preventRemove,
-            // Native Back pops before removal guards; a bar action lets the guard run first.
-            unstable_headerLeftItems: () => [
-              withNativeGlassHeaderItem({
-                type: "button",
-                label: "",
-                accessibilityLabel: "Back",
-                icon: { type: "sfSymbol", name: "chevron.backward" },
-                onPress: () => navigation.goBack(),
-              }),
-            ],
-          }}
-        />
-      ) : null}
+    <SettingsScreen title={title} guardBack={preventRemove}>
       <ScrollView
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
