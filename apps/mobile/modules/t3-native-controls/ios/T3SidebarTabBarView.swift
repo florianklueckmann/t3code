@@ -11,7 +11,11 @@ private final class WorkspaceTabBar: UITabBar {
     let candidates = identified.isEmpty ? tabButtons(in: self) { _ in true } : identified
     // Pressing a tab adds a magnified copy of the row for the glass lens, without identifiers.
     // Sizing compose from it leaves compose enlarged until the bar lays out again.
-    let buttons = candidates.filter { convert($0.bounds, from: $0).size == $0.bounds.size }
+    // Converted widths carry float noise (74.00000000000003), so exact equality drops real buttons.
+    let buttons = candidates.filter { button in
+      let size = convert(button.bounds, from: button).size
+      return abs(size.width - button.bounds.width) < 0.5 && abs(size.height - button.bounds.height) < 0.5
+    }
     let row = buttons.reduce(CGRect.null) { $0.union(convert($1.bounds, from: $1)) }
     if !row.isNull { onContentLayout?(row) }
   }
