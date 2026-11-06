@@ -96,7 +96,7 @@ function BotNotesScreen(props: { readonly children: ReactNode; readonly guardBac
       >
         <ScrollView
           keyboardShouldPersistTaps="handled"
-          keyboardDismissMode="on-drag"
+          keyboardDismissMode={Platform.OS === "android" ? "none" : "on-drag"}
           contentInsetAdjustmentBehavior="automatic"
           automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
           showsVerticalScrollIndicator={false}
