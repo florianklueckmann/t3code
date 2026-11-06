@@ -40,6 +40,7 @@ vi.mock("@react-navigation/native", async () => {
     },
   };
 });
+vi.mock("react-native-keyboard-controller", () => ({ KeyboardAvoidingView: Children }));
 vi.mock("react-native-safe-area-context", () => ({ useSafeAreaInsets: () => ({ bottom: 0 }) }));
 vi.mock("../../native/StackHeader", () => ({
   useScreenOptionsWriter: () => null,
