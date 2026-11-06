@@ -21,7 +21,7 @@ import {
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -164,7 +164,7 @@ const make = Effect.gen(function* () {
   const threadLaunch = yield* ThreadLaunchService.ThreadLaunchService;
   const threads = yield* ThreadManagementService.ThreadManagementService;
   const scheduler = yield* Scheduler.Scheduler;
-  const crypto = yield* Crypto.Crypto;
+  const random = yield* SecureRandom.SecureRandom;
   const changes = yield* PubSub.sliding<BotTaskId>(1024);
 
   const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
@@ -366,8 +366,8 @@ const make = Effect.gen(function* () {
     function* (input) {
       const suffix =
         input.commandId ??
-        (yield* crypto
-          .randomUUIDv4()
+        (yield* random
+          .uuidV4()
           .pipe(Effect.mapError(botError("Failed to allocate a task id.", input.botId))));
       const taskId = `bot-task:${suffix}`;
       const existing = yield* readRow(taskId);
