@@ -27,7 +27,7 @@ import {
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -133,7 +133,7 @@ const make = Effect.gen(function* () {
   const scheduledTasks = yield* ScheduledTaskService.ScheduledTaskService;
   const botTasks = yield* BotTaskService.BotTaskService;
   const turnContext = yield* BotTurnContext.BotTurnContext;
-  const crypto = yield* Crypto.Crypto;
+  const random = yield* SecureRandom.SecureRandom;
   // Subscribers re-read the full list, so only the newest change signal matters.
   const changes = yield* PubSub.sliding<void>(1);
   const notifyChanged = PubSub.publish(changes, undefined).pipe(Effect.asVoid);
@@ -306,8 +306,8 @@ const make = Effect.gen(function* () {
       const modelSelection = input.modelSelection;
       yield* requireSupportedSelection(input.botId, modelSelection);
       // Home threads follow the Bot through the normal thread switch path.
-      const commandSuffix = yield* crypto
-        .randomUUIDv4()
+      const commandSuffix = yield* random
+        .uuidV4()
         .pipe(Effect.mapError(botError("Failed to allocate a command id.", input.botId)));
       const attached = current.projects.filter((project) => project.detachedAt === null);
       yield* Effect.forEach(
@@ -497,8 +497,8 @@ const make = Effect.gen(function* () {
     ) {
       return;
     }
-    const commandSuffix = yield* crypto
-      .randomUUIDv4()
+    const commandSuffix = yield* random
+      .uuidV4()
       .pipe(Effect.mapError(botError("Failed to allocate a command id.", botId)));
     yield* threads
       .dispatch({
@@ -607,8 +607,8 @@ const make = Effect.gen(function* () {
   const learning = BotLearning.make({
     store,
     now: nowIso,
-    newEntryId: crypto
-      .randomUUIDv4()
+    newEntryId: random
+      .uuidV4()
       .pipe(Effect.mapError(botError("Failed to allocate a learning entry id."))),
     taskStatus: (taskId) => botTasks.get(taskId).pipe(Effect.map((task) => task.status)),
   });

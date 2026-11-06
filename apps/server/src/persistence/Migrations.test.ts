@@ -78,11 +78,14 @@ describe("runMigrations", () => {
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
-  it.effect("drops the unused correlation index and keeps correlation values", () =>
-    Effect.gen(function* () {
-      const sql = yield* SqlClient.SqlClient;
-      yield* runMigrations({ toMigrationInclusive: 54 });
-      yield* sql`
+  it.effect.each([54, 77])(
+    "drops the unused correlation index from migration %s and keeps correlation values",
+    (previousMigrationId) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* runMigrations({ toMigrationInclusive: previousMigrationId });
+        const previousHistory = yield* history;
+        yield* sql`
         INSERT INTO orchestration_events (
           event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at,
           command_id, causation_event_id, correlation_id, actor_kind, payload_json, metadata_json
@@ -93,27 +96,32 @@ describe("runMigrations", () => {
         )
       `;
 
-      yield* runMigrations();
+        assert.deepStrictEqual(
+          yield* runMigrations(),
+          migrationManifest.filter(([id]) => id > previousMigrationId),
+        );
+        assert.deepStrictEqual((yield* history).slice(0, previousHistory.length), previousHistory);
+        assert.deepStrictEqual(yield* runMigrations(), []);
 
-      const indexes = yield* sql<{ readonly name: string }>`
+        const indexes = yield* sql<{ readonly name: string }>`
         SELECT name FROM sqlite_master
         WHERE type = 'index' AND tbl_name = 'orchestration_events' AND sql IS NOT NULL
       `;
-      const indexNames = indexes.map((row) => row.name);
-      assert.notInclude(indexNames, "idx_orch_events_correlation_id");
-      for (const kept of [
-        "idx_orch_events_stream_version",
-        "idx_orch_events_stream_sequence",
-        "idx_orch_events_command_id",
-        "idx_orchestration_events_agent_stream_sequence",
-      ]) {
-        assert.include(indexNames, kept);
-      }
-      const events = yield* sql<{ readonly correlation_id: string | null }>`
+        const indexNames = indexes.map((row) => row.name);
+        assert.notInclude(indexNames, "idx_orch_events_correlation_id");
+        for (const kept of [
+          "idx_orch_events_stream_version",
+          "idx_orch_events_stream_sequence",
+          "idx_orch_events_command_id",
+          "idx_orchestration_events_agent_stream_sequence",
+        ]) {
+          assert.include(indexNames, kept);
+        }
+        const events = yield* sql<{ readonly correlation_id: string | null }>`
         SELECT correlation_id FROM orchestration_events WHERE event_id = 'event-1'
       `;
-      assert.deepStrictEqual(events, [{ correlation_id: "correlation-1" }]);
-    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+        assert.deepStrictEqual(events, [{ correlation_id: "correlation-1" }]);
+      }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
   it.effect.each([30, 54])("still starts with a site-local migration at id %s", (id) =>

@@ -9,6 +9,7 @@ import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeUtil from "node:util";
+import * as NodePlatformCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { BotDetail, OrchestratorMcpThreadReadResult, Project } from "@t3tools/contracts";
@@ -380,5 +381,8 @@ const main = Effect.gen(function* () {
 });
 
 if (import.meta.main) {
-  main.pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, Net.layer)), NodeRuntime.runMain);
+  main.pipe(
+    Effect.provide(Layer.mergeAll(NodeServices.layer, NodePlatformCrypto.layer, Net.layer)),
+    NodeRuntime.runMain,
+  );
 }
