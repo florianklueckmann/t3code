@@ -32,6 +32,7 @@ import * as Schema from "effect/Schema";
 import { HttpServerRequest } from "effect/http";
 
 import { hostedAppUrlConfig } from "../cloud/publicConfig.ts";
+import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as McpHttpServer from "../mcp/McpHttpServer.ts";
@@ -146,6 +147,24 @@ const ClientIdPayload = Schema.Struct({
 });
 const decodeClientIdPayload = Schema.decodeUnknownOption(Schema.fromJsonString(ClientIdPayload));
 
+const ConsentContext = Schema.Struct({
+  issuer: Schema.String,
+  audience: Schema.String,
+});
+const decodeConsentContext = Schema.decodeUnknownOption(Schema.fromJsonString(ConsentContext));
+const encodeConsentContext = Schema.encodeSync(Schema.fromJsonString(ConsentContext));
+
+const consentRequestBinding = (request: AuthMcpAuthorizationRequest) =>
+  JSON.stringify([
+    request.response_type,
+    request.client_id,
+    request.redirect_uri,
+    request.code_challenge,
+    request.code_challenge_method,
+    request.state === undefined ? undefined : Redacted.value(request.state),
+    request.resource,
+  ]);
+
 export interface McpOAuthClient {
   readonly clientId: string;
   readonly name: string;
@@ -205,6 +224,14 @@ export class McpOAuth extends Context.Service<
       readonly urls: McpOAuthUrls;
       readonly request: AuthMcpAuthorizationRequest;
     }) => Effect.Effect<AuthorizationRequest, McpOAuthPageError | McpOAuthRedirectError>;
+    readonly createConsentContext: (input: {
+      readonly urls: McpOAuthUrls;
+      readonly request: AuthMcpAuthorizationRequest;
+    }) => Effect.Effect<string | undefined>;
+    readonly resolveConsentUrls: (input: {
+      readonly urls: McpOAuthUrls;
+      readonly request: AuthMcpAuthorizationRequest;
+    }) => Effect.Effect<McpOAuthUrls, McpOAuthPageError>;
     readonly approvingBrowserSession: (
       request: HttpServerRequest.HttpServerRequest,
       authorization: AuthorizationRequest,
@@ -252,6 +279,7 @@ export const redirectForError = (error: McpOAuthRedirectError, issuer: string) =
   });
 
 const make = Effect.gen(function* () {
+  const { devUrl } = yield* ServerConfig.ServerConfig;
   const environmentAuth = yield* EnvironmentAuth.EnvironmentAuth;
   const secretStore = yield* ServerSecretStore.ServerSecretStore;
   const random = yield* SecureRandom.SecureRandom;
@@ -267,6 +295,50 @@ const make = Effect.gen(function* () {
   const codes = yield* Ref.make<ReadonlyMap<string, PendingCode>>(new Map());
 
   const sign = (domain: string, payload: string) => signer.sign(`${domain}.${payload}`);
+
+  const createConsentContext: McpOAuth["Service"]["createConsentContext"] = Effect.fn(
+    "McpOAuth.createConsentContext",
+  )(function* ({ urls, request }) {
+    if (
+      devUrl === undefined ||
+      devUrl.origin === urls.issuer ||
+      !LOOPBACK_HOSTNAMES.has(new URL(urls.issuer).hostname)
+    )
+      return undefined;
+    const body = base64UrlEncode(
+      encodeConsentContext({ issuer: urls.issuer, audience: devUrl.origin }),
+    );
+    const signature = yield* sign("mcp-consent", `${body}.${consentRequestBinding(request)}`);
+    return `${body}.${signature}`;
+  });
+
+  const resolveConsentUrls: McpOAuth["Service"]["resolveConsentUrls"] = Effect.fn(
+    "McpOAuth.resolveConsentUrls",
+  )(function* ({ urls, request }) {
+    if (request.consent_context === undefined) return urls;
+    const [body, signature, extra] = Redacted.value(request.consent_context).split(".");
+    const fail = () =>
+      new McpOAuthPageError({
+        description:
+          "This sign-in link has an invalid consent context. Start the sign-in again from the app.",
+      });
+    if (!body || !signature || extra !== undefined) return yield* fail();
+    const verified = yield* signer.verify(
+      `mcp-consent.${body}.${consentRequestBinding(request)}`,
+      signature,
+    );
+    if (!verified) return yield* fail();
+    const json = Option.liftThrowable(base64UrlDecodeUtf8)(body);
+    const context = Option.isSome(json) ? decodeConsentContext(json.value) : Option.none();
+    if (
+      Option.isNone(context) ||
+      context.value.audience !== devUrl?.origin ||
+      context.value.audience !== urls.issuer
+    )
+      return yield* fail();
+    // Only server-signed routing metadata can cross the dev redirect; it grants no access.
+    return { issuer: context.value.issuer, resource: `${context.value.issuer}/mcp` };
+  });
 
   const signClientId = (name: string, redirectUris: ReadonlyArray<string>, peerLink: boolean) => {
     const body = base64UrlEncode(
@@ -565,6 +637,8 @@ const make = Effect.gen(function* () {
         ? undefined
         : { organization: managedPolicy.organization, maxRuntimeMode },
     register,
+    createConsentContext,
+    resolveConsentUrls,
     validateAuthorization,
     approvingBrowserSession,
     approve,

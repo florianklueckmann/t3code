@@ -1,6 +1,7 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
+  AuthMcpAuthorizationRequest,
   AuthMcpClientAccess,
   AuthStandardClientScopes,
   type AuthCreatePairingCredentialInput,
@@ -21,12 +22,14 @@ import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 import * as Schema from "effect/Schema";
 
 import * as ServerConfig from "../config.ts";
+import * as ServerHttp from "../http.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as Sqlite from "../persistence/Sqlite.ts";
 import * as EnvironmentAuth from "./EnvironmentAuth.ts";
 import * as McpOAuth from "./McpOAuth.ts";
 import * as McpOAuthHttp from "./mcpOAuthHttp.ts";
+import { base64UrlEncode } from "./utils.ts";
 import * as ServerSecretStore from "./ServerSecretStore.ts";
 import * as AuthHttp from "./http.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
@@ -36,15 +39,32 @@ class AuthTestApi extends HttpApi.make("environment")
   .add(EnvironmentHttpApi.groups.mcpOAuth) {}
 
 const layerConfig = ServerConfig.layerTest(process.cwd(), { prefix: "t3-mcp-oauth-test-" });
-const layerEnvironmentAuth = EnvironmentAuth.layer.pipe(
-  Layer.provide(ManagedPolicy.layerTest()),
-  Layer.provide(Sqlite.layerMemory),
-  Layer.provideMerge(ServerSecretStore.layer),
-  Layer.provideMerge(ServerEnvironment.layerIdentity),
-  Layer.provide(layerConfig),
-);
-const makeLayerRoutes = (capture: (auth: EnvironmentAuth.EnvironmentAuth["Service"]) => void) =>
-  Layer.mergeAll(
+const makeLayerRoutes = (
+  capture: (auth: EnvironmentAuth.EnvironmentAuth["Service"]) => void,
+  devUrl?: string,
+) => {
+  const config =
+    devUrl === undefined
+      ? layerConfig
+      : Layer.effect(
+          ServerConfig.ServerConfig,
+          ServerConfig.ServerConfig.pipe(
+            Effect.map((config) => ({
+              ...config,
+              devUrl: new URL(devUrl),
+              staticDir: config.baseDir,
+            })),
+          ),
+        ).pipe(Layer.provide(layerConfig));
+  const layerEnvironmentAuth = EnvironmentAuth.layer.pipe(
+    Layer.provide(ManagedPolicy.layerTest()),
+    Layer.provide(Sqlite.layerMemory),
+    Layer.provideMerge(ServerSecretStore.layer),
+    Layer.provideMerge(ServerEnvironment.layerIdentity),
+    Layer.provide(config),
+  );
+  return Layer.mergeAll(
+    ServerHttp.layerStaticAndDevRoute,
     Layer.effectDiscard(
       EnvironmentAuth.EnvironmentAuth.pipe(Effect.tap((auth) => Effect.sync(() => capture(auth)))),
     ),
@@ -60,7 +80,7 @@ const makeLayerRoutes = (capture: (auth: EnvironmentAuth.EnvironmentAuth["Servic
     ),
   ).pipe(
     Layer.provideMerge(layerEnvironmentAuth),
-    Layer.provide(layerConfig),
+    Layer.provideMerge(config),
     Layer.provideMerge(
       HttpPlatform.layer.pipe(
         Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
@@ -69,8 +89,11 @@ const makeLayerRoutes = (capture: (auth: EnvironmentAuth.EnvironmentAuth["Servic
     ),
     Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
   );
+};
 
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const decodeAuthorizationRequest = Schema.decodeEffect(AuthMcpAuthorizationRequest);
+const encodeAuthorizationRequest = Schema.encodeEffect(AuthMcpAuthorizationRequest);
 const ORIGIN = "https://box.example.ts.net";
 const REDIRECT = "http://localhost/callback";
 const verifier = "a".repeat(43) + "-verifier-for-tests";
@@ -91,6 +114,7 @@ type Handler = (request: Request) => Effect.Effect<Response>;
 
 const withRoutes = <A, E>(
   use: (handler: Handler, auth: EnvironmentAuth.EnvironmentAuth["Service"]) => Effect.Effect<A, E>,
+  devUrl?: string,
 ) =>
   Effect.gen(function* () {
     const random = yield* SecureRandom.SecureRandom;
@@ -98,7 +122,7 @@ const withRoutes = <A, E>(
     let routerAuth: EnvironmentAuth.EnvironmentAuth["Service"] | undefined;
     const layerRoutes = makeLayerRoutes((auth) => {
       routerAuth = auth;
-    });
+    }, devUrl);
     return yield* Effect.acquireUseRelease(
       Effect.sync(() => HttpRouter.toWebHandler(layerRoutes, { disableLogger: true })),
       (web) =>
@@ -243,6 +267,131 @@ it.live("registers loopback and https clients and never redirects for an unverif
       expect(yield* json<Record<string, unknown>>(forgedDetails)).not.toHaveProperty("redirectTo");
     }),
   ),
+);
+
+it.live(
+  "keeps separated dev consent bound to its issuer through approval and S256 exchange",
+  () => {
+    const issuer = "http://127.0.0.1:19231";
+    const webOrigin = "http://localhost:19232";
+    return withRoutes(
+      (handler, auth) =>
+        Effect.gen(function* () {
+          const onOrigin =
+            (origin: string): Handler =>
+            (request) => {
+              const url = new URL(request.url);
+              const headers = new Headers(request.headers);
+              headers.set("host", new URL(origin).host);
+              headers.delete("x-forwarded-proto");
+              return handler(
+                new Request(`${origin}${url.pathname}${url.search}`, {
+                  method: request.method,
+                  headers,
+                  body: request.body,
+                  duplex: "half",
+                } as RequestInit),
+              );
+            };
+          const api = onOrigin(issuer);
+          const web = onOrigin(webOrigin);
+          const clientId = yield* registeredClientId(api);
+          const params = { ...authorizeParams(clientId), resource: `${issuer}/mcp` };
+          const handoff = yield* api(at(`/oauth/mcp/authorize?${new URLSearchParams(params)}`));
+          expect(handoff.status).toBe(302);
+          const pageRedirect = yield* api(
+            new Request(new URL(handoff.headers.get("location")!, issuer)),
+          );
+          expect(pageRedirect.status).toBe(302);
+          const page = new URL(pageRedirect.headers.get("location")!);
+          expect(page.origin).toBe(webOrigin);
+          expect(page.pathname).toBe("/connect-agent");
+          // Use the consent surface's schema roundtrip, including opaque server context.
+          const authorization = yield* decodeAuthorizationRequest(
+            Object.fromEntries(page.searchParams),
+          ).pipe(Effect.flatMap(encodeAuthorizationRequest));
+          const details = yield* web(postJson("/oauth/mcp/approval", authorization));
+          expect(details.status).toBe(200);
+          expect(yield* json<unknown>(details)).toMatchObject({
+            clientName: "Claude Code",
+            environmentHost: new URL(issuer).host,
+          });
+
+          const signature = authorization.consent_context?.split(".")[1];
+          const forgedContext = (issuer: string, audience: string) =>
+            `${base64UrlEncode(encodeJson({ issuer, audience }))}.${signature}`;
+          for (const changed of [
+            { consent_context: forgedContext("http://untrusted.example", webOrigin) },
+            { consent_context: forgedContext(issuer, "http://untrusted.example") },
+            { response_type: "token" },
+            { client_id: "untrusted-client" },
+            { code_challenge_method: "plain" },
+            { resource: `${webOrigin}/mcp` },
+            { redirect_uri: "https://untrusted.example/callback" },
+            { code_challenge: "b".repeat(43) },
+            { state: "changed" },
+            { consent_context: "https://untrusted.example" },
+          ]) {
+            const altered = { ...authorization, ...changed };
+            const response = yield* web(postJson("/oauth/mcp/approval", altered));
+            expect(response.status).toBe(400);
+            expect((yield* decide(web, altered, { _tag: "deny" })).status).toBe(400);
+          }
+          expect(
+            (yield* onOrigin("http://untrusted.example")(
+              postJson("/oauth/mcp/approval", authorization),
+            )).status,
+          ).toBe(400);
+          const unsigned = yield* web(postJson("/oauth/mcp/approval", params));
+          const unsignedResult = yield* json<{ redirectTo: string }>(unsigned);
+          expect(new URL(unsignedResult.redirectTo).searchParams.get("error")).toBe(
+            "invalid_target",
+          );
+          const reauthorize = yield* web(
+            at(`/oauth/mcp/authorize?${new URLSearchParams(authorization)}`),
+          );
+          expect(new URL(reauthorize.headers.get("location")!).searchParams.get("error")).toBe(
+            "invalid_target",
+          );
+          const denied = yield* decide(web, authorization, { _tag: "deny" });
+          expect(new URL(denied.redirectTo!).searchParams.get("iss")).toBe(issuer);
+
+          for (const invalid of ["resource", "issuer", "pkce", undefined]) {
+            const pairing = yield* auth.issuePairingCredential();
+            const approved = yield* decide(web, authorization, {
+              _tag: "pairing-code",
+              access: "read-only",
+              code: pairing.credential,
+            });
+            expect(approved.status).toBe(200);
+            const callback = new URL(approved.redirectTo!);
+            expect(callback.searchParams.get("iss")).toBe(issuer);
+            expect(callback.searchParams.get("state")).toBe(params.state);
+            const tokenRequest = at(
+              "/oauth/mcp/token",
+              form({
+                grant_type: "authorization_code",
+                code: callback.searchParams.get("code")!,
+                redirect_uri: params.redirect_uri,
+                client_id: clientId,
+                code_verifier: invalid === "pkce" ? "b".repeat(64) : verifier,
+                resource: invalid === "resource" ? `${webOrigin}/mcp` : params.resource,
+              }),
+            );
+            const token = yield* (invalid === "issuer" ? web : api)(tokenRequest);
+            expect(token.status).toBe(invalid === undefined ? 200 : 400);
+            if (invalid === undefined) {
+              const result = yield* json<{ access_token: string; scope: string }>(token);
+              expect(result.scope).toBe("orchestration:read");
+              expect(typeof result.access_token).toBe("string");
+            } else {
+              expect(yield* json<unknown>(token)).toMatchObject({ error: "invalid_grant" });
+            }
+          }
+        }),
+      webOrigin,
+    );
+  },
 );
 
 it.live("signs in with a pairing code and issues a token only /mcp accepts", () =>
