@@ -1252,7 +1252,10 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     transcript: CodexReplay.CodexAppServerReplayTranscript,
     onEvent: (event: ProviderAdapter.ProviderAdapterV2Event) => Effect.Effect<unknown> = () =>
       Effect.void,
-    onRequest: (method: string, params: unknown) => Effect.Effect<void> = () => Effect.void,
+    onRequest: (
+      method: string,
+      params: unknown,
+    ) => Effect.Effect<void, CodexError.CodexAppServerError> = () => Effect.void,
     readChildMetadata?: Parameters<typeof withCodexReplayChildMetadata>[2],
     beforeEmitInbound?: CodexReplay.CodexAppServerReplayDriver["beforeEmitInbound"],
     onUsageLimits?: CodexAdapterV2.CodexAdapterV2Options["onUsageLimits"],
@@ -2814,6 +2817,265 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             NodeServices.layer,
             NodeCrypto.layer,
           ),
+        ),
+      ),
+    ),
+  );
+
+  it.effect.each([
+    "active-goal",
+    "fresh-history",
+    "accepted",
+    "paused",
+    "complete",
+    "budgetLimited",
+    "timeLimited",
+    "missing-goal",
+    "goal-read-error",
+    "other-error",
+    "wrong-code",
+    "invalid-response",
+    "transport-error",
+    "fallback-rejected",
+    "ordinary-empty",
+    "cancelled-lookup",
+    "stale-attempt",
+    "accepted-notification",
+  ] as const)("bounds restart recovery for %s", (state) =>
+    Effect.gen(function* () {
+      const nativeThreadId = "restart-recovery-thread";
+      const nativeTurnId = "restart-recovery-turn";
+      const prompt = "Continue where you left off.";
+      const emptyError = { code: -32603, message: "failed to submit turn input: EmptyInput" };
+      const preamble = codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt });
+      const params = {
+        threadId: nativeThreadId,
+        input: state === "fresh-history" ? [{ type: "text", text: prompt }] : [],
+        cwd: "/workspace",
+        model: "gpt-5.4",
+        approvalPolicy: "never",
+        approvalsReviewer: "user",
+        sandboxPolicy: { type: "dangerFullAccess" },
+        summary: "detailed",
+        collaborationMode: { mode: "default", settings: { model: "gpt-5.4" } },
+      };
+      const exchange = (
+        id: number,
+        method: string,
+        params: unknown,
+        reply: { readonly result: unknown } | { readonly error: unknown },
+      ): Array<CodexReplay.CodexAppServerReplayEntry> => [
+        { type: "expect_outbound", label: method, frame: { id, method, params } },
+        { type: "emit_inbound", label: method, frame: { id, ...reply } },
+      ];
+      const success = {
+        result: { turn: makeCodexReplayTurn({ id: nativeTurnId, status: "inProgress" }) },
+      };
+      const successful =
+        state === "fresh-history" || state === "accepted" || state === "active-goal";
+      const readsGoal = ![
+        "fresh-history",
+        "accepted",
+        "other-error",
+        "wrong-code",
+        "invalid-response",
+        "transport-error",
+        "ordinary-empty",
+        "accepted-notification",
+      ].includes(state);
+      const retries = state === "active-goal" || state === "fallback-rejected";
+      const entries: Array<CodexReplay.CodexAppServerReplayEntry> = [
+        ...preamble.slice(0, 5),
+        ...exchange(
+          3,
+          "thread/resume",
+          {
+            threadId: nativeThreadId,
+            excludeTurns: true,
+            config: CodexAdapterV2.CODEX_THREAD_CONFIG,
+          },
+          { result: { thread: { id: nativeThreadId, updatedAt: 1782622450 } } },
+        ),
+      ];
+      if (state !== "ordinary-empty") {
+        entries.push({
+          type: "expect_outbound",
+          label: "first start",
+          frame: { id: 4, method: "turn/start", params },
+        });
+        if (state === "accepted-notification")
+          entries.push({
+            type: "emit_inbound",
+            label: "accepted before response",
+            frame: {
+              method: "turn/started",
+              params: { threadId: nativeThreadId, turn: success.result.turn },
+            },
+          });
+        if (state !== "transport-error")
+          entries.push({
+            type: "emit_inbound",
+            label: "first start",
+            frame: {
+              id: 4,
+              ...(state === "fresh-history" || state === "accepted"
+                ? success
+                : state === "invalid-response"
+                  ? { result: {} }
+                  : {
+                      error:
+                        state === "other-error"
+                          ? { ...emptyError, message: "unrelated failure" }
+                          : state === "wrong-code"
+                            ? { ...emptyError, code: -32600 }
+                            : emptyError,
+                    }),
+            },
+          });
+      }
+      if (readsGoal)
+        entries.push(
+          ...exchange(
+            5,
+            "thread/goal/get",
+            { threadId: nativeThreadId },
+            state === "goal-read-error"
+              ? { error: { code: -32603, message: "lookup failed" } }
+              : {
+                  result: {
+                    goal:
+                      state === "missing-goal"
+                        ? null
+                        : {
+                            threadId: nativeThreadId,
+                            objective: "Finish the work",
+                            status: ["paused", "complete", "budgetLimited", "timeLimited"].includes(
+                              state,
+                            )
+                              ? state
+                              : "active",
+                            tokenBudget: null,
+                            tokensUsed: 10,
+                            timeUsedSeconds: 3,
+                            createdAt: 1782622440,
+                            updatedAt: 1782622450,
+                          },
+                  },
+                },
+          ),
+        );
+      if (retries)
+        entries.push(
+          ...exchange(
+            6,
+            "turn/start",
+            {
+              ...params,
+              input: [{ type: "text", text: prompt }],
+            },
+            state === "fallback-rejected" ? { error: emptyError } : success,
+          ),
+        );
+      const transcript = makeCodexReplayTranscript({ scenario: `restart-${state}`, entries });
+      const registered = yield* Deferred.make<void>();
+      const lookupStarted = yield* Deferred.make<void>();
+      const releaseLookup = yield* Deferred.make<void>();
+      const requests: Array<string> = [];
+      const harness = yield* makeCodexReplayHarness(
+        transcript,
+        (event) =>
+          event.type === "provider_turn.updated"
+            ? Deferred.succeed(registered, undefined)
+            : Effect.void,
+        (method) =>
+          Effect.gen(function* () {
+            requests.push(method);
+            if (state === "transport-error" && method === "turn/start")
+              return yield* new CodexError.CodexAppServerTransportError({
+                operation: "write-output-stream",
+                cause: new Error("connection lost"),
+              });
+            if (state === "cancelled-lookup" && method === "thread/goal/get") {
+              yield* Deferred.succeed(lookupStarted, undefined);
+              yield* Deferred.await(releaseLookup);
+            }
+          }),
+        undefined,
+        (entry) =>
+          state === "accepted-notification" && entry.label === "first start"
+            ? Deferred.await(registered)
+            : Effect.void,
+      );
+      const resumed = yield* harness.runtime.resumeThread({
+        providerThread: harness.providerThread,
+        modelSelection: CODEX_TEST_MODEL_SELECTION,
+        runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+      });
+      const turnInput = {
+        ...makeCodexTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: resumed,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make("restart-attempt"),
+          text: state === "ordinary-empty" ? "" : prompt,
+        }),
+        shouldStartProviderTurn: () => Effect.succeed(state !== "stale-attempt"),
+        nativeThreadHasTurns: state !== "fresh-history",
+        ...(state === "ordinary-empty"
+          ? {}
+          : { restartContinuationOfRunId: RunId.make("prior-run") }),
+      };
+      const started = yield* harness.runtime.startTurn(turnInput).pipe(Effect.forkChild);
+      if (state === "cancelled-lookup") {
+        yield* Deferred.await(lookupStarted);
+        yield* Fiber.interrupt(started);
+        yield* Deferred.succeed(releaseLookup, undefined);
+        assert.deepEqual(requests.slice(3), ["turn/start", "thread/goal/get"]);
+        assert.isEmpty(harness.events.filter((event) => event.type === "provider_turn.updated"));
+        return;
+      }
+      const result = yield* Fiber.join(started).pipe(Effect.result);
+      assert.equal(result._tag, successful ? "Success" : "Failure", JSON.stringify(result));
+      if (successful || state === "accepted-notification") {
+        yield* Deferred.await(registered);
+        const turns = harness.events.filter((event) => event.type === "provider_turn.updated");
+        assert.lengthOf(turns, 1);
+        assert.equal(turns[0]?.providerTurn.runAttemptId, turnInput.attemptId);
+        assert.equal(turns[0]?.providerTurn.providerThreadId, resumed.id);
+        assert.equal(turns[0]?.providerTurn.nodeId, turnInput.rootNodeId);
+      } else {
+        assert.isEmpty(harness.events.filter((event) => event.type === "provider_turn.updated"));
+      }
+      if (result._tag === "Failure") {
+        if (state === "other-error")
+          assert.nestedPropertyVal(result.failure, "cause.errorMessage", "unrelated failure");
+        if (state === "wrong-code") assert.nestedPropertyVal(result.failure, "cause.code", -32600);
+        if (state === "invalid-response")
+          assert.nestedPropertyVal(result.failure, "cause.operation", "decode-payload");
+        if (state === "transport-error")
+          assert.nestedPropertyVal(result.failure, "cause._tag", "CodexAppServerTransportError");
+      }
+      assert.deepEqual(
+        requests.slice(3),
+        state === "ordinary-empty"
+          ? []
+          : [
+              "turn/start",
+              ...(readsGoal ? ["thread/goal/get"] : []),
+              ...(retries ? ["turn/start"] : []),
+            ],
+      );
+      if (result._tag === "Failure" && (readsGoal || state === "accepted-notification")) {
+        assert.nestedPropertyVal(result.failure, "cause.errorMessage", emptyError.message);
+      }
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
         ),
       ),
     ),

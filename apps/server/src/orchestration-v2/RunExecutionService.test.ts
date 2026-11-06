@@ -3134,6 +3134,44 @@ it.effect("does not start a turn whose run settled during the app context read",
   }),
 );
 
+it.effect.each(["current", "settled", "stopped", "read-error"] as const)(
+  "rechecks %s ownership when an adapter retries its start",
+  (state) =>
+    Effect.gen(function* () {
+      const retrying = yield* Ref.make(false);
+      const retryAllowed = yield* Deferred.make<boolean>();
+      yield* captureRootRunTermination({
+        key: `adapter-retry:${state}`,
+        shouldFinalizeRun: () => Effect.succeed(true),
+        shouldStartProviderTurn: () =>
+          Effect.gen(function* () {
+            if (!(yield* Ref.get(retrying))) return true;
+            if (state === "read-error")
+              return yield* new ProjectionStore.ProjectionStoreReadError({
+                threadId: ThreadId.make(`thread:adapter-retry:${state}`),
+                cause: "database unavailable",
+              });
+            return state !== "settled";
+          }),
+        hasUnpairedRunInterruptRequest: () =>
+          Ref.get(retrying).pipe(Effect.map((retrying) => retrying && state === "stopped")),
+        events: (ids) =>
+          Stream.unwrap(
+            Deferred.await(retryAllowed).pipe(
+              Effect.as(Stream.make(rootTerminalEvent(ids, "completed"))),
+            ),
+          ),
+        startTurn: (turnInput) =>
+          Effect.gen(function* () {
+            yield* Ref.set(retrying, true);
+            assert.isDefined(turnInput.shouldStartProviderTurn);
+            yield* Deferred.succeed(retryAllowed, yield* turnInput.shouldStartProviderTurn!());
+          }),
+      });
+      assert.equal(yield* Deferred.await(retryAllowed), state === "current");
+    }),
+);
+
 it.effect("delivers the current Bot instructions with the provider turn", () =>
   Effect.gen(function* () {
     const delivered = yield* Ref.make<ReadonlyArray<string | undefined>>([]);
