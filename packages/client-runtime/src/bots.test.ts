@@ -196,7 +196,7 @@ describe("home Bot task cards", () => {
   const tasks = [task("t1"), task("t2", { status: "failed" }), task("t3"), task("t4")];
 
   it("hides a finished card, keeps it hidden after a reload and shows it again", () => {
-    const hidden = hideBotTaskCard([], environmentId, tasks[0]!, tasks);
+    const hidden = hideBotTaskCard([], environmentId, tasks[0]!);
     const reloadedHidden = JSON.parse(JSON.stringify(hidden)) as HiddenBotTaskCards;
     const reloadedTasks = tasks.map((entry) => ({ ...entry }));
 
@@ -216,20 +216,17 @@ describe("home Bot task cards", () => {
     const otherHome = task("t0", { homeThreadId: ThreadId.make("bot-home:companion:old") });
     const hidden = tasks
       .slice(0, 3)
-      .reduce<HiddenBotTaskCards>(
-        (next, entry) => hideBotTaskCard(next, environmentId, entry, tasks),
-        [],
-      );
+      .reduce<HiddenBotTaskCards>((next, entry) => hideBotTaskCard(next, environmentId, entry), []);
     const cards = homeBotTaskCards(environmentId, [otherHome, ...tasks], homeThreadId, hidden);
     expect(ids(cards)).toEqual([]);
     expect(cards.hiddenKeys).toHaveLength(3);
   });
 
   it("never hides open work and shows a card again once its task runs or finishes anew", () => {
-    const hidden = hideBotTaskCard([], environmentId, tasks[0]!, tasks);
+    const hidden = hideBotTaskCard([], environmentId, tasks[0]!);
     for (const status of ["accepted", "running", "waiting"] as const) {
       const open = task("t1", { status, completedAt: null });
-      expect(hideBotTaskCard([], environmentId, open, tasks)).toEqual([]);
+      expect(hideBotTaskCard([], environmentId, open)).toEqual([]);
       expect(ids(homeBotTaskCards(environmentId, [open], homeThreadId, hidden))).toEqual(["t1"]);
     }
     const finishedAgain = task("t1", { completedAt: "2026-11-06T07:00:00.000Z" });
@@ -239,19 +236,31 @@ describe("home Bot task cards", () => {
   });
 
   it("keeps hidden cards apart per environment, Bot and project", () => {
-    const hidden = hideBotTaskCard([], environmentId, tasks[0]!, tasks);
+    const hidden = hideBotTaskCard([], environmentId, tasks[0]!);
     expect(ids(homeBotTaskCards("env-b", [tasks[0]!], homeThreadId, hidden))).toEqual(["t1"]);
     for (const other of [task("t1", { botId: "scout" }), task("t1", { projectId: "launch" })]) {
       expect(ids(homeBotTaskCards(environmentId, [other], homeThreadId, hidden))).toEqual(["t1"]);
     }
   });
 
-  it("drops keys of tasks that left the loaded list, only within the same Bot and project", () => {
+  it("keeps other saved hides while deduplicating and bounding stored keys", () => {
     const otherBot = task("x1", { botId: "scout" });
-    const kept = hideBotTaskCard([], environmentId, otherBot, [otherBot]);
-    const stale = hideBotTaskCard(kept, environmentId, task("gone"), [task("gone")]);
-    const next = hideBotTaskCard(stale, environmentId, tasks[0]!, tasks);
-    expect(next).toEqual([kept[0], botTaskCardKey(environmentId, tasks[0]!)]);
+    const kept = hideBotTaskCard([], environmentId, otherBot);
+    const stale = hideBotTaskCard(kept, environmentId, task("gone"));
+    const next = hideBotTaskCard(stale, environmentId, tasks[0]!);
+    expect(next).toEqual([
+      kept[0],
+      botTaskCardKey(environmentId, task("gone")),
+      botTaskCardKey(environmentId, tasks[0]!),
+    ]);
+    const repeated = hideBotTaskCard(next, environmentId, tasks[0]!);
+    expect(repeated).toEqual(next);
+    const bounded = Array.from({ length: 201 }, (_, index) =>
+      task(`bounded-${index}`),
+    ).reduce<HiddenBotTaskCards>((keys, entry) => hideBotTaskCard(keys, environmentId, entry), []);
+    expect(bounded).toHaveLength(200);
+    expect(bounded[0]).toBe(botTaskCardKey(environmentId, task("bounded-1")));
+    expect(bounded.at(-1)).toBe(botTaskCardKey(environmentId, task("bounded-200")));
   });
 });
 
