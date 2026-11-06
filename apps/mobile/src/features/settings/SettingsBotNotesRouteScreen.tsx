@@ -14,21 +14,19 @@ import {
   type EnvironmentId,
   type ProjectId,
 } from "@t3tools/contracts";
-import { useRef, useState } from "react";
-import { Platform, Pressable, View } from "react-native";
+import { useRef, useState, type ReactNode } from "react";
+import { Pressable, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
 import * as Dialog from "../../components/ui/Dialog";
 import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
-import { NativeStackScreenOptions } from "../../native/StackHeader";
 import { useEnvironmentServerConfig } from "../../state/entities";
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
 import { reportBotFailure } from "../bots/reportBotFailure";
-import { withNativeGlassHeaderItem } from "../layout/native-glass-header-items";
-import { useSelectWorkspaceDetail } from "../workspace/useSelectWorkspaceDetail";
+import { useSelectWorkspaceDetail } from "../layout/workspace/useSelectWorkspaceDetail";
 import { BotNoteSections } from "./BotContinuationSection";
 import {
   BOT_NOTE_SECTION_LABELS,
@@ -56,15 +54,38 @@ export function SettingsBotNotesRouteScreen({
   readonly history?: boolean;
 }>) {
   const { environmentId, botId, projectId } = route.params;
-  const insets = useSafeAreaInsets();
   const config = useEnvironmentServerConfig(environmentId);
   const query = useEnvironmentQuery(
     serverEnvironment.botContinuation({ environmentId, input: { botId, projectId } }),
   );
   const unsupported = config !== null && config.environment.capabilities.botContinuation !== true;
 
+  if (!unsupported && query.data !== null) {
+    return (
+      <BotNotesEditor
+        environmentId={environmentId}
+        view={query.data}
+        initialHistoryOpen={route.params.history === true}
+        onSaved={query.refresh}
+        error={query.error}
+      />
+    );
+  }
   return (
-    <SettingsScreen title="Working notes">
+    <BotNotesScreen>
+      <Text className="px-2 text-base text-foreground-muted">
+        {unsupported
+          ? "Update T3 Code on this environment to use working notes."
+          : (query.error ?? "Loading working notes…")}
+      </Text>
+    </BotNotesScreen>
+  );
+}
+
+function BotNotesScreen(props: { readonly children: ReactNode; readonly guardBack?: boolean }) {
+  const insets = useSafeAreaInsets();
+  return (
+    <SettingsScreen title="Working notes" guardBack={props.guardBack}>
       <ScrollView
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
@@ -74,27 +95,7 @@ export function SettingsBotNotesRouteScreen({
         contentContainerClassName="gap-5 px-5 pt-4"
         contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 18) + 18 }}
       >
-        {unsupported ? (
-          <Text className="px-2 text-base text-foreground-muted">
-            Update T3 Code on this environment to use working notes.
-          </Text>
-        ) : (
-          <>
-            {query.error === null ? null : (
-              <Text className="px-2 text-base text-danger-foreground">{query.error}</Text>
-            )}
-            {query.data !== null ? (
-              <BotNotesEditor
-                environmentId={environmentId}
-                view={query.data}
-                initialHistoryOpen={route.params.history === true}
-                onSaved={query.refresh}
-              />
-            ) : query.error === null ? (
-              <Text className="px-2 text-base text-foreground-muted">Loading working notes…</Text>
-            ) : null}
-          </>
-        )}
+        {props.children}
       </ScrollView>
     </SettingsScreen>
   );
@@ -106,6 +107,7 @@ function BotNotesEditor(props: {
   readonly view: BotContinuationView;
   readonly initialHistoryOpen: boolean;
   readonly onSaved: () => void;
+  readonly error: string | null;
 }) {
   const { environmentId, view } = props;
   const navigation = useNavigation();
@@ -209,25 +211,10 @@ function BotNotesEditor(props: {
   };
 
   return (
-    <View className="gap-5">
-      {Platform.OS === "ios" ? (
-        <NativeStackScreenOptions
-          options={{
-            headerBackVisible: false,
-            gestureEnabled: !preventRemove,
-            // Native Back pops before removal guards; a bar action lets the guard run first.
-            unstable_headerLeftItems: () => [
-              withNativeGlassHeaderItem({
-                type: "button",
-                label: "",
-                accessibilityLabel: "Back",
-                icon: { type: "sfSymbol", name: "chevron.backward" },
-                onPress: () => navigation.goBack(),
-              }),
-            ],
-          }}
-        />
-      ) : null}
+    <BotNotesScreen guardBack={preventRemove}>
+      {props.error === null ? null : (
+        <Text className="px-2 text-base text-danger-foreground">{props.error}</Text>
+      )}
       {conflict === null ? null : (
         <SettingsSection title="Current notes" footer={botNoteConflictMessage(conflict)}>
           <View className="gap-3 px-4 py-3">
@@ -378,7 +365,7 @@ function BotNotesEditor(props: {
           ))
         )}
       </SettingsSection>
-    </View>
+    </BotNotesScreen>
   );
 }
 

@@ -16,7 +16,7 @@ import type {
   ScheduledTask,
   ScheduledTaskId,
 } from "@t3tools/contracts";
-import { useRef, useState } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { Platform, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -26,13 +26,11 @@ import * as Dialog from "../../components/ui/Dialog";
 import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
 import { SegmentedControl } from "../../components/ui/SegmentedControl";
 import { uuidv4 } from "../../lib/uuid";
-import { NativeStackScreenOptions } from "../../native/StackHeader";
 import { useEnvironmentServerConfig } from "../../state/entities";
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { reportBotFailure } from "../bots/reportBotFailure";
-import { withNativeGlassHeaderItem } from "../layout/native-glass-header-items";
 import {
   defaultBotSessionAtMs,
   formatLeadTime,
@@ -64,7 +62,6 @@ export function SettingsBotRoutineRouteScreen({
   readonly taskId?: ScheduledTaskId;
 }>) {
   const { environmentId, botId, projectId, taskId } = route.params;
-  const insets = useSafeAreaInsets();
   const config = useEnvironmentServerConfig(environmentId);
   const bots = useEnvironmentQuery(serverEnvironment.botsLive({ environmentId, input: {} }));
   const scheduled = useEnvironmentQuery(
@@ -95,8 +92,38 @@ export function SettingsBotRoutineRouteScreen({
                 ? "This routine's timing can't be edited here. You can still pause, run or delete it."
                 : null;
 
+  const title = taskId === undefined ? "New routine" : "Edit routine";
+  if (unavailable === null && bot && initialDraft && task !== undefined) {
+    return (
+      <BotRoutineForm
+        key={taskId ?? "new"}
+        environmentId={environmentId}
+        bot={bot}
+        projectId={projectId}
+        task={task}
+        initialDraft={initialDraft}
+        timeZone={config?.environment.timeZone}
+        title={title}
+      />
+    );
+  }
   return (
-    <SettingsScreen title={taskId === undefined ? "New routine" : "Edit routine"}>
+    <BotRoutineScreen title={title}>
+      <Text className="px-2 text-base text-foreground-muted">
+        {unavailable ?? "Loading routine…"}
+      </Text>
+    </BotRoutineScreen>
+  );
+}
+
+function BotRoutineScreen(props: {
+  readonly title: string;
+  readonly children: ReactNode;
+  readonly guardBack?: boolean;
+}) {
+  const insets = useSafeAreaInsets();
+  return (
+    <SettingsScreen title={props.title} guardBack={props.guardBack}>
       <ScrollView
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
@@ -106,21 +133,7 @@ export function SettingsBotRoutineRouteScreen({
         contentContainerClassName="gap-5 px-5 pt-4"
         contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 18) + 18 }}
       >
-        {unavailable !== null ? (
-          <Text className="px-2 text-base text-foreground-muted">{unavailable}</Text>
-        ) : bot && initialDraft && task !== undefined ? (
-          <BotRoutineForm
-            key={taskId ?? "new"}
-            environmentId={environmentId}
-            bot={bot}
-            projectId={projectId}
-            task={task}
-            initialDraft={initialDraft}
-            timeZone={config?.environment.timeZone}
-          />
-        ) : (
-          <Text className="px-2 text-base text-foreground-muted">Loading routine…</Text>
-        )}
+        {props.children}
       </ScrollView>
     </SettingsScreen>
   );
@@ -134,6 +147,7 @@ function BotRoutineForm(props: {
   readonly task: ScheduledTask | null;
   readonly initialDraft: BotRoutineDraft;
   readonly timeZone: string | undefined;
+  readonly title: string;
 }) {
   const { environmentId, task } = props;
   const navigation = useNavigation();
@@ -209,25 +223,7 @@ function BotRoutineForm(props: {
   };
 
   return (
-    <View className="gap-5">
-      {Platform.OS === "ios" ? (
-        <NativeStackScreenOptions
-          options={{
-            headerBackVisible: false,
-            gestureEnabled: !preventRemove,
-            // Native Back pops before removal guards; a bar action lets the guard run first.
-            unstable_headerLeftItems: () => [
-              withNativeGlassHeaderItem({
-                type: "button",
-                label: "",
-                accessibilityLabel: "Back",
-                icon: { type: "sfSymbol", name: "chevron.backward" },
-                onPress: () => navigation.goBack(),
-              }),
-            ],
-          }}
-        />
-      ) : null}
+    <BotRoutineScreen title={props.title} guardBack={preventRemove}>
       <View
         className="gap-5"
         pointerEvents={saving ? "none" : "auto"}
@@ -451,6 +447,6 @@ function BotRoutineForm(props: {
         onPress={() => void save()}
         label={saving ? "Saving…" : task ? "Save changes" : "Add routine"}
       />
-    </View>
+    </BotRoutineScreen>
   );
 }
