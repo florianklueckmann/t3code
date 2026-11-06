@@ -19,6 +19,8 @@ export function BotTaskRow(props: {
   readonly environmentId: EnvironmentId;
   readonly task: BotTaskSummary;
   readonly onOpen: (threadId: ThreadId) => void;
+  /** Home passes it for finished tasks only; history rows leave it out. */
+  readonly onHide?: (() => void) | undefined;
   readonly showDetail?: boolean;
   readonly borderTop?: boolean;
 }) {
@@ -33,7 +35,8 @@ export function BotTaskRow(props: {
   const when = formatBotInstant(task.completedAt ?? task.createdAt);
   const canView = task.status === "completed";
   const showCancel = isBotTaskOpen(task) && canCancel;
-  const hasActions = canView || workThreadId !== null || showCancel;
+  const onHide = props.onHide;
+  const hasActions = canView || workThreadId !== null || showCancel || onHide !== undefined;
   const confirmCancel = () =>
     Dialog.alert("Cancel task?", task.title, [
       { text: "Keep working", style: "cancel" },
@@ -100,6 +103,15 @@ export function BotTaskRow(props: {
               onPress={confirmCancel}
             />
           ) : null}
+          {onHide === undefined ? null : (
+            <BotTaskAction
+              label="Hide"
+              icon="eye.slash"
+              tone="neutral"
+              accessibilityLabel={`Hide ${task.title} from Home`}
+              onPress={onHide}
+            />
+          )}
         </View>
       ) : null}
       {resultOpen ? (

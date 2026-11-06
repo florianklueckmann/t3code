@@ -8,6 +8,8 @@ import {
 import {
   BotId,
   type BotSummary,
+  BotTaskId,
+  type BotTaskStatus,
   ProjectId,
   ProviderInstanceId,
   type ScheduledTask,
@@ -22,9 +24,14 @@ import {
   botRoutineDraft,
   botRoutineUpsertInput,
   botSourceDrafts,
+  botTaskCardKey,
   emptyBotSourceDraft,
+  type HiddenBotTaskCards,
+  hideBotTaskCard,
+  homeBotTaskCards,
   parseBotSourceDrafts,
   rankBotConversations,
+  showBotTaskCards,
 } from "./bots.ts";
 
 const draft = (label: string, location: string) => ({ ...emptyBotSourceDraft(), label, location });
@@ -160,6 +167,91 @@ describe("rankBotConversations", () => {
 
   it("offers nothing for an archived Bot", () => {
     expect(rank(bot([context("new")], "2026-01-04T00:00:00.000Z"))).toEqual([]);
+  });
+});
+
+describe("home Bot task cards", () => {
+  const environmentId = "env-a";
+  const homeThreadId = ThreadId.make("bot-home:companion:campaign");
+  const task = (
+    id: string,
+    overrides: Partial<{
+      status: BotTaskStatus;
+      completedAt: string | null;
+      botId: string;
+      projectId: string;
+      homeThreadId: ThreadId;
+    }> = {},
+  ) => ({
+    id: BotTaskId.make(id),
+    botId: BotId.make(overrides.botId ?? "companion"),
+    projectId: ProjectId.make(overrides.projectId ?? "campaign"),
+    homeThreadId: overrides.homeThreadId ?? homeThreadId,
+    status: overrides.status ?? "completed",
+    completedAt:
+      overrides.completedAt === undefined ? "2026-11-06T06:00:00.000Z" : overrides.completedAt,
+  });
+  const ids = (cards: { readonly visible: ReadonlyArray<{ readonly id: string }> }) =>
+    cards.visible.map((card) => card.id);
+  const tasks = [task("t1"), task("t2", { status: "failed" }), task("t3"), task("t4")];
+
+  it("hides a finished card, keeps it hidden after a reload and shows it again", () => {
+    const hidden = hideBotTaskCard([], environmentId, tasks[0]!, tasks);
+    const reloadedHidden = JSON.parse(JSON.stringify(hidden)) as HiddenBotTaskCards;
+    const reloadedTasks = tasks.map((entry) => ({ ...entry }));
+
+    const cards = homeBotTaskCards(environmentId, reloadedTasks, homeThreadId, reloadedHidden);
+    expect(ids(cards)).toEqual(["t2", "t3"]);
+    expect(cards.hiddenKeys).toHaveLength(1);
+
+    const shown = showBotTaskCards(reloadedHidden, cards.hiddenKeys);
+    expect(ids(homeBotTaskCards(environmentId, reloadedTasks, homeThreadId, shown))).toEqual([
+      "t1",
+      "t2",
+      "t3",
+    ]);
+  });
+
+  it("counts only the newest Home cards, so hiding never pulls older tasks in", () => {
+    const otherHome = task("t0", { homeThreadId: ThreadId.make("bot-home:companion:old") });
+    const hidden = tasks
+      .slice(0, 3)
+      .reduce<HiddenBotTaskCards>(
+        (next, entry) => hideBotTaskCard(next, environmentId, entry, tasks),
+        [],
+      );
+    const cards = homeBotTaskCards(environmentId, [otherHome, ...tasks], homeThreadId, hidden);
+    expect(ids(cards)).toEqual([]);
+    expect(cards.hiddenKeys).toHaveLength(3);
+  });
+
+  it("never hides open work and shows a card again once its task runs or finishes anew", () => {
+    const hidden = hideBotTaskCard([], environmentId, tasks[0]!, tasks);
+    for (const status of ["accepted", "running", "waiting"] as const) {
+      const open = task("t1", { status, completedAt: null });
+      expect(hideBotTaskCard([], environmentId, open, tasks)).toEqual([]);
+      expect(ids(homeBotTaskCards(environmentId, [open], homeThreadId, hidden))).toEqual(["t1"]);
+    }
+    const finishedAgain = task("t1", { completedAt: "2026-11-06T07:00:00.000Z" });
+    expect(ids(homeBotTaskCards(environmentId, [finishedAgain], homeThreadId, hidden))).toEqual([
+      "t1",
+    ]);
+  });
+
+  it("keeps hidden cards apart per environment, Bot and project", () => {
+    const hidden = hideBotTaskCard([], environmentId, tasks[0]!, tasks);
+    expect(ids(homeBotTaskCards("env-b", [tasks[0]!], homeThreadId, hidden))).toEqual(["t1"]);
+    for (const other of [task("t1", { botId: "scout" }), task("t1", { projectId: "launch" })]) {
+      expect(ids(homeBotTaskCards(environmentId, [other], homeThreadId, hidden))).toEqual(["t1"]);
+    }
+  });
+
+  it("drops keys of tasks that left the loaded list, only within the same Bot and project", () => {
+    const otherBot = task("x1", { botId: "scout" });
+    const kept = hideBotTaskCard([], environmentId, otherBot, [otherBot]);
+    const stale = hideBotTaskCard(kept, environmentId, task("gone"), [task("gone")]);
+    const next = hideBotTaskCard(stale, environmentId, tasks[0]!, tasks);
+    expect(next).toEqual([kept[0], botTaskCardKey(environmentId, tasks[0]!)]);
   });
 });
 
