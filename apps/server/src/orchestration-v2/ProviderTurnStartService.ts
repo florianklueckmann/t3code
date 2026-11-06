@@ -244,6 +244,17 @@ export const layer: Layer.Layer<
             return run?.activeAttemptId === input.attemptId && run.status === expectedStatus;
           }),
         );
+      const unpairedRunInterruptRequest = projectionStore.hasUnpairedRunInterruptRequest(
+        input.threadId,
+        idAllocator.derive.runSignalTurnItem({
+          runId: input.runId,
+          signal: "interrupt-request",
+        }),
+        idAllocator.derive.runSignalTurnItem({
+          runId: input.runId,
+          signal: "interrupt-result",
+        }),
+      );
       return {
         isCurrentAttemptInStatus,
         loadInheritedBackgroundTurnItems: () =>
@@ -259,7 +270,12 @@ export const layer: Layer.Layer<
             ),
             Effect.catchCause(() => Effect.succeed(input.inheritedBackgroundTurnItems)),
           ),
-        shouldStartProviderTurn: () => isCurrentAttemptInStatus("running"),
+        shouldStartProviderTurn: Effect.fn("ProviderTurnStartService.shouldStartProviderTurn")(
+          function* (options?: { readonly checkInterruptRequest?: boolean }) {
+            if (!(yield* isCurrentAttemptInStatus("running"))) return false;
+            return options?.checkInterruptRequest !== true || !(yield* unpairedRunInterruptRequest);
+          },
+        ),
         shouldFinalizeRun: () =>
           projectionStore.getRuntimeRecoveryProjection(input.threadId).pipe(
             Effect.map((current) => {
@@ -271,19 +287,7 @@ export const layer: Layer.Layer<
             }),
           ),
         hasUnpairedRunInterruptRequest: () =>
-          projectionStore
-            .hasUnpairedRunInterruptRequest(
-              input.threadId,
-              idAllocator.derive.runSignalTurnItem({
-                runId: input.runId,
-                signal: "interrupt-request",
-              }),
-              idAllocator.derive.runSignalTurnItem({
-                runId: input.runId,
-                signal: "interrupt-result",
-              }),
-            )
-            .pipe(Effect.catchCause(() => Effect.succeed(false))),
+          unpairedRunInterruptRequest.pipe(Effect.catchCause(() => Effect.succeed(false))),
         loadRunInterruptReason: () =>
           projectionStore
             .getThreadRecords(input.threadId, ["turnItems"], {

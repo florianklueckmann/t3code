@@ -2841,6 +2841,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     "cancelled-lookup",
     "stale-attempt",
     "accepted-notification",
+    "completed-notification",
   ] as const)("bounds restart recovery for %s", (state) =>
     Effect.gen(function* () {
       const nativeThreadId = "restart-recovery-thread";
@@ -2871,6 +2872,63 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       const success = {
         result: { turn: makeCodexReplayTurn({ id: nativeTurnId, status: "inProgress" }) },
       };
+      const goal = {
+        threadId: nativeThreadId,
+        objective: "Finish the work",
+        status: "active",
+        tokenBudget: null,
+        tokensUsed: 10,
+        timeUsedSeconds: 3,
+        createdAt: 1782622440,
+        updatedAt: 1782622450,
+      };
+      const completes = state === "completed-notification";
+      const notifiesAcceptance = state === "accepted-notification" || completes;
+      const acceptedNotifications: Array<CodexReplay.CodexAppServerReplayEntry> = [
+        {
+          type: "emit_inbound",
+          label: "accepted before response",
+          frame: {
+            method: "turn/started",
+            params: { threadId: nativeThreadId, turn: success.result.turn },
+          },
+        },
+        ...(completes
+          ? [
+              {
+                type: "emit_inbound" as const,
+                label: "goal active",
+                frame: {
+                  method: "thread/goal/updated",
+                  params: { threadId: nativeThreadId, turnId: nativeTurnId, goal },
+                },
+              },
+              {
+                type: "emit_inbound" as const,
+                label: "accepted turn completed",
+                frame: {
+                  method: "turn/completed",
+                  params: {
+                    threadId: nativeThreadId,
+                    turn: makeCodexReplayTurn({ id: nativeTurnId, status: "completed" }),
+                  },
+                },
+              },
+              {
+                type: "emit_inbound" as const,
+                label: "goal accounted",
+                frame: {
+                  method: "thread/goal/updated",
+                  params: {
+                    threadId: nativeThreadId,
+                    turnId: null,
+                    goal: { ...goal, tokensUsed: 11 },
+                  },
+                },
+              },
+            ]
+          : []),
+      ];
       const successful =
         state === "fresh-history" || state === "accepted" || state === "active-goal";
       const readsGoal = ![
@@ -2882,6 +2940,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         "transport-error",
         "ordinary-empty",
         "accepted-notification",
+        "completed-notification",
       ].includes(state);
       const retries = state === "active-goal" || state === "fallback-rejected";
       const entries: Array<CodexReplay.CodexAppServerReplayEntry> = [
@@ -2903,15 +2962,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           label: "first start",
           frame: { id: 4, method: "turn/start", params },
         });
-        if (state === "accepted-notification")
-          entries.push({
-            type: "emit_inbound",
-            label: "accepted before response",
-            frame: {
-              method: "turn/started",
-              params: { threadId: nativeThreadId, turn: success.result.turn },
-            },
-          });
+        if (notifiesAcceptance) entries.push(...acceptedNotifications);
         if (state !== "transport-error")
           entries.push({
             type: "emit_inbound",
@@ -2933,37 +2984,31 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             },
           });
       }
-      if (readsGoal)
-        entries.push(
-          ...exchange(
-            5,
-            "thread/goal/get",
-            { threadId: nativeThreadId },
-            state === "goal-read-error"
-              ? { error: { code: -32603, message: "lookup failed" } }
-              : {
-                  result: {
-                    goal:
-                      state === "missing-goal"
-                        ? null
-                        : {
-                            threadId: nativeThreadId,
-                            objective: "Finish the work",
-                            status: ["paused", "complete", "budgetLimited", "timeLimited"].includes(
-                              state,
-                            )
-                              ? state
-                              : "active",
-                            tokenBudget: null,
-                            tokensUsed: 10,
-                            timeUsedSeconds: 3,
-                            createdAt: 1782622440,
-                            updatedAt: 1782622450,
-                          },
-                  },
+      if (readsGoal) {
+        const goalExchange = exchange(
+          5,
+          "thread/goal/get",
+          { threadId: nativeThreadId },
+          state === "goal-read-error"
+            ? { error: { code: -32603, message: "lookup failed" } }
+            : {
+                result: {
+                  goal:
+                    state === "missing-goal"
+                      ? null
+                      : {
+                          ...goal,
+                          status: ["paused", "complete", "budgetLimited", "timeLimited"].includes(
+                            state,
+                          )
+                            ? state
+                            : "active",
+                        },
                 },
-          ),
+              },
         );
+        entries.push(...goalExchange);
+      }
       if (retries)
         entries.push(
           ...exchange(
@@ -2978,6 +3023,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         );
       const transcript = makeCodexReplayTranscript({ scenario: `restart-${state}`, entries });
       const registered = yield* Deferred.make<void>();
+      const completed = yield* Deferred.make<void>();
       const lookupStarted = yield* Deferred.make<void>();
       const releaseLookup = yield* Deferred.make<void>();
       const requests: Array<string> = [];
@@ -2986,7 +3032,10 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         (event) =>
           event.type === "provider_turn.updated"
             ? Deferred.succeed(registered, undefined)
-            : Effect.void,
+            : event.type === "provider_thread.updated" &&
+                event.providerThread.goal?.tokensUsed === 11
+              ? Deferred.succeed(completed, undefined)
+              : Effect.void,
         (method) =>
           Effect.gen(function* () {
             requests.push(method);
@@ -3001,10 +3050,13 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             }
           }),
         undefined,
-        (entry) =>
-          state === "accepted-notification" && entry.label === "first start"
+        (entry) => {
+          if (state === "completed-notification" && entry.label === "first start")
+            return Deferred.await(completed);
+          return state === "accepted-notification" && entry.label === "first start"
             ? Deferred.await(registered)
-            : Effect.void,
+            : Effect.void;
+        },
       );
       const resumed = yield* harness.runtime.resumeThread({
         providerThread: harness.providerThread,
@@ -3036,7 +3088,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       }
       const result = yield* Fiber.join(started).pipe(Effect.result);
       assert.equal(result._tag, successful ? "Success" : "Failure", JSON.stringify(result));
-      if (successful || state === "accepted-notification") {
+      if (successful || notifiesAcceptance) {
         yield* Deferred.await(registered);
         const turns = harness.events.filter((event) => event.type === "provider_turn.updated");
         assert.lengthOf(turns, 1);
@@ -3065,7 +3117,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
               ...(retries ? ["turn/start"] : []),
             ],
       );
-      if (result._tag === "Failure" && (readsGoal || state === "accepted-notification")) {
+      if (result._tag === "Failure" && (readsGoal || notifiesAcceptance)) {
         assert.nestedPropertyVal(result.failure, "cause.errorMessage", emptyError.message);
       }
     }).pipe(
