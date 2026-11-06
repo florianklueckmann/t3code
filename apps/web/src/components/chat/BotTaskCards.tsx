@@ -185,10 +185,7 @@ export function BotTaskCards({
               onHide={
                 botTaskCardKey(environmentId, task) === null
                   ? undefined
-                  : () =>
-                      setHidden((current) =>
-                        hideBotTaskCard(current, environmentId, task, loadedTasks),
-                      )
+                  : () => setHidden((current) => hideBotTaskCard(current, environmentId, task))
               }
             />
           ))}

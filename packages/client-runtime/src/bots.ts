@@ -349,29 +349,16 @@ export function homeBotTaskCards<Task extends HideableTask & Pick<BotTaskSummary
   return { visible, hiddenKeys };
 }
 
-/**
- * Hides a finished task's card. Keys of the same Bot and project whose task left the loaded
- * list are dropped, since the list holds the newest tasks and those can never return to Home.
- */
 export function hideBotTaskCard(
   hidden: HiddenBotTaskCards,
   environmentId: string,
   task: HideableTask,
-  loadedTasks: ReadonlyArray<HideableTask>,
 ): HiddenBotTaskCards {
   const key = botTaskCardKey(environmentId, task);
   if (key === null) return hidden;
-  const scope = botTaskCardScope(environmentId, task);
-  const loadedKeys = new Set(
-    loadedTasks.flatMap((loaded) => botTaskCardKey(environmentId, loaded) ?? []),
+  return [...hidden.filter((candidate) => candidate !== key), key].slice(
+    -HIDDEN_BOT_TASK_CARDS_MAX,
   );
-  return [
-    ...hidden.filter(
-      (candidate) =>
-        candidate !== key && (!candidate.startsWith(scope) || loadedKeys.has(candidate)),
-    ),
-    key,
-  ].slice(-HIDDEN_BOT_TASK_CARDS_MAX);
 }
 
 export function showBotTaskCards(
