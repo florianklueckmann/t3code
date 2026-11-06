@@ -1896,6 +1896,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           new Map<ProviderThreadId, Extract<OrchestrationV2TurnItem, { type: "error" }>>(),
         );
         const activeTurns = yield* Ref.make(new Map<string, ActiveCodexTurnContext>());
+        const acceptedRootTurns = new WeakSet<ProviderAdapter.ProviderAdapterV2TurnInput>();
         const turnTokenUsageByThread = new Map<string, CodexTurnTokenUsageState>();
         const usageStateForThread = (nativeThreadId: string) => {
           let state = turnTokenUsageByThread.get(nativeThreadId);
@@ -2167,6 +2168,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           if (existing !== undefined) {
             return existing;
           }
+          acceptedRootTurns.add(input.turnInput);
           const providerTurnId = idAllocator.derive.providerTurn({
             driver: CODEX_PROVIDER,
             nativeTurnId: input.nativeTurnId,
@@ -6868,6 +6870,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           function* (
             turnInput: ProviderAdapter.ProviderAdapterV2TurnInput,
             codexInput: ReadonlyArray<CodexSchema.V2TurnStartParams__UserInput>,
+            beforeStart?: Effect.Effect<void, CodexErrors.CodexAppServerRequestError>,
           ) {
             const threadId = yield* getNativeThreadId(turnInput.providerThread);
             const mcpSession = yield* mcpSessions.read(turnInput.threadId);
@@ -6902,6 +6905,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               ...(yield* Ref.get(settledTurns)),
               ...(yield* Ref.get(activeTurns)),
             ]);
+            if (beforeStart !== undefined) yield* beforeStart;
             const started = yield* client.request("turn/start", turnStartParams);
             const previousTurn =
               previousTurns.get(started.turn.id) ??
@@ -7360,11 +7364,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                         cause.errorMessage !== "failed to submit turn input: EmptyInput"
                       )
                         return yield* cause;
-                      const accepted = [
-                        ...(yield* Ref.get(activeTurns)).values(),
-                        ...(yield* Ref.get(settledTurns)).values(),
-                      ].some((context) => context.input === turnInput);
-                      if (accepted) return yield* cause;
+                      if (acceptedRootTurns.has(turnInput)) return yield* cause;
                       const current = yield* client
                         .request("thread/goal/get", {
                           threadId: yield* getNativeThreadId(turnInput.providerThread),
@@ -7372,12 +7372,18 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                         .pipe(Effect.orElseSucceed(() => null));
                       if (current?.goal?.status !== "active") return yield* cause;
                       const recoveryInput = yield* toCodexInput(turnInput);
-                      if (
-                        turnInput.shouldStartProviderTurn !== undefined &&
-                        !(yield* turnInput.shouldStartProviderTurn())
-                      )
-                        return yield* cause;
-                      yield* startNativeTurn(turnInput, recoveryInput);
+                      yield* startNativeTurn(
+                        turnInput,
+                        recoveryInput,
+                        Effect.gen(function* () {
+                          if (
+                            turnInput.shouldStartProviderTurn !== undefined &&
+                            !(yield* turnInput.shouldStartProviderTurn())
+                          )
+                            return yield* cause;
+                          if (acceptedRootTurns.has(turnInput)) return yield* cause;
+                        }),
+                      );
                     },
                   ),
                 }),
