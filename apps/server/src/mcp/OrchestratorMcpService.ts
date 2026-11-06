@@ -2003,6 +2003,12 @@ const make = Effect.gen(function* () {
       if (input.allowChanges !== undefined && input.botId === undefined) {
         return yield* failure("invalid_request", "allowChanges needs botId.");
       }
+      if (
+        input.botId !== undefined &&
+        (input.freshSession === true || input.bindToCurrentThread === true)
+      ) {
+        return yield* failure("invalid_request", "Bot routines need a new thread for each run.");
+      }
       // A routine runs in full access, so only a caller with full access may set one up.
       if (
         input.botId !== undefined &&
@@ -2108,6 +2114,12 @@ const make = Effect.gen(function* () {
         const { parent, limits } = yield* loadCaller(scope);
         const existing = yield* loadScheduledTask(input.scheduledTaskId, limits);
         yield* assertLiveCallerForOtherProject(scope, parent, existing.projectId);
+        if (
+          existing.bot !== undefined &&
+          (input.freshSession === true || input.bindToCurrentThread === true)
+        ) {
+          return yield* failure("invalid_request", "Bot routines need a new thread for each run.");
+        }
         if (input.allowChanges !== undefined && existing.bot === undefined) {
           return yield* failure("invalid_request", "allowChanges needs a Bot routine.");
         }

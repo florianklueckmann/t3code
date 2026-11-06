@@ -1,3 +1,5 @@
+import * as Config from "effect/Config";
+import * as Option from "effect/Option";
 import * as FileSystem from "effect/FileSystem";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -587,7 +589,7 @@ it.effect(
   () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
-      const root = process.env.T3B21_FIXTURE_ROOT;
+      const root = Option.getOrUndefined(yield* Config.option(Config.String("T3B21_FIXTURE_ROOT")));
       if (root !== undefined) yield* fs.makeDirectory(root, { recursive: true });
       const directory =
         root === undefined

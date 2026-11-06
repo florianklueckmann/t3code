@@ -1146,7 +1146,9 @@ export const layer = Layer.effect(
                     })
                     .pipe(
                       Effect.map((launched) => launched.threadId),
-                      Effect.tap((threadId) => threadMode === "new_thread" ? Effect.void : bindThread(active, threadId)),
+                      Effect.tap((threadId) =>
+                        threadMode === "new_thread" ? Effect.void : bindThread(active, threadId),
+                      ),
                     ),
                 )
               : yield* Effect.exit(
@@ -1485,6 +1487,9 @@ export const layer = Layer.effect(
                   : iso(DateTime.makeUnsafe(requestedBot.sessionAt)),
             };
       if (bot !== undefined) {
+        if (input.threadMode !== undefined && input.threadMode !== "new_thread") {
+          return yield* taskError("Bot routines need a new thread for each run.", { taskId: id });
+        }
         if (input.schedule.type === "webhook") {
           return yield* taskError("Bot routines run on a time schedule, not a webhook.", {
             taskId: id,

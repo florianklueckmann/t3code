@@ -81,7 +81,16 @@ export const layer = Layer.effect(
         Effect.gen(function* () {
           if (intent.removing === 1)
             yield* sql`DELETE FROM scheduled_task_webhook_deliveries WHERE task_id = ${intent.task_id}`;
-          return yield* sql.unsafe<A>(intent.query, params);
+          const rows = yield* sql.unsafe<A>(intent.query, params);
+          if (intent.removing !== 1 && intent.bot_id !== null) {
+            yield* sql`UPDATE scheduled_tasks SET thread_id = NULL, thread_mode = 'new_thread'
+              WHERE task_id = ${intent.task_id}`;
+          } else if (intent.removing !== 1 && !/\bthread_mode\b/i.test(intent.query)) {
+            // Pre-Main80 inserts rely on the new default even when their old binding continues.
+            yield* sql`UPDATE scheduled_tasks SET thread_mode = 'continue'
+              WHERE task_id = ${intent.task_id} AND thread_id IS NOT NULL AND thread_mode = 'new_thread'`;
+          }
+          return rows;
         }),
       );
       const [checkpoint] = yield* sql<{ readonly busy: number }>`PRAGMA wal_checkpoint(FULL)`;

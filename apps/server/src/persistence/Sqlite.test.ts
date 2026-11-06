@@ -11,13 +11,11 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
 import { vi } from "vite-plus/test";
 
 import * as BotDatabase from "../bots/persistence/BotDatabase.ts";
-import { runMigrations } from "./Migrations.ts";
-import DelegatedRecoveryIndexes from "./Migrations/079_DelegatedRecoveryIndexes.ts";
+import { migrationManifest, runMigrations } from "./Migrations.ts";
 import * as SqlitePersistence from "./Sqlite.ts";
 
 const workers = vi.hoisted((): Array<NodeWorkerThreads.Worker> => []);
@@ -103,10 +101,10 @@ it.effect("keeps writes moving past a 48 MiB WAL while a reader retains its snap
     Effect.ensuring(Effect.sync(() => NodeFS.rmSync(tempDir, { recursive: true, force: true }))),
   );
 });
-it.effect.each([0, 78, 79])(
-  "starts isolated persistence from migration %s and preserves canonical 79 across reopen",
+it.effect.each([0, 78, 79, 80])(
+  "starts isolated persistence from migration %s and preserves canonical 80 across reopen",
   (previousMigrationId) => {
-    const tempDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-sqlite-79-"));
+    const tempDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-sqlite-80-"));
     const dbPath = NodePath.join(tempDir, "statev2.sqlite");
     const persistence = () =>
       SqlitePersistence.layerFromPath(dbPath).pipe(Layer.provide(NodeServices.layer));
@@ -121,12 +119,24 @@ it.effect.each([0, 78, 79])(
           ORDER BY name
         `,
         data: yield* sql`SELECT * FROM migration_probe`,
+        schedules: yield* sql`SELECT * FROM scheduled_tasks ORDER BY task_id`,
       };
     });
     const seed = Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* sql`CREATE TABLE migration_probe(id TEXT PRIMARY KEY, payload TEXT NOT NULL)`;
       yield* sql`INSERT INTO migration_probe VALUES ('preserved', 'invalid JSON')`;
+      for (const threadId of [null, "bound"]) {
+        yield* sql`INSERT INTO scheduled_tasks (
+          task_id, title, prompt, enabled, schedule_json, project_id, thread_id,
+          workspace_strategy_json, model_selection_json, runtime_mode, interaction_mode,
+          created_by, creation_source, created_at, updated_at, last_run_status, run_count
+        ) VALUES (${threadId ?? "unbound"}, 'Schedule', 'brief', 0, '{}', 'project', ${threadId},
+          '{}', '{}', 'full-access', 'default', 'user', 'mcp', 'created', 'updated', 'never', 0)`;
+      }
+      if (previousMigrationId === 0 || previousMigrationId === 80) {
+        yield* sql`UPDATE scheduled_tasks SET thread_mode = 'fresh_session' WHERE task_id = 'bound'`;
+      }
     });
 
     return Effect.gen(function* () {
@@ -134,14 +144,7 @@ it.effect.each([0, 78, 79])(
         previousMigrationId === 0
           ? undefined
           : yield* Effect.gen(function* () {
-              yield* runMigrations({ toMigrationInclusive: 78 });
-              if (previousMigrationId === 79) {
-                yield* Migrator.make({})({
-                  loader: Migrator.fromRecord({
-                    "79_DelegatedRecoveryIndexes": DelegatedRecoveryIndexes,
-                  }),
-                });
-              }
+              yield* runMigrations({ toMigrationInclusive: previousMigrationId });
               yield* seed;
               return yield* snapshot;
             }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: dbPath })));
@@ -149,15 +152,54 @@ it.effect.each([0, 78, 79])(
       const first = yield* Effect.gen(function* () {
         if (previousMigrationId === 0) yield* seed;
         const current = yield* snapshot;
-        assert.lengthOf(current.history, 79);
+        assert.deepStrictEqual(
+          current.history.map(({ migration_id, name }) => [migration_id, name]),
+          migrationManifest.map(([id, name]) => [id, name]),
+        );
+        assert.deepStrictEqual(
+          current.schedules.map(({ task_id, thread_id, thread_mode }) => ({
+            task_id,
+            thread_id,
+            thread_mode,
+          })),
+          [
+            {
+              task_id: "bound",
+              thread_id: "bound",
+              thread_mode:
+                previousMigrationId === 0 || previousMigrationId === 80
+                  ? "fresh_session"
+                  : "continue",
+            },
+            { task_id: "unbound", thread_id: null, thread_mode: "new_thread" },
+          ],
+        );
         assert.lengthOf(current.indexes, 2);
         assert.deepStrictEqual(current.data, [{ id: "preserved", payload: "invalid JSON" }]);
-        if (previousMigrationId === 79) assert.deepStrictEqual(current, before);
+        if (previousMigrationId === 80) assert.deepStrictEqual(current, before);
+        if (before)
+          assert.deepStrictEqual(
+            current.schedules.map(({ thread_mode: _mode, ...row }) => row),
+            before.schedules.map(({ thread_mode: _mode, ...row }) => row),
+          );
         if (before)
           assert.deepStrictEqual(current.history.slice(0, before.history.length), before.history);
         const bots = yield* BotDatabase.BotDatabase;
         const botHistory = yield* bots`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
-        assert.lengthOf(botHistory, 8);
+        assert.deepStrictEqual(
+          botHistory.map(({ migration_id, name }) => [migration_id, name]),
+          [
+            [1, "Bots"],
+            [2, "BotAppearance"],
+            [3, "BotTasks"],
+            [4, "BotLearning"],
+            [5, "BotRoutines"],
+            [6, "BotRoutineChanges"],
+            [7, "BotTaskHomeReturn"],
+            [8, "BotTaskHomeInput"],
+            [9, "BotContinuation"],
+          ],
+        );
         return { ...current, botHistory };
       }).pipe(Effect.provide(persistence()));
 
@@ -175,6 +217,8 @@ it.effect.each([0, 78, 79])(
           const sql = yield* SqlClient.SqlClient;
           assert.deepStrictEqual(yield* sql`PRAGMA integrity_check`, [{ integrity_check: "ok" }]);
           assert.deepStrictEqual(yield* bots`PRAGMA integrity_check`, [{ integrity_check: "ok" }]);
+          assert.deepStrictEqual(yield* sql`PRAGMA foreign_key_check`, []);
+          assert.deepStrictEqual(yield* bots`PRAGMA foreign_key_check`, []);
         }).pipe(Effect.provide(persistence()));
       }
     }).pipe(
