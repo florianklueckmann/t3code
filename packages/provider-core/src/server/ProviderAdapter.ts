@@ -226,6 +226,51 @@ export class ProviderAdapterOpenSessionError extends Schema.TaggedError<Provider
   }
 }
 
+const ProviderAdapterNoChangesRefusal = Schema.Literals([
+  "launch-args",
+  "managed-sign-in",
+  "account",
+  "chatgpt-account",
+  "version",
+  "config",
+  "hooks",
+  "sandbox",
+  "profile",
+]);
+
+const noChangesRefusalText: Record<typeof ProviderAdapterNoChangesRefusal.Type, string> = {
+  "launch-args": "it uses custom launch arguments",
+  "managed-sign-in": "it signs in through T3 Code",
+  account: "its signed-in account couldn't be confirmed",
+  "chatgpt-account": "it can't share a ChatGPT sign-in safely yet",
+  version: "this check has not verified its Codex version",
+  config: "its configuration adds settings that couldn't be verified",
+  hooks: "it has hooks configured",
+  sandbox: "its read-only sandbox check failed",
+  profile: "its session was opened for other work",
+};
+
+/**
+ * The provider could not prove it would enforce `changes: "none"`, so nothing started. Retrying
+ * cannot help; the reason names what to change.
+ */
+export class ProviderAdapterNoChangesRefusedError extends Schema.TaggedError<ProviderAdapterNoChangesRefusedError>()(
+  "ProviderAdapterNoChangesRefusedError",
+  {
+    driver: ProviderDriverKind,
+    reason: ProviderAdapterNoChangesRefusal,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    return `This routine task is set to No changes, which its provider can't enforce here because ${noChangesRefusalText[this.reason]}, so nothing ran. Start a new routine task once that is fixed, or ask the Bot directly.`;
+  }
+}
+
+export const isProviderAdapterNoChangesRefusedError = Schema.is(
+  ProviderAdapterNoChangesRefusedError,
+);
+
 export class ProviderAdapterCloseSessionError extends Schema.TaggedError<ProviderAdapterCloseSessionError>()(
   "ProviderAdapterCloseSessionError",
   {
@@ -454,6 +499,7 @@ export class ProviderAdapterSessionStoppedError extends Schema.TaggedError<Provi
 export const ProviderAdapterV2Error = Schema.Union([
   ProviderAdapterCapabilitiesError,
   ProviderAdapterOpenSessionError,
+  ProviderAdapterNoChangesRefusedError,
   ProviderAdapterCloseSessionError,
   ProviderAdapterResumeThreadError,
   ProviderAdapterThreadInUseError,

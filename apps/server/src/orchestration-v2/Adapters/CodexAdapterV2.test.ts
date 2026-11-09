@@ -222,6 +222,24 @@ describe("CodexAdapterV2 runtime policy", () => {
       assert.equal(fullAccess.approvalPolicy, "never");
       assert.equal(fullAccess.approvalsReviewer, "user");
       assert.equal(fullAccess.sandboxPolicy?.type, "dangerFullAccess");
+
+      // A run that may change nothing ignores the mode and every override.
+      const restricted = yield* CodexAdapterV2.buildCodexTurnStartParams({
+        nativeThreadId: "native-no-changes",
+        codexInput: [{ type: "text", text: "test" }],
+        runtimePolicy: {
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          cwd: null,
+          changes: "none",
+          approvalPolicy: "on-request",
+          sandboxPolicy: { type: "dangerFullAccess" },
+        },
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+      });
+      assert.equal(restricted.approvalPolicy, "never");
+      assert.equal(restricted.approvalsReviewer, "user");
+      assert.deepEqual(restricted.sandboxPolicy, { type: "readOnly", networkAccess: false });
     }),
   );
 

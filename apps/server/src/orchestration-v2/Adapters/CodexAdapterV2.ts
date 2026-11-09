@@ -77,6 +77,7 @@ import type {
   ProviderTurnId,
   ProviderInstanceId,
   RuntimeMode,
+  ServerProvider,
   ThreadId,
 } from "@t3tools/contracts";
 import * as CodexClient from "effect-codex-app-server/client";
@@ -97,6 +98,7 @@ import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as Exit from "effect/Exit";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
@@ -116,9 +118,18 @@ import {
   toMcpElicitationResponse,
 } from "../../provider/CodexMcpElicitation.ts";
 import {
+  type CodexHomeLayout,
   materializeCodexShadowHome,
   resolveCodexHomeLayout,
 } from "../../provider/Drivers/CodexHomeLayout.ts";
+import {
+  CODEX_NO_CHANGES_DISABLED_FEATURES,
+  codexNoChangesHomePath,
+  type CodexNoChangesHome,
+  materializeCodexNoChangesHome,
+  noChangesAccountRefusal,
+  verifyCodexNoChangesProcess,
+} from "../../provider/Drivers/CodexNoChangesProfile.ts";
 import {
   boundProviderEventForLogging,
   shouldPersistProviderEvent,
@@ -763,6 +774,12 @@ function codexRuntimeModeTurnDefaults(runtimeMode: RuntimeMode): {
   }
 }
 
+const CODEX_NO_CHANGES_TURN = {
+  approvalPolicy: "never",
+  approvalsReviewer: "user",
+  sandboxPolicy: { type: "readOnly", networkAccess: false },
+} as const satisfies ReturnType<typeof codexRuntimeModeTurnDefaults>;
+
 export const buildCodexTurnStartParams = Effect.fn("CodexAdapterV2.buildCodexTurnStartParams")(
   function* (input: {
     readonly nativeThreadId: string;
@@ -777,13 +794,17 @@ export const buildCodexTurnStartParams = Effect.fn("CodexAdapterV2.buildCodexTur
     readonly appContext?: ProviderAdapter.ProviderAdapterV2TurnInput["appContext"];
     readonly applicationInstructions?: string;
   }) {
-    const runtimeModeDefaults = codexRuntimeModeTurnDefaults(input.runtimePolicy.runtimeMode);
+    // A run that may change nothing ignores the thread's mode and every override.
+    const runtimeModeDefaults =
+      input.runtimePolicy.changes === "none"
+        ? CODEX_NO_CHANGES_TURN
+        : codexRuntimeModeTurnDefaults(input.runtimePolicy.runtimeMode);
     const approvalPolicy =
-      input.runtimePolicy.approvalPolicy === undefined
+      input.runtimePolicy.approvalPolicy === undefined || input.runtimePolicy.changes === "none"
         ? runtimeModeDefaults.approvalPolicy
         : yield* decodeTurnApprovalPolicy(input.runtimePolicy.approvalPolicy);
     const sandboxPolicy =
-      input.runtimePolicy.sandboxPolicy === undefined
+      input.runtimePolicy.sandboxPolicy === undefined || input.runtimePolicy.changes === "none"
         ? runtimeModeDefaults.sandboxPolicy
         : yield* decodeTurnSandboxPolicy(input.runtimePolicy.sandboxPolicy);
     const selectedEffort =
@@ -1416,6 +1437,10 @@ const CODEX_NATIVE_MEMORY_DISABLED_CONFIG = {
   "memories.generate_memories": false,
 } as const;
 
+const CODEX_NO_CHANGES_THREAD_CONFIG = Object.fromEntries(
+  CODEX_NO_CHANGES_DISABLED_FEATURES.map((name) => [`features.${name}`, false]),
+);
+
 function codexThreadRuntimeParams(input: {
   readonly threadId: ThreadId | null;
   readonly mcpSession: McpProviderSession.McpProviderSessionConfig | undefined;
@@ -1424,9 +1449,13 @@ function codexThreadRuntimeParams(input: {
 }): {
   readonly cwd?: string;
   readonly model?: string;
+  readonly sandbox?: "read-only";
+  readonly approvalPolicy?: "never";
+  readonly approvalsReviewer?: "user";
   readonly config: Readonly<Record<string, Schema.Json>>;
 } {
   const { mcpSession } = input;
+  const restricted = input.runtimePolicy?.changes === "none";
   const t3Server =
     mcpSession === undefined
       ? undefined
@@ -1438,11 +1467,16 @@ function codexThreadRuntimeParams(input: {
   return {
     ...(input.runtimePolicy?.cwd == null ? {} : { cwd: input.runtimePolicy.cwd }),
     ...(input.modelSelection === undefined ? {} : { model: input.modelSelection.model }),
+    ...(restricted
+      ? { sandbox: "read-only", approvalPolicy: "never", approvalsReviewer: "user" }
+      : {}),
     config: {
       ...CODEX_THREAD_CONFIG,
       ...(input.runtimePolicy?.nativeMemory === "disabled"
         ? CODEX_NATIVE_MEMORY_DISABLED_CONFIG
         : {}),
+      // The sealed home already turns these off; the thread repeats it as a second layer.
+      ...(restricted ? CODEX_NO_CHANGES_THREAD_CONFIG : {}),
       // One app-server serves many threads, so the id goes in per-thread shell config, not its env.
       ...(input.threadId === null
         ? {}
@@ -1620,7 +1654,10 @@ export type CodexAdapterV2DriverEnv =
 
 export const createCodexAdapterV2 = Effect.fn("CodexAdapterV2.createCodexAdapterV2")(function* (
   { instanceId, environment, enabled, config }: ProviderAdapterDriverCreateInput<CodexSettings>,
-  hooks: Pick<CodexAdapterV2Options, "onUsageLimits" | "resolveRuntime" | "compatibility"> = {},
+  hooks: Pick<CodexAdapterV2Options, "onUsageLimits" | "resolveRuntime" | "compatibility"> & {
+    /** The account the instance reports. Without it, runs that may change nothing are refused. */
+    readonly noChangesAccount?: Effect.Effect<ServerProvider["auth"]>;
+  } = {},
 ) {
   const clientFactory = yield* CodexAppServerClientFactory;
   const continuationRequests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
@@ -1629,7 +1666,9 @@ export const createCodexAdapterV2 = Effect.fn("CodexAdapterV2.createCodexAdapter
   const hostEnvironment = yield* HostProcess.Environment;
   const idAllocator = yield* IdAllocator.IdAllocatorV2;
   const serverConfig = yield* ServerConfig;
+  const path = yield* Path.Path;
   const homeLayout = yield* resolveCodexHomeLayout(config);
+  const { noChangesAccount, ...adapterHooks } = hooks;
 
   yield* materializeCodexShadowHome(homeLayout).pipe(
     Effect.mapError(
@@ -1660,7 +1699,21 @@ export const createCodexAdapterV2 = Effect.fn("CodexAdapterV2.createCodexAdapter
     idAllocator,
     serverConfig,
     continuationRequests,
-    ...hooks,
+    ...(noChangesAccount === undefined
+      ? {}
+      : {
+          noChanges: {
+            layout: homeLayout,
+            homePath: codexNoChangesHomePath({
+              path,
+              stateDir: serverConfig.stateDir,
+              instanceId,
+            }),
+            account: noChangesAccount,
+            path,
+          },
+        }),
+    ...adapterHooks,
   });
 });
 
@@ -1678,6 +1731,13 @@ export interface CodexAdapterV2Options {
   readonly fileSystem: FileSystem.FileSystem;
   readonly idAllocator: IdAllocator.IdAllocatorV2["Service"];
   readonly serverConfig: ServerConfig["Service"];
+  /** The sealed profile for runs that may change nothing. Without it those runs are refused. */
+  readonly noChanges?: {
+    readonly layout: CodexHomeLayout;
+    readonly homePath: string;
+    readonly account: Effect.Effect<ServerProvider["auth"]>;
+    readonly path: Path.Path;
+  };
   /** Omitting this leaves late completions projection-only. */
   readonly continuationRequests?: {
     readonly offer: (
@@ -1694,6 +1754,67 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
     threadId === null ? Effect.undefined : mcpSessions.read(threadId);
   const { clientFactory, digest, fileSystem, idAllocator, serverConfig } = adapterOptions;
   const continuationRequests = adapterOptions.continuationRequests;
+  const refuseNoChanges = (
+    reason: ProviderAdapter.ProviderAdapterNoChangesRefusedError["reason"],
+  ) => new ProviderAdapter.ProviderAdapterNoChangesRefusedError({ driver: CODEX_PROVIDER, reason });
+  // The ordinary and the No changes process share one state store; Codex fails to create a fresh
+  // one when two of its processes initialize at the same time.
+  const processStartPermit = yield* Semaphore.make(1);
+
+  /**
+   * A session serves only runs with the profile it opened with, so a restricted run never reaches
+   * an ordinary process, nor the reverse, whatever a cache, restart or caller above gets wrong.
+   */
+  const guardSessionProfile = (
+    runtime: ProviderAdapter.ProviderAdapterV2SessionRuntime,
+    opened: ProviderAdapter.ProviderAdapterV2RuntimePolicy["changes"],
+  ): ProviderAdapter.ProviderAdapterV2SessionRuntime => {
+    const matches = (
+      policy: ProviderAdapter.ProviderAdapterV2RuntimePolicy | undefined,
+    ): Effect.Effect<void, ProviderAdapter.ProviderAdapterNoChangesRefusedError> =>
+      policy?.changes === opened ? Effect.void : Effect.fail(refuseNoChanges("profile"));
+    const { compactThread } = runtime;
+    return {
+      ...runtime,
+      ensureThread: (input) =>
+        matches(input.runtimePolicy).pipe(Effect.andThen(() => runtime.ensureThread(input))),
+      resumeThread: (input) =>
+        matches(input.runtimePolicy).pipe(Effect.andThen(() => runtime.resumeThread(input))),
+      forkThread: (input) =>
+        matches(input.runtimePolicy).pipe(Effect.andThen(() => runtime.forkThread(input))),
+      startTurn: (input) =>
+        matches(input.runtimePolicy).pipe(Effect.andThen(() => runtime.startTurn(input))),
+      ...(compactThread === undefined
+        ? {}
+        : {
+            compactThread: (input) =>
+              matches(input.runtimePolicy).pipe(Effect.andThen(() => compactThread(input))),
+          }),
+    };
+  };
+
+  /** Whatever can be refused without starting Codex is refused before anything starts. */
+  const prepareNoChangesHome = Effect.fn("CodexAdapterV2.prepareNoChangesHome")(function* () {
+    const profile = adapterOptions.noChanges;
+    if (adapterOptions.resolveRuntime !== undefined) {
+      return yield* refuseNoChanges("managed-sign-in");
+    }
+    if (profile === undefined) return yield* refuseNoChanges("account");
+    if (resolveCodexLaunchArgs(adapterOptions.settings.launchArgs, adapterOptions.environment)) {
+      return yield* refuseNoChanges("launch-args");
+    }
+    const account = yield* profile.account;
+    const accountRefusal = noChangesAccountRefusal(account);
+    if (accountRefusal !== undefined) return yield* refuseNoChanges(accountRefusal);
+    const home: CodexNoChangesHome = yield* materializeCodexNoChangesHome({
+      layout: profile.layout,
+      homePath: profile.homePath,
+    }).pipe(
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(Path.Path, profile.path),
+    );
+    return { home, account, path: profile.path };
+  });
 
   return ProviderAdapter.ProviderAdapterV2.of({
     instanceId: adapterOptions.instanceId,
@@ -1707,6 +1828,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
     openSession: Effect.fn("CodexAdapterV2.openSession")(
       function* (input) {
         const scope = yield* Scope.Scope;
+        const noChanges =
+          input.runtimePolicy.changes === "none" ? yield* prepareNoChangesHome() : undefined;
         const resolvedRuntime =
           adapterOptions.resolveRuntime === undefined
             ? undefined
@@ -1720,12 +1843,17 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     }),
                 ),
               );
+        const startScope = yield* Scope.fork(scope);
+        yield* processStartPermit.takeScoped(1).pipe(Scope.provide(startScope));
         const client = yield* clientFactory.open({
           instanceId: adapterOptions.instanceId,
           threadId: input.threadId,
           providerSessionId: input.providerSessionId,
           runtimePolicy: input.runtimePolicy,
-          settings: resolvedRuntime?.config ?? adapterOptions.settings,
+          settings:
+            noChanges === undefined
+              ? (resolvedRuntime?.config ?? adapterOptions.settings)
+              : { ...adapterOptions.settings, homePath: noChanges.home.homePath, launchArgs: "" },
           environment: resolvedRuntime?.environment ?? adapterOptions.environment,
         });
         const additionalContextByThread = yield* Ref.make(
@@ -1770,6 +1898,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           ),
         );
         const initialized = yield* Ref.make(false);
+        const codexVersion = yield* Ref.make<string | undefined>(undefined);
         // Codex rejects a second initialize on the shared app-server.
         const initializePermit = yield* Semaphore.make(1);
         const ensureInitialized = initializePermit.withPermit(
@@ -1795,6 +1924,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 }),
               );
             const version = userAgent && /\/(\S+)/u.exec(userAgent)?.[1];
+            yield* Ref.set(codexVersion, version || undefined);
             const advisory =
               version && adapterOptions.compatibility
                 ? yield* adapterOptions.compatibility(version)
@@ -1813,7 +1943,22 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           }),
         );
         // A failed open is discarded, so the next turn spawns the updated binary.
-        if (adapterOptions.compatibility !== undefined) yield* ensureInitialized;
+        if (adapterOptions.compatibility !== undefined || noChanges !== undefined) {
+          yield* ensureInitialized;
+        }
+        yield* Scope.close(startScope, Exit.void);
+        if (noChanges !== undefined) {
+          yield* verifyCodexNoChangesProcess({
+            client,
+            home: noChanges.home,
+            version: yield* Ref.get(codexVersion),
+            cwd: input.runtimePolicy.cwd,
+            expectedAccount: noChanges.account,
+          }).pipe(
+            Effect.provideService(FileSystem.FileSystem, fileSystem),
+            Effect.provideService(Path.Path, noChanges.path),
+          );
+        }
         const now = yield* DateTime.now;
         const session = providerSession({
           providerSessionId: input.providerSessionId,
@@ -5327,8 +5472,15 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           }).pipe(Effect.orDie, turnTerminalizationPermit.withPermits(1)),
         );
 
+        // A restricted session declines every request at once: no stored allowance, no prompt.
+        const declineAll = noChanges !== undefined;
         yield* client.handleServerRequest("item/commandExecution/requestApproval", (payload) =>
           Effect.gen(function* () {
+            if (declineAll) {
+              return {
+                decision: "decline",
+              } satisfies CodexSchema.CommandExecutionRequestApprovalResponse;
+            }
             const context = yield* awaitActiveTurn(payload.turnId);
             if (context === undefined) {
               return yield* toProtocolError(
@@ -5400,6 +5552,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
 
         yield* client.handleServerRequest("item/fileChange/requestApproval", (payload) =>
           Effect.gen(function* () {
+            if (declineAll) {
+              return {
+                decision: "decline",
+              } satisfies CodexSchema.FileChangeRequestApprovalResponse;
+            }
             const context = yield* awaitActiveTurn(payload.turnId);
             if (context === undefined) {
               return yield* toProtocolError(
@@ -5472,6 +5629,12 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
 
         yield* client.handleServerRequest("item/permissions/requestApproval", (payload) =>
           Effect.gen(function* () {
+            if (declineAll) {
+              return {
+                permissions: {},
+                scope: "turn",
+              } satisfies CodexSchema.PermissionsRequestApprovalResponse;
+            }
             const context = yield* awaitActiveTurn(payload.turnId);
             if (context === undefined) {
               return yield* toProtocolError(
@@ -5533,6 +5696,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
 
         yield* client.handleServerRequest("mcpServer/elicitation/request", (payload) =>
           Effect.gen(function* () {
+            if (declineAll) {
+              return {
+                action: "decline",
+              } satisfies CodexSchema.McpServerElicitationRequestResponse;
+            }
             if (toMcpElicitationResponse(payload, "accept").action !== "accept") {
               yield* Effect.logWarning("Declined an unsupported MCP elicitation.", {
                 serverName: payload.serverName,
@@ -5612,6 +5780,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
 
         yield* client.handleServerRequest("execCommandApproval", (payload) =>
           Effect.gen(function* () {
+            if (declineAll) {
+              return {
+                decision: approvalDecisionToLegacyReviewDecision("decline"),
+              } satisfies CodexSchema.ExecCommandApprovalResponse;
+            }
             const context = yield* findActiveTurnByNativeThreadId(payload.conversationId);
             if (context === undefined) {
               return yield* toProtocolError(
@@ -5681,6 +5854,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
 
         yield* client.handleServerRequest("applyPatchApproval", (payload) =>
           Effect.gen(function* () {
+            if (declineAll) {
+              return {
+                decision: approvalDecisionToLegacyReviewDecision("decline"),
+              } satisfies CodexSchema.ApplyPatchApprovalResponse;
+            }
             const context = yield* findActiveTurnByNativeThreadId(payload.conversationId);
             if (context === undefined) {
               return yield* toProtocolError(
@@ -5749,6 +5927,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
 
         yield* client.handleServerRequest("item/tool/requestUserInput", (payload) =>
           Effect.gen(function* () {
+            if (declineAll) {
+              return { answers: {} } satisfies CodexSchema.ToolRequestUserInputResponse;
+            }
             const context = yield* awaitActiveTurn(payload.turnId);
             if (context === undefined) {
               return yield* toProtocolError(
@@ -7924,7 +8105,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 }),
             ),
           ),
-          mcpApps,
+          // App cards call tools on their own; a restricted session gets plain tool rows.
+          ...(noChanges === undefined ? { mcpApps } : {}),
           readThreadSnapshot: Effect.fn("CodexAdapterV2.readThreadSnapshot")(
             function* (threadInput) {
               const threadId = yield* getNativeThreadId(threadInput.providerThread);
@@ -8130,17 +8312,18 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               ),
           ),
         };
-        return runtime;
+        return guardSessionProfile(runtime, input.runtimePolicy.changes);
       },
       (effect, input) =>
         effect.pipe(
-          Effect.mapError(
-            (cause) =>
-              new ProviderAdapter.ProviderAdapterOpenSessionError({
-                driver: CODEX_PROVIDER,
-                providerSessionId: input.providerSessionId,
-                cause,
-              }),
+          Effect.mapError((cause) =>
+            ProviderAdapter.isProviderAdapterNoChangesRefusedError(cause)
+              ? cause
+              : new ProviderAdapter.ProviderAdapterOpenSessionError({
+                  driver: CODEX_PROVIDER,
+                  providerSessionId: input.providerSessionId,
+                  cause,
+                }),
           ),
         ),
     ),

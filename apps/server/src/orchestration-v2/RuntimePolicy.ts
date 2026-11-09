@@ -53,12 +53,11 @@ export class RuntimePolicyAboveCeilingError extends Schema.TaggedError<RuntimePo
 
 export const isRuntimePolicyAboveCeilingError = Schema.is(RuntimePolicyAboveCeilingError);
 
-const NoChangesUnsupportedReason = Schema.Literals(["provider", "platform", "not-enforced"]);
+const NoChangesUnsupportedReason = Schema.Literals(["provider", "platform"]);
 
 const noChangesUnsupportedText: Record<typeof NoChangesUnsupportedReason.Type, string> = {
   provider: "only Codex can enforce",
   platform: "is only verified on macOS",
-  "not-enforced": "this version can't enforce yet",
 };
 
 /** A run that may change nothing would reach a provider that cannot enforce it. Never retried. */

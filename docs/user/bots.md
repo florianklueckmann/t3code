@@ -117,8 +117,21 @@ to authorize the edits or messages requested in the brief. New and existing rout
 default to **No changes** until you choose otherwise. The brief determines
 the result's content and format.
 
-Both modes run in **Full access** without approval prompts. The change mode
-controls the Bot's instructions, not its tool access. Tasks you ask for directly
+**Changes allowed** runs in **Full access** without approval prompts. **No changes**
+is enforced, not only requested: the routine's task runs in a separate Codex
+process with a read-only sandbox, no network for its commands, and no approval
+prompts. It can read files and search the web, but it cannot write files, reach
+other machines from the shell, use your MCP servers, apps, plugins or hooks, or
+use T3 Code actions that change something, such as sending to threads,
+scheduling, delegating or saving what the Bot learned. It still signs in with
+the provider account you selected for the Bot and shares its conversation
+history. The task's result is saved as usual.
+
+No changes currently works only on macOS, with Codex 0.167.0 signed in with an
+API key, the built-in OpenAI provider and no custom launch arguments.
+Anywhere else the routine's task fails with the reason instead of running with
+more access. Follow-up messages in a routine's task stay No changes; to have the
+Bot make the changes it proposed, ask it directly. Tasks you ask for directly
 run in the conversation's mode.
 
 If the environment was off when a routine was due, it runs the latest missed
