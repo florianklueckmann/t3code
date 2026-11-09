@@ -110,6 +110,15 @@ const CATALOG = [
   catalogProvider("codex-blocked", "codex"),
   catalogProvider("codex-off", "codex", false),
   catalogProvider("claude", "claudeAgent"),
+  { ...catalogProvider("codex-no-catalog", "codex"), models: [] },
+  {
+    ...catalogProvider("codex-no-options", "codex"),
+    models: [{ ...catalogModel("gpt-5"), capabilities: {} }],
+  },
+  {
+    ...catalogProvider("codex-null-capabilities", "codex"),
+    models: [{ ...catalogModel("gpt-5"), capabilities: null }],
+  },
 ];
 
 interface FakeThread {
@@ -1334,6 +1343,17 @@ it.effect("runs a direct task on its own model without changing the Bot or its H
         });
         assert.deepEqual(yield* launchedSelection(world, inherited.workThreadId), codex);
         assert.deepEqual(inherited.modelSelection, codex);
+        const withoutOptions = {
+          instanceId: ProviderInstanceId.make("codex-no-options"),
+          model: "gpt-5",
+        };
+        const plain = yield* services.tasks.start({
+          botId,
+          projectId: campaign,
+          prompt: "Recap without model options.",
+          modelSelection: withoutOptions,
+        });
+        assert.deepEqual(yield* launchedSelection(world, plain.workThreadId), withoutOptions);
         assert.deepEqual((yield* services.bots.get({ botId })).modelSelection, codex);
         assert.deepEqual(yield* launchedSelection(world, homeThreadId), codex);
         assert.lengthOf(yield* world.commandsMatching("thread.model-selection.set"), 0);
@@ -1426,6 +1446,33 @@ it.effect.each<{
     name: "a model the provider does not offer",
     modelSelection: { ...codex, model: "gpt-9" },
     error: "Model gpt-9 is not offered by provider codex.",
+  },
+  {
+    name: "an unavailable model catalog",
+    modelSelection: {
+      instanceId: ProviderInstanceId.make("codex-no-catalog"),
+      model: "invented-model",
+    },
+    error:
+      "Provider instance codex-no-catalog has no model catalog. Refresh the provider before choosing a task model.",
+  },
+  {
+    name: "missing option metadata",
+    modelSelection: {
+      instanceId: ProviderInstanceId.make("codex-no-options"),
+      model: "gpt-5",
+      options: [{ id: "reasoningEffort", value: "low" }],
+    },
+    error: "Unknown option reasoningEffort; supported options: none.",
+  },
+  {
+    name: "unavailable model capabilities",
+    modelSelection: {
+      instanceId: ProviderInstanceId.make("codex-null-capabilities"),
+      model: "gpt-5",
+      options: [{ id: "fastMode", value: true }],
+    },
+    error: "Unknown option fastMode; supported options: none.",
   },
   {
     name: "an unknown option",

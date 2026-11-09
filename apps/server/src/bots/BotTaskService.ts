@@ -431,12 +431,16 @@ const make = Effect.gen(function* () {
       }))
     )
       return yield* refuse(`Provider instance ${instanceId} is turned off for this project.`);
+    if (provider.models.length === 0)
+      return yield* refuse(
+        `Provider instance ${instanceId} has no model catalog. Refresh the provider before choosing a task model.`,
+      );
     const model = provider.models.find((candidate) => candidate.slug === selection.model);
-    if (model === undefined && provider.models.length > 0)
+    if (model === undefined)
       return yield* refuse(`Model ${selection.model} is not offered by provider ${instanceId}.`);
     const problems = invalidOptionSelections(
       selection.options ?? [],
-      model?.capabilities?.optionDescriptors,
+      model.capabilities?.optionDescriptors ?? [],
     );
     if (problems.length > 0)
       return yield* refuse(
