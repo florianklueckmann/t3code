@@ -74,6 +74,19 @@ were interrupted or cancelled, or were skipped. **Hide** removes a finished card
 from the conversation on this device only, and **Show hidden** brings it back;
 the task and its result stay in **Settings → Bots**.
 
+On iOS and Android, completed direct tasks and routines use the same notifications
+as agent work. Enable notifications for the environment in **Settings → Notifications**
+and allow them in the phone's settings. Tapping a result notification opens its
+saved result in the task's work thread, including when connected remotely through
+T3 Connect. Result alerts use a generic title and do not include the prompt or answer text.
+
+Cancelled and skipped tasks do not alert. Work-thread failures follow the existing failure
+notification preference. If delivery is unavailable, the result card and unread
+conversation remain; reconnecting can deliver a recent result, but results older
+than two minutes do not trigger a delayed alert. Each registered device follows
+its own notification settings. A missing saved result shows an unavailable notice
+when opened; follow-up answers do not replace the saved task result.
+
 For a direct task, you can ask the Bot to return its result here automatically
 and continue the work you already authorized. This is off by default and allows
 one pending return per conversation input turn. It waits for active work and

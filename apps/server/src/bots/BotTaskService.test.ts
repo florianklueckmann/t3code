@@ -526,6 +526,7 @@ it.effect("looks up an existing work thread outside the latest 50 environment ta
         assert.deepEqual((yield* lookup(ThreadId.make("bot-work:missing"))).tasks, []);
         yield* services.bots.setArchived({ botId, archived: true });
         assert.equal((yield* lookup(workThreadId)).tasks[0]?.botId, botId);
+        assert.equal((yield* services.tasks.getAwarenessTasks(workThreadId))[0]?.taskId, task.id);
       }),
     );
   }).pipe(Effect.provide(layerDatabase)),
@@ -607,6 +608,17 @@ it.effect(
           };
           yield* Ref.update(world.records, (all) => new Map(all).set(workThreadId, record));
           yield* world.update(workThreadId, { runId: laterRunId });
+          assert.deepEqual(yield* services.tasks.getAwarenessTasks(workThreadId), [
+            {
+              taskId: task.id,
+              projectId: campaign,
+              workThreadId,
+              status: "completed",
+              resultRunId: runId,
+              completedAt: (yield* services.tasks.get(task.id)).completedAt,
+            },
+          ]);
+          assert.deepEqual(yield* services.tasks.getAwarenessTasks(ThreadId.make("missing")), []);
           const saved = yield* services.tasks.getResult({ taskId: task.id });
           assert.equal(saved.task.id, task.id);
           assert.deepEqual(saved.result, { state: "available", runId, text: "The saved result." });
@@ -1192,6 +1204,7 @@ it.effect("runs a dated preparation once and publishes its result to the home co
         assert.equal(task?.origin, "routine");
         assert.equal(task?.workThreadId, workThreadId);
         assert.equal(task?.homeThreadId, home);
+        assert.equal((yield* services.tasks.getAwarenessTasks(workThreadId))[0]?.taskId, task?.id);
         assert.equal(task?.runtimeMode, "full-access");
         assert.equal(task?.sessionAt, iso(sessionAt));
 
@@ -1243,6 +1256,10 @@ it.effect("runs a dated preparation once and publishes its result to the home co
         const task = yield* services.tasks.get(taskId);
         assert.equal(task.status, "completed");
         assert.isNotNull(task.completedAt);
+        assert.equal((yield* services.tasks.getAwarenessTasks())[0]?.taskId, task.id);
+        yield* TestClock.adjust("3 minutes");
+        assert.deepEqual(yield* services.tasks.getAwarenessTasks(), []);
+        assert.equal((yield* services.tasks.getAwarenessTasks(workThreadId))[0]?.taskId, task.id);
         const routine = (yield* services.routines.list()).tasks[0];
         assert.isNull(routine?.nextRunAt);
       }),

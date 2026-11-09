@@ -6,6 +6,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
 
+import type { SignedApnsDeliveryJob } from "./apnsDeliveryJobs.ts";
 import * as RelayConfiguration from "../Config.ts";
 import * as ApnsDeliveryQueue from "./ApnsDeliveryQueue.ts";
 
@@ -30,12 +31,12 @@ const config: RelayConfiguration.RelayConfiguration["Service"] = {
 
 describe("ApnsDeliveryQueue", () => {
   it.effect("does not require the deployment RuntimeContext when building the Worker layer", () => {
-    const sent: unknown[] = [];
+    const sent: SignedApnsDeliveryJob[] = [];
     const sender: Cloudflare.Queues.WriteQueueClient = {
       raw: Effect.die("raw queue binding is not used"),
       send: (body) =>
         Effect.sync(() => {
-          sent.push(body);
+          sent.push(body as SignedApnsDeliveryJob);
         }),
       sendBatch: () => Effect.die("batch queue binding is not used"),
     };
@@ -47,7 +48,7 @@ describe("ApnsDeliveryQueue", () => {
 
     return Effect.gen(function* () {
       const queue = yield* ApnsDeliveryQueue.ApnsDeliveryQueue;
-      yield* queue.enqueuePushNotification({
+      const input = {
         userId: "user-1",
         deviceId: "device-1",
         token: "push-token",
@@ -56,11 +57,24 @@ describe("ApnsDeliveryQueue", () => {
           body: "Input: Project",
           environmentId: "env-1",
           threadId: "thread-1",
-          deepLink: "/threads/env-1/thread-1",
+          deepLink: "/threads/env-1/thread-1?botTaskId=task-1",
+          phase: "completed" as const,
+          updatedAt: "1970-01-01T00:00:00.000Z",
         },
+      };
+      yield* queue.enqueuePushNotification(input);
+      const restarted = yield* ApnsDeliveryQueue.ApnsDeliveryQueue.pipe(Effect.provide(layer));
+      yield* restarted.enqueuePushNotification(input);
+      yield* queue.enqueuePushNotification({ ...input, deviceId: "device-2" });
+      yield* queue.enqueuePushNotification({
+        ...input,
+        notification: { ...input.notification, environmentId: "env-2" },
       });
-
-      expect(sent).toHaveLength(1);
+      expect(sent).toHaveLength(4);
+      expect(sent[0]?.payload.notification?.deepLink).toBe(input.notification.deepLink);
+      expect(sent[0]?.payload.jobId).toBe(sent[1]?.payload.jobId);
+      expect(sent[0]?.payload.jobId).not.toBe(sent[2]?.payload.jobId);
+      expect(sent[0]?.payload.jobId).not.toBe(sent[3]?.payload.jobId);
     }).pipe(Effect.provide(layer));
   });
 });

@@ -19,7 +19,7 @@ import {
   ModelSelection,
   type OrchestrationV2ThreadShell,
   type OrchestrationV2TurnItem,
-  type ProjectId,
+  ProjectId,
   type RuntimeMode,
   ThreadId,
   RunId,
@@ -134,6 +134,15 @@ export function deriveTaskStatus(input: {
   }
 }
 
+export interface BotTaskAwareness {
+  readonly taskId: BotTaskId;
+  readonly projectId: ProjectId;
+  readonly workThreadId: ThreadId;
+  readonly status: BotTaskStatus;
+  readonly resultRunId: RunId | null;
+  readonly completedAt: string | null;
+}
+
 export class BotTaskService extends Context.Service<
   BotTaskService,
   {
@@ -151,6 +160,10 @@ export class BotTaskService extends Context.Service<
       readonly projectId: ProjectId;
     }) => Effect.Effect<{ readonly modelSelection: ModelSelection }, BotError>;
     readonly get: (taskId: BotTaskId) => Effect.Effect<BotTaskSummary, BotError>;
+    /** Reads routing identity without loading prompts or saved answer content. */
+    readonly getAwarenessTasks: (
+      workThreadId?: ThreadId,
+    ) => Effect.Effect<ReadonlyArray<BotTaskAwareness>, BotError>;
     readonly getResult: (input: BotTaskResultInput) => Effect.Effect<BotTaskResult, BotError>;
     readonly list: (input: BotTaskListInput) => Effect.Effect<BotTaskListResult, BotError>;
     readonly subscribeList: (input: BotTaskListInput) => Stream.Stream<BotTaskListResult, BotError>;
@@ -628,6 +641,40 @@ const make = Effect.gen(function* () {
     return yield* toSummary(row);
   });
 
+  const getAwarenessTasks = Effect.fn("BotTaskService.getAwarenessTasks")(function* (
+    workThreadId?: ThreadId,
+  ) {
+    const cutoff = DateTime.formatIso(DateTime.subtract(yield* DateTime.now, { minutes: 2 }));
+    const rows = yield* sql<
+      Pick<
+        BotTaskRow,
+        "task_id" | "project_id" | "work_thread_id" | "status" | "result_run_id" | "completed_at"
+      >
+    >`
+      SELECT task_id, project_id, work_thread_id, status, result_run_id, completed_at
+      FROM bot_tasks WHERE work_thread_id IS NOT NULL
+        AND ${
+          workThreadId === undefined
+            ? sql`(completed_at IS NULL OR completed_at >= ${cutoff})`
+            : sql`work_thread_id = ${workThreadId}`
+        }
+    `.pipe(Effect.mapError(storageError));
+    return rows.flatMap((row): BotTaskAwareness[] =>
+      row.work_thread_id === null
+        ? []
+        : [
+            {
+              taskId: BotTaskId.make(row.task_id),
+              projectId: ProjectId.make(row.project_id),
+              workThreadId: ThreadId.make(row.work_thread_id),
+              status: row.status as BotTaskStatus,
+              resultRunId: row.result_run_id === null ? null : RunId.make(row.result_run_id),
+              completedAt: row.completed_at,
+            },
+          ],
+    );
+  });
+
   const getResult: BotTaskService["Service"]["getResult"] = Effect.fn("BotTaskService.getResult")(
     function* (input) {
       const row = yield* readRow(input.taskId);
@@ -993,6 +1040,7 @@ const make = Effect.gen(function* () {
     requireRunnable,
     get,
     getResult,
+    getAwarenessTasks,
     list,
     subscribeList,
     cancel,

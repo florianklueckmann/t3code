@@ -81,6 +81,25 @@ class AgentNotificationsTest : AgentNotificationsFixture() {
   }
 
   @Test
+  fun savedBotResultOpensItsTaskAndDeduplicatesRetries() {
+    val path = "/threads/environment/thread?botTaskId=bot-task%3Asaved"
+    AgentNotifications.receive(context, update("bot-result", false) + mapOf("alert_path" to path))
+    val alert = manager.activeNotifications.single()
+    assertEquals("t3code-dev:/$path", shadowOf(alert.notification.contentIntent).savedIntent.dataString)
+    AgentNotifications.receive(context, update("bot-result", false) + mapOf("alert_path" to path))
+    assertEquals(1, manager.activeNotifications.size)
+  }
+
+  @Test
+  fun savedBotResultOnScreenDoesNotAlert() {
+    lifecycle.currentState = Lifecycle.State.RESUMED
+    AgentNotifications.receive(context, update("bot-result", false) + mapOf(
+      "alert_path" to "/threads/environment/thread?botTaskId=bot-task%3Asaved"
+    ))
+    assertTrue(manager.activeNotifications.isEmpty())
+  }
+
+  @Test
   fun alertsStackByThreadGroup() {
     AgentNotifications.receive(context, update("grouped", false))
     assertEquals("environment/thread", manager.activeNotifications.single().notification.group)

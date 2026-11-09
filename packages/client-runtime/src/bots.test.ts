@@ -25,6 +25,7 @@ import {
   botRoutineUpsertInput,
   botSourceDrafts,
   botTaskCardKey,
+  botTaskResultMatchesThread,
   emptyBotSourceDraft,
   type HiddenBotTaskCards,
   hideBotTaskCard,
@@ -371,4 +372,21 @@ it("keeps working-note lines separate and rejects oversized drafts without trunc
       availability: "historical_unverified",
     }),
   ).toContain("historical/unverified");
+});
+
+it("keeps notification results scoped to their task, project and work thread", () => {
+  const task = {
+    id: BotTaskId.make("task"),
+    projectId: ProjectId.make("project"),
+    workThreadId: ThreadId.make("work"),
+  };
+  const thread = { taskId: task.id, projectId: task.projectId, threadId: task.workThreadId };
+  expect(botTaskResultMatchesThread(task, thread)).toBe(true);
+  expect(botTaskResultMatchesThread(task, { ...thread, taskId: "other" })).toBe(false);
+  expect(botTaskResultMatchesThread(task, { ...thread, projectId: ProjectId.make("other") })).toBe(
+    false,
+  );
+  expect(botTaskResultMatchesThread(task, { ...thread, threadId: ThreadId.make("other") })).toBe(
+    false,
+  );
 });

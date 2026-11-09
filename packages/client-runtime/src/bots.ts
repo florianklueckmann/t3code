@@ -575,3 +575,15 @@ export function botContinuationRefCaption(ref: BotContinuationRef): string {
     return `Task · ${ref.status === null ? "Unavailable" : BOT_TASK_STATUS_LABELS[ref.status]}`;
   return `${ref.directUser ? "Your words" : "Home input"}: “${ref.quote}”`;
 }
+
+/** Notification routes cannot open a result belonging to another project or work thread. */
+export function botTaskResultMatchesThread(
+  task: Pick<BotTaskSummary, "id" | "workThreadId" | "projectId">,
+  thread: { readonly taskId: string; readonly threadId: ThreadId; readonly projectId: ProjectId },
+): boolean {
+  return (
+    task.id === thread.taskId &&
+    task.workThreadId === thread.threadId &&
+    task.projectId === thread.projectId
+  );
+}

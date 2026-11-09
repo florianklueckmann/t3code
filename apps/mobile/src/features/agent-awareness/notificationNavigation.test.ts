@@ -1,11 +1,13 @@
 import type { NotificationResponse } from "expo-notifications";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
+import { foregroundNotificationBehavior } from "./foregroundNotificationBehavior";
 import { consumeLastAgentNotificationResponse } from "./notificationResponseConsumer";
 
 import {
   extractAgentNotificationDeepLink,
   routeAgentNotificationResponseOnce,
+  threadDeepLinkOnScreen,
 } from "./notificationPayload";
 
 function responseWithData(data: Record<string, unknown>, identifier = "notification-1") {
@@ -52,6 +54,28 @@ describe("consumeLastAgentNotificationResponse", () => {
 });
 
 describe("extractAgentNotificationDeepLink", () => {
+  it("suppresses a saved-result alert for the work thread already on screen", () => {
+    const response = responseWithData({ deepLink: "/threads/env/work?botTaskId=saved" });
+    expect(threadDeepLinkOnScreen("/threads/env/work?botTaskId=saved")).toBe("/threads/env/work");
+    expect(
+      foregroundNotificationBehavior(
+        response.notification as NotificationResponse["notification"],
+        "/threads/env/work",
+      ).shouldShowBanner,
+    ).toBe(false);
+    expect(
+      foregroundNotificationBehavior(
+        response.notification as NotificationResponse["notification"],
+        "/threads/other/work",
+      ).shouldShowBanner,
+    ).toBe(true);
+  });
+
+  it("preserves the saved Bot task in APNs and Android notification links", () => {
+    const deepLink = "/threads/remote-env/work-thread?botTaskId=bot-task%3Asaved";
+    expect(extractAgentNotificationDeepLink(responseWithData({ deepLink }))).toBe(deepLink);
+  });
+
   it("uses explicit deep links from APNs payload data", () => {
     expect(
       extractAgentNotificationDeepLink(

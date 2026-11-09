@@ -3,6 +3,7 @@ import * as Cloudflare from "@alchemy.run/cloudflare";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
+import * as Digest from "effect/crypto/Digest";
 import * as Mac from "effect/crypto/Mac";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -82,6 +83,7 @@ const make = Effect.gen(function* () {
   const random = yield* SecureRandom.SecureRandom;
   const config = yield* RelayConfiguration.RelayConfiguration;
   const mac = yield* Mac.Mac;
+  const digest = yield* Digest.Digest;
 
   return ApnsDeliveryQueue.of({
     enqueueLiveActivity: Effect.fn("relay.apns_delivery_queue.enqueue_live_activity")(
@@ -150,7 +152,31 @@ const make = Effect.gen(function* () {
           "relay.thread_id": input.notification.threadId,
         });
         const now = yield* DateTime.now;
-        const jobId = yield* random.uuidV4().pipe(
+        // Re-publication after a server restart must reuse the relay's durable delivery claim.
+        const identity =
+          input.notification.phase !== undefined && input.notification.updatedAt !== undefined
+            ? [
+                input.userId,
+                input.deviceId,
+                input.notification.environmentId,
+                input.notification.threadId,
+                input.notification.phase,
+                input.notification.updatedAt,
+              ]
+                .map((value) => `${value.length}:${value}`)
+                .join("")
+            : null;
+        const jobId = yield* (
+          identity === null
+            ? random.uuidV4()
+            : digest
+                .digest(Digest.sha256, new TextEncoder().encode(identity))
+                .pipe(
+                  Effect.map((bytes) =>
+                    Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join(""),
+                  ),
+                )
+        ).pipe(
           Effect.mapError(
             (cause) =>
               new ApnsDeliveryQueueSendError({
