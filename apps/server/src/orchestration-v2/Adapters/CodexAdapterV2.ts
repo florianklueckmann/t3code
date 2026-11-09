@@ -1,4 +1,4 @@
-import { pipe } from "effect/Function";
+import { redactCodexProtocolValue } from "./codexProtocolRedaction.ts";
 import * as DocumentText from "../../provider/DocumentText.ts";
 import { revertCodexThread } from "../../provider/CodexThreadRevert.ts";
 import { historyResponseItems } from "@t3tools/provider-core/server/handoffBudget";
@@ -1535,62 +1535,12 @@ export function makeCodexAppServerProtocolLogger(input: {
           protocol: "codex.app-server",
           kind: "protocol",
           providerSessionId: input.providerSessionId,
-          event: redactCodexProtocolValue(boundProviderEventForLogging(event)),
+          event: boundProviderEventForLogging(redactCodexProtocolValue(event)),
         },
         input.threadId,
       )
       .pipe(Effect.ignore);
   };
-}
-
-function redactCodexProtocolValue(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.map(redactCodexProtocolValue);
-  }
-  if (value === null || typeof value !== "object") {
-    if (typeof value !== "string") {
-      return value;
-    }
-    if (/^Bearer\s+/i.test(value)) {
-      return "[REDACTED]";
-    }
-    const trimmed = value.trim();
-    if (
-      !(
-        (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
-        (trimmed.startsWith("[") && trimmed.endsWith("]"))
-      )
-    ) {
-      return value;
-    }
-    try {
-      return pipe(
-        JSON.parse(trimmed) as unknown,
-        boundProviderEventForLogging,
-        redactCodexProtocolValue,
-        JSON.stringify,
-      );
-    } catch {
-      return value;
-    }
-  }
-  return Object.fromEntries(
-    Object.entries(value).map(([key, nested]) => [
-      key,
-      isSensitiveCodexProtocolKey(key) ? "[REDACTED]" : redactCodexProtocolValue(nested),
-    ]),
-  );
-}
-
-function isSensitiveCodexProtocolKey(key: string): boolean {
-  const normalized = key.replace(/[^a-z0-9]/gi, "").toLowerCase();
-  return (
-    normalized.endsWith("authorization") ||
-    normalized.endsWith("apikey") ||
-    normalized.endsWith("token") ||
-    normalized.endsWith("password") ||
-    normalized.endsWith("secret")
-  );
 }
 
 export const layerAppServerClientFactory: Layer.Layer<

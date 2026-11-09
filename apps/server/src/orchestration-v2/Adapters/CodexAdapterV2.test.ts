@@ -276,73 +276,361 @@ describe("CodexAdapterV2 runtime policy", () => {
 });
 
 describe("CodexAdapterV2 native protocol logging", () => {
-  it.effect("logs decoded app-server frames once with credentials redacted", () =>
-    Effect.gen(function* () {
-      const writes: Array<{
-        readonly event: unknown;
-        readonly threadId: ThreadId | null;
-      }> = [];
-      const logger: ProviderEventLoggers.EventNdjsonLogger = {
-        filePath: "/tmp/events.log",
-        write: (event, threadId) =>
-          Effect.sync(() => {
-            writes.push({ event, threadId });
-          }),
-        close: () => Effect.void,
-      };
-      const threadId = ThreadId.make("thread-1");
-      const providerSessionId = ProviderSessionId.make("provider-session-1");
-      const protocolLogger = CodexAdapterV2.makeCodexAppServerProtocolLogger({
-        nativeEventLogger: logger,
-        threadId,
-        providerSessionId,
-      });
-
-      assert.notEqual(protocolLogger, undefined);
-      if (protocolLogger === undefined) {
-        return;
-      }
-
-      yield* protocolLogger({
-        direction: "incoming",
-        stage: "decoded",
-        payload: {
-          method: "thread/event",
-          params: {
-            id: "evt-1",
-            http_headers: { Authorization: "Bearer secret-codex-token" },
-            usage: { inputTokens: 12, outputTokens: 8, totalTokens: 20 },
+  const cases = [
+    {
+      name: "generic authorization and usage",
+      frame: (secret: string) => ({
+        method: "thread/event",
+        params: {
+          http_headers: { Authorization: `Bearer ${secret}` },
+          usage: { inputTokens: 12, outputTokens: 8, totalTokens: 20 },
+        },
+      }),
+      names: ["Authorization", '"inputTokens":12', '"totalTokens":20'],
+    },
+    {
+      name: "flat dotted outgoing start",
+      frame: (secret: string) => ({
+        method: "thread/start",
+        params: { config: { "mcp_servers.a.env.CUSTOM_KEY": secret } },
+      }),
+      names: ["mcp_servers.a.env.CUSTOM_KEY"],
+    },
+    {
+      name: "deeper dotted outgoing resume",
+      frame: (secret: string) => ({
+        method: "thread/resume",
+        params: { config: { "mcp_servers.a.http_headers": { "X-Custom-Key": secret } } },
+      }),
+      names: ["mcp_servers.a.http_headers", "X-Custom-Key"],
+    },
+    {
+      name: "nested incoming config/read layer",
+      frame: (secret: string) => ({
+        id: 1,
+        result: {
+          config: { mcp_servers: { a: { http_headers: { "X-Custom-Key": secret } } } },
+          layers: [{ config: { mcp_servers: { a: { env: { CUSTOM_KEY: secret } } } } }],
+        },
+      }),
+      names: ["mcp_servers", "X-Custom-Key", "CUSTOM_KEY", "layers"],
+    },
+    {
+      name: "dotted table outgoing fork",
+      frame: (secret: string) => ({
+        method: "thread/fork",
+        params: { config: { "mcp_servers.a": { env: { CUSTOM_KEY: secret } } } },
+      }),
+      names: ["mcp_servers.a", "CUSTOM_KEY"],
+    },
+    {
+      name: "mixed paths and array wrappers",
+      frame: (secret: string) => ({
+        result: [
+          { config: [{ mcp_servers: { "a.env": { CUSTOM_KEY: [secret, { child: secret }] } } }] },
+        ],
+      }),
+      names: ["mcp_servers", "a.env", "CUSTOM_KEY", "child"],
+    },
+    {
+      name: "quoted and dotted server names",
+      frame: (secret: string) => ({
+        params: {
+          config: {
+            'mcp_servers."a.b".env.CUSTOM_KEY': secret,
+            "mcp_servers.'c.d'.http_headers": { "X-Custom-Key": secret },
+            "mcp_servers.e.f.env.CUSTOM_KEY": secret,
+            mcp_servers: { "g.h": { env: { CUSTOM_KEY: secret } } },
           },
         },
-      });
-      yield* protocolLogger({
-        direction: "incoming",
-        stage: "raw",
-        payload:
-          '{"method":"thread/event","params":{"http_headers":{"Authorization":"Bearer secret-codex-token"}}}\n',
-      });
-
-      assert.equal(writes.length, 1);
-      assert.equal(writes[0]?.threadId, threadId);
-      assert.deepEqual(writes[0]?.event, {
-        provider: "codex",
-        protocol: "codex.app-server",
-        kind: "protocol",
-        providerSessionId,
-        event: {
-          direction: "incoming",
-          stage: "decoded",
-          payload: {
-            method: "thread/event",
-            params: {
-              id: "evt-1",
-              http_headers: { Authorization: "[REDACTED]" },
-              usage: { inputTokens: 12, outputTokens: 8, totalTokens: 20 },
+      }),
+      names: ["a.b", "c.d", "e.f", "g.h", "CUSTOM_KEY", "X-Custom-Key"],
+    },
+    {
+      name: "escaped quoted paths and fully dotted headers",
+      frame: (secret: string) => ({
+        params: {
+          config: {
+            'mcp_servers."a\\"b.c".env.CUSTOM_KEY': secret,
+            'mcp_servers.a."\\u0065nv".CUSTOM_KEY': secret,
+            "mcp_servers.a.http_headers.X-Custom-Key": secret,
+          },
+        },
+      }),
+      names: ["CUSTOM_KEY", "X-Custom-Key"],
+    },
+    ...["nested", "encoded", "mixed", "dotted"].map((shape) => ({
+      name: `config-named MCP server ${shape}`,
+      frame: (secret: string) => {
+        const config =
+          shape === "dotted"
+            ? {
+                'mcp_servers."config".env.CUSTOM_KEY': secret,
+                'mcp_servers."config".http_headers.X-Custom-Key': secret,
+                'mcp_servers."config".bearer_token_env_var': "ACCOUNT_TOKEN",
+                'mcp_servers."config".env_http_headers.Authorization': "HEADER_ENV",
+              }
+            : {
+                mcp_servers: {
+                  config: {
+                    bearer_token_env_var: "ACCOUNT_TOKEN",
+                    env_http_headers: { Authorization: "HEADER_ENV" },
+                    ...(shape === "mixed"
+                      ? { "env.CUSTOM_KEY": secret, "http_headers.X-Custom-Key": secret }
+                      : { env: { CUSTOM_KEY: secret }, http_headers: { "X-Custom-Key": secret } }),
+                  },
+                },
+              };
+        return { result: { config: shape === "encoded" ? JSON.stringify(config) : config } };
+      },
+      names: ["mcp_servers", "CUSTOM_KEY", "X-Custom-Key", "ACCOUNT_TOKEN", "HEADER_ENV"],
+    })),
+    {
+      name: "encoded config and credential containers",
+      frame: (secret: string) => ({
+        result: {
+          config: JSON.stringify({
+            mcp_servers: {
+              a: {
+                command: "safe-command",
+                url: "https://example.invalid/mcp",
+                env_http_headers: { Authorization: "ACCOUNT_TOKEN" },
+                bearer_token_env_var: "ACCOUNT_TOKEN",
+                env: JSON.stringify({ CUSTOM_KEY: secret }),
+                http_headers: { "X-Custom-Key": { nested: secret } },
+              },
+            },
+          }),
+        },
+      }),
+      names: [
+        "mcp_servers",
+        "CUSTOM_KEY",
+        "X-Custom-Key",
+        "nested",
+        "safe-command",
+        "https://example.invalid/mcp",
+        "ACCOUNT_TOKEN",
+      ],
+    },
+    {
+      name: "encoded frame",
+      frame: (secret: string) => ({
+        result: JSON.stringify({ config: { mcp_servers: { a: { env: { CUSTOM_KEY: secret } } } } }),
+      }),
+      names: ["CUSTOM_KEY", "mcp_servers"],
+    },
+    ...["object", "encoded config", "encoded frame", "scalar container"].map((shape) => ({
+      name: `100 KiB ${shape}`,
+      frame: (secret: string) => {
+        const config = {
+          mcp_servers: {
+            a: {
+              env:
+                shape === "scalar container"
+                  ? secret.repeat(Math.ceil((100 * 1024) / secret.length))
+                  : { CUSTOM_KEY: secret.repeat(Math.ceil((100 * 1024) / secret.length)) },
             },
           },
+        };
+        return shape === "encoded frame"
+          ? { result: JSON.stringify({ config }) }
+          : { params: { config: shape === "encoded config" ? JSON.stringify(config) : config } };
+      },
+      names: ["mcp_servers"],
+    })),
+    {
+      name: "variable references and generic credential masks",
+      frame: (secret: string) => ({
+        method: "thread/event",
+        params: {
+          config: {
+            mcp_servers: {
+              a: {
+                env_http_headers: { Authorization: "ACCOUNT_TOKEN", "X-Custom-Key": "HEADER_ENV" },
+                bearer_token_env_var: "ACCOUNT_TOKEN",
+                "env_http_headers.Authorization": "ACCOUNT_TOKEN",
+                http_headers: { Authorization: secret },
+                env: { PASSWORD: secret },
+              },
+            },
+          },
+          apiKey: secret,
+          password: secret,
+          text: `Bearer ${secret}`,
+          usage: { inputTokens: 12, outputTokens: 8, totalTokens: 20 },
         },
-      });
-    }),
+      }),
+      names: [
+        "ACCOUNT_TOKEN",
+        "HEADER_ENV",
+        "Authorization",
+        "PASSWORD",
+        '"inputTokens":12',
+        '"totalTokens":20',
+      ],
+    },
+    {
+      name: "OAuth credentials and authorization URLs",
+      frame: (secret: string) => ({
+        params: {
+          config: {
+            "oauth.client_secret": secret,
+            oauth: {
+              code: secret,
+              authorization_code: secret,
+              code_verifier: secret,
+              device_code: secret,
+              user_code: secret,
+              client_id: "public-client-id",
+              scopes: ["calendar.readonly"],
+            },
+          },
+          oauth: {
+            client_secret: secret,
+            access_token: secret,
+            refresh_token: secret,
+            code: secret,
+          },
+        },
+        result: { authorizationUrl: `https://example.invalid/authorize?code=${secret}` },
+      }),
+      names: [
+        "oauth",
+        "client_secret",
+        "authorizationUrl",
+        "public-client-id",
+        "calendar.readonly",
+      ],
+    },
+    {
+      name: "OAuth method code",
+      frame: (secret: string) => ({
+        method: "mcpServer/oauth/login",
+        params: { code: secret, status: "waiting-for-authorization" },
+        result: { code: secret, authorization_code: secret, access_token: secret },
+      }),
+      names: ["mcpServer/oauth/login", "code", "waiting-for-authorization"],
+    },
+    ...["scalar", "array", "encoded array"].map((shape) => ({
+      name: `malformed OAuth table ${shape}`,
+      frame: (secret: string) => ({
+        params: {
+          config:
+            shape === "scalar"
+              ? { mcp_servers: { a: { oauth: `client_secret = "${secret}"` } } }
+              : { oauth: shape === "array" ? [secret] : JSON.stringify([secret]) },
+        },
+      }),
+      names: ["oauth", "[OMITTED: unparseable config]"],
+    })),
+    {
+      name: "encoded OAuth table with safe diagnostics",
+      frame: (secret: string) => ({
+        params: {
+          config: {
+            oauth: JSON.stringify({ client_secret: secret, client_id: "public-client-id" }),
+          },
+        },
+      }),
+      names: ["oauth", "client_secret", "public-client-id"],
+    },
+    ...[
+      '{"mcp_servers":{"a":{"env":{"CUSTOM_KEY":',
+      "[mcp_servers.a.env]\nCUSTOM_KEY = ",
+      '{"mcp_servers."unclosed.env":',
+    ].map((prefix, index) => ({
+      name: `malformed config ${index}`,
+      frame: (secret: string) => ({ result: { config: `${prefix}${secret}` } }),
+      names: ["[OMITTED: unparseable config]"],
+    })),
+    {
+      name: "malformed encoded frame with recognizable config",
+      frame: (secret: string) => ({
+        result: `{"config":{"mcp_servers":{"a":{"env":{"CUSTOM_KEY":"${secret}`,
+      }),
+      names: ["[OMITTED: unparseable config]"],
+    },
+    {
+      name: "recognizable unrecognized encoded config",
+      frame: (secret: string) => ({ result: `[mcp_servers.a.env]\nCUSTOM_KEY = ${secret}` }),
+      names: ["[OMITTED: unparseable config]"],
+    },
+    {
+      name: "malformed dotted config path",
+      frame: (secret: string) => ({ params: { config: { 'mcp_servers."unclosed.env': secret } } }),
+      names: ["[OMITTED: unparseable config]"],
+    },
+    {
+      name: "ordinary tool text and dotted keys",
+      frame: (secret: string) => ({
+        params: { apiKey: secret },
+        result: {
+          text: "Documentation: mcp_servers.a.env.CUSTOM_KEY is a config path.",
+          "tool.mcp_servers.a.env.CUSTOM_KEY": "ordinary dotted tool key",
+          code: "ordinary program code",
+        },
+      }),
+      names: [
+        "Documentation: mcp_servers.a.env.CUSTOM_KEY is a config path.",
+        "ordinary dotted tool key",
+        "ordinary program code",
+      ],
+    },
+  ];
+
+  it.effect.each(cases)(
+    "logs decoded app-server frames once with credentials redacted: $name",
+    ({ name, frame, names }) =>
+      Effect.gen(function* () {
+        const writes: Array<{ readonly event: unknown; readonly threadId: ThreadId | null }> = [];
+        const logger: ProviderEventLoggers.EventNdjsonLogger = {
+          filePath: "/tmp/events.log",
+          write: (event, threadId) =>
+            Effect.sync(() => {
+              writes.push({ event, threadId });
+            }),
+          close: () => Effect.void,
+        };
+        const threadId = ThreadId.make("thread-1");
+        const providerSessionId = ProviderSessionId.make("provider-session-1");
+        const protocolLogger = CodexAdapterV2.makeCodexAppServerProtocolLogger({
+          nativeEventLogger: logger,
+          threadId,
+          providerSessionId,
+        });
+        assert.notEqual(protocolLogger, undefined);
+        if (protocolLogger === undefined) return;
+
+        const secret = "fixture-credential-value";
+        const payload = frame(secret);
+        const original = encodeUnknownJson(payload);
+        for (const direction of ["incoming", "outgoing"] as const) {
+          const event = { direction, stage: "decoded" as const, payload };
+          yield* protocolLogger(event);
+          yield* protocolLogger({ direction, stage: "raw", payload: original });
+          const write = writes.at(-1);
+          const serialized = encodeUnknownJson(write?.event);
+          assert.equal(
+            serialized.includes(secret.slice(0, 12)),
+            false,
+            `${name}: credential retained`,
+          );
+          for (const safeName of names) {
+            assert.equal(serialized.includes(safeName), true, `${name}: safe name missing`);
+          }
+          if (!names.includes("[OMITTED: unparseable config]")) {
+            assert.equal(serialized.includes("[OMITTED:"), false, `${name}: unexpected omission`);
+          }
+          assert.isBelow(serialized.length, 64 * 1024);
+          assert.equal(write?.threadId, threadId);
+          assert.equal(encodeUnknownJson(payload) === original, true, `${name}: input mutated`);
+          assert.equal(serialized.includes(`"direction":"${direction}"`), true);
+          assert.equal(serialized.includes(`"providerSessionId":"${providerSessionId}"`), true);
+          assert.equal(serialized.includes('"protocol":"codex.app-server"'), true);
+        }
+        assert.equal(writes.length, 2);
+      }),
   );
 });
 
