@@ -1479,7 +1479,10 @@ export const layer = Layer.effect(
       // keep their run history, and so real load failures propagate instead
       // of silently resetting an existing row.
       const existingTask = yield* findTask(id);
-      const threadMode = resolveThreadMode(input, existingTask);
+      // An older editor can omit the Bot and send a generic destination its routine never uses.
+      const requestedBot = input.bot ?? existingTask?.bot;
+      const threadMode =
+        requestedBot === undefined ? resolveThreadMode(input, existingTask) : "new_thread";
       const keptThreadId = input.threadId ?? existingTask?.threadId ?? null;
       // A bound thread belongs to its project, so moving the task leaves it for a new one.
       const movedOffThread =
@@ -1500,9 +1503,6 @@ export const layer = Layer.effect(
           ? managedRuntimeModeDenial(managedPolicy.summary, input.runtimeMode)
           : undefined;
       if (modeDenial !== undefined) return yield* taskError(modeDenial, { taskId: id });
-      // Omitted keeps the stored target, so an older editor cannot turn a routine into a plain
-      // thread schedule.
-      const requestedBot = input.bot ?? existingTask?.bot;
       const bot: ScheduledTaskBotTarget | undefined =
         requestedBot === undefined
           ? undefined
