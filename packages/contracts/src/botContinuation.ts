@@ -19,7 +19,7 @@ export const BOT_CONTINUATION_LIMITS = {
   revisions: 20,
   injectionChars: 8000,
 } as const;
-const Quote = TrimmedNonEmptyString.check(Schema.isMaxLength(BOT_CONTINUATION_LIMITS.itemChars));
+const Quote = TrimmedNonEmptyString;
 const Text = Quote.check(Schema.isPattern(/^[^\r\n]+$/));
 const InputItem = Schema.Struct({
   text: Text,
@@ -35,15 +35,39 @@ const sectionFields = <S extends Schema.Top>(item: S) => ({
 const withinBounds = Schema.makeFilter(
   (
     note: Readonly<
-      Record<(typeof BOT_CONTINUATION_SECTIONS)[number], readonly { readonly text: string }[]>
+      Record<
+        (typeof BOT_CONTINUATION_SECTIONS)[number],
+        readonly { readonly text: string; readonly quote?: string | undefined }[]
+      >
     >,
   ) => {
     const items = BOT_CONTINUATION_SECTIONS.flatMap((section) => note[section]);
+    const counts = items.reduce(
+      (current, item) => ({
+        total: current.total + item.text.length,
+        longestText: Math.max(current.longestText, item.text.length),
+        longestQuote: Math.max(current.longestQuote, item.quote?.length ?? 0),
+      }),
+      { total: 0, longestText: 0, longestQuote: 0 },
+    );
+    const exceeded: string[] = [];
+    if (items.length > BOT_CONTINUATION_LIMITS.items)
+      exceeded.push(`${items.length} items (limit ${BOT_CONTINUATION_LIMITS.items})`);
+    if (counts.total > BOT_CONTINUATION_LIMITS.textChars)
+      exceeded.push(
+        `${counts.total} total text units (limit ${BOT_CONTINUATION_LIMITS.textChars})`,
+      );
+    if (counts.longestText > BOT_CONTINUATION_LIMITS.itemChars)
+      exceeded.push(
+        `longest text ${counts.longestText} units (limit ${BOT_CONTINUATION_LIMITS.itemChars})`,
+      );
+    if (counts.longestQuote > BOT_CONTINUATION_LIMITS.itemChars)
+      exceeded.push(
+        `longest quote ${counts.longestQuote} units (limit ${BOT_CONTINUATION_LIMITS.itemChars})`,
+      );
     return (
-      (items.length <= BOT_CONTINUATION_LIMITS.items &&
-        items.reduce((sum, item) => sum + item.text.length, 0) <=
-          BOT_CONTINUATION_LIMITS.textChars) ||
-      "Working notes allow 20 items and 4000 total text characters."
+      exceeded.length === 0 ||
+      `Working notes exceed budget (UTF-16 code units): ${exceeded.join("; ")}.`
     );
   },
 );

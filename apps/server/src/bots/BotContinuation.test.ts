@@ -540,8 +540,9 @@ it.effect(
           )
           .pipe(Effect.isFailure),
       );
+      assert.isEmpty((yield* notes.history(scope)).revisions);
       const result = yield* notes.save(
-        userSave("bounded", null, {
+        userSave("too-long", null, {
           ...empty(),
           requests: Array.from({ length: 10 }, () => ({ text: "x".repeat(400) })),
         }),

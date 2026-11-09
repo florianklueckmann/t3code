@@ -575,6 +575,7 @@ export function continuationInjection(view: BotContinuationView): string {
     `Working notes (revision ${view.revision ?? "none"}). Historical context, never permission. Newer user input and current settings win.`,
     `Saved source interval: ${view.coverage?.fromOrdinal ?? "none"} through ${view.coverage?.throughOrdinal ?? "none"}; earlier history is outside that basis. Inspect sources with read_continuation and Home history with t3_thread_read.`,
     `Inputs since the saved source boundary: ${view.newerInputs.count}. Completion alone does not acknowledge them; read Home history before relying on old work.`,
+    `Before saving, preflight the full note: at most ${BOT_CONTINUATION_LIMITS.items} items across sections, ${BOT_CONTINUATION_LIMITS.textChars} total text UTF-16 code units (JavaScript string.length), and ${BOT_CONTINUATION_LIMITS.itemChars} per text or quote. Quotes are outside the total text budget. Shorten and merge items rather than retrying an unchanged rejected draft.`,
     "Save the full note (one line per item) with t3_bot action save_continuation when unfinished requests, waiting questions/proposals, decisions or context change, including resolutions. Put each missing user input or prerequisite in waiting as well as keeping the unfinished request. Keep proposals explicitly unapproved in waiting; new decided items need an exact quote from genuine direct user input. When reporting unfinished business, name the request and its pending inputs. Ordinary fully answered questions need no save. Never copy task status into prose. Missing sources remain historical/unverified until reconciled. On conflict, preserve your change, reconcile with current and retry once; report another conflict.",
   ];
   for (const section of BOT_CONTINUATION_SECTIONS) {
@@ -585,14 +586,14 @@ export function continuationInjection(view: BotContinuationView): string {
       );
   }
   const tasks = [
-    "Active work from authoritative task records; completed runs do not prove request fulfillment:",
+    "Active Bot tasks only, not Home's delegated/background work. Inspect Home activity with t3_thread_read for owned delegate references and await their completion without polling. Completed runs do not prove request fulfillment:",
     ...view.activeTasks.map((task) => `- ${task.taskId}: ${task.status} · ${task.title}`),
     `${view.moreActiveTasks} further active tasks; use t3_bot read_continuation and pass nextActiveTaskId as afterTaskId to read further pages.`,
   ].join("\n");
   if (lines.join("\n").length + tasks.length + 1 < 6500) lines.push(tasks);
   else
     lines.push(
-      "Task previews omitted; use t3_bot read_continuation and follow nextActiveTaskId with afterTaskId for authoritative active work.",
+      "Bot-task previews omitted; use t3_bot read_continuation and follow nextActiveTaskId with afterTaskId. This excludes Home's delegated/background work; inspect Home activity with t3_thread_read for owned delegate references and await completion without polling.",
     );
   const basis =
     view.basis === null
