@@ -21,6 +21,18 @@ it.effect("ModelSelection migrates legacy `provider` field to `instanceId`", () 
   }),
 );
 
+it("ModelSelection advertises instanceId or its provider alias as required", () => {
+  const { schema } = Schema.toJsonSchemaDocument(ModelSelection);
+  const branches = Array.isArray(schema.anyOf) ? schema.anyOf : [schema];
+  assert.deepStrictEqual(
+    branches.map((branch) => branch.required),
+    [
+      ["instanceId", "model"],
+      ["provider", "model"],
+    ],
+  );
+});
+
 it.effect("ModelSelection prefers explicit instanceId over legacy provider", () =>
   Effect.gen(function* () {
     const parsed = yield* decodeModelSelection({

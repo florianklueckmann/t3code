@@ -12,12 +12,21 @@ const ModelSelectionWire = Schema.Struct({
   options: Schema.optionalKey(ProviderOptionSelections),
 });
 
-const ModelSelectionSource = Schema.Struct({
-  provider: Schema.optional(Schema.Unknown),
-  instanceId: Schema.optional(Schema.Unknown),
-  model: Schema.Unknown,
-  options: Schema.optional(Schema.Unknown),
-});
+// Values stay Unknown so the wire schema owns validation; the union only advertises that
+// `instanceId`, or its legacy alias `provider`, is required.
+const ModelSelectionSource = Schema.Union([
+  Schema.Struct({
+    instanceId: Schema.Unknown,
+    provider: Schema.optional(Schema.Unknown),
+    model: Schema.Unknown,
+    options: Schema.optional(Schema.Unknown),
+  }),
+  Schema.Struct({
+    provider: Schema.Unknown,
+    model: Schema.Unknown,
+    options: Schema.optional(Schema.Unknown),
+  }),
+]);
 
 export const ModelSelection = ModelSelectionSource.pipe(
   Schema.decodeTo(
@@ -25,7 +34,7 @@ export const ModelSelection = ModelSelectionSource.pipe(
     SchemaTransformation.transformEffect({
       decode: (raw) => {
         const instanceIdSource =
-          raw.instanceId !== undefined
+          "instanceId" in raw && raw.instanceId !== undefined
             ? raw.instanceId
             : typeof raw.provider === "string"
               ? raw.provider
