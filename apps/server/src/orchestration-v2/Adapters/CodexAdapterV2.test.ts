@@ -524,6 +524,39 @@ describe("CodexAdapterV2 native protocol logging", () => {
       }),
       names: ["oauth", "[OMITTED: unparseable config]"],
     })),
+    ...["nested", "encoded", "config wrapper", "server-map wrapper", "server wrapper"].map(
+      (shape) => ({
+        name: `malformed header-reference table array ${shape}`,
+        frame: (secret: string) => {
+          const references = { Authorization: secret };
+          const server = {
+            env_http_headers:
+              shape === "nested"
+                ? [references]
+                : shape === "encoded"
+                  ? JSON.stringify([references])
+                  : references,
+          };
+          return {
+            result: {
+              config:
+                shape === "config wrapper"
+                  ? [{ mcp_servers: { alpha: server } }]
+                  : {
+                      mcp_servers:
+                        shape === "server-map wrapper"
+                          ? [{ alpha: server }]
+                          : { alpha: shape === "server wrapper" ? [server] : server },
+                    },
+            },
+          };
+        },
+        names:
+          shape === "nested" || shape === "encoded"
+            ? ["env_http_headers", "[OMITTED: unparseable config]"]
+            : ["env_http_headers", "Authorization", "[REDACTED]"],
+      }),
+    ),
     {
       name: "encoded OAuth table with safe diagnostics",
       frame: (secret: string) => ({
@@ -534,6 +567,69 @@ describe("CodexAdapterV2 native protocol logging", () => {
         },
       }),
       names: ["oauth", "client_secret", "public-client-id"],
+    },
+    ...["nested", "encoded config", "encoded frame"].map((shape) => ({
+      name: `reference-like dotted server names ${shape}`,
+      frame: (secret: string) => {
+        const server = {
+          env: { CUSTOM_KEY: secret },
+          http_headers: { "X-Custom-Key": secret },
+          oauth: { client_secret: secret, code_verifier: secret, client_id: "public-client-id" },
+        };
+        const config = {
+          mcp_servers: { "a.env_http_headers": server, "b.bearer_token_env_var": server },
+        };
+        return shape === "encoded frame"
+          ? { result: JSON.stringify({ config }) }
+          : { result: { config: shape === "encoded config" ? JSON.stringify(config) : config } };
+      },
+      names: [
+        "a.env_http_headers",
+        "b.bearer_token_env_var",
+        "CUSTOM_KEY",
+        "X-Custom-Key",
+        "public-client-id",
+      ],
+    })),
+    ...["object", "encoded config"].map((shape) => ({
+      name: `dotted OAuth credential descendants ${shape}`,
+      frame: (secret: string) => {
+        const config = Object.fromEntries([
+          ...["client_secret", "access_token", "refresh_token", "code_verifier", "code"].flatMap(
+            (field) => [
+              [`oauth.${field}.nested`, secret],
+              [`mcp_servers.a.oauth.${field}.nested`, secret],
+            ],
+          ),
+          ['mcp_servers."a.b".oauth."code_verifier".nested', secret],
+        ]);
+        return { params: { config: shape === "encoded config" ? JSON.stringify(config) : config } };
+      },
+      names: ["oauth.client_secret.nested", "mcp_servers.a.oauth.code.nested"],
+    })),
+    {
+      name: "structured reference slots and credential-like identifiers",
+      frame: (secret: string) => ({
+        params: {
+          config: {
+            mcp_servers: {
+              a: {
+                env_http_headers: {
+                  Authorization: "ACCOUNT_TOKEN",
+                  "X-Custom-Key": { nested: secret },
+                },
+                "env_http_headers.X-Other": [secret],
+                bearer_token_env_var: { nested: secret },
+              },
+              client_secret: {
+                env_http_headers: { env: "HEADER_ENV" },
+                bearer_token_env_var: "IDENTIFIER_ENV",
+              },
+            },
+          },
+        },
+      }),
+      names: ["ACCOUNT_TOKEN", "X-Custom-Key", "X-Other", "HEADER_ENV", "IDENTIFIER_ENV"],
     },
     ...[
       '{"mcp_servers":{"a":{"env":{"CUSTOM_KEY":',

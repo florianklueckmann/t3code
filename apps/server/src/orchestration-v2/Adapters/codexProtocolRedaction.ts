@@ -66,28 +66,119 @@ function isSensitiveKey(key: string, oauth: boolean): boolean {
   );
 }
 
-interface RedactionContext {
-  readonly configPath?: ReadonlyArray<string> | undefined;
-  readonly mode?: "secret" | "reference" | undefined;
-  readonly oauth?: "fields" | "table" | undefined;
+// The structural role of a value. Frame keys are literal; config, server and OAuth table keys
+// are dotted paths; server names and header names are literal identifiers, never fields.
+type Role =
+  | "frame"
+  | "configTable"
+  | "config"
+  | "servers"
+  | "server"
+  | "references"
+  | "reference"
+  | "oauth"
+  | "secret";
+
+interface Position {
+  readonly role: Role;
+  readonly oauth: boolean;
+}
+
+const TABLE_ROLES: ReadonlySet<Role> = new Set([
+  "configTable",
+  "servers",
+  "server",
+  "references",
+  "oauth",
+]);
+
+function enter({ role, oauth }: Position, segment: string): Position {
+  switch (role) {
+    case "secret":
+    case "reference":
+      return { role: "secret", oauth };
+    case "servers":
+      return { role: "server", oauth };
+    case "references":
+      return { role: "reference", oauth };
+    case "frame":
+      if (segment === "config") return { role: "configTable", oauth };
+      break;
+    case "server":
+      if (segment === "env_http_headers") return { role: "references", oauth };
+      if (segment === "bearer_token_env_var") return { role: "reference", oauth };
+      break;
+    case "configTable":
+    case "config":
+    case "oauth":
+      break;
+    default: {
+      const exhaustive: never = role;
+      return exhaustive;
+    }
+  }
+  if (segment === "oauth") return { role: "oauth", oauth: true };
+  // An unquoted dotted server name can push a server's own fields deeper into its config, so
+  // these container names stay secret anywhere in config.
+  if (
+    isSensitiveKey(segment, oauth) ||
+    (role !== "frame" && (segment === "env" || segment === "http_headers"))
+  ) {
+    return { role: "secret", oauth };
+  }
+  if (role !== "frame" && segment === "mcp_servers") return { role: "servers", oauth };
+  return { role: role === "frame" ? "frame" : "config", oauth };
+}
+
+function enterKey(position: Position, key: string): Position | undefined {
+  switch (position.role) {
+    case "frame":
+      return key === "mcp_servers" || key.startsWith("mcp_servers.")
+        ? configKeySegments(key)?.reduce(enter, { ...position, role: "configTable" })
+        : enter(position, key);
+    case "servers": {
+      // A dotted server name may also be meant as a path. That reading can make the server
+      // secret or OAuth-sensitive, but it never grants a reference exemption.
+      const server = enter(position, key);
+      const path = configKeySegments(key)?.reduce(enter, position);
+      if (path?.role === "secret") return path;
+      return { ...server, oauth: server.oauth || path?.oauth === true };
+    }
+    case "references":
+    case "reference":
+    case "secret":
+      return enter(position, key);
+    case "configTable":
+    case "config":
+    case "server":
+    case "oauth":
+      return configKeySegments(key)?.reduce(enter, position);
+    default: {
+      const exhaustive: never = position.role;
+      return exhaustive;
+    }
+  }
 }
 
 export function redactCodexProtocolValue(value: unknown): unknown {
   const ancestors = new WeakSet<object>();
-  const redact = (value: unknown, context: RedactionContext, depth: number): unknown => {
+  const redact = (value: unknown, at: Position, depth: number): unknown => {
     // Redaction precedes the logger's bounds, so guard cycles and depth here too.
     if (depth > 64) return OMITTED_VALUE;
+    // Only a string names an environment variable; anything else in a reference slot is secret.
+    const position: Position =
+      at.role === "reference" && typeof value !== "string" ? { ...at, role: "secret" } : at;
     if (typeof value === "string") {
-      if (context.mode === undefined && /^Bearer\s+/i.test(value)) return REDACTED;
+      if (/^Bearer\s+/i.test(value)) return REDACTED;
       const trimmed = value.trim();
       if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
         try {
           const decoded: unknown = JSON.parse(trimmed);
-          return JSON.stringify(redact(decoded, context, depth + 1));
+          return JSON.stringify(redact(decoded, position, depth + 1));
         } catch {
-          if (context.mode === "secret") return REDACTED;
+          if (position.role === "secret") return REDACTED;
           if (
-            context.configPath !== undefined ||
+            position.role !== "frame" ||
             /^\[\s*mcp_servers(?:\.|\])/.test(trimmed) ||
             /"(?:config|mcp_servers[^"\n]*|oauth|authorizationUrl|client_secret|access_token|refresh_token)"\s*:/.test(
               trimmed,
@@ -97,77 +188,36 @@ export function redactCodexProtocolValue(value: unknown): unknown {
           }
         }
       }
-      if (context.mode === "secret") return REDACTED;
-      const mcpIndex = context.configPath?.indexOf("mcp_servers") ?? -1;
-      if (
-        context.mode !== "reference" &&
-        (context.oauth === "table" ||
-          context.configPath?.length === 0 ||
-          (mcpIndex >= 0 && (context.configPath?.length ?? 0) <= mcpIndex + 2))
-      )
-        return OMITTED_CONFIG;
-      return value;
+      if (position.role === "secret") return REDACTED;
+      return TABLE_ROLES.has(position.role) ? OMITTED_CONFIG : value;
     }
     if (
-      context.oauth === "table" &&
+      (position.role === "oauth" || position.role === "references") &&
       (value === null || typeof value !== "object" || Array.isArray(value))
     ) {
       return OMITTED_CONFIG;
     }
     if (value === null || typeof value !== "object") {
-      return context.mode === "secret" ? REDACTED : value;
+      return position.role === "secret" ? REDACTED : value;
     }
     if (ancestors.has(value)) return OMITTED_VALUE;
     ancestors.add(value);
     try {
       if (Array.isArray(value)) {
-        return value.map((nested) => redact(nested, context, depth + 1));
+        // Malformed table wrappers cannot supply trusted reference positions.
+        const elementPosition: Position = TABLE_ROLES.has(position.role)
+          ? { ...position, role: "secret" }
+          : position;
+        return value.map((nested) => redact(nested, elementPosition, depth + 1));
       }
-      const oauth =
-        context.oauth !== undefined ||
-        ("method" in value && typeof value.method === "string" && /oauth/i.test(value.method));
+      const parent: Position =
+        "method" in value && typeof value.method === "string" && /oauth/i.test(value.method)
+          ? { ...position, oauth: true }
+          : position;
       return Object.fromEntries(
         Object.entries(value).map(([key, nested]) => {
-          if (context.mode !== undefined) {
-            return [key, redact(nested, context, depth + 1)];
-          }
-          const isConfig = key === "config" && context.configPath === undefined;
-          const isMcp = key === "mcp_servers" || key.startsWith("mcp_servers.");
-          const segments =
-            context.configPath !== undefined || isMcp ? configKeySegments(key) : [key];
-          if (segments === undefined) return [key, OMITTED_CONFIG];
-          const configPath = isConfig
-            ? []
-            : context.configPath !== undefined || isMcp
-              ? [...(context.configPath ?? []), ...segments]
-              : undefined;
-          const mcpIndex = configPath?.indexOf("mcp_servers") ?? -1;
-          const fields = mcpIndex < 0 ? [] : (configPath ?? []).slice(mcpIndex + 2);
-          const mode = fields.some((field) => field === "env" || field === "http_headers")
-            ? "secret"
-            : fields.some(
-                  (field) => field === "env_http_headers" || field === "bearer_token_env_var",
-                )
-              ? "reference"
-              : undefined;
-          const nestedOauth = oauth || segments.includes("oauth");
-          return [
-            key,
-            mode === undefined &&
-            (isSensitiveKey(key, nestedOauth) ||
-              isSensitiveKey(segments.at(-1) ?? key, nestedOauth))
-              ? REDACTED
-              : redact(
-                  nested,
-                  {
-                    configPath,
-                    mode,
-                    oauth:
-                      segments.at(-1) === "oauth" ? "table" : nestedOauth ? "fields" : undefined,
-                  },
-                  depth + 1,
-                ),
-          ];
+          const child = enterKey(parent, key);
+          return [key, child === undefined ? OMITTED_CONFIG : redact(nested, child, depth + 1)];
         }),
       );
     } finally {
@@ -175,7 +225,7 @@ export function redactCodexProtocolValue(value: unknown): unknown {
     }
   };
   try {
-    return redact(value, {}, 0);
+    return redact(value, { role: "frame", oauth: false }, 0);
   } catch {
     return OMITTED_VALUE;
   }
