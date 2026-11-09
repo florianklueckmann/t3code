@@ -53,9 +53,34 @@ export class RuntimePolicyAboveCeilingError extends Schema.TaggedError<RuntimePo
 
 export const isRuntimePolicyAboveCeilingError = Schema.is(RuntimePolicyAboveCeilingError);
 
+const NoChangesUnsupportedReason = Schema.Literals(["provider", "platform", "not-enforced"]);
+
+const noChangesUnsupportedText: Record<typeof NoChangesUnsupportedReason.Type, string> = {
+  provider: "only Codex can enforce",
+  platform: "is only verified on macOS",
+  "not-enforced": "this version can't enforce yet",
+};
+
+/** A run that may change nothing would reach a provider that cannot enforce it. Never retried. */
+export class RuntimePolicyUnsupportedError extends Schema.TaggedError<RuntimePolicyUnsupportedError>()(
+  "RuntimePolicyUnsupportedError",
+  {
+    threadId: ThreadId,
+    providerInstanceId: ProviderInstanceId,
+    reason: NoChangesUnsupportedReason,
+  },
+) {
+  override get message(): string {
+    return `This routine task is set to No changes, which ${noChangesUnsupportedText[this.reason]}, so nothing ran. To make changes, ask the Bot directly, or allow changes on the routine for its next run.`;
+  }
+}
+
+export const isRuntimePolicyUnsupportedError = Schema.is(RuntimePolicyUnsupportedError);
+
 export const RuntimePolicyV2Error = Schema.Union([
   RuntimePolicyResolveError,
   RuntimePolicyAboveCeilingError,
+  RuntimePolicyUnsupportedError,
 ]);
 export type RuntimePolicyV2Error = typeof RuntimePolicyV2Error.Type;
 

@@ -15,6 +15,7 @@ import { DeviceService } from "../device/DeviceService.ts";
 import { ServerEnvironment } from "../environment/ServerEnvironment.ts";
 import { GitWorkflowService } from "../git/GitWorkflowService.ts";
 import * as McpHttpServer from "../mcp/McpHttpServer.ts";
+import { layerCallerChangesAllowed } from "../mcp/McpToolAccess.testkit.ts";
 import { PreviewAutomationBroker } from "../mcp/PreviewAutomationBroker.ts";
 import {
   CLAUDE_PROVIDER,
@@ -116,6 +117,7 @@ const codexAdditionalContext = () =>
 
 const layerAdvertisedTools = McpHttpServer.layerTools.pipe(
   Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+  Layer.provideMerge(layerCallerChangesAllowed),
   Layer.provide(toolHandlerServices),
 );
 

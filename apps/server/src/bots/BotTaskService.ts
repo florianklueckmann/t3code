@@ -31,12 +31,14 @@ import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Predicate from "effect/Predicate";
 import * as PubSub from "effect/PubSub";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as BotDatabase from "./persistence/BotDatabase.ts";
 
+import * as RuntimePolicy from "../orchestration-v2/RuntimePolicy.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
@@ -195,6 +197,17 @@ const botError = (message: string, botId?: BotId) => (cause?: unknown) =>
 const errorMessage = (cause: unknown): string =>
   cause instanceof Error && cause.message !== "" ? cause.message : String(cause);
 
+/** A launch refused because No changes can't be enforced says why, under its launch wrappers. */
+const launchFailureMessage = (error: unknown): string => {
+  let current = error;
+  for (let depth = 0; depth < 8; depth++) {
+    if (RuntimePolicy.isRuntimePolicyUnsupportedError(current)) return current.message;
+    if (!Predicate.hasProperty(current, "cause")) break;
+    current = current.cause;
+  }
+  return errorMessage(error);
+};
+
 const make = Effect.gen(function* () {
   const sql = yield* BotDatabase.BotDatabase;
   const store = yield* BotStore.BotStore;
@@ -350,7 +363,7 @@ const make = Effect.gen(function* () {
       // A launch that was refused is not retried: nothing broadens or repeats work on its own.
       yield* sql`
         UPDATE bot_tasks
-        SET status = 'failed', detail = ${`The work thread could not start: ${errorMessage(Cause.squash(launched.cause))}`},
+        SET status = 'failed', detail = ${`The work thread could not start: ${launchFailureMessage(Cause.squash(launched.cause))}`},
             completed_at = ${now}, updated_at = ${now}
         WHERE task_id = ${row.task_id} AND completed_at IS NULL
       `.pipe(Effect.mapError(storageError));

@@ -3,35 +3,49 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
 import * as RuntimePolicy from "../orchestration-v2/RuntimePolicy.ts";
+import * as BotExecutionConstraint from "./BotExecutionConstraint.ts";
 import * as BotTurnContext from "./BotTurnContext.ts";
 
 /**
  * Turns off the provider's own memory in Bot conversations, so what a Bot keeps is only
- * the scoped, reviewable learning its policy governs. Other threads keep their settings.
+ * the scoped, reviewable learning its policy governs. A routine task admitted without changes
+ * runs restricted, or not at all where that cannot be enforced. Other threads keep their settings.
  */
 export const layer: Layer.Layer<
   RuntimePolicy.RuntimePolicyV2,
   never,
-  RuntimePolicy.RuntimePolicyV2 | BotTurnContext.BotTurnContext
+  | RuntimePolicy.RuntimePolicyV2
+  | BotTurnContext.BotTurnContext
+  | BotExecutionConstraint.BotExecutionConstraint
 > = Layer.effect(
   RuntimePolicy.RuntimePolicyV2,
   Effect.gen(function* () {
     const base = yield* RuntimePolicy.RuntimePolicyV2;
     const botTurnContext = yield* BotTurnContext.BotTurnContext;
+    const executionConstraint = yield* BotExecutionConstraint.BotExecutionConstraint;
     return RuntimePolicy.RuntimePolicyV2.of({
       resolve: Effect.fn("BotRuntimePolicy.resolve")(function* (input) {
         const policy = yield* base.resolve(input);
+        const resolveError = (cause: unknown) =>
+          new RuntimePolicy.RuntimePolicyResolveError({
+            projectId: input.thread.projectId,
+            providerInstanceId: input.modelSelection.instanceId,
+            cause,
+          });
         // Inactive Bot conversations count too: a failed read must not leave memory on.
-        const bot = yield* botTurnContext.forThread(input.thread.id).pipe(
-          Effect.mapError(
-            (cause) =>
-              new RuntimePolicy.RuntimePolicyResolveError({
-                projectId: input.thread.projectId,
-                providerInstanceId: input.modelSelection.instanceId,
-                cause,
-              }),
-          ),
-        );
+        const bot = yield* botTurnContext
+          .forThread(input.thread.id)
+          .pipe(Effect.mapError(resolveError));
+        const constraint = yield* executionConstraint
+          .forThread(input.thread.id)
+          .pipe(Effect.mapError(resolveError));
+        if (constraint === "no-changes") {
+          return yield* new RuntimePolicy.RuntimePolicyUnsupportedError({
+            threadId: input.thread.id,
+            providerInstanceId: input.modelSelection.instanceId,
+            reason: "not-enforced",
+          });
+        }
         return bot._tag === "none"
           ? policy
           : ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({

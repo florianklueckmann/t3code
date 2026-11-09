@@ -36,6 +36,7 @@ import * as ManagedProjectFolders from "../../../project/ManagedProjectFolders.t
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as SourceControlRepositoryService from "../../../sourceControl/SourceControlRepositoryService.ts";
 import * as GitVcsDriver from "../../../vcs/GitVcsDriver.ts";
+import * as McpCallerChanges from "../../McpCallerChanges.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 
 const shared = {
@@ -45,6 +46,7 @@ const shared = {
   dependencies: [
     McpInvocationContext.McpInvocationContext,
     ThreadManagementService.ThreadManagementService,
+    McpCallerChanges.McpCallerChanges,
     ProjectService.ProjectService,
     SecureRandom.SecureRandom,
   ],

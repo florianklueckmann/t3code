@@ -36,6 +36,7 @@ import * as PeerForwarding from "../../../peer/PeerForwarding.ts";
 import * as GitVcsDriver from "../../../vcs/GitVcsDriver.ts";
 import * as VcsProcess from "../../../vcs/VcsProcess.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
+import { layerCallerChangesAllowed } from "../../McpToolAccess.testkit.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import * as ProjectHandlers from "./handlers.ts";
 import { ProjectToolkit } from "./tools.ts";
@@ -94,6 +95,7 @@ const clientLaunchHarness = (input: {
       issuedAt: 0,
       capabilities: new Set(["orchestration" as const]),
     }),
+    layerCallerChangesAllowed,
     Layer.mock(ThreadManagement.ThreadManagementService)({
       // A thread exists once a launch started it.
       getThreadShell: (threadId) => {

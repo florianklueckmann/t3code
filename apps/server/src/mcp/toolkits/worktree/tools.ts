@@ -14,12 +14,14 @@ import * as ProjectService from "../../../project/ProjectService.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 import { Tool, Toolkit } from "effect/ai";
 
+import * as McpCallerChanges from "../../McpCallerChanges.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as WorktreeMcpService from "../../WorktreeMcpService.ts";
 
 const dependencies = [
   McpInvocationContext.McpInvocationContext,
   ThreadManagementService.ThreadManagementService,
+  McpCallerChanges.McpCallerChanges,
   WorktreeMcpService.WorktreeMcpService,
 ];
 
@@ -76,6 +78,7 @@ const WorktreeListTool = Tool.make("t3_worktree_list", {
   dependencies: [
     McpInvocationContext.McpInvocationContext,
     ThreadManagementService.ThreadManagementService,
+    McpCallerChanges.McpCallerChanges,
     ProjectService.ProjectService,
     WorktreeMcpService.WorktreeMcpService,
   ],

@@ -21,7 +21,7 @@ import * as BotTaskService from "../../../bots/BotTaskService.ts";
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
-import { liveThreadShell } from "../../McpToolAccess.testkit.ts";
+import { layerCallerChangesAllowed, liveThreadShell } from "../../McpToolAccess.testkit.ts";
 import * as BotHandlers from "./handlers.ts";
 import { BotToolkit, type BotToolInput } from "./tools.ts";
 
@@ -91,6 +91,7 @@ const callTool = (
               Layer.mock(ThreadManagement.ThreadManagementService)({
                 getThreadShell: () => Effect.succeed(liveThreadShell(threadId)),
               }),
+              layerCallerChangesAllowed,
               Layer.mock(BotContinuation.BotContinuation)({
                 get: (input) =>
                   Effect.succeed({

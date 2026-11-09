@@ -61,6 +61,11 @@ export const ProviderAdapterV2RuntimePolicy = Schema.Struct({
    * and the thread is not used to build it. Bot conversations use T3 Code's scoped learning instead.
    */
   nativeMemory: Schema.optional(Schema.Literal("disabled")),
+  /**
+   * "none": this run is unattended and may change nothing. Only a provider verified to enforce it
+   * receives it; an adapter enforces it or refuses the run, and never widens it.
+   */
+  changes: Schema.optional(Schema.Literal("none")),
 });
 export type ProviderAdapterV2RuntimePolicy = typeof ProviderAdapterV2RuntimePolicy.Type;
 

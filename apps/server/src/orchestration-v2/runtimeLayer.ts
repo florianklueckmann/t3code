@@ -4,6 +4,7 @@ import * as UsageLimitRecoveryWorker from "./UsageLimitRecoveryWorker.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as BotProjectGuard from "../bots/BotProjectGuard.ts";
 import * as BotContinuation from "../bots/BotContinuation.ts";
+import * as BotExecutionConstraint from "../bots/BotExecutionConstraint.ts";
 import * as BotService from "../bots/BotService.ts";
 import * as BotRuntimePolicy from "../bots/BotRuntimePolicy.ts";
 import * as BotTaskService from "../bots/BotTaskService.ts";
@@ -71,9 +72,10 @@ export const layerEventInfrastructure = Layer.mergeAll(
 
 const layerRuntimePolicyProvided = BotRuntimePolicy.layer.pipe(
   Layer.provide(
-    Layer.merge(
+    Layer.mergeAll(
       RuntimePolicy.layerFromProjectStore.pipe(Layer.provide(ProjectStore.layer)),
       BotTurnContext.layer,
+      BotExecutionConstraint.layer,
     ),
   ),
 );

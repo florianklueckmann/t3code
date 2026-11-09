@@ -711,13 +711,23 @@ export const layer: Layer.Layer<
         .pipe(Effect.result);
       if (resolvedPolicy._tag === "Failure") {
         const error = resolvedPolicy.failure;
-        if (error._tag !== "RuntimePolicyAboveCeilingError") return yield* error;
-        yield* settleStartFailure({
-          signal: "runtime-mode-above-ceiling",
-          title: "Thread mode is above the policy limit",
-          error,
-          message: error.message,
-        });
+        if (error._tag === "RuntimePolicyResolveError") return yield* error;
+        // Neither refusal can pass on a retry, so both settle the run now.
+        yield* settleStartFailure(
+          error._tag === "RuntimePolicyAboveCeilingError"
+            ? {
+                signal: "runtime-mode-above-ceiling",
+                title: "Thread mode is above the policy limit",
+                error,
+                message: error.message,
+              }
+            : {
+                signal: "runtime-no-changes-unsupported",
+                title: "No changes can't be enforced",
+                error,
+                message: error.message,
+              },
+        );
         return;
       }
       const resolvedRuntimePolicy = resolvedPolicy.success;

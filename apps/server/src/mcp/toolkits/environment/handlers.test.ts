@@ -19,7 +19,7 @@ import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementSer
 import * as Settings from "../../../serverSettings.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
-import { liveThreadShell } from "../../McpToolAccess.testkit.ts";
+import { layerCallerChangesAllowed, liveThreadShell } from "../../McpToolAccess.testkit.ts";
 import * as EnvironmentHandlers from "./handlers.ts";
 import { EnvironmentToolkit } from "./tools.ts";
 
@@ -49,6 +49,7 @@ it.effect("refuses a preferences update when the caller's turn ends while it wai
         getThreadShell: () =>
           Ref.get(caller).pipe(Effect.tap(() => Deferred.succeed(checked, undefined))),
       }),
+      layerCallerChangesAllowed,
       Layer.mock(Environment.ServerEnvironment)({
         getDescriptor: Effect.succeed({
           environmentId,

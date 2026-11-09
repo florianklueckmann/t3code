@@ -50,6 +50,7 @@ import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
+import { layerCallerChangesAllowed } from "./McpToolAccess.testkit.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import * as PeerLinkRequests from "../peer/PeerLinkRequests.ts";
@@ -236,6 +237,7 @@ describe("orchestrator MCP toolkit", () => {
         ]);
         const layerTest = layerOrchestratorToolkit.pipe(
           Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+          Layer.provideMerge(layerCallerChangesAllowed),
           Layer.provideMerge(layerOrchestration),
           Layer.provide(
             CodexOrchestratorReplayHarness.makeProviderAdapterRegistryLayer(transcript).pipe(
