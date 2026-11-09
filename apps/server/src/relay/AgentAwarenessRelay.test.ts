@@ -451,45 +451,53 @@ describe("AgentAwarenessRelay", () => {
     }).pipe(Effect.scoped),
   );
 
-  it.effect("catches up a recent saved result after restart and reuses its original identity", () =>
-    Effect.gen(function* () {
-      yield* TestClock.setTime(DateTime.toEpochMillis(DateTime.makeUnsafe(NOW)));
-      const botTasks: BotTaskService.BotTaskAwareness[] = [
-        {
-          taskId: BotTaskId.make("bot-task:restart"),
-          projectId: PROJECT_ID,
-          workThreadId: THREAD_ID,
-          status: "completed",
-          resultRunId: RunId.make("saved"),
-          completedAt: "2026-09-04T11:59:30.000Z",
-        },
-      ];
-      const { relay, secrets, currentShell, publications } = yield* makeTestRelay({ botTasks });
-      yield* Ref.set(
-        currentShell,
-        shell({
-          status: "completed",
-          latestRunId: RunId.make("saved"),
-          latestRunCompletedAt: DateTime.makeUnsafe("2026-09-04T11:59:30.000Z"),
-        }),
-      );
-      yield* secrets.set(PUBLISH_AGENT_ACTIVITY_SECRET, new TextEncoder().encode("false"));
-      yield* relay.publishThread(THREAD_ID);
-      assert.lengthOf(publications, 0);
-      yield* relay.start();
-      yield* secrets.set(PUBLISH_AGENT_ACTIVITY_SECRET, new TextEncoder().encode("true"));
-      yield* TestClock.adjust("1 second");
-      yield* relay.drain;
-      yield* TestClock.adjust("5 seconds");
-      yield* relay.drain;
-      assert.lengthOf(publications, 1);
-      assert.equal(publications[0]?.state?.updatedAt, botTasks[0]?.completedAt);
-      assert.include(publications[0]?.state?.deepLink ?? "", "botTaskId=bot-task%3Arestart");
-      yield* relay.requestCatchUp();
-      yield* TestClock.adjust("1 second");
-      yield* relay.drain;
-      assert.lengthOf(publications, 1);
-    }).pipe(Effect.scoped),
+  it.effect.each([
+    { completedAt: "2026-09-04T11:59:30.000Z", expectedPublications: 1 },
+    { completedAt: "2026-09-04T11:57:00.000Z", expectedPublications: 0 },
+  ])(
+    "only catches up fresh saved results and reuses their identity: $completedAt",
+    ({ completedAt, expectedPublications }) =>
+      Effect.gen(function* () {
+        yield* TestClock.setTime(DateTime.toEpochMillis(DateTime.makeUnsafe(NOW)));
+        const botTasks: BotTaskService.BotTaskAwareness[] = [
+          {
+            taskId: BotTaskId.make("bot-task:restart"),
+            projectId: PROJECT_ID,
+            workThreadId: THREAD_ID,
+            status: "completed",
+            resultRunId: RunId.make("saved"),
+            completedAt,
+          },
+        ];
+        const { relay, secrets, currentShell, publications } = yield* makeTestRelay({ botTasks });
+        yield* Ref.set(
+          currentShell,
+          shell({
+            status: "completed",
+            latestRunId: RunId.make("saved"),
+            latestRunCompletedAt: DateTime.makeUnsafe(completedAt),
+          }),
+        );
+        yield* secrets.set(PUBLISH_AGENT_ACTIVITY_SECRET, new TextEncoder().encode("false"));
+        yield* relay.publishThread(THREAD_ID);
+        assert.lengthOf(publications, 0);
+        yield* relay.start();
+        yield* secrets.set(PUBLISH_AGENT_ACTIVITY_SECRET, new TextEncoder().encode("true"));
+        yield* TestClock.adjust("1 second");
+        yield* relay.drain;
+        yield* TestClock.adjust("5 seconds");
+        yield* relay.drain;
+        assert.lengthOf(publications, expectedPublications);
+        if (expectedPublications > 0) {
+          assert.equal(publications[0]?.state?.updatedAt, botTasks[0]?.completedAt);
+          assert.include(publications[0]?.state?.deepLink ?? "", "botTaskId=bot-task%3Arestart");
+        }
+        yield* relay.publishThread(THREAD_ID);
+        yield* relay.requestCatchUp();
+        yield* TestClock.adjust("1 second");
+        yield* relay.drain;
+        assert.lengthOf(publications, expectedPublications);
+      }).pipe(Effect.scoped),
   );
 
   it.effect.each([

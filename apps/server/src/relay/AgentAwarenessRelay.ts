@@ -535,13 +535,15 @@ export const make = Effect.gen(function* () {
       project,
     });
     const task = (yield* botTasks.getAwarenessTasks(threadId))[0];
-    const savedResult =
+    const savedResultAt =
       task?.status === "completed" &&
       task.resultRunId !== null &&
       task.completedAt !== null &&
       Option.isSome(thread) &&
       task.projectId === thread.value.projectId &&
-      task.resultRunId === thread.value.latestRunId;
+      task.resultRunId === thread.value.latestRunId
+        ? task.completedAt
+        : undefined;
     const projectTaskState = (
       state: RelayAgentActivityState | null,
     ): RelayAgentActivityState | null => {
@@ -561,13 +563,13 @@ export const make = Effect.gen(function* () {
         // Reconciliation must persist the saved run before the generic completion can alert.
         return { ...state, phase: "running", headline: "Agent is working", detail: undefined };
       }
-      if (state.phase === "completed" && savedResult && task.completedAt !== null) {
+      if (state.phase === "completed" && savedResultAt !== undefined) {
         return {
           ...state,
           threadTitle: "Bot task result",
           headline: "Bot task finished",
           detail: "Review the saved Bot task result.",
-          updatedAt: task.completedAt,
+          updatedAt: savedResultAt,
           deepLink: buildAgentAwarenessDeepLink({
             environmentId,
             threadId,
@@ -584,8 +586,11 @@ export const make = Effect.gen(function* () {
       (snapshot.state?.phase === "completed" || snapshot.state?.phase === "failed") &&
       !hasLivePublishedState(publishedStateByThread, threadId)
     ) {
+      const recentSavedResult =
+        savedResultAt !== undefined &&
+        savedResultAt >= DateTime.formatIso(DateTime.subtract(yield* DateTime.now, { minutes: 2 }));
       if (
-        !savedResult &&
+        !recentSavedResult &&
         (Option.isNone(thread) || !terminalWorkSinceStart(thread.value, startedAt))
       )
         return;
