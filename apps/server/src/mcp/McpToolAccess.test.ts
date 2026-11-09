@@ -36,6 +36,11 @@ const noChangesThreadId = ThreadId.make("thread:no-changes");
 const noChangesSubagentThreadId = ThreadId.make("thread:no-changes-subagent");
 const unreadableTaskThreadId = ThreadId.make("thread:unreadable-task");
 const plainSubagentThreadId = ThreadId.make("thread:plain-subagent");
+// Recorded parents with no thread shell: one whose task row is restricted, one unrestricted.
+const missingNoChangesParentId = ThreadId.make("thread:missing-no-changes-parent");
+const missingPlainParentId = ThreadId.make("thread:missing-plain-parent");
+const orphanedNoChangesSubagentThreadId = ThreadId.make("thread:orphaned-no-changes-subagent");
+const orphanedPlainSubagentThreadId = ThreadId.make("thread:orphaned-plain-subagent");
 
 const subagentShell = (threadId: ThreadId, parentThreadId: ThreadId) => {
   const shell = liveThreadShell(threadId);
@@ -80,13 +85,25 @@ const shells = new Map([
   [noChangesSubagentThreadId, subagentShell(noChangesSubagentThreadId, noChangesThreadId)],
   [unreadableTaskThreadId, liveThreadShell(unreadableTaskThreadId)],
   [plainSubagentThreadId, subagentShell(plainSubagentThreadId, fullAccessThreadId)],
+  [
+    orphanedNoChangesSubagentThreadId,
+    subagentShell(orphanedNoChangesSubagentThreadId, missingNoChangesParentId),
+  ],
+  [
+    orphanedPlainSubagentThreadId,
+    subagentShell(orphanedPlainSubagentThreadId, missingPlainParentId),
+  ],
 ]);
 
 /** Stands in for the Bot task lookup; an unreadable task answers "none", as the live port does. */
 const layerCallerChanges = Layer.succeed(McpCallerChanges.McpCallerChanges, {
   forThread: (threadId) =>
     Effect.succeed(
-      threadId === noChangesThreadId || threadId === unreadableTaskThreadId ? "none" : "allowed",
+      threadId === noChangesThreadId ||
+        threadId === unreadableTaskThreadId ||
+        threadId === missingNoChangesParentId
+        ? "none"
+        : "allowed",
     ),
 });
 
@@ -273,6 +290,8 @@ const noChanges = threadCaller(noChangesThreadId);
 const noChangesSubagent = threadCaller(noChangesSubagentThreadId);
 const unreadableTask = threadCaller(unreadableTaskThreadId);
 const plainSubagent = threadCaller(plainSubagentThreadId);
+const orphanedNoChangesSubagent = threadCaller(orphanedNoChangesSubagentThreadId);
+const orphanedPlainSubagent = threadCaller(orphanedPlainSubagentThreadId);
 
 it.effect.each([
   ["reads", ended, {}, "ran"],
@@ -364,6 +383,11 @@ it.effect.each([
   ["starts_threads", noChangesSubagent, {}, "capability_denied"],
   // A task that cannot be read is treated as restricted.
   ["writes", unreadableTask, {}, "capability_denied"],
+  // So is a subagent whose recorded parent cannot be found.
+  ["reads_as_caller", orphanedNoChangesSubagent, {}, "ran"],
+  ["writes", orphanedNoChangesSubagent, {}, "capability_denied"],
+  ["acts_as_caller", orphanedNoChangesSubagent, {}, "capability_denied"],
+  ["writes", orphanedPlainSubagent, {}, "capability_denied"],
   // Others are unchanged.
   ["writes", plainSubagent, {}, "ran"],
   ["writes_environment", fullAccess, {}, "ran"],
@@ -491,6 +515,8 @@ it.effect.each([
   ["writes_threads", noChanges, { environmentId: box }, "capability_denied"],
   ["starts_threads", noChanges, { environmentId: box }, "capability_denied"],
   ["writes_environment", noChanges, { environmentId: box }, "capability_denied"],
+  ["writes", orphanedNoChangesSubagent, { environmentId: box }, "capability_denied"],
+  ["starts_threads", orphanedPlainSubagent, { environmentId: box }, "capability_denied"],
 
   // A thread id names a thread where the call runs, and is checked there.
   [
