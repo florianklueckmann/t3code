@@ -82,6 +82,12 @@ cancelled tasks keep their status on the card without starting a result turn.
 Detach, archive, and cancelling the task revoke a pending return. Routines and
 older tasks do not gain automatic returns.
 
+A direct task runs on the Bot's model unless you ask the Bot to use another
+Codex model or reasoning level for that task. Only that task uses it; the Bot
+and its conversations keep their model. A model or option the provider does not
+offer, or a provider turned off for the project, is refused before the task
+starts. Routines always follow the Bot's current model.
+
 A **routine** runs a task on a schedule. In **Settings → Bots**, edit
 the Bot and choose **Add routine** under the project. Describe what the Bot should do,
 then pick a timing:

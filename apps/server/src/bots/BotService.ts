@@ -51,7 +51,6 @@ import * as BotTaskService from "./BotTaskService.ts";
 import * as BotTurnContext from "./BotTurnContext.ts";
 
 /** The only driver whose adapter delivers Bot instructions on every turn so far. */
-const BOT_SUPPORTED_DRIVER = "codex";
 
 export class BotService extends Context.Service<
   BotService,
@@ -173,7 +172,7 @@ const make = Effect.gen(function* () {
         botId,
       )();
     }
-    if (instance.driverKind !== BOT_SUPPORTED_DRIVER) {
+    if (instance.driverKind !== BotTaskService.BOT_SUPPORTED_DRIVER) {
       return yield* botError("Bots currently support Codex providers only.", botId)();
     }
   });

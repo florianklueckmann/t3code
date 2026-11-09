@@ -10,6 +10,7 @@ import RoutineChanges from "./Migrations/006_BotRoutineChanges.ts";
 import Continuation from "./Migrations/009_BotContinuation.ts";
 import HomeInput from "./Migrations/008_BotTaskHomeInput.ts";
 import HomeReturn from "./Migrations/007_BotTaskHomeReturn.ts";
+import TaskModelSelection from "./Migrations/010_BotTaskModelSelection.ts";
 
 const routines = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -42,6 +43,7 @@ const entries = [
   [7, "BotTaskHomeReturn", HomeReturn],
   [8, "BotTaskHomeInput", HomeInput],
   [9, "BotContinuation", Continuation],
+  [10, "BotTaskModelSelection", TaskModelSelection],
 ] as const;
 const run = Migrator.make({});
 export const runMigrations = Effect.fn("BotDatabase.runMigrations")(function* () {

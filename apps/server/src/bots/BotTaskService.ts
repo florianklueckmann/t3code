@@ -16,7 +16,7 @@ import {
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   MessageId,
-  type ModelSelection,
+  ModelSelection,
   type OrchestrationV2ThreadShell,
   type OrchestrationV2TurnItem,
   type ProjectId,
@@ -24,6 +24,7 @@ import {
   ThreadId,
   RunId,
 } from "@t3tools/contracts";
+import { invalidOptionSelections } from "@t3tools/shared/model";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
@@ -38,6 +39,7 @@ import * as BotDatabase from "./persistence/BotDatabase.ts";
 
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import {
   BOT_ROUTINE_RUNTIME_MODE,
   type BotRoutineAdmission,
@@ -50,6 +52,7 @@ import * as BotStore from "./BotStore.ts";
 import { isDirectHomeInput, latestDirectHomeInput } from "./homeReturn.ts";
 
 const LIST_LIMIT = 50;
+export const BOT_SUPPORTED_DRIVER = "codex";
 
 interface BotTaskRow {
   readonly task_id: string;
@@ -76,11 +79,18 @@ interface BotTaskRow {
   readonly return_home_run_id: string | null;
   readonly return_home_message_id: string | null;
   readonly return_finished_at: string | null;
+  /** Direct tasks: what the work thread runs on. Null for routines and older tasks, which follow the Bot. */
+  readonly model_selection_json: string | null;
   readonly created_at: string;
   readonly updated_at: string;
 }
 
-const decodeSummary = Schema.decodeUnknownEffect(BotTaskSummary);
+const decodeSummary = Schema.decodeUnknownEffect(
+  Schema.Struct({
+    ...BotTaskSummary.fields,
+    modelSelection: Schema.optional(Schema.fromJsonString(ModelSelection)),
+  }),
+);
 const isBotError = Schema.is(BotError);
 
 const isTerminal = (status: BotTaskStatus) => BOT_TASK_TERMINAL_STATUSES.has(status);
@@ -177,6 +187,7 @@ const make = Effect.gen(function* () {
   const store = yield* BotStore.BotStore;
   const threadLaunch = yield* ThreadLaunchService.ThreadLaunchService;
   const threads = yield* ThreadManagementService.ThreadManagementService;
+  const providers = yield* ProviderRegistry.ProviderRegistry;
   const scheduler = yield* Scheduler.Scheduler;
   const random = yield* SecureRandom.SecureRandom;
   const changes = yield* PubSub.sliding<{
@@ -206,6 +217,7 @@ const make = Effect.gen(function* () {
       updatedAt: row.updated_at,
       completedAt: row.completed_at,
       returnToHome: row.return_home_run_id !== null,
+      ...(row.model_selection_json === null ? {} : { modelSelection: row.model_selection_json }),
     }).pipe(Effect.mapError(storageError));
 
   const readRow = (taskId: string) =>
@@ -286,14 +298,19 @@ const make = Effect.gen(function* () {
     if (row === undefined || row.completed_at !== null || row.cancel_requested_at !== null) return;
     const bot = yield* store.getBot(row.bot_id).pipe(Effect.mapError(storageError));
     if (bot === undefined || row.work_thread_id === null) return;
-    const detail = yield* BotStore.toDetail(bot, [], []).pipe(Effect.mapError(storageError));
+    const modelSelection =
+      row.model_selection_json === null
+        ? (yield* BotStore.toDetail(bot, [], []).pipe(Effect.mapError(storageError))).modelSelection
+        : yield* BotStore.decodeModelSelection(row.model_selection_json).pipe(
+            Effect.mapError(storageError),
+          );
     const launched = yield* threadLaunch
       .launch({
         commandId: CommandId.make(`bot-task-launch:${row.task_id}`),
         threadId: ThreadId.make(row.work_thread_id),
         projectId: row.project_id as ProjectId,
         title: row.title,
-        modelSelection: detail.modelSelection,
+        modelSelection,
         runtimeMode: row.runtime_mode as RuntimeMode,
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         workspaceStrategy: { type: "root" },
@@ -334,7 +351,8 @@ const make = Effect.gen(function* () {
         task_id, bot_id, project_id, home_thread_id, work_thread_id, origin, title, prompt,
         scheduled_task_id, occurrence_key, occurrence_due_at, session_at, allow_changes, runtime_mode, status,
         detail, dispatched_at, cancel_requested_at, result_run_id, completed_at, notified_at,
-        created_at, updated_at, return_home_run_id, return_home_message_id, return_finished_at
+        created_at, updated_at, return_home_run_id, return_home_message_id, return_finished_at,
+        model_selection_json
       ) VALUES (
         ${row.task_id}, ${row.bot_id}, ${row.project_id}, ${row.home_thread_id},
         ${row.work_thread_id}, ${row.origin}, ${row.title}, ${row.prompt},
@@ -342,7 +360,8 @@ const make = Effect.gen(function* () {
         ${row.session_at}, ${row.allow_changes}, ${row.runtime_mode}, ${row.status}, ${row.detail},
         ${row.dispatched_at}, ${row.cancel_requested_at}, ${row.result_run_id},
         ${row.completed_at}, ${row.notified_at}, ${row.created_at}, ${row.updated_at},
-        ${row.return_home_run_id}, ${row.return_home_message_id}, ${row.return_finished_at}
+        ${row.return_home_run_id}, ${row.return_home_message_id}, ${row.return_finished_at},
+        ${row.model_selection_json}
       )
       ON CONFLICT DO NOTHING
     `;
@@ -385,8 +404,44 @@ const make = Effect.gen(function* () {
     return_home_run_id: null,
     return_home_message_id: null,
     return_finished_at: null,
+    model_selection_json: null,
     created_at: input.now,
     updated_at: input.now,
+  });
+
+  /** A task's own selection must be one its project could start a Bot on now. */
+  const requireTaskSelection = Effect.fn("BotTaskService.requireTaskSelection")(function* (
+    input: BotStartTaskInput,
+    selection: ModelSelection,
+  ) {
+    const refuse = (message: string) => botError(message, input.botId)();
+    const { instanceId } = selection;
+    const provider = (yield* providers.getProviders).find(
+      (candidate) => candidate.instanceId === instanceId,
+    );
+    if (provider === undefined)
+      return yield* refuse(`Provider instance ${instanceId} is not configured.`);
+    if (provider.driver !== BOT_SUPPORTED_DRIVER)
+      return yield* refuse("Bots currently support Codex providers only.");
+    if (!provider.enabled) return yield* refuse(`Provider instance ${instanceId} is disabled.`);
+    if (
+      !(yield* threads.isProviderInstanceEnabledForProject({
+        projectId: input.projectId,
+        instanceId,
+      }))
+    )
+      return yield* refuse(`Provider instance ${instanceId} is turned off for this project.`);
+    const model = provider.models.find((candidate) => candidate.slug === selection.model);
+    if (model === undefined && provider.models.length > 0)
+      return yield* refuse(`Model ${selection.model} is not offered by provider ${instanceId}.`);
+    const problems = invalidOptionSelections(
+      selection.options ?? [],
+      model?.capabilities?.optionDescriptors,
+    );
+    if (problems.length > 0)
+      return yield* refuse(
+        `Model ${selection.model} on provider ${instanceId} rejected options: ${problems.join(" ")}`,
+      );
   });
 
   const start: BotTaskService["Service"]["start"] = Effect.fn("BotTaskService.start")(
@@ -401,6 +456,14 @@ const make = Effect.gen(function* () {
       if (existing !== undefined) return yield* toSummary(existing);
       const context = yield* activeContext(input.botId, input.projectId);
       if (context._tag === "inactive") return yield* botError(context.reason, input.botId)();
+      if (input.modelSelection !== undefined) {
+        yield* requireTaskSelection(input, input.modelSelection);
+      }
+      // Fixed at admission, so a restart before launch keeps what the task was started with.
+      const modelSelection =
+        input.modelSelection ??
+        (yield* BotStore.toDetail(context.bot, [], []).pipe(Effect.mapError(storageError)))
+          .modelSelection;
       // A direct request runs in the mode the user gave the Bot's conversation.
       const home = yield* threads
         .getThreadShell(ThreadId.make(context.context.home_thread_id))
@@ -467,6 +530,7 @@ const make = Effect.gen(function* () {
         }),
         return_home_run_id: returnHomeRunId,
         return_home_message_id: returnHomeMessageId,
+        model_selection_json: BotStore.encodeModelSelection(modelSelection),
       };
       yield* sql
         .withTransaction(

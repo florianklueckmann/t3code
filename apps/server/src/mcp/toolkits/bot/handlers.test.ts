@@ -141,11 +141,38 @@ const callTool = (
                     })),
                   ),
                 decideLearning: (input) => record(`decide:${input.decision}`),
+                resolveProject: (input) =>
+                  Effect.succeed({ projectId: input.projectId ?? campaignA } as never),
               }),
               Layer.mock(BotTaskService.BotTaskService)({
                 list: () =>
                   Ref.update(calls, (current) => [...current, "list_tasks"]).pipe(
                     Effect.as({ tasks: [] }),
+                  ),
+                start: (input) =>
+                  Ref.update(calls, (current) => [
+                    ...current,
+                    `start:${JSON.stringify(input.modelSelection ?? null)}`,
+                  ]).pipe(
+                    Effect.as({
+                      id: BotTaskId.make("bot-task:1"),
+                      botId,
+                      projectId: input.projectId,
+                      homeThreadId: threadId,
+                      workThreadId: ThreadId.make("bot-work:bot-task:1"),
+                      origin: "direct" as const,
+                      title: "Recap",
+                      scheduledTaskId: null,
+                      occurrenceDueAt: null,
+                      sessionAt: null,
+                      runtimeMode: "full-access" as const,
+                      status: "accepted" as const,
+                      detail: null,
+                      createdAt: "2026-11-02T00:00:00.000Z",
+                      updatedAt: "2026-11-02T00:00:00.000Z",
+                      completedAt: null,
+                      modelSelection: input.modelSelection ?? detail.modelSelection,
+                    }),
                   ),
               }),
             ),
@@ -229,6 +256,24 @@ it.effect(
       );
       expect(readOnly.result).toMatchObject({ code: "capability_denied" });
     }),
+);
+
+it.effect("starts a task on its own model without updating the Bot", () =>
+  Effect.gen(function* () {
+    const modelSelection = {
+      instanceId: ProviderInstanceId.make("codex"),
+      model: "gpt-5.1",
+      options: [{ id: "reasoningEffort", value: "low" }],
+    };
+    const started = yield* callTool(
+      { action: "start_task", botId, task: "Recap.", modelSelection },
+      undefined,
+    );
+    expect(started.calls).toEqual([`start:${JSON.stringify(modelSelection)}`]);
+    expect(started.result).toMatchObject({ task: { modelSelection } });
+    const inherited = yield* callTool({ action: "start_task", botId, task: "Recap." }, undefined);
+    expect(inherited.calls).toEqual(["start:null"]);
+  }),
 );
 
 it.effect("lets read-only clients read Bots but not change them", () =>

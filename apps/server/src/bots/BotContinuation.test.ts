@@ -648,7 +648,7 @@ it.effect(
           readonly migration_id: number;
           readonly name: string;
         }>`SELECT migration_id, name FROM effect_sql_migrations ORDER BY migration_id`;
-        assert.deepEqual(history.at(-1), { migration_id: 9, name: "BotContinuation" });
+        assert.deepEqual(history.at(-1), { migration_id: 10, name: "BotTaskModelSelection" });
       }).pipe(Effect.provide(connection), Effect.scoped);
     }).pipe(Effect.provide(NodeServices.layer)),
 );

@@ -68,7 +68,10 @@ const BotToolParameters = Schema.Struct({
   }),
   name: BotUpdateInput.fields.name,
   instructions: BotUpdateInput.fields.instructions,
-  modelSelection: BotUpdateInput.fields.modelSelection,
+  modelSelection: BotUpdateInput.fields.modelSelection.annotate({
+    description:
+      "`create`/`update`: the Bot's model. `start_task`: this task's model and options only, such as reasoningEffort; the Bot keeps its own. Omit to use the Bot's.",
+  }),
   learningPolicy: BotUpdateInput.fields.learningPolicy,
   guidance: BotAttachProjectInput.fields.guidance,
   sources: BotAttachProjectInput.fields.sources,
@@ -113,7 +116,7 @@ const BotTool = Tool.make("t3_bot", {
     BotTaskService.BotTaskService,
   ],
   description:
-    "Bots: named identities with one home conversation per attached project. `update` with `projectId` sets that project's guidance and preferred sources (preferred, not exclusive); without it, the Bot. `guidance` and `sources` replace the stored values, so send the full list. `start_task` runs `task` in a new work thread of the Bot's project; its result shows as a card in the home conversation. `learn` (with `projectId`, `learning`) records a user's standing instruction or proposes a lesson from their correction. `adopt`, `reject` and `reinstate` (an earlier revision) take `entryId` and `revision`; `retire` takes `entryId`. `read_continuation` reads project working notes and active Bot tasks, not Home's delegated/background work; inspect Home activity with `t3_thread_read` for owned delegate references and await their completion without polling. `save_continuation` replaces the working notes from this active Home with `continuation` {baseRevision, updateId (stable retry id), note (requests/waiting/decided/context arrays of {text, quote?, taskIds?}), basis (copy exactly from instructions/read)}. On conflict reconcile with current; proposals stay waiting and a new decided item requires a genuine direct user quote. Codex models only.",
+    "Bots: named identities with one home conversation per attached project. `update` with `projectId` sets that project's guidance and preferred sources (preferred, not exclusive); without it, the Bot. `guidance` and `sources` replace the stored values, so send the full list. `start_task` runs `task` in a new work thread of the Bot's project; its result shows as a card in the home conversation. For a different model or reasoning for one task, pass `modelSelection` to `start_task`, not `update`. `learn` (with `projectId`, `learning`) records a user's standing instruction or proposes a lesson from their correction. `adopt`, `reject` and `reinstate` (an earlier revision) take `entryId` and `revision`; `retire` takes `entryId`. `read_continuation` reads project working notes and active Bot tasks, not Home's delegated/background work; inspect Home activity with `t3_thread_read` for owned delegate references and await their completion without polling. `save_continuation` replaces the working notes from this active Home with `continuation` {baseRevision, updateId (stable retry id), note (requests/waiting/decided/context arrays of {text, quote?, taskIds?}), basis (copy exactly from instructions/read)}. On conflict reconcile with current; proposals stay waiting and a new decided item requires a genuine direct user quote. Codex models only.",
   parameters: BotToolParameters,
   success: Schema.Struct({
     bots: Schema.optional(Schema.Array(Schema.Struct(botToolSummaryFields))),

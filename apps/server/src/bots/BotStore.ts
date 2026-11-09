@@ -80,7 +80,7 @@ const encodeAppearanceJson = Schema.encodeSync(Schema.fromJsonString(BotAppearan
 export const encodeAppearance = (appearance: BotAppearance | null): string | null =>
   appearance === null ? null : encodeAppearanceJson(appearance);
 const decodeDetail = Schema.decodeUnknownEffect(BotDetail);
-const decodeModelSelection = Schema.decodeUnknownEffect(ModelSelectionJson);
+export const decodeModelSelection = Schema.decodeUnknownEffect(ModelSelectionJson);
 const decodeSources = Schema.decodeUnknownEffect(SourcesJson);
 const decodeAppearance = Schema.decodeUnknownEffect(AppearanceJson);
 

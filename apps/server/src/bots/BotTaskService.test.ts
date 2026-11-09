@@ -2,11 +2,13 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
+  BOT_WORK_THREAD_ID_PREFIX,
   BotId,
   BotTaskId,
   BotTaskListInput,
   type BotTaskStatus,
   CommandId,
+  type ModelSelection,
   type OrchestrationV2ServerCommand,
   type OrchestrationV2ThreadShell,
   type Project,
@@ -23,6 +25,7 @@ import {
   type ScheduledTaskUpsertInput,
   ScheduledTaskId,
   ScheduledTaskError,
+  type ServerProvider,
   ThreadId,
 } from "@t3tools/contracts";
 import { makeSubagentConversationArtifacts } from "@t3tools/provider-core/server/subagentProjection";
@@ -51,6 +54,7 @@ import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
@@ -69,9 +73,50 @@ const codex = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" };
 const START = Date.parse("2026-11-02T12:00:00.000Z");
 const HOUR = 3_600_000;
 
+const catalogModel = (slug: string): ServerProvider["models"][number] => ({
+  slug,
+  name: slug,
+  isCustom: false,
+  capabilities: {
+    optionDescriptors: [
+      {
+        id: "reasoningEffort",
+        label: "Reasoning",
+        type: "select",
+        options: [
+          { id: "low", label: "Low" },
+          { id: "high", label: "High", isDefault: true },
+        ],
+      },
+      { id: "fastMode", label: "Fast", type: "boolean" },
+    ],
+  },
+});
+const catalogProvider = (instanceId: string, driver: string, enabled = true): ServerProvider => ({
+  instanceId: ProviderInstanceId.make(instanceId),
+  driver: ProviderDriverKind.make(driver),
+  enabled,
+  installed: true,
+  version: "test",
+  status: enabled ? "ready" : "disabled",
+  auth: { status: "authenticated" },
+  checkedAt: "2026-11-02T00:00:00.000Z",
+  models: [catalogModel("gpt-5"), catalogModel("gpt-5.1")],
+  slashCommands: [],
+  skills: [],
+});
+const CATALOG = [
+  catalogProvider("codex", "codex"),
+  catalogProvider("codex-blocked", "codex"),
+  catalogProvider("codex-off", "codex", false),
+  catalogProvider("claude", "claudeAgent"),
+];
+
 interface FakeThread {
   readonly projectId: ProjectId;
   readonly archived: boolean;
+  /** What the thread was launched with. */
+  readonly modelSelection: ModelSelection;
   readonly runtimeMode: RuntimeMode;
   readonly status: OrchestrationV2ThreadShell["status"];
   readonly blockingRequest: boolean;
@@ -211,6 +256,7 @@ const makeThreadWorld = Effect.gen(function* () {
         new Map(current).set(threadId, {
           projectId: input.projectId,
           archived: false,
+          modelSelection: input.modelSelection,
           runtimeMode: input.runtimeMode,
           status: "idle",
           blockingRequest: false,
@@ -238,6 +284,8 @@ const makeThreadWorld = Effect.gen(function* () {
       withBotResultDelivery: (command, use) =>
         beforeDeliveryLock.pipe(Effect.andThen(use(dispatchLocked(command)))),
       getThreadShell,
+      isProviderInstanceEnabledForProject: (input) =>
+        Effect.succeed(input.instanceId !== "codex-blocked"),
       getProjectThreadRecords: (input, fields, filter) =>
         Effect.gen(function* () {
           yield* Ref.update(reads, (all) => [...all, { input, fields, filter }]);
@@ -291,6 +339,7 @@ const layerSupport = Layer.mergeAll(
         driverKind: ProviderDriverKind.make("codex"),
       } as ProviderInstance),
   }),
+  Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed(CATALOG) }),
   Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
     namedProjectsRoot: "/projects",
     isScratchProject: () => Effect.succeed(false),
@@ -1237,6 +1286,171 @@ it.effect("starts work a crash left admitted without launching it twice", () =>
         assert.equal(retried.status, "accepted");
         assert.lengthOf((yield* services.tasks.list({ botId })).tasks, 1);
         assert.lengthOf(yield* world.commandsMatching(`launch ${retried.workThreadId}`), 1);
+      }),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
+const ownModel = {
+  instanceId: ProviderInstanceId.make("codex"),
+  model: "gpt-5.1",
+  options: [{ id: "reasoningEffort", value: "low" }],
+} satisfies ModelSelection;
+
+const launchedSelection = (world: ThreadWorld, workThreadId: ThreadId | null) =>
+  Ref.get(world.threads).pipe(
+    Effect.map((threads) => threads.get(workThreadId ?? assert.fail("no work thread"))),
+    Effect.map((thread) => thread?.modelSelection),
+  );
+
+it.effect("runs a direct task on its own model without changing the Bot or its Home", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(START);
+    yield* seedProject;
+    const world = yield* makeThreadWorld;
+    yield* withServices(world, (services) =>
+      Effect.gen(function* () {
+        const homeThreadId = yield* attachBot(services);
+        const request = {
+          botId,
+          projectId: campaign,
+          prompt: "Recap the last session carefully.",
+          modelSelection: ownModel,
+          commandId: CommandId.make("own-model"),
+        };
+        const task = yield* services.tasks.start(request);
+        assert.deepEqual(yield* launchedSelection(world, task.workThreadId), ownModel);
+        assert.deepEqual(task.modelSelection, ownModel);
+        assert.equal(task.homeThreadId, homeThreadId);
+        assert.isTrue(task.workThreadId?.startsWith(BOT_WORK_THREAD_ID_PREFIX));
+        // A retry returns the same task without launching it again.
+        assert.deepEqual(yield* services.tasks.start(request), task);
+        assert.lengthOf(yield* world.commandsMatching(`launch ${task.workThreadId}`), 1);
+
+        const inherited = yield* services.tasks.start({
+          botId,
+          projectId: campaign,
+          prompt: "Recap the last session.",
+        });
+        assert.deepEqual(yield* launchedSelection(world, inherited.workThreadId), codex);
+        assert.deepEqual(inherited.modelSelection, codex);
+        assert.deepEqual((yield* services.bots.get({ botId })).modelSelection, codex);
+        assert.deepEqual(yield* launchedSelection(world, homeThreadId), codex);
+        assert.lengthOf(yield* world.commandsMatching("thread.model-selection.set"), 0);
+      }),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect("keeps each task's model when a restart comes before its launch", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(START);
+    yield* seedProject;
+    const world = yield* makeThreadWorld;
+    const sql = yield* BotDatabase.BotDatabase;
+    const taskId = BotTaskId.make("bot-task:restart-before-launch");
+    yield* withServices(world, (services) =>
+      Effect.gen(function* () {
+        const homeThreadId = yield* attachBot(services);
+        // Admitted before task selections were recorded, so it follows the Bot.
+        yield* sql`
+          INSERT INTO bot_tasks (
+            task_id, bot_id, project_id, home_thread_id, work_thread_id, origin,
+            title, prompt, runtime_mode, status, created_at, updated_at
+          ) VALUES (
+            'bot-task:before-010', ${botId}, ${campaign}, ${homeThreadId},
+            'bot-work:bot-task:before-010', 'direct', 'Older task', 'Recap.', 'full-access',
+            'accepted', ${iso(START)}, ${iso(START)}
+          )
+        `;
+        const gate = {
+          stage: "before-thread" as const,
+          entered: yield* Deferred.make<void>(),
+          release: yield* Deferred.make<void>(),
+        };
+        yield* Ref.set(world.launchGate, gate);
+        yield* Effect.forkScoped(
+          services.tasks.start({
+            botId,
+            projectId: campaign,
+            prompt: "Recap the last session.",
+            modelSelection: ownModel,
+            commandId: CommandId.make("restart-before-launch"),
+          }),
+        );
+        // The server stops while the task is admitted and its work thread not yet created.
+        yield* Deferred.await(gate.entered);
+      }),
+    );
+    yield* withServices(world, (services) =>
+      Effect.gen(function* () {
+        assert.deepEqual((yield* services.tasks.get(taskId)).modelSelection, ownModel);
+        yield* services.tasks.reconcile;
+        const task = yield* services.tasks.get(taskId);
+        assert.deepEqual(yield* launchedSelection(world, task.workThreadId), ownModel);
+        const older = yield* services.tasks.get(BotTaskId.make("bot-task:before-010"));
+        assert.isUndefined(older.modelSelection);
+        assert.deepEqual(yield* launchedSelection(world, older.workThreadId), codex);
+        assert.deepEqual((yield* services.bots.get({ botId })).modelSelection, codex);
+      }),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect.each<{
+  readonly name: string;
+  readonly modelSelection: ModelSelection;
+  readonly error: string;
+}>([
+  {
+    name: "an unknown provider",
+    modelSelection: { instanceId: ProviderInstanceId.make("missing"), model: "gpt-5" },
+    error: "Provider instance missing is not configured.",
+  },
+  {
+    name: "a provider Bots do not support",
+    modelSelection: { instanceId: ProviderInstanceId.make("claude"), model: "gpt-5" },
+    error: "Bots currently support Codex providers only.",
+  },
+  {
+    name: "a disabled provider",
+    modelSelection: { instanceId: ProviderInstanceId.make("codex-off"), model: "gpt-5" },
+    error: "Provider instance codex-off is disabled.",
+  },
+  {
+    name: "a provider the project turned off",
+    modelSelection: { instanceId: ProviderInstanceId.make("codex-blocked"), model: "gpt-5" },
+    error: "Provider instance codex-blocked is turned off for this project.",
+  },
+  {
+    name: "a model the provider does not offer",
+    modelSelection: { ...codex, model: "gpt-9" },
+    error: "Model gpt-9 is not offered by provider codex.",
+  },
+  {
+    name: "an unknown option",
+    modelSelection: { ...codex, options: [{ id: "verbosity", value: "high" }] },
+    error: "Unknown option verbosity; supported options: reasoningEffort, fastMode.",
+  },
+  {
+    name: "an option value the model does not have",
+    modelSelection: { ...codex, options: [{ id: "reasoningEffort", value: "max" }] },
+    error: "Option reasoningEffort must be one of: low, high.",
+  },
+])("refuses a task on $name before admitting it", ({ modelSelection, error }) =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(START);
+    yield* seedProject;
+    const world = yield* makeThreadWorld;
+    yield* withServices(world, (services) =>
+      Effect.gen(function* () {
+        yield* attachBot(services);
+        const refused = yield* services.tasks
+          .start({ botId, projectId: campaign, prompt: "Recap.", modelSelection })
+          .pipe(Effect.flip);
+        assert.include(refused.message, error);
+        assert.lengthOf((yield* services.tasks.list({ botId })).tasks, 0);
+        assert.lengthOf(yield* world.commandsMatching(`launch ${BOT_WORK_THREAD_ID_PREFIX}`), 0);
       }),
     );
   }).pipe(Effect.provide(layerDatabase)),

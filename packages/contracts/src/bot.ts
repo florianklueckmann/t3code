@@ -388,6 +388,11 @@ export const BotTaskSummary = Schema.Struct({
   updatedAt: IsoDateTime,
   completedAt: Schema.NullOr(IsoDateTime),
   returnToHome: Schema.optional(Schema.Boolean),
+  /**
+   * What a direct task runs on: its own selection, or the Bot's when it was started. Absent for
+   * routines, which follow the Bot, and for tasks started before this was recorded.
+   */
+  modelSelection: Schema.optional(ModelSelection),
 });
 export type BotTaskSummary = typeof BotTaskSummary.Type;
 
@@ -408,6 +413,8 @@ export const BotStartTaskInput = Schema.Struct({
   projectId: ProjectId,
   prompt: TrimmedNonEmptyString.check(Schema.isMaxLength(BOT_INSTRUCTIONS_MAX_CHARS)),
   title: Schema.optional(BotName),
+  /** Runs only this task on that model and options; omitted follows the Bot. */
+  modelSelection: Schema.optional(ModelSelection),
   /** Makes a retried start return the same task. */
   commandId: Schema.optional(CommandId),
 });

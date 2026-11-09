@@ -28,6 +28,7 @@ import * as ThreadManagementService from "../orchestration-v2/ThreadManagementSe
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -128,6 +129,8 @@ const layerSupport = Layer.mergeAll(
         driverKind: ProviderDriverKind.make(instanceId === "claude" ? "claudeAgent" : "codex"),
       } as ProviderInstance),
   }),
+  // Task selections are covered in BotTaskService.test.ts.
+  Layer.mock(ProviderRegistry.ProviderRegistry)({}),
   BotProjectGuard.layer,
   Scheduler.layer,
   ServerSettings.layerTest(),
