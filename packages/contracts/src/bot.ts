@@ -12,7 +12,7 @@ import {
   TrimmedNonEmptyString,
   TrimmedString,
 } from "./baseSchemas.ts";
-import { ModelSelection } from "./modelSelection.ts";
+import { ModelSelection, ModelSelectionInput } from "./modelSelection.ts";
 import { RuntimeMode } from "./providerPolicy.ts";
 
 /** No colons: the server derives home thread ids from the Bot and project ids. */
@@ -414,7 +414,7 @@ export const BotStartTaskInput = Schema.Struct({
   prompt: TrimmedNonEmptyString.check(Schema.isMaxLength(BOT_INSTRUCTIONS_MAX_CHARS)),
   title: Schema.optional(BotName),
   /** Runs only this task on that model and options; omitted follows the Bot. */
-  modelSelection: Schema.optional(ModelSelection),
+  modelSelection: Schema.optional(ModelSelectionInput),
   /** Makes a retried start return the same task. */
   commandId: Schema.optional(CommandId),
 });

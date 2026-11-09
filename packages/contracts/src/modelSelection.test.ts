@@ -2,11 +2,13 @@ import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
+import { BotStartTaskInput } from "./bot.ts";
 import { ModelSelection } from "./modelSelection.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 
 const decodeModelSelection = Schema.decodeUnknownEffect(ModelSelection);
 const encodeModelSelection = Schema.encodeUnknownEffect(ModelSelection);
+const decodeBotStartTask = Schema.decodeUnknownEffect(BotStartTaskInput);
 
 it.effect("ModelSelection migrates legacy `provider` field to `instanceId`", () =>
   Effect.gen(function* () {
@@ -81,4 +83,41 @@ it.effect(
       const encoded = yield* encodeModelSelection(decoded);
       assert.deepStrictEqual(encoded.options, decoded.options);
     }),
+);
+
+it.effect("a requested task model refuses option members that stored selections would drop", () =>
+  Effect.gen(function* () {
+    const decodeTask = (modelSelection: unknown) =>
+      decodeBotStartTask({ botId: "bot", projectId: "project", prompt: "Recap.", modelSelection });
+    for (const options of [
+      { reasoningEffort: 123 },
+      { reasoningEffort: null },
+      { reasoningEffort: { level: "low" } },
+      { reasoningEffort: ["low"] },
+      { reasoningEffort: "   " },
+      { "  ": "low" },
+    ]) {
+      const exit = yield* Effect.exit(
+        decodeTask({ instanceId: "codex", model: "gpt-5-codex", options }),
+      );
+      assert.isTrue(exit._tag === "Failure", JSON.stringify(options));
+    }
+    for (const options of [{}, []]) {
+      const decoded = yield* decodeTask({ instanceId: "codex", model: "gpt-5-codex", options });
+      assert.deepStrictEqual(decoded.modelSelection?.options, []);
+    }
+    const legacy = yield* decodeTask({
+      provider: "codex",
+      model: "gpt-5-codex",
+      options: { reasoningEffort: " low ", fastMode: true },
+    });
+    assert.deepStrictEqual(legacy.modelSelection, {
+      instanceId: ProviderInstanceId.make("codex"),
+      model: "gpt-5-codex",
+      options: [
+        { id: "reasoningEffort", value: "low" },
+        { id: "fastMode", value: true },
+      ],
+    });
+  }),
 );
