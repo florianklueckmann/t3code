@@ -119,5 +119,14 @@ it.effect("a requested task model refuses option members that stored selections 
         { id: "fastMode", value: true },
       ],
     });
+    const colliding = yield* decodeTask({
+      instanceId: "codex",
+      model: "gpt-5-codex",
+      options: { reasoningEffort: "low", " reasoningEffort ": "high" },
+    });
+    assert.deepStrictEqual(colliding.modelSelection?.options, [
+      { id: "reasoningEffort", value: "low" },
+      { id: "reasoningEffort", value: "high" },
+    ]);
   }),
 );

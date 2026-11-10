@@ -2,7 +2,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 
-import { TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { NonBlankRecordKey, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import {
   ProviderOptionSelection,
   ProviderOptionSelections,
@@ -71,6 +71,7 @@ export type ModelSelection = typeof ModelSelection.Type;
 export const ModelSelectionInput = modelSelectionFrom(
   Schema.Union([
     Schema.Array(ProviderOptionSelection),
-    Schema.Record(TrimmedNonEmptyString, ProviderOptionSelectionValue),
+    // Untrimmed keys: trimming here would merge ` a ` into `a` before admission rejects the repeat.
+    Schema.Record(NonBlankRecordKey, ProviderOptionSelectionValue),
   ]),
 );
