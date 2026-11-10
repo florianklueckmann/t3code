@@ -8448,7 +8448,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     ),
   );
 
-  it.effect("keeps a sealed run's native child sealed once the Home loads ordinarily", () =>
+  it.effect("stops a sealed run's native child as it starts and keeps it sealed later", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const scenario = "codex-home-seal-child";
@@ -8510,19 +8510,25 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                   },
                 },
               },
-              // turn/started, then the child spawns and outlives the sealed turn.
+              // turn/started, then the child spawns; its turn is stopped as it starts.
               ...spawned.slice(7),
-              ...rootFinished,
               ...step(
                 8,
+                "turn/interrupt",
+                { threadId: RESUME_CHILD_THREAD, turnId: RESUME_CHILD_TURN_1 },
+                {},
+              ),
+              ...rootFinished,
+              ...step(
+                9,
                 "thread/unsubscribe",
                 { threadId: RESUME_NATIVE_THREAD },
                 { status: "unsubscribed" },
               ),
               {
                 type: "expect_outbound",
-                label: "thread/resume 9",
-                frame: { id: 9, method: "thread/resume", params: seal.ordinaryResume },
+                label: "thread/resume 10",
+                frame: { id: 10, method: "thread/resume", params: seal.ordinaryResume },
               },
               // The child asks while its parent is being loaded for ordinary work.
               {
@@ -8550,8 +8556,8 @@ describe("CodexAdapterV2 post-settle continuation", () => {
               },
               {
                 type: "emit_inbound",
-                label: "thread/resume 9",
-                frame: { id: 9, result: seal.resumed },
+                label: "thread/resume 10",
+                frame: { id: 10, result: seal.resumed },
               },
             ],
           }),

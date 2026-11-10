@@ -3017,40 +3017,41 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             const currentParent = yield* findActiveTurnByNativeThreadId(parentNativeThreadId);
             if (currentParent !== undefined) subagent.parentContext = currentParent;
             const terminalizedNativeTurns = yield* Ref.get(terminalizedNonCompletedNativeTurns);
+            const nativeThreadId = yield* getNativeThreadId(subagent.providerThread);
+            // A sealed run's child shares the Home's T3 credential and could outlive the run, when
+            // the Home's next ordinary run would answer for its calls. So it never runs.
+            let refused = threadSeals.get(nativeThreadId) === "t3BotOnly";
             let ancestor: ActiveCodexTurnContext | undefined = subagent.parentContext;
-            while (ancestor !== undefined) {
-              if (terminalizedNativeTurns.has(ancestor.nativeTurnId)) {
-                const nativeThreadId = yield* getNativeThreadId(subagent.providerThread);
-                // Fork requests off the notification reader so it can read their responses.
-                yield* client
-                  .request("turn/interrupt", {
-                    threadId: nativeThreadId,
-                    turnId: turn.nativeTurnId,
-                  })
-                  .pipe(
-                    Effect.catch((cause) =>
-                      Effect.logWarning("orchestration-v2.codex-late-subagent-interrupt-failed", {
+            while (!refused && ancestor !== undefined) {
+              refused = terminalizedNativeTurns.has(ancestor.nativeTurnId);
+              ancestor = ancestor.subagent?.parentContext;
+            }
+            if (refused) {
+              // Fork requests off the notification reader so it can read their responses.
+              yield* client
+                .request("turn/interrupt", {
+                  threadId: nativeThreadId,
+                  turnId: turn.nativeTurnId,
+                })
+                .pipe(
+                  Effect.catch((cause) =>
+                    Effect.logWarning("orchestration-v2.codex-late-subagent-interrupt-failed", {
+                      nativeThreadId,
+                      nativeTurnId: turn.nativeTurnId,
+                      cause,
+                    }),
+                  ),
+                  Effect.timeoutOrElse({
+                    duration: "10 seconds",
+                    orElse: () =>
+                      Effect.logWarning("orchestration-v2.codex-late-subagent-interrupt-timeout", {
                         nativeThreadId,
                         nativeTurnId: turn.nativeTurnId,
-                        cause,
                       }),
-                    ),
-                    Effect.timeoutOrElse({
-                      duration: "10 seconds",
-                      orElse: () =>
-                        Effect.logWarning(
-                          "orchestration-v2.codex-late-subagent-interrupt-timeout",
-                          {
-                            nativeThreadId,
-                            nativeTurnId: turn.nativeTurnId,
-                          },
-                        ),
-                    }),
-                    Effect.forkIn(scope),
-                  );
-                return;
-              }
-              ancestor = ancestor.subagent?.parentContext;
+                  }),
+                  Effect.forkIn(scope),
+                );
+              return;
             }
             const providerTurnId = idAllocator.derive.providerTurn({
               driver: CODEX_PROVIDER,
