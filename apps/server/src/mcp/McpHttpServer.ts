@@ -233,8 +233,13 @@ const makeMcpAuthMiddleware = Effect.gen(function* () {
         offerOAuth: Option.isSome(clients) && !looksLikeProviderToken(token),
       });
     }
-    const asked = withModeLimit(invocation, request);
-    if (asked === undefined) return invalidModeLimit;
+    const modeLimited = withModeLimit(invocation, request);
+    if (modeLimited === undefined) return invalidModeLimit;
+    const asked =
+      modeLimited.thread !== undefined &&
+      request.headers[McpInvocationContext.SEALED_LOAD_HEADER] !== undefined
+        ? { ...modeLimited, thread: { ...modeLimited.thread, sealedLoad: true as const } }
+        : modeLimited;
     const limited = McpInvocationContext.withRuntimeModeCeiling(asked, runtimeModeCeiling);
     const linkedEnvironments = yield* linksEnabled;
     if (limited.client?.linked === true && !linkedEnvironments) return linkedEnvironmentsOff;

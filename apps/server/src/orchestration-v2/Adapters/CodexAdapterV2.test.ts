@@ -12,6 +12,7 @@ import {
   CodexSettings,
   EnvironmentId,
   MessageId,
+  isOrchestrationV2WorkActive,
   type ModelSelection,
   NodeId,
   type OrchestrationV2AppThread,
@@ -3788,7 +3789,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           "t3-code": {
             url: "http://127.0.0.1:43123/mcp",
             tool_timeout_sec: 65 * 60,
-            http_headers: { Authorization: "Bearer home-seal-token" },
+            http_headers: { Authorization: "Bearer home-seal-token", "t3-sealed-load": "1" },
             enabled_tools: ["t3_bot"],
             tools: { t3_bot: { approval_mode: "approve" } },
           },
@@ -8399,211 +8400,280 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     };
   };
 
-  it.effect("refuses a Home seal while the Home has a native child", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const scenario = "codex-home-seal-children";
-        const seal = codexHomeSealReplay(scenario, RESUME_NATIVE_THREAD);
-        const { spawned, rootFinished } = lateChildPrefix();
-        // The transcript ends with the ordinary turn: the refusal reaches Codex with nothing.
-        const harness = yield* makeCodexReplayHarness(
-          makeCodexReplayTranscript({
-            scenario,
-            entries: seal.onMeasuredVersion([...spawned, ...rootFinished]),
-          }),
-        );
-        yield* harness.runtime.startTurn(
-          makeCodexTestTurnInput({
-            threadId: harness.threadId,
-            providerThread: harness.providerThread,
-            now: yield* DateTime.now,
-            attemptId: RunAttemptId.make("seal-children-ordinary"),
-            text: RESUME_PROMPT,
-          }),
-        );
-        yield* harness.awaitTerminal(1);
-        yield* seal.setMcpSession;
-        const refused = yield* harness.runtime
-          .resumeThread({
-            providerThread: harness.providerThread,
-            modelSelection: CODEX_TEST_MODEL_SELECTION,
-            runtimePolicy: seal.sealedPolicy,
-          })
-          .pipe(Effect.flip);
-        assert.equal(
-          refused._tag === "ProviderAdapterHomeSealRefusedError" ? refused.reason : refused._tag,
-          "children",
-        );
-      }).pipe(
-        Effect.provideService(HostProcess.Platform, "darwin"),
-        Effect.provide(
-          Layer.mergeAll(
-            IdAllocator.layer,
-            McpProviderSessions.layer,
-            NodeServices.layer,
-            NodeCrypto.layer,
+  it.effect.each(["live", "finished"] as const)(
+    "refuses a Home seal only while the Home's native child is live: %s",
+    (child) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const scenario = `codex-home-seal-children-${child}`;
+          const seal = codexHomeSealReplay(scenario, RESUME_NATIVE_THREAD);
+          const { step } = seal;
+          const { spawned, rootFinished } = lateChildPrefix();
+          // A live child's transcript ends with the ordinary turn: its refusal reaches Codex with nothing.
+          const harness = yield* makeCodexReplayHarness(
+            makeCodexReplayTranscript({
+              scenario,
+              entries: seal.onMeasuredVersion(
+                child === "live"
+                  ? [...spawned, ...rootFinished]
+                  : [
+                      ...spawned,
+                      childTurnCompleted(RESUME_CHILD_TURN_1),
+                      ...rootFinished,
+                      // Still loaded, a finished child could be woken by the sealed turn.
+                      ...step(
+                        4,
+                        "thread/loaded/list",
+                        {},
+                        { data: [RESUME_NATIVE_THREAD, RESUME_CHILD_THREAD] },
+                      ),
+                      ...step(5, "thread/archive", { threadId: RESUME_CHILD_THREAD }, {}),
+                      ...step(
+                        6,
+                        "thread/unsubscribe",
+                        { threadId: RESUME_NATIVE_THREAD },
+                        { status: "unsubscribed" },
+                      ),
+                      ...step(
+                        7,
+                        "config/read",
+                        { includeLayers: false, cwd: "/workspace" },
+                        seal.configRead,
+                      ),
+                      ...step(8, "thread/resume", seal.sealedResume, seal.resumed),
+                      ...step(
+                        9,
+                        "thread/memoryMode/set",
+                        { threadId: RESUME_NATIVE_THREAD, mode: "disabled" },
+                        {},
+                      ),
+                    ],
+              ),
+            }),
+          );
+          yield* harness.runtime.startTurn(
+            makeCodexTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now: yield* DateTime.now,
+              attemptId: RunAttemptId.make("seal-children-ordinary"),
+              text: RESUME_PROMPT,
+            }),
+          );
+          yield* harness.awaitTerminal(1);
+          yield* seal.setMcpSession;
+          const sealed = yield* harness.runtime
+            .resumeThread({
+              providerThread: harness.providerThread,
+              modelSelection: CODEX_TEST_MODEL_SELECTION,
+              runtimePolicy: seal.sealedPolicy,
+            })
+            .pipe(Effect.result);
+          assert.equal(
+            sealed._tag === "Success"
+              ? "sealed"
+              : sealed.failure._tag === "ProviderAdapterHomeSealRefusedError"
+                ? sealed.failure.reason
+                : sealed.failure._tag,
+            child === "live" ? "children" : "sealed",
+          );
+        }).pipe(
+          Effect.provideService(HostProcess.Platform, "darwin"),
+          Effect.provide(
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              NodeCrypto.layer,
+            ),
           ),
         ),
       ),
-    ),
   );
 
-  it.effect("stops a sealed run's native child as it starts and keeps it sealed later", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const scenario = "codex-home-seal-child";
-        const seal = codexHomeSealReplay(scenario, RESUME_NATIVE_THREAD);
-        const { step } = seal;
-        yield* seal.setMcpSession;
-        const { spawned, rootFinished } = lateChildPrefix();
-        const askedUser = yield* Deferred.make<void>();
-        const harness = yield* makeCodexReplayHarness(
-          makeCodexReplayTranscript({
-            scenario,
-            entries: [
-              ...seal.onMeasuredVersion(spawned.slice(0, 5)),
-              ...step(
-                3,
-                "thread/unsubscribe",
-                { threadId: RESUME_NATIVE_THREAD },
-                { status: "unsubscribed" },
-              ),
-              ...step(
-                4,
-                "config/read",
-                { includeLayers: false, cwd: "/workspace" },
-                seal.configRead,
-              ),
-              ...step(5, "thread/resume", seal.sealedResume, seal.resumed),
-              ...step(
-                6,
-                "thread/memoryMode/set",
-                { threadId: RESUME_NATIVE_THREAD, mode: "disabled" },
-                {},
-              ),
-              {
-                type: "expect_outbound",
-                label: "sealed turn/start",
-                frame: {
-                  id: 7,
-                  method: "turn/start",
-                  params: {
-                    threadId: RESUME_NATIVE_THREAD,
-                    input: [{ type: "text", text: RESUME_PROMPT }],
-                    cwd: "/workspace",
-                    model: "gpt-5.4",
-                    approvalPolicy: "never",
-                    approvalsReviewer: "user",
-                    sandboxPolicy: { type: "readOnly", networkAccess: false },
-                    summary: "detailed",
-                    collaborationMode: { mode: "default", settings: { model: "gpt-5.4" } },
+  // The child finishes before its interrupt lands, so only the interrupt makes it "stopped".
+  it.effect.each([
+    { stop: "confirmed", order: ["child interrupted", "root completed"] },
+    { stop: "refused", order: ["root failed"] },
+  ] as const)(
+    "a sealed run settles only once its native child's stop is $stop, and the child stays sealed",
+    ({ stop, order: expectedOrder }) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const scenario = `codex-home-seal-child-${stop}`;
+          const seal = codexHomeSealReplay(scenario, RESUME_NATIVE_THREAD);
+          const { step } = seal;
+          yield* seal.setMcpSession;
+          const { spawned, rootFinished } = lateChildPrefix();
+          const askedUser = yield* Deferred.make<void>();
+          const order: Array<string> = [];
+          const harness = yield* makeCodexReplayHarness(
+            makeCodexReplayTranscript({
+              scenario,
+              entries: [
+                ...seal.onMeasuredVersion(spawned.slice(0, 5)),
+                ...step(
+                  3,
+                  "thread/unsubscribe",
+                  { threadId: RESUME_NATIVE_THREAD },
+                  { status: "unsubscribed" },
+                ),
+                ...step(
+                  4,
+                  "config/read",
+                  { includeLayers: false, cwd: "/workspace" },
+                  seal.configRead,
+                ),
+                ...step(5, "thread/resume", seal.sealedResume, seal.resumed),
+                ...step(
+                  6,
+                  "thread/memoryMode/set",
+                  { threadId: RESUME_NATIVE_THREAD, mode: "disabled" },
+                  {},
+                ),
+                {
+                  type: "expect_outbound",
+                  label: "sealed turn/start",
+                  frame: {
+                    id: 7,
+                    method: "turn/start",
+                    params: {
+                      threadId: RESUME_NATIVE_THREAD,
+                      input: [{ type: "text", text: RESUME_PROMPT }],
+                      cwd: "/workspace",
+                      model: "gpt-5.4",
+                      approvalPolicy: "never",
+                      approvalsReviewer: "user",
+                      sandboxPolicy: { type: "readOnly", networkAccess: false },
+                      summary: "detailed",
+                      collaborationMode: { mode: "default", settings: { model: "gpt-5.4" } },
+                    },
                   },
                 },
-              },
-              {
-                type: "emit_inbound",
-                label: "sealed turn/start",
-                frame: {
-                  id: 7,
-                  result: {
-                    turn: makeCodexReplayTurn({ id: RESUME_NATIVE_TURN, status: "inProgress" }),
+                {
+                  type: "emit_inbound",
+                  label: "sealed turn/start",
+                  frame: {
+                    id: 7,
+                    result: {
+                      turn: makeCodexReplayTurn({ id: RESUME_NATIVE_TURN, status: "inProgress" }),
+                    },
                   },
                 },
-              },
-              // turn/started, then the child spawns; its turn is stopped as it starts.
-              ...spawned.slice(7),
-              ...step(
-                8,
-                "turn/interrupt",
-                { threadId: RESUME_CHILD_THREAD, turnId: RESUME_CHILD_TURN_1 },
-                {},
-              ),
-              ...rootFinished,
-              ...step(
-                9,
-                "thread/unsubscribe",
-                { threadId: RESUME_NATIVE_THREAD },
-                { status: "unsubscribed" },
-              ),
-              {
-                type: "expect_outbound",
-                label: "thread/resume 10",
-                frame: { id: 10, method: "thread/resume", params: seal.ordinaryResume },
-              },
-              // The child asks while its parent is being loaded for ordinary work.
-              {
-                type: "emit_inbound",
-                label: "child approval",
-                frame: {
-                  id: 100,
-                  method: "execCommandApproval",
-                  params: {
-                    conversationId: RESUME_CHILD_THREAD,
-                    callId: "child-exec",
-                    command: ["touch", "child.txt"],
-                    cwd: "/workspace",
-                    parsedCmd: [],
+                // turn/started, then the child spawns; its turn is stopped as it starts.
+                ...spawned.slice(7),
+                {
+                  type: "expect_outbound",
+                  label: "turn/interrupt 8",
+                  frame: {
+                    id: 8,
+                    method: "turn/interrupt",
+                    params: { threadId: RESUME_CHILD_THREAD, turnId: RESUME_CHILD_TURN_1 },
                   },
                 },
-              },
-              {
-                type: "expect_outbound",
-                label: "child approval declined",
-                frame: {
-                  id: 100,
-                  result: { decision: { denied: { rejection: "User declined the request." } } },
+                {
+                  type: "emit_inbound",
+                  label: "turn/interrupt 8",
+                  frame:
+                    stop === "confirmed"
+                      ? { id: 8, result: {} }
+                      : { id: 8, error: { code: -32603, message: "interrupt failed" } },
                 },
-              },
-              {
-                type: "emit_inbound",
-                label: "thread/resume 10",
-                frame: { id: 10, result: seal.resumed },
-              },
-            ],
-          }),
-          (event) =>
-            event.type === "runtime_request.updated"
-              ? Deferred.succeed(askedUser, undefined)
-              : Effect.void,
-        );
-        const resume = (runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy) =>
-          harness.runtime.resumeThread({
-            providerThread: harness.providerThread,
-            modelSelection: CODEX_TEST_MODEL_SELECTION,
-            runtimePolicy,
+                ...rootFinished,
+                ...(stop === "confirmed" ? [childTurnCompleted(RESUME_CHILD_TURN_1)] : []),
+                ...step(
+                  9,
+                  "thread/unsubscribe",
+                  { threadId: RESUME_NATIVE_THREAD },
+                  { status: "unsubscribed" },
+                ),
+                {
+                  type: "expect_outbound",
+                  label: "thread/resume 10",
+                  frame: { id: 10, method: "thread/resume", params: seal.ordinaryResume },
+                },
+                // The child asks while its parent is being loaded for ordinary work.
+                {
+                  type: "emit_inbound",
+                  label: "child approval",
+                  frame: {
+                    id: 100,
+                    method: "execCommandApproval",
+                    params: {
+                      conversationId: RESUME_CHILD_THREAD,
+                      callId: "child-exec",
+                      command: ["touch", "child.txt"],
+                      cwd: "/workspace",
+                      parsedCmd: [],
+                    },
+                  },
+                },
+                {
+                  type: "expect_outbound",
+                  label: "child approval declined",
+                  frame: {
+                    id: 100,
+                    result: { decision: { denied: { rejection: "User declined the request." } } },
+                  },
+                },
+                {
+                  type: "emit_inbound",
+                  label: "thread/resume 10",
+                  frame: { id: 10, result: seal.resumed },
+                },
+              ],
+            }),
+            (event) => {
+              if (event.type === "turn.terminal") order.push(`root ${event.status}`);
+              if (
+                event.type === "subagent.updated" &&
+                !isOrchestrationV2WorkActive(event.subagent.status)
+              )
+                order.push(`child ${event.subagent.status}`);
+              return event.type === "runtime_request.updated"
+                ? Deferred.succeed(askedUser, undefined)
+                : Effect.void;
+            },
+          );
+          const resume = (runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy) =>
+            harness.runtime.resumeThread({
+              providerThread: harness.providerThread,
+              modelSelection: CODEX_TEST_MODEL_SELECTION,
+              runtimePolicy,
+            });
+          yield* resume(seal.sealedPolicy);
+          // Without a session the turn frame carries no T3 instructions; the seal is already loaded.
+          yield* (yield* McpProviderSessions.McpProviderSessions).clear(harness.threadId);
+          yield* harness.runtime.startTurn({
+            ...makeCodexTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now: yield* DateTime.now,
+              attemptId: RunAttemptId.make("seal-child-sealed"),
+              text: RESUME_PROMPT,
+            }),
+            runtimePolicy: seal.sealedPolicy,
           });
-        yield* resume(seal.sealedPolicy);
-        // Without a session the turn frame carries no T3 instructions; the seal is already loaded.
-        yield* (yield* McpProviderSessions.McpProviderSessions).clear(harness.threadId);
-        yield* harness.runtime.startTurn({
-          ...makeCodexTestTurnInput({
-            threadId: harness.threadId,
-            providerThread: harness.providerThread,
-            now: yield* DateTime.now,
-            attemptId: RunAttemptId.make("seal-child-sealed"),
-            text: RESUME_PROMPT,
-          }),
-          runtimePolicy: seal.sealedPolicy,
-        });
-        yield* harness.awaitTerminal(1);
-        // The ordinary load completes only after the child's request was declined, never shown.
-        const outcome = yield* Effect.raceFirst(
-          resume(CODEX_TEST_RUNTIME_POLICY).pipe(Effect.as("declined")),
-          Deferred.await(askedUser).pipe(Effect.as("asked the user")),
-        );
-        assert.equal(outcome, "declined");
-      }).pipe(
-        Effect.provideService(HostProcess.Platform, "darwin"),
-        Effect.provide(
-          Layer.mergeAll(
-            IdAllocator.layer,
-            McpProviderSessions.layer,
-            NodeServices.layer,
-            NodeCrypto.layer,
+          yield* harness.awaitTerminal(1);
+          assert.deepEqual(order, [...expectedOrder]);
+          // The ordinary load completes only after the child's request was declined, never shown.
+          const outcome = yield* Effect.raceFirst(
+            resume(CODEX_TEST_RUNTIME_POLICY).pipe(Effect.as("declined")),
+            Deferred.await(askedUser).pipe(Effect.as("asked the user")),
+          );
+          assert.equal(outcome, "declined");
+        }).pipe(
+          Effect.provideService(HostProcess.Platform, "darwin"),
+          Effect.provide(
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              NodeCrypto.layer,
+            ),
           ),
         ),
       ),
-    ),
   );
 
   it.effect.each(["completed", "failed", "interrupted", "starting", "replied-last"] as const)(

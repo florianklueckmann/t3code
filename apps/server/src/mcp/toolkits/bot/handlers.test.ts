@@ -75,6 +75,7 @@ const callTool = (
   caller: {
     readonly changes?: McpCallerChangesValue;
     readonly subagent?: boolean;
+    readonly sealedLoad?: boolean;
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -102,6 +103,7 @@ const callTool = (
                       providerSessionId: "provider:bots",
                       providerInstanceId: ProviderInstanceId.make("codex"),
                       ...(caller.subagent === true ? { subagent: true } : {}),
+                      ...(caller.sealedLoad === true ? { sealedLoad: true as const } : {}),
                     },
                 client:
                   access === undefined && !external
@@ -408,6 +410,13 @@ const saveNote = {
   },
 } as const;
 
+const learnFromHome = {
+  action: "learn",
+  botId,
+  projectId: campaignA,
+  learning: { origin: "correction", kind: "preference", text: "Always recap." },
+} as const;
+
 it.effect.each(["botNote", "botWaiting"] as const)(
   "a restricted Home run may save its own note and change nothing else: %s",
   (changes) =>
@@ -437,6 +446,20 @@ it.effect.each(["botNote", "botWaiting"] as const)(
       expect(fromSubagent.result).toMatchObject({ code: "capability_denied" });
       expect(fromSubagent.calls).toEqual([]);
     }),
+);
+
+it.effect("a sealed load's call never gets ordinary authority once its Home is ordinary", () =>
+  Effect.gen(function* () {
+    // A native child of a restricted run keeps the sealed load's credential after the run ends.
+    for (const params of [learnFromHome, saveNote]) {
+      const refused = yield* callTool(params, undefined, { botId, projectId: campaignA }, false, {
+        changes: "allowed",
+        sealedLoad: true,
+      });
+      expect(refused.result, params.action).toMatchObject({ code: "capability_denied" });
+      expect(refused.calls).toEqual([]);
+    }
+  }),
 );
 
 it.effect("a No changes routine task still cannot save a working note", () =>

@@ -119,6 +119,12 @@ const restrictedRunRefusal = new OrchestratorMcpFailure({
     "This Bot maintenance turn may only save its own Home's working note, so other tools that change things are refused.",
 });
 
+const endedRestrictedRunRefusal = new OrchestratorMcpFailure({
+  code: "capability_denied",
+  message:
+    "This call comes from a Bot maintenance turn that has ended, so tools that change things are refused.",
+});
+
 const missingAncestorRefusal = new OrchestratorMcpFailure({
   code: "capability_denied",
   message:
@@ -133,6 +139,9 @@ const refuseRestrictedCaller = Effect.fn("McpToolAccess.refuseRestrictedCaller")
   caller: Caller,
 ) {
   if (caller.caller === undefined) return;
+  // A sealed load serves only a restricted run, which these tools refuse whatever its state.
+  if ((yield* McpInvocationContext.McpInvocationContext).thread?.sealedLoad === true)
+    return yield* restrictedRunRefusal;
   const changes = yield* McpCallerChanges.McpCallerChanges;
   let shell = caller.caller;
   for (let depth = 0; ; depth++) {
@@ -384,6 +393,8 @@ export const writesOwnHomeNote = <P, A, E, R>(handle: (params: P) => Effect.Effe
       return yield* restrictedRunRefusal;
     const answer = yield* (yield* McpCallerChanges.McpCallerChanges).forThread(caller.caller.id);
     if (answer === "none") return yield* noChangesRefusal;
+    if (answer === "allowed" && scope.thread.sealedLoad === true)
+      return yield* endedRestrictedRunRefusal;
   });
   return declare((params: P) => check.pipe(Effect.flatMap(() => handle(params))), undefined);
 };

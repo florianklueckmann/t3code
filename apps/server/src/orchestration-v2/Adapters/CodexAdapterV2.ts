@@ -106,6 +106,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { resolveAttachmentPath, resolveAttachmentPathById } from "../../attachmentStore.ts";
 import * as PortScanner from "../../preview/PortScanner.ts";
+import * as McpInvocationContext from "../../mcp/McpInvocationContext.ts";
 import { getCodexServiceTierOptionValue } from "../../codexModelOptions.ts";
 import { ServerConfig } from "../../config.ts";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
@@ -1522,7 +1523,10 @@ function codexThreadRuntimeParams(input: {
           "t3-code": {
             url: mcpSession.endpoint,
             tool_timeout_sec: CODEX_T3_MCP_TOOL_TIMEOUT_SEC,
-            http_headers: { Authorization: mcpSession.authorizationHeader },
+            http_headers: {
+              Authorization: mcpSession.authorizationHeader,
+              [McpInvocationContext.SEALED_LOAD_HEADER]: "1",
+            },
             enabled_tools: [CODEX_HOME_SEAL_T3_TOOL],
             // Approval "never" in a read-only sandbox refuses an MCP write Codex can't see is safe.
             tools: { [CODEX_HOME_SEAL_T3_TOOL]: { approval_mode: "approve" } },
@@ -2192,6 +2196,14 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
          * "unknown" follows a release whose load failed. A child of a sealed turn stays sealed.
          */
         const threadSeals = new Map<string, CodexThreadSeal | "unknown">();
+        /** A sealed child turn's stop, true once its turn ended. Its root turn waits for it. */
+        const sealedChildStops = new Map<
+          string,
+          {
+            readonly rootProviderThreadId: OrchestrationV2ProviderThread["id"];
+            readonly stopped: Deferred.Deferred<boolean>;
+          }
+        >();
         const sealLocks = new Map<string, Semaphore.Semaphore>();
         const withSealLock = <A, E, R>(nativeThreadId: string, effect: Effect.Effect<A, E, R>) => {
           let lock = sealLocks.get(nativeThreadId);
@@ -2223,26 +2235,38 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             (yield* awaitActiveTurn(nativeTurnId));
           return codexThreadSealOf(context?.input.runtimePolicy) === "t3BotOnly";
         });
-        const refuseUnenforceableSeal = Effect.fn("CodexAdapterV2.refuseUnenforceableSeal")(
-          function* (
-            providerThread: OrchestrationV2ProviderThread,
-            mcpSession: McpProviderSession.McpProviderSessionConfig | undefined,
-          ) {
-            if (mcpSession === undefined) return yield* refuseSeal("unavailable");
-            if ((yield* HostProcess.Platform) !== "darwin") return yield* refuseSeal("platform");
-            const version = yield* Ref.get(codexVersion);
-            if (version === undefined || !CODEX_HOME_SEAL_VERSIONS.has(version))
-              return yield* refuseSeal("version");
-            // multi_agent_v1 stays offered in a sealed load and could message an ordinary child.
-            for (const subagent of (yield* Ref.get(subagentThreads)).values()) {
-              if (
-                approvalOwnerCodexTurn(subagent.parentContext).owner.providerThread.id ===
-                providerThread.id
-              )
-                return yield* refuseSeal("children");
-            }
-          },
-        );
+        const prepareHomeSeal = Effect.fn("CodexAdapterV2.prepareHomeSeal")(function* (
+          providerThread: OrchestrationV2ProviderThread,
+          mcpSession: McpProviderSession.McpProviderSessionConfig | undefined,
+        ) {
+          if (mcpSession === undefined) return yield* refuseSeal("unavailable");
+          if ((yield* HostProcess.Platform) !== "darwin") return yield* refuseSeal("platform");
+          const version = yield* Ref.get(codexVersion);
+          if (version === undefined || !CODEX_HOME_SEAL_VERSIONS.has(version))
+            return yield* refuseSeal("version");
+          const children = [...(yield* Ref.get(subagentThreads)).values()].filter(
+            (subagent) =>
+              approvalOwnerCodexTurn(subagent.parentContext).owner.providerThread.id ===
+              providerThread.id,
+          );
+          // A live child keeps acting with the ordinary config it started with.
+          if (children.some((subagent) => isOrchestrationV2WorkActive(subagent.task.status)))
+            return yield* refuseSeal("children");
+          if (children.length === 0) return;
+          // Codex keeps a finished child loaded for messages, and a sealed turn's message would
+          // wake it with its own ordinary hooks. Archived, it is not found; `resume_agent` reopens
+          // it under the sealed caller's config (measured on 0.166.0).
+          const loaded = yield* client
+            .request("thread/loaded/list", {})
+            .pipe(Effect.mapError((cause) => refuseSeal("seal", cause)));
+          for (const subagent of children) {
+            const nativeThreadId = subagent.providerThread.nativeThreadRef?.nativeId;
+            if (nativeThreadId == null || !loaded.data.includes(nativeThreadId)) continue;
+            yield* client
+              .request("thread/archive", { threadId: nativeThreadId })
+              .pipe(Effect.mapError((cause) => refuseSeal("seal", cause)));
+          }
+        });
         /** A turn runs only on a thread loaded with exactly its run's seal. */
         const requireLoadedSeal = (turnInput: ProviderAdapter.ProviderAdapterV2TurnInput) => {
           const nativeThreadId = turnInput.providerThread.nativeThreadRef?.nativeId;
@@ -3018,15 +3042,29 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             if (currentParent !== undefined) subagent.parentContext = currentParent;
             const terminalizedNativeTurns = yield* Ref.get(terminalizedNonCompletedNativeTurns);
             const nativeThreadId = yield* getNativeThreadId(subagent.providerThread);
-            // A sealed run's child shares the Home's T3 credential and could outlive the run, when
-            // the Home's next ordinary run would answer for its calls. So it never runs.
-            let refused = threadSeals.get(nativeThreadId) === "t3BotOnly";
+            // A child of a sealed run, or one a sealed turn reaches, must not act for the Home, so
+            // it is stopped as it starts. Its root turn settles only once that stop is confirmed.
+            const sealed =
+              threadSeals.get(nativeThreadId) === "t3BotOnly" ||
+              codexThreadSealOf(subagent.parentContext.input.runtimePolicy) === "t3BotOnly";
+            let late = false;
             let ancestor: ActiveCodexTurnContext | undefined = subagent.parentContext;
-            while (!refused && ancestor !== undefined) {
-              refused = terminalizedNativeTurns.has(ancestor.nativeTurnId);
+            while (!sealed && !late && ancestor !== undefined) {
+              late = terminalizedNativeTurns.has(ancestor.nativeTurnId);
               ancestor = ancestor.subagent?.parentContext;
             }
-            if (refused) {
+            if (sealed || late) {
+              const stopped = yield* Deferred.make<boolean>();
+              if (sealed) {
+                sealedChildStops.set(turn.nativeTurnId, {
+                  rootProviderThreadId: approvalOwnerCodexTurn(subagent.parentContext).owner
+                    .providerThread.id,
+                  stopped,
+                });
+                yield* Ref.update(interruptingNativeTurns, (current) =>
+                  new Set(current).add(turn.nativeTurnId),
+                );
+              }
               // Fork requests off the notification reader so it can read their responses.
               yield* client
                 .request("turn/interrupt", {
@@ -3039,7 +3077,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                       nativeThreadId,
                       nativeTurnId: turn.nativeTurnId,
                       cause,
-                    }),
+                    }).pipe(Effect.andThen(Deferred.succeed(stopped, false))),
                   ),
                   Effect.timeoutOrElse({
                     duration: "10 seconds",
@@ -3047,11 +3085,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                       Effect.logWarning("orchestration-v2.codex-late-subagent-interrupt-timeout", {
                         nativeThreadId,
                         nativeTurnId: turn.nativeTurnId,
-                      }),
+                      }).pipe(Effect.andThen(Deferred.succeed(stopped, false))),
                   }),
                   Effect.forkIn(scope),
                 );
-              return;
+              if (!sealed) return;
             }
             const providerTurnId = idAllocator.derive.providerTurn({
               driver: CODEX_PROVIDER,
@@ -7012,7 +7050,40 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                       : { failureErrorInfo: payload.turn.error.codexErrorInfo }),
                   }),
             };
-            if (!(yield* retryCapacityFailure(terminal))) yield* finalizeCodexTurn(terminal);
+            if (yield* retryCapacityFailure(terminal)) return;
+            const childStop = sealedChildStops.get(payload.turn.id);
+            if (childStop !== undefined) {
+              yield* finalizeCodexTurn(terminal);
+              yield* Ref.update(interruptingNativeTurns, (current) => {
+                const updated = new Set(current);
+                updated.delete(payload.turn.id);
+                return updated;
+              });
+              yield* Deferred.succeed(childStop.stopped, true);
+              return;
+            }
+            const childStops = [...sealedChildStops].filter(
+              ([, stop]) =>
+                context.subagent === null &&
+                stop.rootProviderThreadId === context.providerThread.id,
+            );
+            if (childStops.length === 0) return yield* finalizeCodexTurn(terminal);
+            // Settling releases a restricted Home to ordinary work, so it waits off the reader.
+            yield* Effect.forEach(childStops, ([, stop]) => Deferred.await(stop.stopped)).pipe(
+              Effect.flatMap((stopped) => {
+                for (const [nativeTurnId] of childStops) sealedChildStops.delete(nativeTurnId);
+                return finalizeCodexTurn(
+                  stopped.every(Boolean)
+                    ? terminal
+                    : {
+                        ...terminal,
+                        status: "failed",
+                        failureMessage: "A subagent this turn started could not be stopped.",
+                      },
+                );
+              }),
+              Effect.forkIn(scope),
+            );
           }),
         );
 
@@ -7569,7 +7640,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 Effect.gen(function* () {
                   yield* ensureInitialized;
                   if (seal === "t3BotOnly")
-                    yield* refuseUnenforceableSeal(threadInput.providerThread, mcpSession);
+                    yield* prepareHomeSeal(threadInput.providerThread, mcpSession);
                   const loaded = threadSeals.get(nativeThreadId);
                   // Codex ignores a resume's config while the thread is loaded, so a seal change
                   // releases it first. Unknown state is released before either seal.
