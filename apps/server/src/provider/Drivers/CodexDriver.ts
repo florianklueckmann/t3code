@@ -48,6 +48,7 @@ import {
   type ProviderSnapshotSettings,
 } from "@t3tools/provider-core/server/snapshotSettings";
 import {
+  codexAccountHomePath,
   codexContinuationIdentity,
   materializeCodexShadowHome,
   resolveCodexHomeLayout,
@@ -291,6 +292,7 @@ export const CodexDriver: ProviderDriver<
     );
     const sealedGeneration = yield* makeCodexSealedGeneration({
       getSnapshot: snapshot.getSnapshot,
+      storeHomePath: codexAccountHomePath(homeLayout),
       openClient: (cwd) =>
         withCodexAppServerClient({
           binaryPath: effectiveConfig.binaryPath,

@@ -18,14 +18,16 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 
 import { codexDefaultReasoningEffortOverride } from "../provider/CodexProvider.ts";
+import { codexStoreStartPermit } from "../provider/Drivers/CodexHomeLayout.ts";
 
 // Not `CodexTextGeneration`: `codex exec` can substitute models, keeps MCP servers when listing
 // them fails, and cannot show denied tool attempts. Raw response events show every model item,
-// so anything but a message or reasoning discards the turn.
+// so anything but reasoning or a message in a known role discards the turn.
 
 /** The oldest Codex version whose app-server was proven to accept raw events and this seal. */
 const SEALED_GENERATION_MIN_CODEX_VERSION = "0.166.0";
@@ -61,6 +63,9 @@ const SEAL_CONFIG = {
   include_apps_instructions: false,
   include_collaboration_mode_instructions: false,
 } as const;
+
+/** Codex 0.166.0 echoes its injected context as developer and user messages; the model answers. */
+const MESSAGE_ROLES = new Set(["developer", "user", "assistant"]);
 
 /** Codex options with a verified sealed mapping; any other selected option refuses. */
 const MAPPED_OPTIONS = new Set(["reasoningEffort", "serviceTier"]);
@@ -152,6 +157,8 @@ const turnFailureReason = (turn: TurnCompleted): SealedDiscardReason => {
 
 export interface CodexSealedGenerationOptions {
   readonly getSnapshot: Effect.Effect<ServerProvider>;
+  /** The account's conversation store, whose start permit sessions on it share. */
+  readonly storeHomePath: string;
   /** Starts and initializes an app-server for the instance in `cwd`, owned by the scope. */
   readonly openClient: (
     cwd: string,
@@ -167,6 +174,7 @@ export const makeCodexSealedGeneration = Effect.fn("makeCodexSealedGeneration")(
   options: CodexSealedGenerationOptions,
 ) {
   const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
 
   const availability: SealedGeneration["availability"] = (selection) =>
     options.getSnapshot.pipe(
@@ -183,7 +191,12 @@ export const makeCodexSealedGeneration = Effect.fn("makeCodexSealedGeneration")(
     const cwd = yield* fileSystem
       .makeTempDirectoryScoped({ prefix: "t3code-sealed-" })
       .pipe(Effect.mapError(() => discarded("process_exit")));
-    const client = yield* options.openClient(cwd);
+    const startPermit = yield* codexStoreStartPermit(options.storeHomePath).pipe(
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(Path.Path, path),
+      Effect.mapError(() => discarded("process_exit")),
+    );
+    const client = yield* startPermit.withPermit(options.openClient(cwd));
 
     // The first reason wins, and a later completion or valid-looking answer never clears it.
     const rejection = yield* Deferred.make<never, SealedGenerationDiscarded>();
@@ -194,7 +207,7 @@ export const makeCodexSealedGeneration = Effect.fn("makeCodexSealedGeneration")(
 
     yield* client.handleServerNotification("rawResponseItem/completed", ({ item }) => {
       if (item.type === "reasoning") return Effect.void;
-      if (item.type !== "message") return reject("tool_attempt");
+      if (item.type !== "message" || !MESSAGE_ROLES.has(item.role)) return reject("tool_attempt");
       answer = assistantText(item) ?? answer;
       return Effect.void;
     });

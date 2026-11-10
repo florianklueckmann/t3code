@@ -278,6 +278,7 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
     );
   const sealed = yield* makeCodexSealedGeneration({
     getSnapshot: snapshot.getSnapshot,
+    storeHomePath: runtime.homePath,
     openClient: (cwd) =>
       runtime.resolve.pipe(
         Effect.mapError(() => new SealedGenerationRefused({ reason: "provider_signed_out" })),

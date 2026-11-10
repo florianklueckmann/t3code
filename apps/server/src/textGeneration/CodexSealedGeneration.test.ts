@@ -14,11 +14,13 @@ import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 
+import { codexStoreStartPermit } from "../provider/Drivers/CodexHomeLayout.ts";
 import {
   SEALED_DEVELOPER_INSTRUCTIONS,
   makeCodexSealedGeneration,
@@ -237,12 +239,19 @@ const harness = Effect.fn("harness")(function* (
   const closed = yield* Ref.make(false);
   const requests = yield* Ref.make<ReadonlyArray<readonly [string, unknown]>>([]);
   const driver = yield* Deferred.make<CodexReplay.CodexAppServerReplayDriver>();
+  const storeHomePath = yield* (yield* FileSystem.FileSystem).makeTempDirectoryScoped();
+  const storePermit = yield* codexStoreStartPermit(storeHomePath);
+  const storePermitHeldWhileOpening = yield* Ref.make(false);
   const generation = yield* makeCodexSealedGeneration({
     getSnapshot: Effect.succeed(options.snapshot ?? baseSnapshot),
+    storeHomePath,
     ...(options.deadline ? { deadline: options.deadline } : {}),
     openClient: (cwd) =>
       Effect.gen(function* () {
         yield* Ref.update(opens, (count) => count + 1);
+        const free = yield* storePermit.takeIfAvailable(1);
+        if (free) yield* storePermit.release(1);
+        yield* Ref.set(storePermitHeldWhileOpening, !free);
         yield* Effect.addFinalizer(() => Ref.set(closed, true));
         const replay = yield* CodexReplay.makeReplayDriver({
           provider: "codex",
@@ -276,7 +285,15 @@ const harness = Effect.fn("harness")(function* (
   const replayState = Deferred.await(driver).pipe(
     Effect.flatMap((replay) => Ref.get(replay.state)),
   );
-  return { generation, opens, closed, requests, replayState };
+  return {
+    generation,
+    opens,
+    closed,
+    requests,
+    replayState,
+    storePermit,
+    storePermitHeldWhileOpening,
+  };
 });
 
 const generateInput = { selection, instructions: POLICY, packet: PACKET, schema: Proposal };
@@ -288,6 +305,7 @@ it.layer(NodeServices.layer)("CodexSealedGeneration", (it) => {
         ...preamble(cwd),
         raw({ type: "reasoning", summary: [] }),
         raw({ type: "message", role: "developer", content: [{ type: "input_text", text: "x" }] }),
+        raw({ type: "message", role: "user", content: [{ type: "input_text", text: PACKET }] }),
         assistant(CLEAN_ANSWER),
         completed(),
       ]);
@@ -369,11 +387,20 @@ it.layer(NodeServices.layer)("CodexSealedGeneration", (it) => {
     }),
   );
 
-  it.effect("keeps a tool rejection even when the turn completes with a valid answer", () =>
+  it.effect.each([
+    {
+      label: "tool call",
+      item: { type: "function_call", name: "exec_command", arguments: "{}", call_id: "c" },
+    },
+    ...["tool", "function", "unknown"].map((role) => ({
+      label: `${role} message`,
+      item: { type: "message", role, content: [{ type: "output_text", text: "tool result" }] },
+    })),
+  ])("keeps the $label rejection even when the turn completes with a valid answer", ({ item }) =>
     Effect.gen(function* () {
       const { generation, replayState } = yield* harness((cwd) => [
         ...preamble(cwd),
-        raw({ type: "function_call", name: "exec_command", arguments: "{}", call_id: "c" }),
+        raw(item),
         assistant(CLEAN_ANSWER),
         completed(),
         // Sent only when the rejection is handled before turn/completed is dispatched.
@@ -455,6 +482,18 @@ it.layer(NodeServices.layer)("CodexSealedGeneration", (it) => {
       reason: "invalid_output",
     },
     { label: "a turn with no answer", tail: [completed()], reason: "invalid_output" },
+    {
+      label: "an answer only in an injected user message",
+      tail: [
+        raw({
+          type: "message",
+          role: "user",
+          content: [{ type: "output_text", text: CLEAN_ANSWER }],
+        }),
+        completed(),
+      ],
+      reason: "invalid_output",
+    },
     {
       label: "an oversized answer",
       tail: [assistant(JSON.stringify({ summary: "x".repeat(64 * 1024) })), completed()],
@@ -607,6 +646,22 @@ it.layer(NodeServices.layer)("CodexSealedGeneration", (it) => {
       assert.isNull(state.failure);
       assert.equal(state.cursor, preamble("").length + interrupt.length);
       assert.isTrue(yield* Ref.get(closed));
+    }),
+  );
+
+  it.effect("holds the shared store start permit only while the process starts", () =>
+    Effect.gen(function* () {
+      const awaitingTurn = yield* Deferred.make<void>();
+      const { generation, storePermit, storePermitHeldWhileOpening } = yield* harness(
+        (cwd) => [...preamble(cwd), ...interrupt],
+        { onAwaitingTurn: awaitingTurn },
+      );
+      const fiber = yield* generation.generate(generateInput).pipe(Effect.forkChild);
+      yield* Deferred.await(awaitingTurn);
+      assert.isTrue(yield* Ref.get(storePermitHeldWhileOpening));
+      assert.isTrue(yield* storePermit.takeIfAvailable(1));
+      yield* storePermit.release(1);
+      yield* Fiber.interrupt(fiber);
     }),
   );
 
