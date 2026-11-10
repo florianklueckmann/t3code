@@ -1513,12 +1513,12 @@ function codexThreadRuntimeParams(input: {
         ...(input.threadId === null
           ? {}
           : { [`shell_environment_policy.set.${PortScanner.AGENT_THREAD_ENV}`]: input.threadId }),
-        // One object, not dotted keys: server names can contain dots.
+        // One object, not dotted keys: server names can contain dots. Codex refuses the whole load
+        // for an entry with no transport, so only servers its config defines are turned off.
         mcp_servers: {
           ...Object.fromEntries(
             (input.userMcpServerNames ?? []).map((name) => [name, { enabled: false }]),
           ),
-          [CODEX_T3_DIRECT_MCP_SERVER]: { enabled: false },
           "t3-code": {
             url: mcpSession.endpoint,
             tool_timeout_sec: CODEX_T3_MCP_TOOL_TIMEOUT_SEC,
@@ -2260,9 +2260,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             Effect.map((response) => {
               const servers: unknown = response.config["mcp_servers"];
               return typeof servers === "object" && servers !== null
-                ? Object.keys(servers).filter(
-                    (name) => name !== "t3-code" && name !== CODEX_T3_DIRECT_MCP_SERVER,
-                  )
+                ? Object.keys(servers).filter((name) => name !== "t3-code")
                 : [];
             }),
             Effect.mapError((cause) => refuseSeal("seal", cause)),

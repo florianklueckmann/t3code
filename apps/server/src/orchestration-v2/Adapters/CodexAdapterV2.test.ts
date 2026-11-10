@@ -3683,7 +3683,21 @@ describe("CodexAdapterV2 post-settle continuation", () => {
               frame: { id: 6, result: {} },
             },
             // Same seal again: no release.
-            ...step(7, "config/read", { includeLayers: false, cwd: "/workspace" }, configRead),
+            // This time the user's own config also defines T3's direct server name.
+            ...step(
+              7,
+              "config/read",
+              { includeLayers: false, cwd: "/workspace" },
+              {
+                ...configRead,
+                config: {
+                  mcp_servers: {
+                    ...configRead.config.mcp_servers,
+                    "t3-code-direct": { url: "http://user" },
+                  },
+                },
+              },
+            ),
             ...step(8, "thread/resume", sealedResume, resumed),
             ...step(9, "thread/memoryMode/set", { threadId: nativeThreadId, mode: "disabled" }, {}),
             // Sealed to normal: release, then an ordinary load.
@@ -3764,12 +3778,13 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         );
         yield* resume(CODEX_TEST_RUNTIME_POLICY);
 
-        // The sealed load keeps only t3_bot on T3 Code's server and turns the user's server off.
+        // The sealed load keeps only t3_bot on T3 Code's server and turns the user's servers off.
+        // Codex 0.166.0 refuses the whole load for an entry with no transport in its config, so
+        // only servers config/read reported are named.
         const sealedServers = (resumeParams[0] as { config: { mcp_servers: unknown } }).config
           .mcp_servers;
         assert.deepEqual(sealedServers, {
           probe: { enabled: false },
-          "t3-code-direct": { enabled: false },
           "t3-code": {
             url: "http://127.0.0.1:43123/mcp",
             tool_timeout_sec: 65 * 60,
@@ -3778,6 +3793,11 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             tools: { t3_bot: { approval_mode: "approve" } },
           },
         });
+        assert.deepEqual(
+          (resumeParams[1] as { config: { mcp_servers: Record<string, unknown> } }).config
+            .mcp_servers["t3-code-direct"],
+          { enabled: false },
+        );
         assert.notProperty((resumeParams[2] as { config: object }).config, "mcp_servers");
       }).pipe(
         Effect.provideService(HostProcess.Platform, "darwin"),
