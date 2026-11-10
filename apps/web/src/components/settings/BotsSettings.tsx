@@ -1324,8 +1324,8 @@ function BotRoutines({
         <div className="min-w-0 space-y-1">
           <Label>Routines</Label>
           <p className="text-xs text-muted-foreground">
-            Each run starts a new work thread in Full access, without approval prompts. The change
-            mode controls the Bot's instructions, not its tool access.
+            Each run starts a new work thread without approval prompts. Changes allowed runs in Full
+            access; No changes can read and report but not change anything.
           </p>
         </div>
         <Button

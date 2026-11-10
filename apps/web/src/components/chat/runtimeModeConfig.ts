@@ -3,7 +3,14 @@ import {
   type ManagedPolicySummary,
   type RuntimeMode,
 } from "@t3tools/contracts";
-import { type LucideIcon, LockIcon, PenLineIcon, ShieldOffIcon, SparklesIcon } from "lucide-react";
+import {
+  EyeIcon,
+  type LucideIcon,
+  LockIcon,
+  PenLineIcon,
+  ShieldOffIcon,
+  SparklesIcon,
+} from "lucide-react";
 
 export const runtimeModeConfig: Record<
   RuntimeMode,
@@ -44,6 +51,23 @@ export function resolveCompatibleRuntimeMode(
       ? runtimeModeOptions.filter((mode) => supportedRuntimeModes.includes(mode))
       : runtimeModeOptions;
   return { modes, mode: modes.includes(runtimeMode) ? runtimeMode : (modes[0] ?? runtimeMode) };
+}
+
+/**
+ * A No changes routine task's only permission: fixed, so no thread mode can appear to lift it.
+ * It keeps the thread's mode as its value, which the server ignores for this task.
+ */
+export function noChangesRuntimeModeOptions(mode: RuntimeMode) {
+  return [
+    {
+      mode,
+      label: "No changes",
+      description: "This routine task can read and report, but not change anything.",
+      icon: EyeIcon,
+      disabledReason:
+        "This routine task is set to No changes. To make the changes it proposes, ask the Bot directly.",
+    },
+  ];
 }
 
 export function resolveRuntimeModeOptions(

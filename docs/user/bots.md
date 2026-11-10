@@ -111,7 +111,7 @@ then pick a timing:
 - **Recurring**: a time of day on chosen weekdays, in the environment's time
   zone, which the form shows.
 
-Choose **No changes** to instruct the Bot to report results and propose changes
+Choose **No changes** to have the Bot report results and propose changes
 without editing files or data or sending messages. Choose **Changes allowed**
 to authorize the edits or messages requested in the brief. New and existing routines
 default to **No changes** until you choose otherwise. The brief determines
@@ -131,7 +131,8 @@ No changes currently works only on macOS, with Codex 0.167.0 signed in with an
 API key, the built-in OpenAI provider, no custom launch arguments, and its
 conversation history in the account's Codex home (no custom `sqlite_home`).
 Anywhere else the routine's task fails with the reason instead of running with
-more access. Follow-up messages in a routine's task stay No changes; to have the
+more access. Follow-up messages in a routine's task stay No changes, and its
+work thread shows No changes as its fixed permission; to have the
 Bot make the changes it proposed, ask it directly. Tasks you ask for directly
 run in the conversation's mode.
 

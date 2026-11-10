@@ -10,3 +10,11 @@ export function useWorkThreadBot(thread: {
 }): BotSummary | null {
   return useAtomValue(serverEnvironment.workThreadBot(thread));
 }
+
+/** "none" while this thread runs a No changes routine task, whatever its mode. */
+export function useWorkThreadChanges(thread: {
+  readonly environmentId: EnvironmentId;
+  readonly id: string;
+}): "none" | null {
+  return useAtomValue(serverEnvironment.workThreadChanges(thread));
+}

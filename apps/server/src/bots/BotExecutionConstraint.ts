@@ -9,6 +9,10 @@ import * as BotStore from "./BotStore.ts";
 
 export type BotExecutionConstraintValue = "standard" | "no-changes";
 
+/** Direct tasks store allow_changes = 0 too; only a routine's saved choice restricts. */
+export const isNoChangesTask = (row: { readonly origin: string; readonly allow_changes: number }) =>
+  row.origin === "routine" && row.allow_changes === 0;
+
 /**
  * What a thread may change, from the task row admitted for it. Routine edits, the thread's mode,
  * an archived Bot or a detached project never change an admitted task's answer.
@@ -31,10 +35,7 @@ const make = Effect.gen(function* () {
       `.pipe(
         Effect.mapError((cause) => new BotStore.BotStoreError({ operation: "read-task", cause })),
       );
-      // Direct tasks store allow_changes = 0 too; only a routine's saved choice restricts.
-      return rows.some((row) => row.origin === "routine" && row.allow_changes === 0)
-        ? "no-changes"
-        : "standard";
+      return rows.some(isNoChangesTask) ? "no-changes" : "standard";
     }),
   });
 });

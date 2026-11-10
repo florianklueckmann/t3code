@@ -50,6 +50,7 @@ import {
   type BotRoutineTargetShape,
 } from "../scheduledTasks/BotRoutineTarget.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
+import { isNoChangesTask } from "./BotExecutionConstraint.ts";
 import * as BotStore from "./BotStore.ts";
 import { isDirectHomeInput, latestDirectHomeInput } from "./homeReturn.ts";
 
@@ -244,6 +245,7 @@ const make = Effect.gen(function* () {
       completedAt: row.completed_at,
       returnToHome: row.return_home_run_id !== null,
       ...(row.model_selection_json === null ? {} : { modelSelection: row.model_selection_json }),
+      changes: isNoChangesTask(row) ? "none" : null,
     }).pipe(Effect.mapError(storageError));
 
   const readRow = (taskId: string) =>

@@ -45,6 +45,22 @@ export type RuntimeModeChoice = (typeof RUNTIME_MODE_CHOICES)[number] & {
 };
 
 /**
+ * A No changes routine task's only permission: fixed, so no thread mode can appear to lift it.
+ * It keeps the thread's mode as its value, which the server ignores for this task.
+ */
+export function noChangesRuntimeModeChoices(mode: RuntimeMode): ReadonlyArray<RuntimeModeChoice> {
+  return [
+    {
+      mode,
+      label: "No changes",
+      description: "This routine task can read and report, but not change anything.",
+      disabledReason:
+        "This routine task is set to No changes. To make the changes it proposes, ask the Bot directly.",
+    },
+  ];
+}
+
+/**
  * Marks modes above a managed runtime ceiling. A control acting on several environments is
  * managed when any of them is, so the first target that refuses a mode supplies its reason.
  */

@@ -1198,6 +1198,19 @@ it.effect("keeps each routine run's change permission after edits and a restart"
           yield* services.constraint.forThread(ThreadId.make("thread:not-a-task")),
           "standard",
         );
+        // Clients read the same admitted answer from the task summary.
+        const changesOf = (workThreadId: ThreadId) =>
+          services.tasks
+            .list({ workThreadId })
+            .pipe(Effect.map(({ tasks }) => tasks.map((task) => task.changes)));
+        assert.deepEqual(
+          [
+            yield* changesOf(workThreads.changingThread),
+            yield* changesOf(workThreads.preparingThread),
+            yield* changesOf(workThreads.directThread),
+          ],
+          [[null], ["none"], [null]],
+        );
       }),
     );
   }).pipe(Effect.provide(layerDatabase)),

@@ -1319,10 +1319,27 @@ export function createServerEnvironmentAtoms<R, E>(
     }).pipe(Atom.withLabel(`environment-data:server:bots:work-thread:${key}`));
   });
 
+  // Reads only the admitted task, so an archived Bot or detached project keeps the restriction.
+  const workThreadChangesFamily = Atom.family((key: string) => {
+    const [environmentId, threadId] = JSON.parse(key) as [EnvironmentId, string];
+    return Atom.make((get): "none" | null => {
+      if (!mayBeBotWorkThreadId(threadId)) return null;
+      if (get(configValueAtom(environmentId))?.environment.capabilities.bots !== true) return null;
+      const tasks = AsyncResult.getOrElse(
+        get(botTasksLive({ environmentId, input: { workThreadId: ThreadId.make(threadId) } })),
+        () => null,
+      );
+      return tasks?.tasks.some((task) => task.changes === "none") ? "none" : null;
+    }).pipe(Atom.withLabel(`environment-data:server:bots:work-thread-changes:${key}`));
+  });
+
   return {
     configValueAtom,
     workThreadBot: (thread: { readonly environmentId: EnvironmentId; readonly id: string }) =>
       workThreadBotFamily(JSON.stringify([thread.environmentId, thread.id])),
+    /** "none" while the thread runs a No changes routine task; its mode cannot lift that. */
+    workThreadChanges: (thread: { readonly environmentId: EnvironmentId; readonly id: string }) =>
+      workThreadChangesFamily(JSON.stringify([thread.environmentId, thread.id])),
     runStorageCleanup: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:run-storage-cleanup",
       tag: WS_METHODS.serverRunStorageCleanup,

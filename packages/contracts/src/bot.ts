@@ -393,6 +393,11 @@ export const BotTaskSummary = Schema.Struct({
    * routines, which follow the Bot, and for tasks started before this was recorded.
    */
   modelSelection: Schema.optional(ModelSelection),
+  /**
+   * "none" when the task was admitted as a No changes routine run, which no thread mode lifts.
+   * Absent from servers that predate enforcement, where nothing restricted the task.
+   */
+  changes: Schema.optional(Schema.NullOr(Schema.Literal("none"))),
 });
 export type BotTaskSummary = typeof BotTaskSummary.Type;
 
