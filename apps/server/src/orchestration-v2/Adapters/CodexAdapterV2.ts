@@ -118,15 +118,18 @@ import {
   toMcpElicitationResponse,
 } from "../../provider/CodexMcpElicitation.ts";
 import {
+  codexAccountHomePath,
   type CodexHomeLayout,
+  codexStoreStartPermit,
   materializeCodexShadowHome,
   resolveCodexHomeLayout,
 } from "../../provider/Drivers/CodexHomeLayout.ts";
 import {
+  acquireCodexNoChangesHome,
+  checkCodexOrdinaryStore,
   CODEX_NO_CHANGES_DISABLED_FEATURES,
   codexNoChangesHomePath,
   type CodexNoChangesHome,
-  materializeCodexNoChangesHome,
   noChangesAccountRefusal,
   verifyCodexNoChangesProcess,
 } from "../../provider/Drivers/CodexNoChangesProfile.ts";
@@ -1757,9 +1760,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
   const refuseNoChanges = (
     reason: ProviderAdapter.ProviderAdapterNoChangesRefusedError["reason"],
   ) => new ProviderAdapter.ProviderAdapterNoChangesRefusedError({ driver: CODEX_PROVIDER, reason });
-  // The ordinary and the No changes process share one state store; Codex fails to create a fresh
-  // one when two of its processes initialize at the same time.
-  const processStartPermit = yield* Semaphore.make(1);
+  const path = yield* Path.Path;
 
   /**
    * A session serves only runs with the profile it opened with, so a restricted run never reaches
@@ -1806,14 +1807,27 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
     const account = yield* profile.account;
     const accountRefusal = noChangesAccountRefusal(account);
     if (accountRefusal !== undefined) return yield* refuseNoChanges(accountRefusal);
-    const home: CodexNoChangesHome = yield* materializeCodexNoChangesHome({
+    yield* checkCodexOrdinaryStore({
+      layout: profile.layout,
+      settingsHomePath: adapterOptions.settings.homePath,
+      environment: adapterOptions.environment,
+    }).pipe(
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(Path.Path, profile.path),
+    );
+    const home: CodexNoChangesHome = yield* acquireCodexNoChangesHome({
       layout: profile.layout,
       homePath: profile.homePath,
     }).pipe(
       Effect.provideService(FileSystem.FileSystem, fileSystem),
       Effect.provideService(Path.Path, profile.path),
     );
-    return { home, account, path: profile.path };
+    return {
+      home,
+      account,
+      path: profile.path,
+      storeHomePath: codexAccountHomePath(profile.layout),
+    };
   });
 
   return ProviderAdapter.ProviderAdapterV2.of({
@@ -1843,8 +1857,20 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     }),
                 ),
               );
+        const ordinarySettings = resolvedRuntime?.config ?? adapterOptions.settings;
+        const storeHomePath =
+          noChanges?.storeHomePath ??
+          (ordinarySettings.homePath ||
+            (adapterOptions.noChanges === undefined
+              ? ""
+              : codexAccountHomePath(adapterOptions.noChanges.layout)));
+        const startPermit = yield* codexStoreStartPermit(storeHomePath).pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, path),
+        );
+        // Released once the process has initialized; a live idle session holds no permit.
         const startScope = yield* Scope.fork(scope);
-        yield* processStartPermit.takeScoped(1).pipe(Scope.provide(startScope));
+        yield* startPermit.takeScoped(1).pipe(Scope.provide(startScope));
         const client = yield* clientFactory.open({
           instanceId: adapterOptions.instanceId,
           threadId: input.threadId,
@@ -1852,7 +1878,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           runtimePolicy: input.runtimePolicy,
           settings:
             noChanges === undefined
-              ? (resolvedRuntime?.config ?? adapterOptions.settings)
+              ? ordinarySettings
               : { ...adapterOptions.settings, homePath: noChanges.home.homePath, launchArgs: "" },
           environment: resolvedRuntime?.environment ?? adapterOptions.environment,
         });

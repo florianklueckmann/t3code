@@ -128,7 +128,8 @@ the provider account you selected for the Bot and shares its conversation
 history. The task's result is saved as usual.
 
 No changes currently works only on macOS, with Codex 0.167.0 signed in with an
-API key, the built-in OpenAI provider and no custom launch arguments.
+API key, the built-in OpenAI provider, no custom launch arguments, and its
+conversation history in the account's Codex home (no custom `sqlite_home`).
 Anywhere else the routine's task fails with the reason instead of running with
 more access. Follow-up messages in a routine's task stay No changes; to have the
 Bot make the changes it proposed, ask it directly. Tasks you ask for directly

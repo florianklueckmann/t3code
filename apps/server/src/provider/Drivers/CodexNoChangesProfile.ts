@@ -7,10 +7,16 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+import type * as PlatformError from "effect/PlatformError";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 
-import type { CodexHomeLayout } from "./CodexHomeLayout.ts";
+import {
+  codexAccountHomePath,
+  type CodexHomeLayout,
+  codexPhysicalPath,
+} from "./CodexHomeLayout.ts";
 
 /**
  * Pinned to the version the native No changes fixture verified: a later Codex can add a tool
@@ -62,7 +68,7 @@ export interface CodexNoChangesHome {
 class CodexNoChangesHomeError extends Schema.TaggedError<CodexNoChangesHomeError>()(
   "CodexNoChangesHomeError",
   {
-    operation: Schema.Literals(["makeDirectory", "remove", "symlink", "writeConfig"]),
+    operation: Schema.Literals(["inspect", "makeDirectory", "remove", "symlink", "writeConfig"]),
     path: Schema.String,
     cause: Schema.Defect(),
   },
@@ -104,17 +110,57 @@ export const codexNoChangesHomePath = (input: {
     encodeURIComponent(input.instanceId).replaceAll("%", "_"),
   );
 
+type EntryState =
+  | { readonly _tag: "Missing" }
+  | { readonly _tag: "Link"; readonly target: string }
+  | { readonly _tag: "File" | "Directory" | "Other" };
+
+// readLink on an entry that is not a link fails with EINVAL.
+const isNotSymlink = (cause: PlatformError.PlatformError) =>
+  cause.reason._tag === "Unknown" &&
+  Predicate.isObject(cause.reason.cause) &&
+  "code" in cause.reason.cause &&
+  cause.reason.cause.code === "EINVAL";
+
+const inspectEntry = Effect.fn("CodexNoChangesProfile.inspectEntry")(function* (entry: string) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const fail = (cause: unknown) =>
+    new CodexNoChangesHomeError({ operation: "inspect", path: entry, cause });
+  const link = yield* fileSystem.readLink(entry).pipe(
+    Effect.map((target): EntryState => ({
+      _tag: "Link",
+      target: path.resolve(path.dirname(entry), target),
+    })),
+    Effect.catchTags({
+      PlatformError: (cause) =>
+        cause.reason._tag === "NotFound"
+          ? Effect.succeed<EntryState>({ _tag: "Missing" })
+          : isNotSymlink(cause)
+            ? Effect.undefined
+            : Effect.fail(fail(cause)),
+    }),
+  );
+  if (link !== undefined) return link;
+  const { type } = yield* fileSystem.stat(entry).pipe(Effect.mapError(fail));
+  return {
+    _tag: type === "File" ? "File" : type === "Directory" ? "Directory" : "Other",
+  } satisfies EntryState;
+});
+
 /**
- * Writes the fixed config and links the allowed entries, replacing whatever stands in their way.
- * Runs before every process start, so an edited config or a stray link never outlives a run.
+ * Replaces only its own config and links. A real entry where a link belongs, or a redirected
+ * home, may hold data or a live writer's lock, so it is refused and kept. While another process
+ * runs on this home (`live`), nothing is written: it must already be exactly this layout.
  */
 export const materializeCodexNoChangesHome = Effect.fn("materializeCodexNoChangesHome")(
   function* (input: {
     readonly layout: CodexHomeLayout;
     readonly homePath: string;
+    readonly live?: boolean;
   }): Effect.fn.Return<
     CodexNoChangesHome,
-    CodexNoChangesHomeError,
+    CodexNoChangesHomeError | ProviderAdapter.ProviderAdapterNoChangesRefusedError,
     FileSystem.FileSystem | Path.Path
   > {
     const fileSystem = yield* FileSystem.FileSystem;
@@ -126,51 +172,131 @@ export const materializeCodexNoChangesHome = Effect.fn("materializeCodexNoChange
       fileSystem
         .makeDirectory(directory, { recursive: true })
         .pipe(Effect.mapError(fail("makeDirectory", directory)));
-    const removeEntry = (entry: string) =>
-      fileSystem.remove(entry, { recursive: true }).pipe(
-        Effect.catchTags({
-          PlatformError: (cause) =>
-            cause.reason._tag === "NotFound"
-              ? Effect.void
-              : Effect.fail(fail("remove", entry)(cause)),
-        }),
-      );
-    // Anything but a link to the exact target goes, so a planted file or directory cannot persist.
-    const linkEntry = Effect.fn("materializeCodexNoChangesHome.linkEntry")(function* (
-      name: string,
-      target: string,
-    ) {
-      const entry = path.join(input.homePath, name);
-      const current = yield* fileSystem.readLink(entry).pipe(
-        Effect.map((value) => path.resolve(input.homePath, value)),
-        Effect.orElseSucceed(() => undefined),
-      );
-      if (current === target) return;
-      yield* removeEntry(entry);
-      yield* fileSystem.symlink(target, entry).pipe(Effect.mapError(fail("symlink", entry)));
-    });
+    // Only ever called on a link or a file T3 Code wrote, never recursively.
+    const unlink = (entry: string) =>
+      fileSystem.remove(entry).pipe(Effect.mapError(fail("remove", entry)));
+    const refuseHome = refuse("home");
 
-    // The ordinary process runs in this home, so its SQLite thread index lives here too.
-    const accountHomePath = input.layout.effectiveHomePath ?? input.layout.sharedHomePath;
+    const accountHomePath = codexAccountHomePath(input.layout);
     const configPath = path.join(input.homePath, "config.toml");
     const userConfig = userConfigFor(accountHomePath);
     const configText = renderConfig(userConfig);
+    const links = [
+      ...SHARED_STORE_ENTRIES.map(
+        (name) => [name, path.join(input.layout.sharedHomePath, name)] as const,
+      ),
+      ...SHARED_AUTH_ENTRIES.map((name) => [name, path.join(accountHomePath, name)] as const),
+    ];
 
-    yield* makeDirectory(input.homePath);
-    for (const name of SHARED_STORE_ENTRIES) {
-      const target = path.join(input.layout.sharedHomePath, name);
-      yield* makeDirectory(target);
-      yield* linkEntry(name, target);
+    const root = yield* inspectEntry(input.homePath);
+    if (root._tag === "Missing" && !input.live) {
+      yield* makeDirectory(input.homePath);
+    } else if (root._tag !== "Directory") {
+      return yield* refuseHome;
     }
-    for (const name of SHARED_AUTH_ENTRIES) {
-      yield* linkEntry(name, path.join(accountHomePath, name));
+
+    for (const [name, target] of links) {
+      const entry = path.join(input.homePath, name);
+      const state = yield* inspectEntry(entry);
+      if (state._tag === "Link" && state.target === target) continue;
+      if (input.live || (state._tag !== "Link" && state._tag !== "Missing")) {
+        return yield* refuseHome;
+      }
+      if (SHARED_STORE_ENTRIES.some((store) => store === name)) yield* makeDirectory(target);
+      if (state._tag === "Link") yield* unlink(entry);
+      yield* fileSystem.symlink(target, entry).pipe(Effect.mapError(fail("symlink", entry)));
     }
-    // Written fresh: a link or hard link here would let another file stand in for T3 Code's config.
-    yield* removeEntry(configPath);
-    yield* fileSystem
-      .writeFileString(configPath, configText)
-      .pipe(Effect.mapError(fail("writeConfig", configPath)));
+
+    const config = yield* inspectEntry(configPath);
+    const current =
+      config._tag === "File"
+        ? yield* fileSystem
+            .readFileString(configPath)
+            .pipe(Effect.mapError(fail("inspect", configPath)))
+        : undefined;
+    if (current !== configText) {
+      if (input.live || config._tag === "Directory" || config._tag === "Other") {
+        return yield* refuseHome;
+      }
+      // Renamed into place, so a link or hard link never lets another file stand in for it.
+      const staged = `${configPath}.${process.pid}.tmp`;
+      yield* fileSystem
+        .writeFileString(staged, configText)
+        .pipe(Effect.mapError(fail("writeConfig", staged)));
+      yield* fileSystem
+        .rename(staged, configPath)
+        .pipe(Effect.mapError(fail("writeConfig", configPath)));
+    }
     return { homePath: input.homePath, configPath, configText, userConfig };
+  },
+);
+
+interface ProfileOwners {
+  readonly permit: Semaphore.Semaphore;
+  live: number;
+}
+// One server process, one filesystem: owners are counted per physical profile home.
+const profileOwners = new Map<string, ProfileOwners>();
+
+/**
+ * Prepares the profile home and holds it for the calling scope. The first owner prepares it;
+ * later ones, while any is live, reuse it unchanged or are refused, so a running process never
+ * has its config or links replaced underneath it.
+ */
+export const acquireCodexNoChangesHome = Effect.fn("CodexNoChangesProfile.acquireHome")(
+  function* (input: { readonly layout: CodexHomeLayout; readonly homePath: string }) {
+    const key = yield* codexPhysicalPath(input.homePath);
+    let owners = profileOwners.get(key);
+    if (owners === undefined) {
+      owners = { permit: Semaphore.makeUnsafe(1), live: 0 };
+      profileOwners.set(key, owners);
+    }
+    const held = owners;
+    return yield* Effect.acquireRelease(
+      held.permit.withPermit(
+        materializeCodexNoChangesHome({ ...input, live: held.live > 0 }).pipe(
+          Effect.tap(() => Effect.sync(() => void (held.live += 1))),
+        ),
+      ),
+      () => Effect.sync(() => void (held.live -= 1)),
+    );
+  },
+);
+
+/**
+ * The ordinary process keeps its thread index wherever `sqlite_home` or `CODEX_SQLITE_HOME`
+ * points, or in its own home. This profile can only share the last, so anything else is refused.
+ */
+export const checkCodexOrdinaryStore = Effect.fn("CodexNoChangesProfile.checkOrdinaryStore")(
+  function* (input: {
+    readonly layout: CodexHomeLayout;
+    readonly settingsHomePath: string;
+    readonly environment: NodeJS.ProcessEnv;
+  }) {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const refuseStore = refuse("store");
+    const accountHomePath = codexAccountHomePath(input.layout);
+    const ordinaryHome = input.settingsHomePath || input.environment.CODEX_HOME?.trim();
+    if (ordinaryHome && path.resolve(ordinaryHome) !== path.resolve(accountHomePath)) {
+      return yield* refuseStore;
+    }
+    if (input.environment.CODEX_SQLITE_HOME?.trim()) return yield* refuseStore;
+    const configText = yield* fileSystem
+      .readFileString(path.join(accountHomePath, "config.toml"))
+      .pipe(
+        Effect.catchTags({
+          PlatformError: (cause) =>
+            cause.reason._tag === "NotFound" ? Effect.succeed("") : Effect.fail(refuseStore),
+        }),
+      );
+    // Any mention, also in a profile or an escaped key: refusing a comment is the cheap mistake.
+    const unescaped = configText.replace(
+      /\\u([0-9a-fA-F]{4})|\\U([0-9a-fA-F]{8})/gu,
+      (_match, short: string | undefined, long: string | undefined) =>
+        String.fromCodePoint(Number.parseInt(short ?? long ?? "0", 16)),
+    );
+    if (unescaped.includes("sqlite_home")) return yield* refuseStore;
   },
 );
 
@@ -351,6 +477,7 @@ export const verifyCodexNoChangesProcess = Effect.fn("CodexNoChangesProfile.veri
     ) {
       return yield* refuse("config");
     }
+    if (effective["sqlite_home"] !== home.userConfig["sqlite_home"]) return yield* refuse("store");
 
     const features = new Map<string, boolean>();
     let cursor: string | null | undefined;

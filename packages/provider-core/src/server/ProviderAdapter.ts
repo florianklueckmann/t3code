@@ -236,6 +236,8 @@ const ProviderAdapterNoChangesRefusal = Schema.Literals([
   "hooks",
   "sandbox",
   "profile",
+  "home",
+  "store",
 ]);
 
 const noChangesRefusalText: Record<typeof ProviderAdapterNoChangesRefusal.Type, string> = {
@@ -248,6 +250,8 @@ const noChangesRefusalText: Record<typeof ProviderAdapterNoChangesRefusal.Type, 
   hooks: "it has hooks configured",
   sandbox: "its read-only sandbox check failed",
   profile: "its session was opened for other work",
+  home: "its No changes profile folder holds entries T3 Code did not create, or is in use with other settings",
+  store: "its conversation history is kept in a custom location this check can't share",
 };
 
 /**

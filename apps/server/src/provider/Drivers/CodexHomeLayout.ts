@@ -4,6 +4,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as PlatformError from "effect/PlatformError";
+import * as Semaphore from "effect/Semaphore";
 
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -442,6 +443,45 @@ export const materializeCodexShadowHome = Effect.fn("materializeCodexShadowHome"
     sharedHomePath: layout.sharedHomePath,
     effectiveHomePath,
   });
+});
+
+/** Where Codex keeps the account's conversation store when no `sqlite_home` moves it. */
+export const codexAccountHomePath = (layout: CodexHomeLayout) =>
+  layout.effectiveHomePath ?? layout.sharedHomePath;
+
+/** A path's physical identity, also for a store directory Codex has not created yet. */
+export const codexPhysicalPath = Effect.fn("CodexHomeLayout.codexPhysicalPath")(function* (
+  target: string,
+) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const resolved = path.resolve(target);
+  return yield* fileSystem.realPath(resolved).pipe(
+    Effect.catch(() =>
+      fileSystem
+        .realPath(path.dirname(resolved))
+        .pipe(Effect.map((parent) => path.join(parent, path.basename(resolved)))),
+    ),
+    Effect.orElseSucceed(() => resolved),
+  );
+});
+
+// One server process, one filesystem: permits are keyed by physical store, across instances.
+const storeStartPermits = new Map<string, Semaphore.Semaphore>();
+
+/**
+ * Codex fails to create a fresh state store when two of its processes initialize it at once, so
+ * every process this server starts on one physical store spawns and initializes in turn.
+ */
+export const codexStoreStartPermit = Effect.fn("CodexHomeLayout.codexStoreStartPermit")(function* (
+  storeHomePath: string,
+) {
+  const key = yield* codexPhysicalPath(storeHomePath);
+  const existing = storeStartPermits.get(key);
+  if (existing !== undefined) return existing;
+  const permit = Semaphore.makeUnsafe(1);
+  storeStartPermits.set(key, permit);
+  return permit;
 });
 
 export function codexContinuationIdentity(layout: CodexHomeLayout) {

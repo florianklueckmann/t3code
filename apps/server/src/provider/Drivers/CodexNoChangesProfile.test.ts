@@ -3,11 +3,16 @@ import { assert, it } from "@effect/vitest";
 import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
 import type * as CodexClient from "effect-codex-app-server/client";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+import type * as PlatformError from "effect/PlatformError";
+import * as Scope from "effect/Scope";
 
 import type { CodexHomeLayout } from "./CodexHomeLayout.ts";
 import {
+  acquireCodexNoChangesHome,
+  checkCodexOrdinaryStore,
   CODEX_NO_CHANGES_DISABLED_FEATURES,
   type CodexNoChangesHome,
   materializeCodexNoChangesHome,
@@ -43,9 +48,8 @@ it.layer(NodeServices.layer)("CodexNoChangesProfile", (it) => {
         const fileSystem = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
         const { shared, shadow, elsewhere, layout, homePath } = yield* fixture;
-        // Planted entries: a credential copy, a linked config and a linked store.
+        // Planted links: a config and a store pointing elsewhere.
         yield* fileSystem.makeDirectory(homePath, { recursive: true });
-        yield* fileSystem.writeFileString(path.join(homePath, "auth.json"), '{"copied":true}');
         yield* fileSystem.symlink(
           path.join(elsewhere, "config.toml"),
           path.join(homePath, "config.toml"),
@@ -85,18 +89,176 @@ it.layer(NodeServices.layer)("CodexNoChangesProfile", (it) => {
       }).pipe(Effect.scoped),
   );
 
+  it.effect.skipIf(!symlinksSupported)(
+    "refuses and keeps entries it does not own, and a redirected home",
+    () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const plant = (
+          build: (input: {
+            readonly homePath: string;
+            readonly elsewhere: string;
+          }) => Effect.Effect<ReadonlyArray<string>, PlatformError.PlatformError>,
+        ) =>
+          Effect.gen(function* () {
+            const { layout, homePath, elsewhere } = yield* fixture;
+            const kept = yield* build({ homePath, elsewhere }).pipe(Effect.orDie);
+            const outcome = yield* Effect.flip(materializeCodexNoChangesHome({ layout, homePath }));
+            const survived: Array<string> = [];
+            for (const file of kept) {
+              survived.push(`${path.basename(file)}=${yield* fileSystem.readFileString(file)}`);
+            }
+            return {
+              reason:
+                outcome._tag === "ProviderAdapterNoChangesRefusedError" ? outcome.reason : "io",
+              survived,
+              elsewhereConfig: yield* fileSystem.readFileString(
+                path.join(elsewhere, "config.toml"),
+              ),
+            };
+          });
+        const write = (file: string, text: string) =>
+          fileSystem
+            .makeDirectory(path.dirname(file), { recursive: true })
+            .pipe(Effect.andThen(fileSystem.writeFileString(file, text)), Effect.as(file));
+
+        // Real conversation data and a live writer's lock where links belong.
+        assert.deepEqual(
+          yield* plant(({ homePath }) =>
+            Effect.all([
+              write(path.join(homePath, "sessions", "keep.jsonl"), "history"),
+              write(path.join(homePath, "thread-writer-locks", "active.lock"), "writer"),
+            ]),
+          ),
+          {
+            reason: "home",
+            survived: ["keep.jsonl=history", "active.lock=writer"],
+            elsewhereConfig: "[mcp_servers.x]\n",
+          },
+        );
+        // A credential copy is left for the user to look at, not deleted.
+        assert.deepEqual(
+          yield* plant(({ homePath }) =>
+            Effect.all([write(path.join(homePath, "auth.json"), '{"copied":true}')]),
+          ),
+          {
+            reason: "home",
+            survived: ['auth.json={"copied":true}'],
+            elsewhereConfig: "[mcp_servers.x]\n",
+          },
+        );
+        // A home redirected elsewhere is never written through.
+        assert.deepEqual(
+          yield* plant(({ homePath, elsewhere }) =>
+            fileSystem.symlink(elsewhere, homePath).pipe(Effect.as([])),
+          ),
+          { reason: "home", survived: [], elsewhereConfig: "[mcp_servers.x]\n" },
+        );
+        assert.deepEqual(
+          yield* plant(({ homePath }) =>
+            fileSystem
+              .makeDirectory(path.join(homePath, "config.toml"), { recursive: true })
+              .pipe(Effect.as([])),
+          ),
+          { reason: "home", survived: [], elsewhereConfig: "[mcp_servers.x]\n" },
+        );
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect.skipIf(!symlinksSupported)(
+    "leaves a live home untouched: the same layout reuses it, another is refused",
+    () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const { shared, shadow, layout, homePath } = yield* fixture;
+        const configInode = fileSystem
+          .stat(path.join(homePath, "config.toml"))
+          .pipe(Effect.map((info) => info.ino));
+        const authTarget = fileSystem.readLink(path.join(homePath, "auth.json"));
+        const otherAccount: CodexHomeLayout = {
+          ...layout,
+          mode: "direct",
+          effectiveHomePath: undefined,
+        };
+
+        const live = yield* Scope.make();
+        yield* acquireCodexNoChangesHome({ layout, homePath }).pipe(Scope.provide(live));
+        const inode = yield* configInode;
+
+        // A second process on the same layout: no write at all.
+        yield* acquireCodexNoChangesHome({ layout, homePath }).pipe(Effect.scoped);
+        assert.deepEqual(yield* configInode, inode);
+        // Another account while the first process runs: refused, links kept.
+        const refused = yield* Effect.flip(
+          acquireCodexNoChangesHome({ layout: otherAccount, homePath }).pipe(Effect.scoped),
+        );
+        assert.equal(
+          refused._tag === "ProviderAdapterNoChangesRefusedError" && refused.reason,
+          "home",
+        );
+        assert.equal(yield* authTarget, path.join(shadow, "auth.json"));
+
+        // Once nothing runs on it, the home follows the new account.
+        yield* Scope.close(live, Exit.void);
+        yield* acquireCodexNoChangesHome({ layout: otherAccount, homePath }).pipe(Effect.scoped);
+        assert.equal(yield* authTarget, path.join(shared, "auth.json"));
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("refuses an ordinary process that keeps its threads somewhere else", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const { shadow, layout } = yield* fixture;
+      const check = (config: string | undefined, environment: NodeJS.ProcessEnv = {}) =>
+        Effect.gen(function* () {
+          const configPath = path.join(shadow, "config.toml");
+          if (config === undefined) yield* fileSystem.remove(configPath, { force: true });
+          else yield* fileSystem.writeFileString(configPath, config);
+          const outcome = yield* Effect.result(
+            checkCodexOrdinaryStore({ layout, settingsHomePath: shadow, environment }),
+          );
+          return outcome._tag === "Success" ? "ok" : outcome.failure.reason;
+        });
+      const outcomes = [
+        yield* check(undefined),
+        yield* check('model = "gpt"\n'),
+        yield* check('sqlite_home = "/elsewhere"\n'),
+        yield* check('[profiles.work]\nsqlite_home = "/elsewhere"\n'),
+        yield* check('"sqlite\\u005fhome" = "/elsewhere"\n'),
+        yield* check(undefined, { CODEX_SQLITE_HOME: "/elsewhere" }),
+      ];
+      assert.deepEqual(outcomes, ["ok", "ok", "store", "store", "store", "store"]);
+      const direct = yield* Effect.result(
+        checkCodexOrdinaryStore({
+          layout: { ...layout, mode: "direct", effectiveHomePath: undefined },
+          settingsHomePath: "",
+          environment: { CODEX_HOME: shadow },
+        }),
+      );
+      assert.equal(direct._tag === "Failure" && direct.failure.reason, "store");
+    }).pipe(Effect.scoped),
+  );
+
   const home: CodexNoChangesHome = {
     homePath: "/sealed",
     configPath: "/sealed/config.toml",
     configText: "config text",
-    userConfig: { sandbox_mode: "read-only" },
+    userConfig: { sandbox_mode: "read-only", sqlite_home: "/account" },
   };
 
   type Responses = Record<string, (params: any) => unknown>;
   const passing: Responses = {
     "account/read": () => ({ account: { type: "apiKey" } }),
     "config/read": () => ({
-      config: { sandbox_mode: "read-only", approval_policy: "never", mcp_servers: {} },
+      config: {
+        sandbox_mode: "read-only",
+        approval_policy: "never",
+        mcp_servers: {},
+        sqlite_home: "/account",
+      },
       layers: [
         { name: { type: "user", file: home.configPath }, config: home.userConfig },
         { name: { type: "system", file: "/etc/codex/config.toml" }, config: {} },
@@ -207,6 +369,16 @@ it.layer(NodeServices.layer)("CodexNoChangesProfile", (it) => {
                 mcp_servers: { m: {} },
               },
             }),
+          }),
+        ],
+        // A required sqlite_home that moves the store past T3 Code's config.
+        [
+          "store",
+          verify({
+            "config/read": () => {
+              const read = passing["config/read"]!({}) as { config: object };
+              return { ...read, config: { ...read.config, sqlite_home: "/required" } };
+            },
           }),
         ],
         [
