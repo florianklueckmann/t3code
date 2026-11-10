@@ -677,8 +677,22 @@ it.effect("a Waiting-only run appends Waiting items and changes nothing else", (
     const basis = (yield* notes.get(scope)).basis!;
     const save = (updateId: string, note: BotContinuationNoteInput) =>
       notes.save({ ...userSave(updateId, 1, note), basis }, bot);
-    const appended = { ...base, waiting: [...base.waiting, { text: "Harbor owner's reply" }] };
+    const appended = {
+      ...base,
+      waiting: [...base.waiting, { text: "Remind the user of the Lantern date", quote: "Lantern" }],
+    };
     for (const [name, note] of [
+      [
+        "unsourced append",
+        { ...base, waiting: [...base.waiting, { text: "Harbor owner's reply" }] },
+      ],
+      [
+        "duplicate append",
+        {
+          ...base,
+          waiting: [...base.waiting, { text: "lantern DATE from the user", quote: "Lantern" }],
+        },
+      ],
       ["edit", { ...base, waiting: [{ text: "Lantern date from the client" }] }],
       ["removal", { ...base, waiting: [] }],
       ["reorder", { ...appended, waiting: [...appended.waiting].reverse() }],
@@ -697,7 +711,7 @@ it.effect("a Waiting-only run appends Waiting items and changes nothing else", (
     if (saved._tag !== "saved") return assert.fail();
     assert.deepEqual(
       saved.view.note.waiting.map((item) => item.text),
-      ["Lantern date from the user", "Harbor owner's reply"],
+      ["Lantern date from the user", "Remind the user of the Lantern date"],
     );
     // Authority belongs to the run: once it ended, the same basis saves nothing.
     yield* main`UPDATE orchestration_v2_projection_runs SET status = 'interrupted' WHERE run_id = 'run-1'`;
