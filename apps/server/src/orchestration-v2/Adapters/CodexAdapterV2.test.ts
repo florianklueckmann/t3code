@@ -43,6 +43,8 @@ import * as Digest from "effect/crypto/Digest";
 import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
 import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { MCP_APP_OUTPUT_KEY, readMcpAppReference } from "@t3tools/shared/mcpApp";
 import { toolOutputImages } from "@t3tools/shared/toolOutput";
 import { resolveAttachmentPathById } from "../../attachmentStore.ts";
@@ -71,6 +73,8 @@ import * as ProviderReplayHarness from "../testkit/ProviderReplayHarness.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import type * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import * as ModelManifest from "../../provider/ModelManifest.ts";
+import * as ServerConfig from "../../config.ts";
+import { codexStoreStartPermit } from "../../provider/Drivers/CodexHomeLayout.ts";
 import * as PortScanner from "../../preview/PortScanner.ts";
 import { resolveProviderCompatibility } from "../../provider/providerCompatibility.ts";
 import * as CodexAdapterV2 from "./CodexAdapterV2.ts";
@@ -1631,6 +1635,92 @@ describe("CodexAdapterV2 session initialize", () => {
         ),
       ),
     ),
+  );
+});
+
+describe("CodexAdapterV2 store start permit", () => {
+  it.effect.each(["explicit", "environment"] as const)(
+    "holds the permit of the store the process launches on with %s CODEX_HOME",
+    (mode) =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: "codex-store-permit-" });
+        const home = path.join(root, "home");
+        const accountHome = path.join(root, "account-store");
+        yield* fileSystem.makeDirectory(home);
+        yield* fileSystem.makeDirectory(accountHome);
+        const accountPermit = yield* codexStoreStartPermit(accountHome);
+        const defaultPermit = yield* codexStoreStartPermit(path.join(home, ".codex"));
+        const isHeld = (permit: typeof accountPermit) =>
+          permit.takeIfAvailable(1).pipe(
+            Effect.tap((free) => (free ? permit.release(1) : Effect.void)),
+            Effect.map((free) => !free),
+          );
+        const launched = yield* Deferred.make<{
+          readonly accountStoreHeld: boolean;
+          readonly defaultStoreHeld: boolean;
+          readonly launchHome: string | undefined;
+        }>();
+        const instanceId = ProviderInstanceId.make("codex-store-permit");
+        const adapter = yield* CodexAdapterV2.createCodexAdapterV2(
+          {
+            instanceId,
+            displayName: undefined,
+            enabled: true,
+            environment: [{ name: "CODEX_HOME", value: accountHome, sensitive: false }],
+            config: {
+              ...DEFAULT_CODEX_SETTINGS,
+              homePath: mode === "explicit" ? accountHome : "",
+              shadowHomePath: "",
+            },
+          },
+          { noChangesAccount: Effect.succeed({ status: "authenticated", type: "chatgpt" }) },
+        ).pipe(
+          Effect.provideService(HostProcess.HomeDirectory, home),
+          Effect.provideService(HostProcess.Environment, {}),
+          Effect.provideService(CodexAdapterV2.CodexAppServerClientFactory, {
+            open: (launch) =>
+              Effect.all({
+                accountStoreHeld: isHeld(accountPermit),
+                defaultStoreHeld: isHeld(defaultPermit),
+                launchHome: Effect.succeed(
+                  launch.settings.homePath || launch.environment.CODEX_HOME,
+                ),
+              }).pipe(
+                Effect.flatMap((observed) => Deferred.succeed(launched, observed)),
+                Effect.andThen(Effect.die("stop before spawning Codex")),
+              ),
+          }),
+        );
+
+        yield* adapter
+          .openSession({
+            threadId: ThreadId.make("thread-store-permit"),
+            providerSessionId: ProviderSessionId.make("session-store-permit"),
+            modelSelection: { instanceId, model: "gpt-5.4" },
+            runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+          })
+          .pipe(Effect.scoped, Effect.exit);
+
+        assert.deepStrictEqual(yield* Deferred.await(launched), {
+          accountStoreHeld: true,
+          defaultStoreHeld: false,
+          launchHome: accountHome,
+        });
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(
+            Layer.effect(
+              ServerConfig.ServerConfig,
+              ProviderReplayHarness.makeReplayServerConfig("store-permit").pipe(Effect.orDie),
+            ),
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+          ).pipe(Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+        ),
+      ),
   );
 });
 

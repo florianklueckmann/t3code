@@ -1670,7 +1670,8 @@ export const createCodexAdapterV2 = Effect.fn("CodexAdapterV2.createCodexAdapter
   const idAllocator = yield* IdAllocator.IdAllocatorV2;
   const serverConfig = yield* ServerConfig;
   const path = yield* Path.Path;
-  const homeLayout = yield* resolveCodexHomeLayout(config);
+  const processEnvironment = yield* mergeProviderInstanceEnvironment(environment, hostEnvironment);
+  const homeLayout = yield* resolveCodexHomeLayout(config, processEnvironment.CODEX_HOME);
   const { noChangesAccount, ...adapterHooks } = hooks;
 
   yield* materializeCodexShadowHome(homeLayout).pipe(
@@ -1695,7 +1696,7 @@ export const createCodexAdapterV2 = Effect.fn("CodexAdapterV2.createCodexAdapter
   return yield* makeCodexAdapterV2({
     instanceId,
     settings,
-    environment: yield* mergeProviderInstanceEnvironment(environment, hostEnvironment),
+    environment: processEnvironment,
     clientFactory,
     digest,
     fileSystem,

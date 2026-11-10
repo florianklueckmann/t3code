@@ -48,9 +48,15 @@ function resolveHomePath(path: Path.Path, home: string, value: string | undefine
   return path.resolve(expanded);
 }
 
+/** `environmentHome` is the instance environment's CODEX_HOME, used when no home is configured. */
 export const resolveCodexHomeLayout = Effect.fn("resolveCodexHomeLayout")(function* (
-  config: CodexSettings,
+  configured: CodexSettings,
+  environmentHome?: string,
 ): Effect.fn.Return<CodexHomeLayout, never, Path.Path> {
+  const config =
+    !configured.homePath.trim() && !configured.shadowHomePath.trim() && environmentHome?.trim()
+      ? { ...configured, homePath: environmentHome }
+      : configured;
   const path = yield* Path.Path;
   const home = yield* HostProcess.HomeDirectory;
   const sharedHomePath = resolveHomePath(path, home, config.homePath);
