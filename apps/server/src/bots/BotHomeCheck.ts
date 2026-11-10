@@ -26,7 +26,7 @@ import * as BotStore from "./BotStore.ts";
 
 /** The whole standing prompt of the periodic Home check. Model-facing. */
 export const HOME_CHECK_PROMPT =
-  "Daily Home check: decide whether anything here needs the user before the next check, then stop. Read your working notes with t3_bot read_continuation and task status with t3_bot list_tasks, and look back over this conversation. Look for open requests, tasks waiting on the user, choices a finished task asked the user to make, and events the user mentioned that need preparation before the next check. Add to Waiting only what needs the user's decision or preparation before the next check. Each new Waiting item quotes the user's own message exactly or names the task it is about. Never add an item that is already in Waiting, and never add again what an earlier check proposed that is no longer in Waiting: the user resolved or removed it. If you add items, save the full note once with t3_bot save_continuation and that read's exact basis, keeping every existing item exactly as it is. If nothing needs the user, do not save. Change nothing else: no task, message or other tool. Reply with one short line.";
+  "Daily Home check: decide whether anything here needs the user before the next check, then stop. Read your working notes with t3_bot read_continuation and task status with t3_bot list_tasks, and look back over this conversation. Look for open requests, tasks waiting on the user, choices a finished task asked the user to make, and events the user mentioned that need preparation before the next check. Add to Waiting only what needs the user's decision or preparation before the next check. Give each new Waiting item a quote copied exactly from the user's own message, or the taskIds of the task it is about. Never add an item that is already in Waiting, and never add again what an earlier check proposed that is no longer in Waiting: the user resolved or removed it. If you add items, save the full note once with t3_bot save_continuation and that read's exact basis, keeping every existing item exactly as it is. If nothing needs the user, do not save. Change nothing else: no task, message or other tool. Reply with one short line.";
 
 /** The check's prompt with the two facts only the server knows. */
 const homeCheckPrompt = (now: DateTime.Zoned, next: DateTime.Zoned) =>
@@ -40,7 +40,7 @@ const Outcome = Schema.Union([
   }),
   Schema.Struct({ kind: Schema.Literal("unsupported"), at: Schema.String, reason: Schema.String }),
 ]);
-export type Outcome = typeof Outcome.Type;
+type Outcome = typeof Outcome.Type;
 const decodeOutcome = Schema.decodeUnknownSync(Schema.fromJsonString(Outcome));
 
 /** A Home with activity this recent is in use; the check waits so it never races the user. */
@@ -204,11 +204,7 @@ export const make = Effect.gen(function* () {
    * Reads a started check's ending from persisted state, so it survives restarts. False while
    * its run is still going.
    */
-  const reconcile = Effect.fn("BotHomeCheck.reconcile")(function* (
-    home: string,
-    messageId: string,
-    at: string,
-  ) {
+  const reconcile = Effect.fnUntraced(function* (home: string, messageId: string, at: string) {
     const [run] = yield* main<{
       readonly run_id: string;
       readonly status: string;
@@ -238,7 +234,7 @@ export const make = Effect.gen(function* () {
     return yield* finish(home, messageId, { kind: "proposed", at, added });
   });
 
-  const start = Effect.fn("BotHomeCheck.start")(function* (
+  const start = Effect.fnUntraced(function* (
     row: Row & { readonly home_thread_id: string; readonly bot_id: string },
     now: DateTime.Zoned,
   ) {
@@ -297,7 +293,7 @@ export const make = Effect.gen(function* () {
         last_outcome_json = NULL, updated_at = ${at} WHERE home_thread_id = ${home}`;
   });
 
-  /** Polled every few seconds, so only a started check or a reconcile is traced. */
+  /** Polled every few seconds while a check is owed or running, so the tick opens no spans. */
   const tick = Effect.gen(function* () {
     const now = DateTime.setZone(yield* DateTime.now, zone);
     const rows = yield* sql<
