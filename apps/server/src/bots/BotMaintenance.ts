@@ -111,7 +111,9 @@ export type NoteRefresh =
 
 /** The whole prompt of the scoped note refresh turn. Model-facing. */
 export const NOTE_REFRESH_PROMPT =
-  "Maintenance: bring your working notes up to date with this Home, then stop. Read them with t3_bot read_continuation. Its `uncovered` list holds, oldest first and in full, the Home input and returned task results no saved note has covered yet. Reconcile each one into the note: unfinished requests, waiting questions or proposals, decisions and task results. Keep every existing item that is still open. Then save the full note once with t3_bot save_continuation and that read's exact basis, even when nothing changed. Keep proposals in waiting until the user approves them; a new decided item needs an exact quote from the user's own message. Do nothing else: no other tool, task or message. Reply with one short line.";
+  "Maintenance: bring your working notes up to date with this Home, then stop. Read them with t3_bot read_continuation. Its `uncovered` list holds, oldest first and in full, the Home input and returned task results no saved note has covered yet. Reconcile each one into the note: unfinished requests, waiting questions or proposals, decisions and task results. Keep every existing item that is still open. An item marked `tooLarge` shows only its first lines: do not guess the rest, and add a waiting item naming its messageId, such as `Unreviewed large input <messageId>: <what its first lines show>`. Then save the full note once with t3_bot save_continuation and that read's exact basis, even when nothing changed. Keep proposals in waiting until the user approves them; a new decided item needs an exact quote from the user's own message. Do nothing else: no other tool, task or message. Reply with one short line.";
+/** Refresh turns one night may run; each saves one page, and the rest waits for the next night. */
+const NIGHTLY_NOTE_PAGES = 3;
 
 interface StateRow {
   readonly settings_revision: number;
@@ -832,7 +834,7 @@ export const make = Effect.gen(function* () {
    * Coverage is derived from the note and the Home, never stored here, so a refresh that fails
    * consumes nothing and the next one sees the same evidence. One outcome row per attempt.
    */
-  const refreshNote = Effect.fn("BotMaintenance.refreshNote")(function* (
+  const refreshPage = Effect.fn("BotMaintenance.refreshPage")(function* (
     scope: BotContinuationScope,
   ) {
     const { home, active } = yield* scopeOf(scope);
@@ -960,6 +962,24 @@ export const make = Effect.gen(function* () {
       runId,
       homeRunId: run.run_id,
     } as const);
+  });
+
+  /**
+   * Page after page until the note is current, an attempt does not refresh, or the night's bound.
+   * Returns the last attempt; a final `current` reports the refresh that reached it.
+   */
+  const refreshNote = Effect.fn("BotMaintenance.refreshNote")(function* (
+    scope: BotContinuationScope,
+  ) {
+    let last: NoteRefresh = yield* refreshPage(scope);
+    for (let page = 1; page < NIGHTLY_NOTE_PAGES && last.status === "refreshed"; page += 1) {
+      // Learning sets the refresh prompt aside, which otherwise holds the next page back.
+      yield* runNow(scope).pipe(Effect.ignore({ log: true }));
+      const next = yield* refreshPage(scope);
+      if (next.status === "current") break;
+      last = next;
+    }
+    return last;
   }, Effect.mapError(failure));
 
   /**

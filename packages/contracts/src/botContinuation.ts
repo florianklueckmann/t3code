@@ -168,13 +168,13 @@ export const BotContinuationView = Schema.Struct({
           kind: Schema.Literals(["input", "result"]),
           directUser: Schema.Boolean,
           text: Schema.String,
+          /** Too large for any read: `text` holds only its first lines. */
+          tooLarge: Schema.optional(
+            Schema.Struct({ bytes: NonNegativeInt, createdAt: IsoDateTime }),
+          ),
         }),
       ),
       remaining: NonNegativeInt,
-      /** The oldest uncovered item when it alone exceeds one read; it stays uncovered. */
-      deferred: Schema.NullOr(
-        Schema.Struct({ messageId: MessageId, ordinal: NonNegativeInt, bytes: NonNegativeInt }),
-      ),
     }),
   ),
   activeTasks: Schema.Array(

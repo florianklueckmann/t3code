@@ -2627,10 +2627,75 @@ it.effect.each([
     }).pipe(Effect.provide(storeOnly), Effect.provideService(HostProcess.Platform, "darwin")),
 );
 
+it.effect(
+  "refreshes at most three pages a night, one scoped turn each, and stops once the Home is busy",
+  () =>
+    Effect.gen(function* () {
+      yield* refreshHome();
+      const { generate } = yield* recordingGenerator(() => Effect.succeed({ operations: [] }));
+      yield* withEngine(generate, ({ maintenance, homeSequence, homeTurns, homeEvents }) =>
+        Effect.gen(function* () {
+          yield* enable(maintenance);
+          const turns = yield* scopedTurns(homeSequence);
+          yield* Ref.set(homeTurns, turns.dispatch);
+          // Each input fills a refresh page of its own.
+          for (const id of ["one", "two", "three", "four", "five"])
+            yield* input(id, `${id}: ${"Harbor detail. ".repeat(1_300)}`);
+          let learned = yield* maintenance.runNow(scope);
+          while (learned.status === "partial") learned = yield* maintenance.runNow(scope);
+          const notes = yield* BotContinuation.BotContinuation;
+          const night = Effect.fn("fixture.night")(function* (
+            pages: number,
+            busyAfterLast = false,
+          ) {
+            // As the nightly pass does, learning runs first.
+            assert.equal((yield* maintenance.runNow(scope)).status, "idle");
+            const refresh = yield* maintenance
+              .refreshNote(scope)
+              .pipe(Effect.forkChild({ startImmediately: true }));
+            const runs: Array<string> = [];
+            for (let page = 1; page <= pages; page += 1) {
+              const runId = yield* Queue.take(turns.started);
+              runs.push(runId);
+              assert.equal((yield* saveNoteAsBot(`${runId}-save`))._tag, "saved");
+              if (busyAfterLast && page === pages) yield* homeRun("busy", "running");
+              yield* endScopedRun(runId, "completed", homeSequence, homeEvents);
+            }
+            return { result: yield* Fiber.join(refresh), runs };
+          });
+
+          const first = yield* night(3);
+          assert.deepEqual(
+            first.result.status === "refreshed" && first.result.homeRunId,
+            first.runs[2],
+          );
+          assert.deepEqual(yield* notes.coverage(scope), { _tag: "behind", inputs: 2, results: 0 });
+          const second = yield* night(1, true);
+          assert.deepEqual(
+            second.result.status === "deferred" && second.result.reason,
+            "home_active",
+          );
+          assert.deepEqual(
+            (yield* noteOutcomes).map((row) => row.outcome),
+            [
+              ...[...first.runs, ...second.runs].map((homeRunId) => ({
+                note: "refreshed",
+                homeRunId,
+              })),
+              { note: "deferred", reason: "home_active" },
+            ],
+          );
+          assert.deepEqual(yield* notes.coverage(scope), { _tag: "behind", inputs: 1, results: 0 });
+          assert.lengthOf(yield* Ref.get(turns.commands), 4);
+        }),
+      );
+    }).pipe(Effect.provide(storeOnly), Effect.provideService(HostProcess.Platform, "darwin")),
+);
+
 it.effect.each([
   { name: "a running Home turn", reason: "home_active" },
   { name: "Home input after the captured sequence", reason: "home_active" },
-  { name: "an input larger than one read shows", reason: "oversized_input" },
+  { name: "a note that leaves no room for a page", reason: "note_too_large" },
   { name: "a Linux host", reason: "unsupported" },
   { name: "a Home on another provider", reason: "unsupported" },
 ] as const)("defers the refresh without a lasting turn for $name", ({ name, reason }) =>
@@ -2640,8 +2705,39 @@ it.effect.each([
     yield* withEngine(generate, ({ maintenance, homeSequence, homeTurns }) =>
       Effect.gen(function* () {
         const turns = yield* scopedTurns(homeSequence);
-        if (name === "an input larger than one read shows")
-          yield* input("pasted", "x".repeat(24_001));
+        if (name === "a note that leaves no room for a page") {
+          // A legal note: JSON writes each control character as six bytes.
+          const crowded = "\u0001".repeat(200);
+          const item = {
+            text: crowded,
+            refs: [
+              {
+                kind: "message",
+                messageId: "earlier",
+                ordinal: 1,
+                digest: "0".repeat(64),
+                quote: crowded,
+                directUser: true,
+                availability: "available",
+              },
+            ],
+          };
+          const revision = JSON.stringify({
+            revision: 1,
+            note: {
+              requests: Array.from({ length: 20 }, () => item),
+              waiting: [],
+              decided: [],
+              context: [],
+            },
+            coverage: null,
+            updatedBy: { kind: "user" },
+            updatedAt: now,
+            restoredFrom: null,
+          });
+          const bots = yield* BotDatabase.BotDatabase;
+          yield* bots`INSERT INTO bot_continuation_revisions (home_thread_id, revision, update_id, request_hash, revision_json) VALUES (${home}, 1, 'crowded', 'crowded', ${revision})`;
+        }
         yield* enable(maintenance);
         yield* input("ask", "Draft the Harbor checklist once I send the dates.");
         yield* maintenance.runNow(scope);

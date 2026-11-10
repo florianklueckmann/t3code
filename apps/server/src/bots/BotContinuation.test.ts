@@ -12,6 +12,7 @@ import {
   ThreadId,
   type BotSaveContinuationInput,
   type BotContinuationNoteInput,
+  type BotContinuationView,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -836,27 +837,176 @@ it.effect("catches a long Home up oldest-first, one shown window a night", () =>
   }).pipe(Effect.provide(services.pipe(Layer.provideMerge(database)))),
 );
 
-it.effect("defers an input larger than one read shows instead of certifying a cut", () =>
+const utf8Bytes = (text: string) => new TextEncoder().encode(text).byteLength;
+/** Codex shows a code-mode model 10,000 approximate tokens of 4 bytes; the read keeps a margin. */
+const refreshResponseBytes = 32_000;
+const toolResultBytes = (view: BotContinuationView) =>
+  utf8Bytes(JSON.stringify({ continuation: view }));
+
+it.effect.each([
+  {
+    name: "pasted JSON",
+    input: (ordinal: number) =>
+      `Keep request ${ordinal} open. ${'{"project":"Harbor","status":"waiting","date":null}\n'.repeat(30)}`.slice(
+        0,
+        600,
+      ),
+    item: (ordinal: number) =>
+      `Unresolved request ${ordinal}: ${"Keep its date and vendor confirmation open. ".repeat(8)}`.slice(
+        0,
+        200,
+      ),
+  },
+  {
+    name: "multilingual text",
+    input: (ordinal: number) =>
+      `请求${ordinal}：${"请保留尚未完成的任务并等待明确的确认。".repeat(30)}`.slice(0, 400),
+    item: (ordinal: number) =>
+      `任务${ordinal}：${"请继续保留此项尚未完成的请求直到用户确认已经解决。".repeat(12)}`.slice(
+        0,
+        200,
+      ),
+  },
+])("delivers a refresh page whole beside a full note of $name", (fixture) =>
   Effect.gen(function* () {
     yield* seed;
-    const bytes = 24_000;
-    yield* input(1, "x".repeat(bytes + 1), { directUser: true });
-    yield* input(2, "Keep the Harbor date open.", { directUser: true });
+    for (let ordinal = 1; ordinal <= 40; ordinal += 1)
+      yield* input(ordinal, fixture.input(ordinal), { directUser: true });
     const notes = yield* BotContinuation.BotContinuation;
+    const requests = Array.from({ length: 20 }, (_, index) => ({
+      text: fixture.item(index + 1),
+      quote: fixture.input(index + 1).slice(0, 400),
+    }));
+    const ordinary = yield* notes.get(scope);
+    assert.equal(
+      (yield* notes.save(
+        { ...userSave("full-note", null, { ...empty(), requests }), basis: ordinary.basis! },
+        bot,
+      ))._tag,
+      "saved",
+    );
+
     const read = yield* refreshRead();
-    assert.deepEqual(read.uncovered, {
-      sources: [],
-      remaining: 2,
-      deferred: { messageId: MessageId.make("message-1"), ordinal: 1, bytes: bytes + 1 },
-    });
-    assert.equal((yield* saveShown("oversized"))._tag, "saved");
+    // Codex keeps the head and tail of a longer result and cuts its middle, basis included.
+    assert.isAtMost(toolResultBytes(read), refreshResponseBytes);
+    assert.deepEqual(read.sources, []);
+    const shown = read.uncovered!.sources;
+    assert.isAbove(shown.length, 0);
+    assert.isBelow(shown.length, 40);
+    assert.deepEqual(
+      shown.map((source) => [source.text, source.tooLarge]),
+      shown.map((_, index) => [fixture.input(index + 1), undefined]),
+    );
+    assert.equal(read.uncovered!.remaining, 40 - shown.length);
+    const saved = yield* notes.save(
+      { ...userSave("page", read.revision, { ...empty(), requests }), basis: read.basis! },
+      bot,
+    );
+    assert.equal(saved._tag, "saved");
     assert.deepEqual(yield* notes.coverage(scope), {
-      _tag: "unprovable",
-      reason: "oversized_input",
-      inputs: 2,
+      _tag: "behind",
+      inputs: 40 - shown.length,
       results: 0,
     });
   }).pipe(Effect.provide(services.pipe(Layer.provideMerge(database)))),
+);
+
+it.effect("saves an old approval shown on a catch-up page as a decision", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const quote = "Approved: ship Harbor on Friday.";
+    yield* input(1, quote, { directUser: true });
+    for (let ordinal = 2; ordinal <= 201; ordinal += 1)
+      yield* input(ordinal, `Unrelated Home input ${ordinal}`, { directUser: true });
+    const notes = yield* BotContinuation.BotContinuation;
+    const read = yield* refreshRead();
+    assert.equal(read.uncovered?.sources[0]?.text, quote);
+    const decided = { ...empty(), decided: [{ text: "Ship Harbor on Friday", quote }] };
+    const saved = yield* notes.save(
+      { ...userSave("old-decision", null, decided), basis: read.basis! },
+      bot,
+    );
+    assert.equal(saved._tag, "saved");
+    assert.deepInclude((yield* notes.get(scope)).note.decided[0]!.refs[0]!, {
+      messageId: MessageId.make("message-1"),
+      availability: "available",
+    });
+  }).pipe(Effect.provide(services.pipe(Layer.provideMerge(database)))),
+);
+
+it.effect("sources a note item in a returned result shown on the page, never a decision", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    yield* homeRun("result-only", 1);
+    yield* returnedResult("result-only", 1);
+    const notes = yield* BotContinuation.BotContinuation;
+    const read = yield* refreshRead();
+    assert.equal(read.uncovered?.sources[0]?.kind, "result");
+    const quote = "The vendor needs a decision on the second quote.";
+    const approval = yield* notes
+      .save(
+        {
+          ...userSave("result-decision", null, {
+            ...empty(),
+            decided: [{ text: "Use it", quote }],
+          }),
+          basis: read.basis!,
+        },
+        bot,
+      )
+      .pipe(Effect.flip);
+    assert.include(approval.message, "a proposal is not approval");
+    const waiting = { ...empty(), waiting: [{ text: "Decide on the vendor's second quote" }] };
+    const saved = yield* notes.save(
+      { ...userSave("result-only-note", null, waiting), basis: read.basis! },
+      bot,
+    );
+    assert.equal(saved._tag, "saved");
+    assert.deepInclude((yield* notes.get(scope)).note.waiting[0]!.refs[0]!, {
+      messageId: MessageId.make("result-1"),
+      availability: "available",
+    });
+    assert.deepEqual(yield* notes.coverage(scope), { _tag: "current" });
+  }).pipe(Effect.provide(services.pipe(Layer.provideMerge(database)))),
+);
+
+it.effect(
+  "shows an input too large for any page by reference and passes it once the note keeps it",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const large = "Diff line of the pasted Harbor patch.\n".repeat(1_000);
+      yield* input(1, large, { directUser: true });
+      yield* input(2, "Keep the Harbor date open.", { directUser: true });
+      const notes = yield* BotContinuation.BotContinuation;
+      const read = yield* refreshRead();
+      assert.isAtMost(toolResultBytes(read), refreshResponseBytes);
+      const [reference, next] = read.uncovered!.sources;
+      assert.deepEqual(reference?.tooLarge, { bytes: utf8Bytes(large), createdAt: now });
+      assert.isTrue(large.startsWith(reference!.text) && reference!.text.endsWith("\n"));
+      assert.isAtMost(utf8Bytes(reference!.text), 2_000);
+      assert.equal(next?.text, "Keep the Harbor date open.");
+
+      const unlisted = yield* notes
+        .save({ ...userSave("unlisted", null, empty()), basis: read.basis! }, bot)
+        .pipe(Effect.flip);
+      assert.include(unlisted.message, "message-1");
+      const kept = {
+        ...empty(),
+        waiting: [{ text: "Unreviewed large input message-1: a pasted Harbor patch" }],
+      };
+      const saved = yield* notes.save(
+        { ...userSave("listed", null, kept), basis: read.basis! },
+        bot,
+      );
+      assert.equal(saved._tag, "saved");
+      assert.deepInclude((yield* notes.get(scope)).note.waiting[0]!.refs[0]!, {
+        messageId: MessageId.make("message-1"),
+        quote: reference!.text.slice(0, 400),
+        availability: "available",
+      });
+      assert.deepEqual(yield* notes.coverage(scope), { _tag: "current" });
+    }).pipe(Effect.provide(services.pipe(Layer.provideMerge(database)))),
 );
 
 it.effect.each(["notification", "delegatedCompletion"] as const)(

@@ -35,11 +35,17 @@ import { isDirectHomeInput } from "./homeReturn.ts";
 
 /** The most recent direct inputs one save basis holds. */
 const SOURCE_WINDOW = 200;
+const PAGE_ITEMS = 40;
 /**
- * One read's share of the uncovered stream, sent whole: enough for a busy Home day, and small
- * enough that the tool result reaches the model uncut.
+ * Codex shows a code-mode model 10,000 approximate tokens of 4 bytes from a tool result and cuts
+ * its middle beyond that. The refresh read's whole result stays a fifth below, for the wrapper,
+ * transport headers and escaping, so every item it certifies reaches the model.
  */
-const UNCOVERED_PAGE = { items: 40, bytes: 24_000 } as const;
+const REFRESH_RESPONSE_BYTES = 32_000;
+/** The most of a too-large item's first lines a page shows. */
+const PREVIEW_BYTES = 2_000;
+/** A refresh read only needs to recognise each reference; the stored quote stays whole. */
+const REFRESH_QUOTE_CHARS = 100;
 // Queued starts preserve run order but can insert a lower display ordinal than older steers.
 const Position = Schema.Struct({ runOrdinal: NonNegativeInt, ordinal: NonNegativeInt });
 type Position = typeof Position.Type;
@@ -64,6 +70,8 @@ const BasisPayload = Schema.Struct({
       through: Position,
       ids: Schema.Array(Schema.String),
       digest: Schema.String,
+      /** Items too large for any read, with the UTF-8 length of the first lines it showed. */
+      previews: Schema.Array(Schema.Struct({ id: Schema.String, bytes: NonNegativeInt })),
     }),
   ),
 });
@@ -82,12 +90,99 @@ export type NoteCoverage =
   | { readonly _tag: "behind"; readonly inputs: number; readonly results: number }
   | {
       readonly _tag: "unprovable";
-      /** The oldest uncovered item alone exceeds one read, so no save can be shown it. */
-      readonly reason: "oversized_input";
+      /** The note and the rest of a refresh read leave no room for even one item's reference. */
+      readonly reason: "note_too_large";
       readonly inputs: number;
       readonly results: number;
     };
+/** An uncovered item the Home has delivered, oldest first. */
+interface Delivered {
+  readonly ordinal: number;
+  readonly runOrdinal: number;
+  readonly result: boolean;
+  readonly message: OrchestrationV2ConversationMessageJson;
+}
+/** An item as a page shows it: whole, or only its first `preview` bytes when too large. */
+interface Shown extends Delivered {
+  readonly text: string;
+  readonly preview: number | null;
+}
 const utf8 = new TextEncoder();
+const utf8Text = new TextDecoder();
+/** The first `bytes` of `text`, which `leadingBytes` placed on a character boundary. */
+const leading = (text: string, bytes: number) =>
+  utf8Text.decode(utf8.encode(text).subarray(0, bytes));
+/** The UTF-8 length of the whole lines in the first `cap` bytes, or else the whole characters. */
+const leadingBytes = (encoded: Uint8Array, cap: number) => {
+  let end = Math.min(cap, encoded.length);
+  while (end > 0 && end < encoded.length && (encoded[end]! & 0xc0) === 0x80) end -= 1;
+  if (end === 0) return 0;
+  const newline = encoded.lastIndexOf(10, end - 1);
+  return newline === -1 ? end : newline + 1;
+};
+const pageEntry = (source: Shown) => ({
+  messageId: source.message.id,
+  ordinal: source.ordinal,
+  kind: source.result ? ("result" as const) : ("input" as const),
+  directUser: source.message.createdBy === "user",
+  text: source.text,
+  ...(source.preview === null
+    ? {}
+    : {
+        tooLarge: {
+          bytes: utf8.encode(source.message.text).byteLength,
+          createdAt: DateTime.formatIso(source.message.createdAt),
+        },
+      }),
+});
+const jsonBytes = (value: unknown) => utf8.encode(encodeJson(value)).byteLength;
+/**
+ * The oldest uncovered items whose whole tool result, `{ continuation: view }` as the MCP text
+ * content, fits the refresh budget. The base is measured with every field the page changes at
+ * its largest, so the response this signs can only be smaller. An item that would not fit even
+ * alone is shown by reference with the first lines that fit.
+ */
+const planPage = (view: BotContinuationView, delivered: readonly Delivered[], total: number) => {
+  const base = jsonBytes({
+    continuation: {
+      ...view,
+      sources: [],
+      moreSources: SOURCE_WINDOW,
+      basis: {
+        token: "0".repeat(32),
+        fromOrdinal: Number.MAX_SAFE_INTEGER,
+        throughOrdinal: Number.MAX_SAFE_INTEGER,
+      },
+      uncovered: { sources: [], remaining: total },
+    },
+  });
+  const shown: Shown[] = [];
+  let bytes = base;
+  const cost = (source: Shown) => jsonBytes(pageEntry(source)) + (shown.length === 0 ? 0 : 1);
+  for (const source of delivered) {
+    const whole: Shown = { ...source, text: source.message.text, preview: null };
+    const wholeBytes = cost(whole);
+    if (bytes + wholeBytes <= REFRESH_RESPONSE_BYTES) {
+      shown.push(whole);
+      bytes += wholeBytes;
+      continue;
+    }
+    // An item that fits a page of its own starts the next one.
+    if (base + jsonBytes(pageEntry(whole)) <= REFRESH_RESPONSE_BYTES) break;
+    const encoded = utf8.encode(source.message.text);
+    let reference: Shown | undefined;
+    for (let cap = PREVIEW_BYTES; reference === undefined; cap = Math.floor(cap / 2)) {
+      const preview = leadingBytes(encoded, cap);
+      const candidate = { ...source, text: utf8Text.decode(encoded.subarray(0, preview)), preview };
+      if (bytes + cost(candidate) <= REFRESH_RESPONSE_BYTES) reference = candidate;
+      else if (cap === 0) break;
+    }
+    if (reference === undefined) break;
+    bytes += cost(reference);
+    shown.push(reference);
+  }
+  return shown;
+};
 const atOrBefore = (a: Position | null | undefined, b: Position | null | undefined) =>
   a == null ||
   (b != null &&
@@ -290,8 +385,8 @@ const make = Effect.gen(function* () {
                 AND m.message_id NOT IN (SELECT value FROM json_each(${encodeJson(revision?.sourceIds ?? [])}))))))`)[0]!;
   });
   /**
-   * The stream after a frontier, oldest first: the first page's worth of delivered items and the
-   * totals, pending ones included. With `through`, only delivered items up to that position.
+   * The stream after a frontier, oldest first: up to a page of delivered items and the totals,
+   * pending ones included. With `through`, only delivered items up to that position.
    */
   const uncovered = Effect.fn("BotContinuation.uncovered")(function* (
     home: ThreadId,
@@ -320,8 +415,8 @@ const make = Effect.gen(function* () {
         AND (${through?.runOrdinal ?? null} IS NULL
           OR (NOT ${pendingColumn}
             AND (COALESCE(r.ordinal, 0), i.ordinal) <= (${through?.runOrdinal ?? 0}, ${through?.ordinal ?? 0})))
-      ORDER BY pending, run_ordinal, i.ordinal LIMIT ${UNCOVERED_PAGE.items + 1}`;
-    const delivered = yield* Effect.forEach(
+      ORDER BY pending, run_ordinal, i.ordinal LIMIT ${PAGE_ITEMS}`;
+    const delivered: readonly Delivered[] = yield* Effect.forEach(
       rows.filter((row) => row.pending === 0),
       (row) =>
         decodeMessage(row.payload_json).pipe(
@@ -335,21 +430,7 @@ const make = Effect.gen(function* () {
     );
     const total = rows[0]?.total ?? 0;
     const results = rows[0]?.results ?? 0;
-    // Never cut an item being certified: the page ends before the first one that does not fit.
-    const shown: typeof delivered = [];
-    let bytes = 0;
-    for (const source of delivered.slice(0, UNCOVERED_PAGE.items)) {
-      bytes += utf8.encode(source.message.text).byteLength;
-      if (bytes > UNCOVERED_PAGE.bytes) break;
-      shown.push(source);
-    }
-    const first = delivered[0];
-    return {
-      inputs: total - results,
-      results,
-      shown,
-      deferred: shown.length === 0 && first !== undefined ? first : null,
-    };
+    return { inputs: total - results, results, delivered };
   });
   const resolveNote = Effect.fn("BotContinuation.resolveNote")(function* (
     home: ThreadId,
@@ -385,7 +466,9 @@ const make = Effect.gen(function* () {
         source !== undefined &&
         row?.run_status !== "rolled_back" &&
         !(row?.run_status === "cancelled" && row.input_intent === "queued_turn") &&
-        isDirectHomeInput(source) &&
+        (isDirectHomeInput(source) ||
+          source.notification !== undefined ||
+          source.delegatedCompletion !== undefined) &&
         source.context?.guest === undefined &&
         !isCompactionCommandMessage(source) &&
         hash(source.text) === ref.digest &&
@@ -408,9 +491,13 @@ const make = Effect.gen(function* () {
       context: sections[3]!,
     };
   });
-  const get = Effect.fn("BotContinuation.get")(function* (
+  /**
+   * The view without its basis. A refresh read, the one a scoped note refresh sees, leaves out
+   * the newest-input previews and clips reference quotes to make room for its page.
+   */
+  const read = Effect.fn("BotContinuation.read")(function* (
     scope: BotContinuationReadInput,
-    options?: { readonly page?: boolean },
+    page: "never" | "botNote" | "always",
   ) {
     const { context, bot, home } = yield* scopeOf(scope);
     const row = yield* currentRow(home);
@@ -418,36 +505,9 @@ const make = Effect.gen(function* () {
     const run = yield* activeRun(home);
     const supplied =
       run === undefined ? [] : yield* sourceWindow(home, run.ordinal, Number.MAX_SAFE_INTEGER);
-    const newest = supplied[0];
     // Only the scoped refresh certifies; ordinary turns already hold the day's input natively.
-    const page =
-      options?.page === true && run?.restriction === "botNote"
-        ? yield* uncovered(home, revision?.frontier)
-        : undefined;
-    const last = page?.shown.at(-1);
-    const basis =
-      run === undefined
-        ? null
-        : signed({
-            homeThreadId: home,
-            runId: RunId.make(run.run_id),
-            fromOrdinal:
-              supplied.length === 0 ? null : Math.min(...supplied.map((source) => source.ordinal)),
-            throughOrdinal:
-              supplied.length === 0 ? null : Math.max(...supplied.map((source) => source.ordinal)),
-            digest: sourceDigest(supplied),
-            throughRunOrdinal: newest?.runOrdinal ?? null,
-            throughInputOrdinal: newest?.ordinal ?? null,
-            page:
-              page === undefined || last === undefined
-                ? null
-                : {
-                    from: revision?.frontier ?? null,
-                    through: { runOrdinal: last.runOrdinal, ordinal: last.ordinal },
-                    ids: page.shown.map((source) => source.message.id),
-                    digest: sourceDigest(page.shown),
-                  },
-          });
+    const refresh = page === "always" || (page === "botNote" && run?.restriction === "botNote");
+    const note = yield* resolveNote(home, revision?.note ?? emptyNote());
     const gap = yield* inputsAfter(home, revision);
     const after =
       scope.afterTaskId === undefined
@@ -467,47 +527,40 @@ const make = Effect.gen(function* () {
     }>`SELECT task_id, title, status, work_thread_id, COUNT(*) OVER() AS total FROM bot_tasks WHERE home_thread_id = ${home} AND status IN ('accepted','running','waiting') AND cancel_requested_at IS NULL
       AND (${after?.task_id ?? null} IS NULL OR created_at > ${after?.created_at ?? ""} OR (created_at = ${after?.created_at ?? ""} AND task_id > ${after?.task_id ?? ""}))
       ORDER BY created_at, task_id LIMIT 8`;
-    return {
+    const shown = refresh ? [] : supplied.slice(0, 8);
+    const clip = (items: BotContinuationNote["requests"]) =>
+      items.map((item) => ({
+        ...item,
+        refs: item.refs.map((ref) =>
+          ref.kind === "message" ? { ...ref, quote: ref.quote.slice(0, REFRESH_QUOTE_CHARS) } : ref,
+        ),
+      }));
+    const view = {
       ...scope,
       homeThreadId: home,
       revision: revision?.revision ?? null,
-      note: yield* resolveNote(home, revision?.note ?? emptyNote()),
+      note: refresh
+        ? {
+            requests: clip(note.requests),
+            waiting: clip(note.waiting),
+            decided: clip(note.decided),
+            context: clip(note.context),
+          }
+        : note,
       updatedBy: revision?.updatedBy ?? null,
       updatedAt: revision?.updatedAt ?? null,
       restoredFrom: revision?.restoredFrom ?? null,
       coverage: revision?.coverage ?? null,
-      basis,
+      basis: null,
       writable: bot.archived_at === null && context.detached_at === null,
       newerInputs: gap,
-      sources: supplied.slice(0, 8).map(({ ordinal, message }) => ({
+      sources: shown.map(({ ordinal, message }) => ({
         messageId: message.id,
         ordinal,
         text: message.text.slice(0, 400),
         directUser: message.createdBy === "user",
       })),
-      moreSources: Math.max(0, supplied.length - 8),
-      ...(page === undefined
-        ? {}
-        : {
-            uncovered: {
-              sources: page.shown.map(({ ordinal, result, message }) => ({
-                messageId: message.id,
-                ordinal,
-                kind: result ? ("result" as const) : ("input" as const),
-                directUser: message.createdBy === "user",
-                text: message.text,
-              })),
-              remaining: page.inputs + page.results - page.shown.length,
-              deferred:
-                page.deferred === null
-                  ? null
-                  : {
-                      messageId: page.deferred.message.id,
-                      ordinal: page.deferred.ordinal,
-                      bytes: utf8.encode(page.deferred.message.text).byteLength,
-                    },
-            },
-          }),
+      moreSources: supplied.length - shown.length,
       activeTasks: tasks.map((task) => ({
         taskId: BotTaskId.make(task.task_id),
         title: task.title.slice(0, 160),
@@ -517,6 +570,52 @@ const make = Effect.gen(function* () {
       moreActiveTasks: Math.max(0, (tasks[0]?.total ?? 0) - tasks.length),
       nextActiveTaskId:
         (tasks[0]?.total ?? 0) > tasks.length ? BotTaskId.make(tasks.at(-1)!.task_id) : null,
+    } satisfies BotContinuationView;
+    return { home, revision, run, supplied, refresh, view };
+  });
+  const get = Effect.fn("BotContinuation.get")(function* (
+    scope: BotContinuationReadInput,
+    options?: { readonly page?: boolean },
+  ) {
+    const { home, revision, run, supplied, refresh, view } = yield* read(
+      scope,
+      options?.page === true ? "botNote" : "never",
+    );
+    if (run === undefined) return view;
+    const newest = supplied[0];
+    const unsigned = {
+      homeThreadId: home,
+      runId: RunId.make(run.run_id),
+      fromOrdinal:
+        supplied.length === 0 ? null : Math.min(...supplied.map((source) => source.ordinal)),
+      throughOrdinal:
+        supplied.length === 0 ? null : Math.max(...supplied.map((source) => source.ordinal)),
+      digest: sourceDigest(supplied),
+      throughRunOrdinal: newest?.runOrdinal ?? null,
+      throughInputOrdinal: newest?.ordinal ?? null,
+    };
+    if (!refresh) return { ...view, basis: signed({ ...unsigned, page: null }) };
+    const { inputs, results, delivered } = yield* uncovered(home, revision?.frontier);
+    const shown = planPage(view, delivered, inputs + results);
+    const last = shown.at(-1);
+    return {
+      ...view,
+      basis: signed({
+        ...unsigned,
+        page:
+          last === undefined
+            ? null
+            : {
+                from: revision?.frontier ?? null,
+                through: { runOrdinal: last.runOrdinal, ordinal: last.ordinal },
+                ids: shown.map((source) => source.message.id),
+                digest: sourceDigest(shown),
+                previews: shown.flatMap((source) =>
+                  source.preview === null ? [] : [{ id: source.message.id, bytes: source.preview }],
+                ),
+              },
+      }),
+      uncovered: { sources: shown.map(pageEntry), remaining: inputs + results - shown.length },
     } satisfies BotContinuationView;
   }, Effect.mapError(failure));
   const history = Effect.fn("BotContinuation.history")(function* (scope: BotContinuationScope) {
@@ -577,11 +676,9 @@ const make = Effect.gen(function* () {
     let basis: typeof BasisPayload.Type | null = null;
     let runRestriction: string | null = null;
     let note = emptyNote();
-    let scopedSources: readonly {
-      readonly ordinal: number;
-      readonly runOrdinal: number;
-      readonly message: OrchestrationV2ConversationMessageJson;
-    }[] = [];
+    // What the saving run was shown, newest first: its page, then the newest direct inputs.
+    let evidence: readonly Omit<Shown, "preview">[] = [];
+    let tooLarge: readonly string[] = [];
     if (retry === undefined && caller.kind === "bot") {
       if (input.basis === undefined)
         return yield* invalid(
@@ -594,7 +691,7 @@ const make = Effect.gen(function* () {
           "The save basis belongs to another Home or run. Read the current working notes again.",
         );
       runRestriction = run.restriction;
-      scopedSources = yield* sourceWindow(
+      const scopedSources = yield* sourceWindow(
         home,
         basis.throughRunOrdinal ?? -1,
         basis.throughInputOrdinal ?? -1,
@@ -609,13 +706,24 @@ const make = Effect.gen(function* () {
       sourceIds = scopedSources.map((source) => source.message.id);
       writer = { kind: "bot", threadId: home, runId: basis.runId };
       const page = basis.page;
+      let shown: readonly Omit<Shown, "preview">[] = [];
       if (page !== null) {
-        const { shown } = yield* uncovered(home, page.from, page.through);
+        const { delivered } = yield* uncovered(home, page.from, page.through);
         if (
-          sourceDigest(shown) !== page.digest ||
-          encodeJson(shown.map((source) => source.message.id)) !== encodeJson(page.ids)
+          sourceDigest(delivered) !== page.digest ||
+          encodeJson(delivered.map((source) => source.message.id)) !== encodeJson(page.ids)
         )
           return { _tag: "conflict", reason: "basis", current: yield* get(input) } as const;
+        const previews = new Map(page.previews.map((preview) => [preview.id, preview.bytes]));
+        shown = delivered.map((source) => {
+          const preview = previews.get(source.message.id);
+          return {
+            ...source,
+            text:
+              preview === undefined ? source.message.text : leading(source.message.text, preview),
+          };
+        });
+        tooLarge = page.previews.map((preview) => preview.id);
         if (atOrBefore(page.from, frontier)) {
           const reached =
             frontier !== undefined && atOrBefore(page.through, frontier) ? frontier : page.through;
@@ -629,6 +737,10 @@ const make = Effect.gen(function* () {
           };
         }
       }
+      evidence = [
+        ...shown.toReversed(),
+        ...scopedSources.map((source) => ({ ...source, result: false, text: source.message.text })),
+      ];
     }
     if (retry === undefined && input.restoredFrom !== undefined) {
       const restored =
@@ -660,11 +772,12 @@ const make = Effect.gen(function* () {
             const quoted =
               item.quote === undefined
                 ? undefined
-                : scopedSources.find(
-                    ({ message }) =>
-                      message.text.includes(item.quote!) &&
+                : evidence.find(
+                    ({ text, result, message }) =>
+                      text.includes(item.quote!) &&
                       (section !== "decided" ||
-                        (message.createdBy === "user" &&
+                        (!result &&
+                          message.createdBy === "user" &&
                           (message.creationSource === "web" ||
                             message.creationSource === "mobile"))),
                   );
@@ -672,7 +785,10 @@ const make = Effect.gen(function* () {
               return yield* invalid(
                 "A new Bot decision needs an exact quote from direct user input; a proposal is not approval.",
               );
-            const source = quoted ?? (carried === undefined ? scopedSources[0] : undefined);
+            const named = evidence.find(
+              ({ message }) => tooLarge.includes(message.id) && item.text.includes(message.id),
+            );
+            const source = quoted ?? (carried === undefined ? (named ?? evidence[0]) : undefined);
             refs =
               source === undefined
                 ? (carried?.refs ?? [])
@@ -682,7 +798,7 @@ const make = Effect.gen(function* () {
                       messageId: source.message.id,
                       ordinal: source.ordinal,
                       digest: hash(source.message.text),
-                      quote: item.quote ?? source.message.text.slice(0, 400),
+                      quote: item.quote ?? source.text.slice(0, 400),
                       directUser: source.message.createdBy === "user",
                       availability: "available",
                     },
@@ -716,6 +832,19 @@ const make = Effect.gen(function* () {
         }
         note = { ...note, [section]: items };
       }
+      // An unread input is kept as a reference to open later, never passed over silently.
+      const unlisted = tooLarge.filter(
+        (id) =>
+          !BOT_CONTINUATION_SECTIONS.some((section) =>
+            note[section].some((item) =>
+              item.refs.some((ref) => ref.kind === "message" && ref.messageId === id),
+            ),
+          ),
+      );
+      if (unlisted.length > 0)
+        return yield* invalid(
+          `Keep each tooLarge item in the note: add a waiting item naming its messageId as an unreviewed large input (${unlisted.join(", ")}).`,
+        );
     }
     if (retry === undefined) note = yield* decodeNote(note);
     // A Waiting-only run keeps every carried item exactly, refs included, and only appends Waiting.
@@ -785,14 +914,12 @@ const make = Effect.gen(function* () {
     return committed._tag === "conflict" ? { ...committed, current: view } : { ...committed, view };
   }, Effect.mapError(failure));
   const coverage = Effect.fn("BotContinuation.coverage")(function* (scope: BotContinuationScope) {
-    const { home } = yield* scopeOf(scope);
-    const row = yield* currentRow(home);
-    const revision = row === undefined ? null : yield* decodeRevision(row.revision_json);
-    const { inputs, results, deferred } = yield* uncovered(home, revision?.frontier);
+    const { home, revision, view } = yield* read(scope, "always");
+    const { inputs, results, delivered } = yield* uncovered(home, revision?.frontier);
     if (inputs === 0 && results === 0) return { _tag: "current" } satisfies NoteCoverage;
-    return deferred === null
-      ? ({ _tag: "behind", inputs, results } satisfies NoteCoverage)
-      : ({ _tag: "unprovable", reason: "oversized_input", inputs, results } satisfies NoteCoverage);
+    return delivered.length > 0 && planPage(view, delivered, inputs + results).length === 0
+      ? ({ _tag: "unprovable", reason: "note_too_large", inputs, results } satisfies NoteCoverage)
+      : ({ _tag: "behind", inputs, results } satisfies NoteCoverage);
   }, Effect.mapError(failure));
   return BotContinuation.of({ get, history, save, coverage });
 });
