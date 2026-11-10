@@ -2488,10 +2488,16 @@ const endScopedRun = Effect.fn("fixture.endScopedRun")(function* (
   } as unknown as OrchestrationV2StoredEvent);
 });
 
-/** The save the scoped turn's model makes through t3_bot, with the basis its run was given. */
-const saveNoteAsBot = Effect.fn("fixture.saveNoteAsBot")(function* (updateId: string) {
+/**
+ * The save the scoped turn's model makes through t3_bot, with the basis of its read_continuation,
+ * or of its Home instructions, which show no source.
+ */
+const saveNoteAsBot = Effect.fn("fixture.saveNoteAsBot")(function* (
+  updateId: string,
+  read: "shown" | "unshown" = "shown",
+) {
   const notes = yield* BotContinuation.BotContinuation;
-  const view = yield* notes.get(scope);
+  const view = yield* notes.get(scope, { page: read === "shown" });
   return yield* notes.save(
     {
       ...scope,
@@ -2569,12 +2575,13 @@ it.effect(
 );
 
 it.effect.each([
-  { ending: "failed", saves: true, reason: "run_failed" },
-  { ending: "interrupted", saves: false, reason: "run_interrupted" },
-  { ending: "completed", saves: false, reason: "not_saved" },
+  { ending: "failed", save: "shown", reason: "run_failed" },
+  { ending: "interrupted", save: null, reason: "run_interrupted" },
+  { ending: "completed", save: null, reason: "not_saved" },
+  { ending: "completed", save: "unshown", reason: "not_shown" },
 ] as const)(
-  "keeps the evidence for the next refresh when the scoped turn ends $ending (saved: $saves)",
-  ({ ending, saves, reason }) =>
+  "keeps the evidence for the next refresh when the scoped turn ends $ending (save: $save)",
+  ({ ending, save, reason }) =>
     Effect.gen(function* () {
       yield* refreshHome();
       const { generate } = yield* recordingGenerator(() => Effect.succeed({ operations: [] }));
@@ -2589,7 +2596,7 @@ it.effect.each([
             .refreshNote(scope)
             .pipe(Effect.forkChild({ startImmediately: true }));
           const runId = yield* Queue.take(turns.started);
-          if (saves) assert.equal((yield* saveNoteAsBot("refresh"))._tag, "saved");
+          if (save !== null) assert.equal((yield* saveNoteAsBot("refresh", save))._tag, "saved");
           yield* endScopedRun(runId, ending, homeSequence, homeEvents);
           const result = yield* Fiber.join(refresh);
           assert.deepEqual(result.status === "not_refreshed" && result.reason, reason);
@@ -2599,10 +2606,13 @@ it.effect.each([
           );
           // A save made before the run failed still stands; only the outcome reports the failure.
           const notes = yield* BotContinuation.BotContinuation;
-          assert.equal((yield* notes.coverage(scope))._tag, saves ? "current" : "behind");
+          assert.equal(
+            (yield* notes.coverage(scope))._tag,
+            save === "shown" ? "current" : "behind",
+          );
 
           // Nothing was consumed: the next attempt is a new turn at the Home's new sequence.
-          if (saves) return;
+          if (save === "shown") return;
           yield* maintenance.runNow(scope);
           const retry = yield* maintenance
             .refreshNote(scope)
@@ -2620,7 +2630,7 @@ it.effect.each([
 it.effect.each([
   { name: "a running Home turn", reason: "home_active" },
   { name: "Home input after the captured sequence", reason: "home_active" },
-  { name: "more new input than one save holds", reason: "input_overflow" },
+  { name: "an input larger than one read shows", reason: "oversized_input" },
   { name: "a Linux host", reason: "unsupported" },
   { name: "a Home on another provider", reason: "unsupported" },
 ] as const)("defers the refresh without a lasting turn for $name", ({ name, reason }) =>
@@ -2630,9 +2640,8 @@ it.effect.each([
     yield* withEngine(generate, ({ maintenance, homeSequence, homeTurns }) =>
       Effect.gen(function* () {
         const turns = yield* scopedTurns(homeSequence);
-        if (name === "more new input than one save holds")
-          for (let index = 0; index <= 200; index += 1)
-            yield* input(`old-${index}`, `Request ${index}`);
+        if (name === "an input larger than one read shows")
+          yield* input("pasted", "x".repeat(24_001));
         yield* enable(maintenance);
         yield* input("ask", "Draft the Harbor checklist once I send the dates.");
         yield* maintenance.runNow(scope);

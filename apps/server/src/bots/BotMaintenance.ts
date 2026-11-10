@@ -104,14 +104,14 @@ export type NoteRefresh =
         | "start_refused"
         | "run_missing"
         | "not_saved"
-        | "source_gap"
+        | "not_shown"
         | `run_${string}`;
     }
   | { readonly status: "deferred"; readonly runId: string; readonly reason: NoteDeferReason };
 
 /** The whole prompt of the scoped note refresh turn. Model-facing. */
 export const NOTE_REFRESH_PROMPT =
-  "Maintenance: bring your working notes up to date with this Home, then stop. Read them with t3_bot read_continuation and reconcile every unfinished request, waiting question or proposal, decision and returned task result since the saved source boundary. Then save the full note once with t3_bot save_continuation and that exact basis, even when nothing changed. Keep proposals in waiting until the user approves them; a new decided item needs an exact quote from the user's own message. Do nothing else: no other tool, task or message. Reply with one short line.";
+  "Maintenance: bring your working notes up to date with this Home, then stop. Read them with t3_bot read_continuation. Its `uncovered` list holds, oldest first and in full, the Home input and returned task results no saved note has covered yet. Reconcile each one into the note: unfinished requests, waiting questions or proposals, decisions and task results. Keep every existing item that is still open. Then save the full note once with t3_bot save_continuation and that read's exact basis, even when nothing changed. Keep proposals in waiting until the user approves them; a new decided item needs an exact quote from the user's own message. Do nothing else: no other tool, task or message. Reply with one short line.";
 
 interface StateRow {
   readonly settings_revision: number;
@@ -881,17 +881,21 @@ export const make = Effect.gen(function* () {
           const pending =
             yield* sql`SELECT 1 FROM bot_maintenance_sources WHERE home_thread_id = ${home} AND state = 'pending' LIMIT 1`;
           if (pending.length > 0) return { _tag: "learning_pending" } as const;
+          const [note] = yield* sql<{
+            readonly frontier: string | null;
+          }>`SELECT json_extract(revision_json, '$.frontier') AS frontier FROM bot_continuation_revisions WHERE home_thread_id = ${home} ORDER BY revision DESC LIMIT 1`;
           return {
             _tag: "read",
             sequence: admitted.sequence,
             coverage: yield* notes.coverage(scope),
+            frontier: note?.frontier ?? null,
           } as const;
         }),
       ),
     );
     if (read._tag === "busy") return yield* deferred("home_active");
     if (read._tag === "learning_pending") return yield* deferred("learning_pending");
-    const { coverage, sequence } = read;
+    const { coverage, sequence, frontier } = read;
     if (coverage._tag === "current") return { status: "current" } as const;
     if (coverage._tag === "unprovable") return yield* deferred(coverage.reason);
     const [thread] = yield* main<{
@@ -944,12 +948,13 @@ export const make = Effect.gen(function* () {
     if (settled?.status !== "completed")
       return yield* notRefreshed(`run_${settled?.status ?? "missing"}`, run.run_id);
     const [saved] = yield* sql<{
-      readonly complete: number | null;
-    }>`SELECT json_extract(revision_json, '$.inspected.complete') AS complete FROM bot_continuation_revisions
+      readonly frontier: string | null;
+    }>`SELECT json_extract(revision_json, '$.frontier') AS frontier FROM bot_continuation_revisions
       WHERE home_thread_id = ${home} AND json_extract(revision_json, '$.updatedBy.runId') = ${run.run_id}
       ORDER BY revision DESC LIMIT 1`;
     if (saved === undefined) return yield* notRefreshed("not_saved", run.run_id);
-    if (saved.complete !== 1) return yield* notRefreshed("source_gap", run.run_id);
+    // Only a save from a read that showed the uncovered page moves the frontier.
+    if (saved.frontier === frontier) return yield* notRefreshed("not_shown", run.run_id);
     return yield* settle("applied", { note: "refreshed", homeRunId: run.run_id }, {
       status: "refreshed",
       runId,

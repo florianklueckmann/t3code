@@ -39,11 +39,14 @@ const read = Effect.fn("mcp.bot.read")(function* (input: BotToolInput) {
     const projectId = yield* requireProjectId(input);
     return {
       continuation: yield* continuation
-        .get({
-          botId,
-          projectId,
-          ...(input.afterTaskId === undefined ? {} : { afterTaskId: input.afterTaskId }),
-        })
+        .get(
+          {
+            botId,
+            projectId,
+            ...(input.afterTaskId === undefined ? {} : { afterTaskId: input.afterTaskId }),
+          },
+          { page: true },
+        )
         .pipe(Effect.mapError(botFailure)),
     };
   }

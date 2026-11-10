@@ -158,6 +158,25 @@ export const BotContinuationView = Schema.Struct({
     }),
   ),
   moreSources: NonNegativeInt,
+  /** Oldest first and in full: the Home input and returned results no shown save covers yet. */
+  uncovered: Schema.optional(
+    Schema.Struct({
+      sources: Schema.Array(
+        Schema.Struct({
+          messageId: MessageId,
+          ordinal: NonNegativeInt,
+          kind: Schema.Literals(["input", "result"]),
+          directUser: Schema.Boolean,
+          text: Schema.String,
+        }),
+      ),
+      remaining: NonNegativeInt,
+      /** The oldest uncovered item when it alone exceeds one read; it stays uncovered. */
+      deferred: Schema.NullOr(
+        Schema.Struct({ messageId: MessageId, ordinal: NonNegativeInt, bytes: NonNegativeInt }),
+      ),
+    }),
+  ),
   activeTasks: Schema.Array(
     Schema.Struct({
       taskId: BotTaskId,

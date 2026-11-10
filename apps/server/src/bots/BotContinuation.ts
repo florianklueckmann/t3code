@@ -35,6 +35,20 @@ import { isDirectHomeInput } from "./homeReturn.ts";
 
 /** The most recent direct inputs one save basis holds. */
 const SOURCE_WINDOW = 200;
+/**
+ * One read's share of the uncovered stream, sent whole: enough for a busy Home day, and small
+ * enough that the tool result reaches the model uncut.
+ */
+const UNCOVERED_PAGE = { items: 40, bytes: 24_000 } as const;
+// Queued starts preserve run order but can insert a lower display ordinal than older steers.
+const Position = Schema.Struct({ runOrdinal: NonNegativeInt, ordinal: NonNegativeInt });
+type Position = typeof Position.Type;
+/** Ids carry the frontier's own run, where a promoted queued input can land behind it. */
+const Frontier = Schema.Struct({
+  ...Position.fields,
+  ids: Schema.Array(Schema.String).check(Schema.isMaxLength(SOURCE_WINDOW)),
+});
+type Frontier = typeof Frontier.Type;
 const BasisPayload = Schema.Struct({
   homeThreadId: ThreadId,
   runId: RunId,
@@ -43,19 +57,23 @@ const BasisPayload = Schema.Struct({
   digest: Schema.NullOr(Schema.String),
   throughRunOrdinal: Schema.NullOr(NonNegativeInt),
   throughInputOrdinal: Schema.NullOr(NonNegativeInt),
+  /** The uncovered page this read returned, which a save from it may certify. */
+  page: Schema.NullOr(
+    Schema.Struct({
+      from: Schema.NullOr(Frontier),
+      through: Position,
+      ids: Schema.Array(Schema.String),
+      digest: Schema.String,
+    }),
+  ),
 });
 const StoredRevision = Schema.Struct({
   ...BotContinuationRevision.fields,
-  // Queued starts preserve run order but can insert a lower display ordinal than older steers.
-  sourcePosition: Schema.optional(
-    Schema.NullOr(Schema.Struct({ runOrdinal: NonNegativeInt, ordinal: NonNegativeInt })),
-  ),
+  sourcePosition: Schema.optional(Schema.NullOr(Position)),
   sourceIds: Schema.optional(Schema.Array(Schema.String).check(Schema.isMaxLength(SOURCE_WINDOW))),
-  // The Home run of the latest Bot save, and whether every direct input through sourcePosition
-  // sat inside some Bot save's window. Notes saved before this was recorded prove nothing.
-  inspected: Schema.optional(
-    Schema.Struct({ runOrdinal: NonNegativeInt, complete: Schema.Boolean }),
-  ),
+  // Every input and returned result through here was shown, in order, to a save that kept it.
+  // Absent, nothing is proven and coverage rebuilds from the start of retained Home history.
+  frontier: Schema.optional(Frontier),
 });
 
 /** Whether the note provably covers every direct Home input and every result returned to it. */
@@ -64,10 +82,16 @@ export type NoteCoverage =
   | { readonly _tag: "behind"; readonly inputs: number; readonly results: number }
   | {
       readonly _tag: "unprovable";
-      /** More new input than one basis holds, or an earlier save already skipped some. */
-      readonly reason: "input_overflow" | "source_gap";
+      /** The oldest uncovered item alone exceeds one read, so no save can be shown it. */
+      readonly reason: "oversized_input";
       readonly inputs: number;
+      readonly results: number;
     };
+const utf8 = new TextEncoder();
+const atOrBefore = (a: Position | null | undefined, b: Position | null | undefined) =>
+  a == null ||
+  (b != null &&
+    (a.runOrdinal < b.runOrdinal || (a.runOrdinal === b.runOrdinal && a.ordinal <= b.ordinal)));
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const encodeRevision = Schema.encodeEffect(Schema.fromJsonString(StoredRevision));
 const encodeBasis = Schema.encodeSync(Schema.fromJsonString(BasisPayload));
@@ -130,7 +154,14 @@ type Caller = { readonly kind: "user" } | { readonly kind: "bot"; readonly threa
 export class BotContinuation extends Context.Service<
   BotContinuation,
   {
-    readonly get: (scope: BotContinuationReadInput) => Effect.Effect<BotContinuationView, BotError>;
+    /**
+     * With `page`, in a scoped note refresh, the view also shows the oldest uncovered page, and
+     * its basis may certify it.
+     */
+    readonly get: (
+      scope: BotContinuationReadInput,
+      options?: { readonly page?: boolean },
+    ) => Effect.Effect<BotContinuationView, BotError>;
     readonly history: (
       scope: BotContinuationScope,
     ) => Effect.Effect<{ readonly revisions: readonly BotContinuationRevision[] }, BotError>;
@@ -198,17 +229,24 @@ const make = Effect.gen(function* () {
       readonly restriction: string | null;
     }>`SELECT run_id, ordinal, json_extract(payload_json, '$.restriction') AS restriction FROM orchestration_v2_projection_runs WHERE thread_id = ${home} AND status IN ('starting', 'running', 'waiting') ORDER BY ordinal DESC LIMIT 1`)[0];
   });
-  const directClause = main.literal(`m.role = 'user'
-    AND json_extract(m.payload_json, '$.notification') IS NULL
-    AND json_extract(m.payload_json, '$.delegatedCompletion') IS NULL
-    AND json_extract(m.payload_json, '$.senderThreadId') IS NULL
+  const isResult = `(json_extract(m.payload_json, '$.notification') IS NOT NULL
+    OR json_extract(m.payload_json, '$.delegatedCompletion') IS NOT NULL)`;
+  const direct = `json_extract(m.payload_json, '$.senderThreadId') IS NULL
     AND json_extract(m.payload_json, '$.scheduledTaskId') IS NULL
     AND json_extract(m.payload_json, '$.context.guest') IS NULL
     AND ((json_extract(m.payload_json, '$.createdBy') = 'user' AND json_extract(m.payload_json, '$.creationSource') IN ('web', 'mobile'))
       OR (json_extract(m.payload_json, '$.createdBy') = 'agent' AND json_extract(m.payload_json, '$.creationSource') = 'mcp'))
-    AND (lower(trim(json_extract(m.payload_json, '$.text'))) != '/compact' OR json_array_length(json_extract(m.payload_json, '$.attachments')) > 0)
+    AND (lower(trim(json_extract(m.payload_json, '$.text'))) != '/compact' OR json_array_length(json_extract(m.payload_json, '$.attachments')) > 0)`;
+  const live = `m.role = 'user'
     AND (r.status IS NULL OR r.status != 'rolled_back')
-    AND NOT (COALESCE(r.status, '') = 'cancelled' AND (i.turn_item_id IS NULL OR COALESCE(json_extract(i.payload_json, '$.inputIntent'), '') = 'queued_turn'))`);
+    AND NOT (COALESCE(r.status, '') = 'cancelled' AND (i.turn_item_id IS NULL OR COALESCE(json_extract(i.payload_json, '$.inputIntent'), '') = 'queued_turn'))`;
+  const directClause = main.literal(`${live} AND NOT ${isResult} AND ${direct}`);
+  /** Direct input and returned results: what the working note must reconcile. */
+  const streamClause = main.literal(`${live} AND (${isResult} OR (${direct}))`);
+  const resultColumn = main.literal(isResult);
+  const pendingColumn = main.literal(
+    `(i.turn_item_id IS NULL OR COALESCE(r.status, '') IN ('queued', 'preparing'))`,
+  );
   const sourceWindow = Effect.fn("BotContinuation.sourceWindow")(function* (
     home: ThreadId,
     throughRun: number | null = null,
@@ -230,14 +268,10 @@ const make = Effect.gen(function* () {
       ),
     );
   });
-  /**
-   * Direct inputs after a revision's source boundary. With `before`, only the delivered ones
-   * older than that position, which a basis ending there never showed.
-   */
+  /** Direct inputs after a revision's source boundary. */
   const inputsAfter = Effect.fn("BotContinuation.inputsAfter")(function* (
     home: ThreadId,
     revision: typeof StoredRevision.Type | null,
-    before?: { readonly runOrdinal: number; readonly ordinal: number },
   ) {
     return (yield* main<{
       readonly count: number;
@@ -253,10 +287,69 @@ const make = Effect.gen(function* () {
           OR (COALESCE(r.ordinal, 0) = ${revision?.sourcePosition?.runOrdinal ?? -1}
             AND (i.ordinal > ${revision?.sourcePosition?.ordinal ?? -1}
               OR (json_extract(i.payload_json, '$.inputIntent') = 'promoted_queued_to_steer'
-                AND m.message_id NOT IN (SELECT value FROM json_each(${encodeJson(revision?.sourceIds ?? [])}))))))
-        AND (${before?.runOrdinal ?? null} IS NULL
-          OR (COALESCE(r.status, '') NOT IN ('queued', 'preparing')
-            AND (COALESCE(r.ordinal, 0), i.ordinal) < (${before?.runOrdinal ?? 0}, ${before?.ordinal ?? 0})))`)[0]!;
+                AND m.message_id NOT IN (SELECT value FROM json_each(${encodeJson(revision?.sourceIds ?? [])}))))))`)[0]!;
+  });
+  /**
+   * The stream after a frontier, oldest first: the first page's worth of delivered items and the
+   * totals, pending ones included. With `through`, only delivered items up to that position.
+   */
+  const uncovered = Effect.fn("BotContinuation.uncovered")(function* (
+    home: ThreadId,
+    frontier: Frontier | null | undefined,
+    through?: Position,
+  ) {
+    const rows = yield* main<
+      SourceRow & {
+        readonly result: number;
+        readonly pending: number;
+        readonly total: number;
+        readonly results: number;
+      }
+    >`SELECT i.ordinal, COALESCE(r.ordinal, 0) AS run_ordinal, m.payload_json,
+        ${resultColumn} AS result, ${pendingColumn} AS pending,
+        COUNT(*) OVER () AS total, SUM(${resultColumn}) OVER () AS results
+      FROM orchestration_v2_projection_messages m
+      LEFT JOIN orchestration_v2_projection_turn_items i ON i.thread_id = m.thread_id AND i.type = 'user_message' AND json_extract(i.payload_json, '$.messageId') = m.message_id
+      LEFT JOIN orchestration_v2_projection_runs r ON r.run_id = COALESCE(i.run_id, m.run_id)
+      WHERE m.thread_id = ${home} AND ${streamClause}
+        AND (${pendingColumn}
+          OR (COALESCE(r.ordinal, 0), i.ordinal) > (${frontier?.runOrdinal ?? -1}, ${frontier?.ordinal ?? -1})
+          OR (COALESCE(r.ordinal, 0) = ${frontier?.runOrdinal ?? -1}
+            AND json_extract(i.payload_json, '$.inputIntent') = 'promoted_queued_to_steer'
+            AND m.message_id NOT IN (SELECT value FROM json_each(${encodeJson(frontier?.ids ?? [])}))))
+        AND (${through?.runOrdinal ?? null} IS NULL
+          OR (NOT ${pendingColumn}
+            AND (COALESCE(r.ordinal, 0), i.ordinal) <= (${through?.runOrdinal ?? 0}, ${through?.ordinal ?? 0})))
+      ORDER BY pending, run_ordinal, i.ordinal LIMIT ${UNCOVERED_PAGE.items + 1}`;
+    const delivered = yield* Effect.forEach(
+      rows.filter((row) => row.pending === 0),
+      (row) =>
+        decodeMessage(row.payload_json).pipe(
+          Effect.map((message) => ({
+            ordinal: row.ordinal,
+            runOrdinal: row.run_ordinal,
+            result: row.result === 1,
+            message,
+          })),
+        ),
+    );
+    const total = rows[0]?.total ?? 0;
+    const results = rows[0]?.results ?? 0;
+    // Never cut an item being certified: the page ends before the first one that does not fit.
+    const shown: typeof delivered = [];
+    let bytes = 0;
+    for (const source of delivered.slice(0, UNCOVERED_PAGE.items)) {
+      bytes += utf8.encode(source.message.text).byteLength;
+      if (bytes > UNCOVERED_PAGE.bytes) break;
+      shown.push(source);
+    }
+    const first = delivered[0];
+    return {
+      inputs: total - results,
+      results,
+      shown,
+      deferred: shown.length === 0 && first !== undefined ? first : null,
+    };
   });
   const resolveNote = Effect.fn("BotContinuation.resolveNote")(function* (
     home: ThreadId,
@@ -315,7 +408,10 @@ const make = Effect.gen(function* () {
       context: sections[3]!,
     };
   });
-  const get = Effect.fn("BotContinuation.get")(function* (scope: BotContinuationReadInput) {
+  const get = Effect.fn("BotContinuation.get")(function* (
+    scope: BotContinuationReadInput,
+    options?: { readonly page?: boolean },
+  ) {
     const { context, bot, home } = yield* scopeOf(scope);
     const row = yield* currentRow(home);
     const revision = row === undefined ? null : yield* decodeRevision(row.revision_json);
@@ -323,6 +419,12 @@ const make = Effect.gen(function* () {
     const supplied =
       run === undefined ? [] : yield* sourceWindow(home, run.ordinal, Number.MAX_SAFE_INTEGER);
     const newest = supplied[0];
+    // Only the scoped refresh certifies; ordinary turns already hold the day's input natively.
+    const page =
+      options?.page === true && run?.restriction === "botNote"
+        ? yield* uncovered(home, revision?.frontier)
+        : undefined;
+    const last = page?.shown.at(-1);
     const basis =
       run === undefined
         ? null
@@ -336,6 +438,15 @@ const make = Effect.gen(function* () {
             digest: sourceDigest(supplied),
             throughRunOrdinal: newest?.runOrdinal ?? null,
             throughInputOrdinal: newest?.ordinal ?? null,
+            page:
+              page === undefined || last === undefined
+                ? null
+                : {
+                    from: revision?.frontier ?? null,
+                    through: { runOrdinal: last.runOrdinal, ordinal: last.ordinal },
+                    ids: page.shown.map((source) => source.message.id),
+                    digest: sourceDigest(page.shown),
+                  },
           });
     const gap = yield* inputsAfter(home, revision);
     const after =
@@ -375,6 +486,28 @@ const make = Effect.gen(function* () {
         directUser: message.createdBy === "user",
       })),
       moreSources: Math.max(0, supplied.length - 8),
+      ...(page === undefined
+        ? {}
+        : {
+            uncovered: {
+              sources: page.shown.map(({ ordinal, result, message }) => ({
+                messageId: message.id,
+                ordinal,
+                kind: result ? ("result" as const) : ("input" as const),
+                directUser: message.createdBy === "user",
+                text: message.text,
+              })),
+              remaining: page.inputs + page.results - page.shown.length,
+              deferred:
+                page.deferred === null
+                  ? null
+                  : {
+                      messageId: page.deferred.message.id,
+                      ordinal: page.deferred.ordinal,
+                      bytes: utf8.encode(page.deferred.message.text).byteLength,
+                    },
+            },
+          }),
       activeTasks: tasks.map((task) => ({
         taskId: BotTaskId.make(task.task_id),
         title: task.title.slice(0, 160),
@@ -399,7 +532,7 @@ const make = Effect.gen(function* () {
                 const {
                   sourcePosition: _position,
                   sourceIds: _ids,
-                  inspected: _inspected,
+                  frontier: _frontier,
                   ...publicRevision
                 } = revision;
                 return { ...publicRevision, note };
@@ -439,7 +572,7 @@ const make = Effect.gen(function* () {
     let coverage = previous?.coverage ?? null;
     let sourcePosition = previous?.sourcePosition ?? null;
     let sourceIds = previous?.sourceIds ?? [];
-    let inspected = previous?.inspected;
+    let frontier = previous?.frontier;
     let writer: BotContinuationRevision["updatedBy"] = { kind: "user" };
     let basis: typeof BasisPayload.Type | null = null;
     let runRestriction: string | null = null;
@@ -475,17 +608,27 @@ const make = Effect.gen(function* () {
           : { runOrdinal: basis.throughRunOrdinal, ordinal: basis.throughInputOrdinal };
       sourceIds = scopedSources.map((source) => source.message.id);
       writer = { kind: "bot", threadId: home, runId: basis.runId };
-      const oldest = scopedSources.at(-1);
-      const skipped =
-        scopedSources.length === SOURCE_WINDOW && oldest !== undefined
-          ? (yield* inputsAfter(home, previous, oldest)).count > 0
-          : false;
-      inspected = {
-        runOrdinal: run.ordinal,
-        complete:
-          !skipped &&
-          ((previous?.sourcePosition ?? null) === null || previous?.inspected?.complete === true),
-      };
+      const page = basis.page;
+      if (page !== null) {
+        const { shown } = yield* uncovered(home, page.from, page.through);
+        if (
+          sourceDigest(shown) !== page.digest ||
+          encodeJson(shown.map((source) => source.message.id)) !== encodeJson(page.ids)
+        )
+          return { _tag: "conflict", reason: "basis", current: yield* get(input) } as const;
+        if (atOrBefore(page.from, frontier)) {
+          const reached =
+            frontier !== undefined && atOrBefore(page.through, frontier) ? frontier : page.through;
+          const ids = new Set(frontier?.runOrdinal === reached.runOrdinal ? frontier.ids : []);
+          for (const source of shown)
+            if (source.runOrdinal === reached.runOrdinal) ids.add(source.message.id);
+          frontier = {
+            runOrdinal: reached.runOrdinal,
+            ordinal: reached.ordinal,
+            ids: [...ids].slice(-SOURCE_WINDOW),
+          };
+        }
+      }
     }
     if (retry === undefined && input.restoredFrom !== undefined) {
       const restored =
@@ -504,7 +647,7 @@ const make = Effect.gen(function* () {
       coverage = revision.coverage;
       sourcePosition = revision.sourcePosition ?? null;
       sourceIds = revision.sourceIds ?? [];
-      inspected = revision.inspected;
+      frontier = revision.frontier;
     } else if (retry === undefined) {
       for (const section of BOT_CONTINUATION_SECTIONS) {
         const items: BotContinuationNote[typeof section][number][] = [];
@@ -597,7 +740,7 @@ const make = Effect.gen(function* () {
       restoredFrom: input.restoredFrom ?? null,
       sourcePosition,
       sourceIds,
-      ...(inspected === undefined ? {} : { inspected }),
+      ...(frontier === undefined ? {} : { frontier }),
     };
     const encoded = yield* encodeRevision(revision);
     if (encoded.length > 64000)
@@ -645,26 +788,11 @@ const make = Effect.gen(function* () {
     const { home } = yield* scopeOf(scope);
     const row = yield* currentRow(home);
     const revision = row === undefined ? null : yield* decodeRevision(row.revision_json);
-    const { count: inputs } = yield* inputsAfter(home, revision);
-    if ((revision?.sourcePosition ?? null) !== null && revision?.inspected?.complete !== true)
-      return { _tag: "unprovable", reason: "source_gap", inputs } satisfies NoteCoverage;
-    if (inputs > SOURCE_WINDOW)
-      return { _tag: "unprovable", reason: "input_overflow", inputs } satisfies NoteCoverage;
-    // Task results and delegated returns can raise decisions. One counts as read only by a save
-    // from a later run, which had the result in its conversation before it started.
-    const { results } = (yield* main<{
-      readonly results: number;
-    }>`SELECT COUNT(*) AS results FROM orchestration_v2_projection_messages m
-      LEFT JOIN orchestration_v2_projection_turn_items i ON i.thread_id = m.thread_id AND i.type = 'user_message' AND json_extract(i.payload_json, '$.messageId') = m.message_id
-      LEFT JOIN orchestration_v2_projection_runs r ON r.run_id = COALESCE(i.run_id, m.run_id)
-      WHERE m.thread_id = ${home} AND m.role = 'user'
-        AND (json_extract(m.payload_json, '$.notification') IS NOT NULL
-          OR json_extract(m.payload_json, '$.delegatedCompletion') IS NOT NULL)
-        AND COALESCE(r.status, '') != 'rolled_back'
-        AND COALESCE(r.ordinal, 0) >= ${revision?.inspected?.runOrdinal ?? -1}`)[0]!;
-    return inputs === 0 && results === 0
-      ? ({ _tag: "current" } satisfies NoteCoverage)
-      : ({ _tag: "behind", inputs, results } satisfies NoteCoverage);
+    const { inputs, results, deferred } = yield* uncovered(home, revision?.frontier);
+    if (inputs === 0 && results === 0) return { _tag: "current" } satisfies NoteCoverage;
+    return deferred === null
+      ? ({ _tag: "behind", inputs, results } satisfies NoteCoverage)
+      : ({ _tag: "unprovable", reason: "oversized_input", inputs, results } satisfies NoteCoverage);
   }, Effect.mapError(failure));
   return BotContinuation.of({ get, history, save, coverage });
 });

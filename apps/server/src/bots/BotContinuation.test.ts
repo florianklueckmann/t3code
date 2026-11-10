@@ -7,6 +7,7 @@ import { assert, it } from "@effect/vitest";
 import {
   BotId,
   BotTaskId,
+  MessageId,
   ProjectId,
   ThreadId,
   type BotSaveContinuationInput,
@@ -739,80 +740,170 @@ const returnedResult = Effect.fn("fixture.returnedResult")(function* (
   yield* main`INSERT INTO orchestration_v2_projection_turn_items (turn_item_id, thread_id, run_id, ordinal, type, status, updated_at, payload_json) VALUES (${`item-${ordinal}`}, ${home}, ${run}, ${ordinal}, 'user_message', 'completed', ${now}, ${JSON.stringify({ messageId })})`;
 });
 
-const coverageTag = (coverage: BotContinuation.NoteCoverage) =>
-  coverage._tag === "unprovable" ? `${coverage._tag}:${coverage.reason}` : coverage._tag;
+const bot = { kind: "bot", threadId: home } as const;
+/** What the running Home turn, as the scoped note refresh, reads with read_continuation. */
+const refreshRead = Effect.fn("fixture.refreshRead")(function* () {
+  const main = yield* SqlClient.SqlClient;
+  yield* main`UPDATE orchestration_v2_projection_runs SET payload_json = json_set(payload_json, '$.restriction', 'botNote') WHERE thread_id = ${home} AND status = 'running'`;
+  return yield* (yield* BotContinuation.BotContinuation).get(scope, { page: true });
+});
+/** Saves the current note with the basis of the refresh read that showed the unsaved page. */
+const saveShown = Effect.fn("fixture.saveShown")(function* (updateId: string) {
+  const notes = yield* BotContinuation.BotContinuation;
+  const read = yield* refreshRead();
+  return yield* notes.save(
+    { ...userSave(updateId, read.revision, empty()), basis: read.basis! },
+    bot,
+  );
+});
 
-it.effect.each([
-  { inputs: 200, before: "behind", after: "current" },
-  { inputs: 201, before: "unprovable:input_overflow", after: "unprovable:source_gap" },
-])(
-  "proves coverage only for input a save's window held ($inputs direct inputs)",
-  ({ inputs, before, after }) =>
-    Effect.gen(function* () {
-      yield* seed;
-      for (let ordinal = 1; ordinal <= inputs; ordinal += 1)
-        yield* input(ordinal, `Request ${ordinal}`, { directUser: true });
-      const notes = yield* BotContinuation.BotContinuation;
-      const bot = { kind: "bot", threadId: home } as const;
-      assert.equal(coverageTag(yield* notes.coverage(scope)), before);
-      const saved = yield* notes.save(
-        {
-          ...userSave("refresh", null, { ...empty(), requests: [{ text: "Request 1" }] }),
-          basis: (yield* notes.get(scope)).basis!,
-        },
-        bot,
-      );
-      if (saved._tag !== "saved") return assert.fail();
-      // The saved boundary moved past every input either way; only the proof tells them apart.
-      assert.equal(saved.view.newerInputs.count, 0);
-      assert.equal(coverageTag(yield* notes.coverage(scope)), after);
-      // A later save cannot vouch for input an earlier one never showed.
-      yield* input(inputs + 1, "One more request", { directUser: true });
-      const later = yield* notes.save(
-        {
-          ...userSave("later", 1, { ...empty(), requests: [{ text: "Request 1" }] }),
-          basis: (yield* notes.get(scope)).basis!,
-        },
-        bot,
-      );
-      assert.equal(later._tag, "saved");
-      assert.equal(coverageTag(yield* notes.coverage(scope)), after);
-    }).pipe(Effect.provide(services.pipe(Layer.provideMerge(database)))),
-);
-
-it.effect("counts a returned task result until a save from a later Home run", () =>
+it.effect("certifies only the Home input a read actually showed to the saving run", () =>
   Effect.gen(function* () {
     yield* seed;
-    yield* input(1, "Ask the vendor for two quotes.", { directUser: true });
-    const notes = yield* BotContinuation.BotContinuation;
-    const save = (updateId: string, baseRevision: number | null) =>
-      Effect.gen(function* () {
-        const view = yield* notes.get(scope);
-        return yield* notes.save(
-          {
-            ...userSave(updateId, baseRevision, { ...empty(), requests: [{ text: "Quotes" }] }),
-            basis: view.basis!,
-          },
-          { kind: "bot", threadId: home },
-        );
+    const harbor = `Keep the unresolved Harbor date request. ${"Its qualification matters. ".repeat(40)}`;
+    for (let ordinal = 1; ordinal <= 9; ordinal += 1)
+      yield* input(ordinal, ordinal === 1 ? harbor : `Answered question ${ordinal}`, {
+        directUser: true,
       });
-    assert.equal((yield* save("first", null))._tag, "saved");
-    assert.deepEqual(yield* notes.coverage(scope), { _tag: "current" });
+    const main = yield* SqlClient.SqlClient;
+    yield* main`UPDATE orchestration_v2_projection_runs SET payload_json = json_set(payload_json, '$.restriction', 'botNote') WHERE run_id = 'run-1'`;
+    const notes = yield* BotContinuation.BotContinuation;
+    // The Home instructions' basis carries no source text, so its save certifies nothing.
+    const instructions = yield* notes.get(scope);
+    assert.isFalse(instructions.sources.some((source) => source.messageId === "message-1"));
+    const unshown = yield* notes.save(
+      { ...userSave("review-window", null), basis: instructions.basis! },
+      bot,
+    );
+    assert.equal(unshown._tag, "saved");
+    assert.deepEqual(yield* notes.coverage(scope), { _tag: "behind", inputs: 9, results: 0 });
 
-    yield* homeRun("run-result", 2);
-    yield* returnedResult("run-result", 2);
-    assert.deepEqual(yield* notes.coverage(scope), { _tag: "behind", inputs: 0, results: 1 });
-    // A save in the result's own run may predate the result reaching the model.
-    assert.equal((yield* save("same-run", 1))._tag, "saved");
-    assert.deepEqual(yield* notes.coverage(scope), { _tag: "behind", inputs: 0, results: 1 });
-    // A user edit carries the proof but reads nothing itself.
-    assert.equal((yield* notes.save(userSave("user", 2), { kind: "user" }))._tag, "saved");
-    assert.deepEqual(yield* notes.coverage(scope), { _tag: "behind", inputs: 0, results: 1 });
-
-    yield* homeRun("run-refresh", 3);
-    assert.equal((yield* save("refresh", 3))._tag, "saved");
-    assert.deepEqual(yield* notes.coverage(scope), { _tag: "current" });
-    assert.equal((yield* notes.save(userSave("user-after", 4), { kind: "user" }))._tag, "saved");
+    const read = yield* notes.get(scope, { page: true });
+    assert.deepEqual(
+      read.uncovered?.sources.map((source) => [source.messageId, source.kind]),
+      Array.from({ length: 9 }, (_, index) => [`message-${index + 1}`, "input"]),
+    );
+    assert.equal(read.uncovered?.sources[0]?.text, harbor);
+    assert.equal((yield* saveShown("shown"))._tag, "saved");
     assert.deepEqual(yield* notes.coverage(scope), { _tag: "current" });
   }).pipe(Effect.provide(services.pipe(Layer.provideMerge(database)))),
+);
+
+it.effect("catches a long Home up oldest-first, one shown window a night", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const items = 40;
+    const inputs = items * 2 + 15;
+    for (let ordinal = 1; ordinal <= inputs; ordinal += 1)
+      yield* input(ordinal, `Request ${ordinal}`, { directUser: true });
+    yield* returnedResult("run-1", inputs + 1);
+    // A revision from before the frontier claims the newest boundary; it proves nothing earlier.
+    const bots = yield* BotDatabase.BotDatabase;
+    const legacy = JSON.stringify({
+      revision: 1,
+      note: { ...empty(), requests: [{ text: "Request 1", refs: [] }] },
+      coverage: { fromOrdinal: 1, throughOrdinal: inputs },
+      updatedBy: { kind: "bot", threadId: home, runId: "run-1" },
+      updatedAt: now,
+      restoredFrom: null,
+      sourcePosition: { runOrdinal: 1, ordinal: inputs + 1 },
+      sourceIds: [],
+      inspected: { runOrdinal: 1, complete: true },
+    });
+    yield* bots`INSERT INTO bot_continuation_revisions (home_thread_id, revision, update_id, request_hash, revision_json) VALUES (${home}, 1, 'legacy', 'legacy', ${legacy})`;
+    const notes = yield* BotContinuation.BotContinuation;
+    assert.equal((yield* notes.get(scope)).newerInputs.count, 0);
+    assert.deepEqual(yield* notes.coverage(scope), { _tag: "behind", inputs, results: 1 });
+
+    const nights = [];
+    for (let night = 1; night <= 3; night += 1) {
+      yield* homeRun(`night-${night}`, night + 1);
+      const read = yield* refreshRead();
+      nights.push(read.uncovered!.sources.map((source) => source.ordinal));
+      assert.equal((yield* saveShown(`night-${night}`))._tag, "saved");
+      nights.push(yield* notes.coverage(scope));
+    }
+    const ordinals = (from: number, through: number) =>
+      Array.from({ length: through - from + 1 }, (_, index) => from + index);
+    assert.deepEqual(nights, [
+      ordinals(1, items),
+      { _tag: "behind", inputs: inputs - items, results: 1 },
+      ordinals(items + 1, items * 2),
+      { _tag: "behind", inputs: inputs - items * 2, results: 1 },
+      ordinals(items * 2 + 1, inputs + 1),
+      { _tag: "current" },
+    ]);
+  }).pipe(Effect.provide(services.pipe(Layer.provideMerge(database)))),
+);
+
+it.effect("defers an input larger than one read shows instead of certifying a cut", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const bytes = 24_000;
+    yield* input(1, "x".repeat(bytes + 1), { directUser: true });
+    yield* input(2, "Keep the Harbor date open.", { directUser: true });
+    const notes = yield* BotContinuation.BotContinuation;
+    const read = yield* refreshRead();
+    assert.deepEqual(read.uncovered, {
+      sources: [],
+      remaining: 2,
+      deferred: { messageId: MessageId.make("message-1"), ordinal: 1, bytes: bytes + 1 },
+    });
+    assert.equal((yield* saveShown("oversized"))._tag, "saved");
+    assert.deepEqual(yield* notes.coverage(scope), {
+      _tag: "unprovable",
+      reason: "oversized_input",
+      inputs: 2,
+      results: 0,
+    });
+  }).pipe(Effect.provide(services.pipe(Layer.provideMerge(database)))),
+);
+
+it.effect.each(["notification", "delegatedCompletion"] as const)(
+  "counts a returned %s until a save whose read showed it",
+  (marker) =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* input(1, "Ask the vendor for two quotes.", { directUser: true });
+      const notes = yield* BotContinuation.BotContinuation;
+      assert.equal((yield* saveShown("first"))._tag, "saved");
+      assert.deepEqual(yield* notes.coverage(scope), { _tag: "current" });
+
+      yield* homeRun("run-result", 2);
+      yield* returnedResult("run-result", 2);
+      const main = yield* SqlClient.SqlClient;
+      if (marker === "delegatedCompletion")
+        yield* main`UPDATE orchestration_v2_projection_messages SET payload_json = json_set(json_remove(payload_json, '$.notification'), '$.delegatedCompletion', json('{"parentRunId":"run-1","generation":1,"taskIds":[]}')) WHERE message_id = 'result-2'`;
+      const behind = { _tag: "behind", inputs: 0, results: 1 } as const;
+      assert.deepEqual(yield* notes.coverage(scope), behind);
+      const instructions = yield* notes.get(scope);
+      assert.equal(
+        (yield* notes.save({ ...userSave("unshown", 1), basis: instructions.basis! }, bot))._tag,
+        "saved",
+      );
+      assert.deepEqual(yield* notes.coverage(scope), behind);
+      // A user edit carries the proof but reads nothing itself.
+      assert.equal((yield* notes.save(userSave("user", 2), { kind: "user" }))._tag, "saved");
+      assert.deepEqual(yield* notes.coverage(scope), behind);
+      // An ordinary turn already holds the result natively and is sent no page.
+      assert.isUndefined((yield* notes.get(scope, { page: true })).uncovered);
+
+      yield* homeRun("run-refresh", 3);
+      const read = yield* refreshRead();
+      assert.deepEqual(
+        read.uncovered?.sources.map((source) => [source.messageId, source.kind]),
+        [["result-2", "result"]],
+      );
+      assert.equal((yield* saveShown("shown"))._tag, "saved");
+      assert.deepEqual(yield* notes.coverage(scope), { _tag: "current" });
+      assert.equal((yield* notes.save(userSave("user-after", 4), { kind: "user" }))._tag, "saved");
+      assert.deepEqual(yield* notes.coverage(scope), { _tag: "current" });
+      // Restoring a revision from before the result brings back its proof, not the newer one.
+      const restored = yield* notes.save(
+        { ...userSave("restore", 5, { ...empty() }), restoredFrom: 1 },
+        { kind: "user" },
+      );
+      assert.equal(restored._tag, "saved");
+      assert.deepEqual(yield* notes.coverage(scope), behind);
+    }).pipe(Effect.provide(services.pipe(Layer.provideMerge(database)))),
 );
