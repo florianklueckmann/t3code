@@ -4,29 +4,76 @@ import {
   type BotConfigureMaintenanceResult,
   type BotContinuationScope,
   BotError,
+  BotLearningEntryId,
   type BotMaintenanceView,
+  BotTaskId,
+  OrchestrationV2ConversationMessageJson,
   ThreadId,
 } from "@t3tools/contracts";
+import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import * as Context from "effect/Context";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as EventStore from "../orchestration-v2/EventStore.ts";
 import * as ThreadCommandExecutor from "../orchestration-v2/ThreadCommandExecutor.ts";
 import * as BotDatabase from "./persistence/BotDatabase.ts";
+import * as Evidence from "./BotMaintenanceEvidence.ts";
+import * as BotService from "./BotService.ts";
 import * as BotStore from "./BotStore.ts";
+import * as BotTaskService from "./BotTaskService.ts";
 
-/** Why maintenance cannot generate here; null only where a real tool-free generator is wired. */
-interface Generation {
-  readonly unavailableReason: string | null;
+/** Turns one bounded packet into an unverified proposal. Never sees Home history or tools. */
+export type Generator = (packet: Evidence.Packet) => Effect.Effect<unknown, BotError>;
+
+/** Production stays unavailable until the sealed tool-free generator exists. */
+type Generation =
+  | { readonly unavailableReason: string }
+  | { readonly unavailableReason: null; readonly generate: Generator };
+
+export interface Outcome {
+  readonly sources: number;
+  readonly active: number;
+  readonly pending: number;
+  readonly stale: number;
+  readonly duplicate: number;
 }
+
+export type DeferReason =
+  | "oversized_evidence"
+  | "instructions_exceed_packet"
+  | "source_changed"
+  | "learning_changed"
+  | "settings_changed";
+
+export type BotMaintenancePass =
+  /** Nothing new to learn from; no model call and no run row. */
+  | { readonly status: "idle" }
+  | {
+      readonly status: "applied" | "partial" | "noop";
+      readonly runId: string;
+      readonly outcome: Outcome;
+    }
+  | { readonly status: "deferred"; readonly runId: string; readonly reason: DeferReason }
+  | {
+      readonly status: "failed";
+      readonly runId: string;
+      readonly reason: "generation_failed" | Evidence.RejectReason;
+    };
 
 interface StateRow {
   readonly settings_revision: number;
   readonly enabled: number;
   readonly started_at: string | null;
+}
+
+interface PendingRow {
+  readonly kind: Evidence.SourceKind;
+  readonly source_id: string;
 }
 
 export class BotMaintenance extends Context.Service<
@@ -36,17 +83,38 @@ export class BotMaintenance extends Context.Service<
     readonly configure: (
       input: BotConfigureMaintenanceInput,
     ) => Effect.Effect<BotConfigureMaintenanceResult, BotError>;
+    /** One learning pass over new evidence; serialized per Home with every other pass. */
+    readonly runNow: (scope: BotContinuationScope) => Effect.Effect<BotMaintenancePass, BotError>;
   }
 >()("t3/bots/BotMaintenance") {}
 
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const decodeMessage = Schema.decodeUnknownOption(
+  Schema.fromJsonString(OrchestrationV2ConversationMessageJson),
+);
 const terminalTaskStatuses = encodeJson([...BOT_TASK_TERMINAL_STATUSES]);
+const RETAINED_RUNS = 30;
 const invalid = (message: string) => new BotError({ message });
 const isBotError = Schema.is(BotError);
 const failure = (cause: unknown) =>
   isBotError(cause)
     ? cause
     : new BotError({ message: "Could not read or change Bot maintenance.", cause });
+const unavailable = () =>
+  invalid(
+    "Bot maintenance is not available on this server yet. It needs a tool-free model profile, so it stays off.",
+  );
+const keyOf = (source: { readonly kind: string; readonly id: string }) =>
+  `${source.kind}\u0000${source.id}`;
+
+/** Provenance kept on the learning revision itself, independent of run retention. */
+const provenance = (runId: string, evidence: ReadonlyArray<Evidence.VerifiedRef>) =>
+  `Bot maintenance run ${runId}. ${evidence
+    .map(
+      (ref) =>
+        `${ref.source.kind} ${ref.source.id} (sha256 ${Evidence.digest(ref.source.text).slice(0, 16)}): "${ref.quote}"`,
+    )
+    .join("; ")}`;
 
 export const make = Effect.fn("BotMaintenance.make")(function* (generation: Generation) {
   const main = yield* SqlClient.SqlClient;
@@ -54,6 +122,10 @@ export const make = Effect.fn("BotMaintenance.make")(function* (generation: Gene
   const store = yield* BotStore.BotStore;
   const events = yield* EventStore.EventStoreV2;
   const homeCommands = yield* ThreadCommandExecutor.ThreadCommandExecutor;
+  const bots = yield* BotService.BotService;
+  const tasks = yield* BotTaskService.BotTaskService;
+  const random = yield* SecureRandom.SecureRandom;
+  const passLocks = yield* KeyedLock.make<ThreadId>();
 
   const scopeOf = Effect.fn("BotMaintenance.scope")(function* (scope: BotContinuationScope) {
     const context = yield* store.getContext(scope.botId, scope.projectId);
@@ -91,10 +163,7 @@ export const make = Effect.fn("BotMaintenance.make")(function* (generation: Gene
   ) {
     const scope = { botId: input.botId, projectId: input.projectId };
     const { home, active } = yield* scopeOf(scope);
-    if (input.enabled && generation.unavailableReason !== null)
-      return yield* invalid(
-        "Bot maintenance is not available on this server yet. It needs a tool-free model profile, so it stays off.",
-      );
+    if (input.enabled && generation.unavailableReason !== null) return yield* unavailable();
     const current = yield* stateRow(home);
     if ((current?.settings_revision ?? 0) !== input.baseRevision)
       return { _tag: "conflict", current: yield* get(scope) } as const;
@@ -152,7 +221,276 @@ export const make = Effect.fn("BotMaintenance.make")(function* (generation: Gene
     return { _tag: "saved", view: yield* get(scope) } as const;
   }, Effect.mapError(failure));
 
-  return BotMaintenance.of({ get, configure });
+  /**
+   * Discovery records every new source identity as pending. An edited, promoted or retried
+   * source keeps its receipt, so it never reads as new; nothing here consumes evidence.
+   */
+  const discover = Effect.fn("BotMaintenance.discover")(function* (home: ThreadId, now: string) {
+    const messages = yield* main<{
+      readonly message_id: string;
+    }>`SELECT message_id FROM orchestration_v2_projection_messages WHERE thread_id = ${home} AND role = 'user'`;
+    yield* sql.withTransaction(
+      Effect.gen(function* () {
+        yield* sql`INSERT OR IGNORE INTO bot_maintenance_sources (home_thread_id, kind, source_id, state, recorded_at)
+          SELECT ${home}, 'home-input', value, 'pending', ${now} FROM json_each(${encodeJson(messages.map((row) => row.message_id))})`;
+        yield* sql`INSERT OR IGNORE INTO bot_maintenance_sources (home_thread_id, kind, source_id, state, recorded_at)
+          SELECT home_thread_id, 'task-result', task_id, 'pending', ${now} FROM bot_tasks
+          WHERE home_thread_id = ${home} AND status IN (SELECT value FROM json_each(${terminalTaskStatuses}))`;
+      }),
+    );
+  });
+
+  const classify = Effect.fn("BotMaintenance.classify")(function* (
+    home: ThreadId,
+    pending: ReadonlyArray<PendingRow>,
+  ) {
+    const classified = new Map<string, Evidence.Classified>();
+    const messageIds = pending
+      .filter((row) => row.kind === "home-input")
+      .map((row) => row.source_id);
+    const inputs = yield* main<{
+      readonly message_id: string;
+      readonly payload_json: string;
+      readonly run_status: string | null;
+      readonly turn_item_id: string | null;
+      readonly input_intent: string | null;
+    }>`SELECT m.message_id, m.payload_json, r.status AS run_status, i.turn_item_id, json_extract(i.payload_json, '$.inputIntent') AS input_intent
+      FROM orchestration_v2_projection_messages m
+      LEFT JOIN orchestration_v2_projection_turn_items i ON i.thread_id = m.thread_id AND i.type = 'user_message' AND json_extract(i.payload_json, '$.messageId') = m.message_id
+      LEFT JOIN orchestration_v2_projection_runs r ON r.run_id = COALESCE(i.run_id, m.run_id)
+      WHERE m.thread_id = ${home} AND m.message_id IN (SELECT value FROM json_each(${encodeJson(messageIds)}))
+      ORDER BY i.ordinal`;
+    for (const id of messageIds) {
+      const row = inputs.find((input) => input.message_id === id);
+      classified.set(
+        keyOf({ kind: "home-input", id }),
+        Evidence.classifyHomeInput({
+          message:
+            row === undefined ? undefined : Option.getOrUndefined(decodeMessage(row.payload_json)),
+          delivered: row?.turn_item_id != null,
+          runStatus: row?.run_status ?? null,
+          inputIntent: row?.input_intent ?? null,
+        }),
+      );
+    }
+    for (const row of pending) {
+      if (row.kind !== "task-result") continue;
+      const task = (yield* sql<{
+        readonly status: string;
+        readonly completed_at: string | null;
+        readonly updated_at: string;
+      }>`SELECT status, completed_at, updated_at FROM bot_tasks WHERE home_thread_id = ${home} AND task_id = ${row.source_id}`)[0];
+      const key = keyOf({ kind: "task-result", id: row.source_id });
+      // Only a completed run's saved answer is evidence; any other ending proves nothing.
+      if (task?.status !== "completed") {
+        classified.set(key, { _tag: "excluded", reason: `task_${task?.status ?? "missing"}` });
+        continue;
+      }
+      const { result } = yield* tasks.getResult({ taskId: BotTaskId.make(row.source_id) });
+      classified.set(
+        key,
+        result.state === "available"
+          ? {
+              _tag: "eligible",
+              source: {
+                kind: "task-result",
+                id: row.source_id,
+                at: task.completed_at ?? task.updated_at,
+                text: result.text,
+              },
+            }
+          : { _tag: "excluded", reason: `result_${result.state}` },
+      );
+    }
+    return classified;
+  });
+
+  const finishRun = (runId: string, status: string, outcome: unknown, now: string) =>
+    sql`UPDATE bot_maintenance_runs SET status = ${status}, outcome_json = ${encodeJson(outcome)}, finished_at = ${now} WHERE run_id = ${runId}`;
+
+  const pass = Effect.fn("BotMaintenance.pass")(function* (
+    scope: BotContinuationScope,
+    home: ThreadId,
+    generate: Generator,
+  ) {
+    const now = DateTime.formatIso(yield* DateTime.now);
+    // This Home's pass lock is held, so a running row outlived its process. Learning and
+    // receipts commit with the run's final status, so it committed nothing.
+    yield* sql`UPDATE bot_maintenance_runs SET status = 'interrupted', finished_at = ${now} WHERE home_thread_id = ${home} AND status = 'running'`;
+    const state = yield* stateRow(home);
+    if (state?.enabled !== 1) return yield* invalid("Bot maintenance is off for this project.");
+    if (!(yield* scopeOf(scope)).active)
+      return yield* invalid("This Bot is archived or detached, so maintenance does not run.");
+
+    yield* discover(home, now);
+    const pending =
+      yield* sql<PendingRow>`SELECT kind, source_id FROM bot_maintenance_sources WHERE home_thread_id = ${home} AND state = 'pending'`;
+    const classified = yield* classify(home, pending);
+    const excluded = pending.flatMap((row) => {
+      const result = classified.get(keyOf({ kind: row.kind, id: row.source_id }));
+      return result?._tag === "excluded" ? [{ ...row, reason: result.reason }] : [];
+    });
+    if (excluded.length > 0)
+      yield* sql`UPDATE bot_maintenance_sources SET state = 'excluded', exclusion_reason = (SELECT json_extract(value, '$.reason') FROM json_each(${encodeJson(excluded)}) WHERE json_extract(value, '$.kind') = kind AND json_extract(value, '$.source_id') = source_id)
+        WHERE home_thread_id = ${home} AND state = 'pending' AND EXISTS (SELECT 1 FROM json_each(${encodeJson(excluded)}) WHERE json_extract(value, '$.kind') = kind AND json_extract(value, '$.source_id') = source_id)`;
+
+    // Learn from the oldest contiguous run of settled sources, so a later correction is never
+    // applied before the input it corrects.
+    const ordered = [...classified.values()]
+      .flatMap((result): Array<{ readonly at: string; readonly source: Evidence.Source | null }> =>
+        result._tag === "eligible"
+          ? [{ at: result.source.at, source: result.source }]
+          : result._tag === "settling"
+            ? [{ at: result.at, source: null }]
+            : [],
+      )
+      .toSorted((a, b) => a.at.localeCompare(b.at));
+    const settling = ordered.findIndex((entry) => entry.source === null);
+    const eligible = ordered
+      .slice(0, settling === -1 ? ordered.length : settling)
+      .flatMap((entry) => (entry.source === null ? [] : [entry.source]));
+    if (eligible.length === 0) return { status: "idle" } as const;
+
+    const bot = yield* store.getBot(scope.botId);
+    if (bot?.learning_policy !== "automatic" && bot?.learning_policy !== "after_adoption")
+      return yield* invalid("The Bot's learning policy is unreadable.");
+    const built = Evidence.buildBatch({
+      projectId: scope.projectId,
+      policy: bot.learning_policy,
+      sources: eligible,
+      learning: yield* store.listLearning(scope.botId),
+    });
+    const runId = yield* random.uuidV4();
+    const recordRun = (status: string, outcome: unknown) =>
+      sql.withTransaction(
+        Effect.gen(function* () {
+          yield* sql`INSERT INTO bot_maintenance_runs (run_id, home_thread_id, status, started_at, finished_at, outcome_json)
+            VALUES (${runId}, ${home}, ${status}, ${now}, ${status === "running" ? null : now}, ${encodeJson(outcome)})`;
+          yield* sql`DELETE FROM bot_maintenance_runs WHERE home_thread_id = ${home} AND run_id NOT IN (
+            SELECT run_id FROM bot_maintenance_runs WHERE home_thread_id = ${home} ORDER BY started_at DESC, rowid DESC LIMIT ${RETAINED_RUNS})`;
+        }),
+      );
+    if (built._tag === "blocked") {
+      yield* recordRun("deferred", { reason: built.reason });
+      return { status: "deferred", runId, reason: built.reason } as const;
+    }
+    const { batch } = built;
+    yield* recordRun("running", { sources: batch.sources.size });
+
+    // No Home, learning or SQL lock is held across the model call.
+    const output = yield* Effect.result(generate(batch.packet));
+    const done = DateTime.formatIso(yield* DateTime.now);
+    if (output._tag === "Failure") {
+      yield* finishRun(runId, "failed", { reason: "generation_failed" }, done);
+      return { status: "failed", runId, reason: "generation_failed" } as const;
+    }
+    const verified = Evidence.verifyProposal(batch, output.success);
+    if (verified._tag === "rejected") {
+      yield* finishRun(runId, "failed", { reason: verified.reason }, done);
+      return { status: "failed", runId, reason: verified.reason } as const;
+    }
+
+    const deferred = (reason: DeferReason) =>
+      finishRun(runId, "deferred", { reason }, done).pipe(
+        Effect.as({ status: "deferred", runId, reason } as const),
+      );
+    const selected = [...batch.sources.values()];
+    // Main reads finish under the Home lock; the learning change below writes only Bot data.
+    return yield* homeCommands.withLock(
+      home,
+      Effect.gen(function* () {
+        const current = yield* classify(
+          home,
+          selected.map((source) => ({ kind: source.kind, source_id: source.id })),
+        );
+        const unchanged = selected.every((source) => {
+          const latest = current.get(keyOf(source));
+          return latest?._tag === "eligible" && latest.source.text === source.text;
+        });
+        if (!unchanged) return yield* deferred("source_changed");
+        return yield* bots.maintainLearning(scope, (learning) =>
+          Effect.gen(function* () {
+            const latest = yield* stateRow(home);
+            if (latest?.enabled !== 1 || latest.settings_revision !== state.settings_revision)
+              return yield* deferred("settings_changed");
+            if (
+              Evidence.learningBasis(learning.policy, learning.rows, scope.projectId) !==
+              batch.basis
+            )
+              return yield* deferred("learning_changed");
+            const outcome = {
+              sources: selected.length,
+              active: 0,
+              pending: 0,
+              stale: 0,
+              duplicate: 0,
+            };
+            for (const operation of verified.proposal.operations) {
+              const kind = operation.op === "add" ? operation.kind : operation.target.kind;
+              // Stricter than ordinary learning: a standing instruction of this kind may
+              // govern the lesson, so it waits for the user instead of applying itself.
+              const governed = learning.rows.some(
+                (row) =>
+                  row.status === "active" &&
+                  row.origin === "instruction" &&
+                  row.kind === kind &&
+                  (row.project_id === null || row.project_id === scope.projectId),
+              );
+              const result = yield* learning.record(governed ? "after_adoption" : learning.policy, {
+                botId: scope.botId,
+                projectId: scope.projectId,
+                scope: "project",
+                kind,
+                text: operation.text,
+                rationale: operation.rationale,
+                evidence: provenance(runId, operation.evidence),
+                origin: "correction",
+                source: { kind: "agent", label: "Bot maintenance" },
+                ...(operation.op === "replace"
+                  ? {
+                      replaces: {
+                        entryId: BotLearningEntryId.make(operation.target.entryId),
+                        revision: operation.target.revision,
+                      },
+                    }
+                  : {}),
+              });
+              if (result.duplicate) outcome.duplicate += 1;
+              else if (result.status === "active") outcome.active += 1;
+              else if (result.status === "pending") outcome.pending += 1;
+              else outcome.stale += 1;
+            }
+            const receipts = selected.map((source) => ({
+              kind: source.kind,
+              source_id: source.id,
+              digest: Evidence.digest(source.text),
+            }));
+            const marked = yield* sql<{ readonly source_id: string }>`UPDATE bot_maintenance_sources
+              SET state = 'applied', run_id = ${runId}, digest = (SELECT json_extract(value, '$.digest') FROM json_each(${encodeJson(receipts)}) WHERE json_extract(value, '$.kind') = kind AND json_extract(value, '$.source_id') = source_id)
+              WHERE home_thread_id = ${home} AND state = 'pending' AND EXISTS (SELECT 1 FROM json_each(${encodeJson(receipts)}) WHERE json_extract(value, '$.kind') = kind AND json_extract(value, '$.source_id') = source_id)
+              RETURNING source_id`;
+            if (marked.length !== receipts.length)
+              return yield* invalid("Maintenance sources changed during the pass.");
+            const status = batch.more
+              ? "partial"
+              : verified.proposal.operations.length === 0
+                ? "noop"
+                : "applied";
+            yield* finishRun(runId, status, outcome, done);
+            return { status, runId, outcome } as const;
+          }),
+        );
+      }),
+    );
+  });
+
+  const runNow = Effect.fn("BotMaintenance.runNow")(function* (scope: BotContinuationScope) {
+    if (generation.unavailableReason !== null) return yield* unavailable();
+    const { home } = yield* scopeOf(scope);
+    return yield* passLocks.withLock(home, pass(scope, home, generation.generate));
+  }, Effect.mapError(failure));
+
+  return BotMaintenance.of({ get, configure, runNow });
 });
 
 // Generation needs the sealed tool-free Codex operation, which is not wired yet, so enabling is refused.

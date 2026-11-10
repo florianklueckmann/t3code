@@ -412,7 +412,14 @@ export const layerProduction = Layer.mergeAll(
   BotContinuation.layer,
   // The Orchestrator's executor reference, so the baseline snapshot takes the same Home lock.
   BotMaintenance.layer.pipe(
-    Layer.provide(Layer.merge(layerEventStoreProvided, ThreadCommandExecutor.layer)),
+    Layer.provide(
+      Layer.mergeAll(
+        layerEventStoreProvided,
+        ThreadCommandExecutor.layer,
+        layerBotServiceProvided,
+        layerBotTaskProvided,
+      ),
+    ),
   ),
   layerBotTaskProvided,
   // The MCP schedule tool reads it to set up routines on a Bot's model.

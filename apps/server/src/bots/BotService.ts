@@ -2,6 +2,7 @@ import {
   BOT_HOME_THREAD_ID_PREFIX,
   BOT_TASK_TERMINAL_STATUSES,
   type BotAttachProjectInput,
+  type BotContinuationScope,
   type BotCreateInput,
   type BotDecideLearningInput,
   type BotDetachProjectInput,
@@ -34,6 +35,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Schema from "effect/Schema";
+import type * as SqlError from "effect/sql/SqlError";
 import * as Stream from "effect/Stream";
 import * as BotDatabase from "./persistence/BotDatabase.ts";
 
@@ -88,6 +90,21 @@ export class BotService extends Context.Service<
     ) => Effect.Effect<BotDetail, BotError>;
     /** Settles lessons whose proposing task has finished, by that task's derived status. */
     readonly reconcileTaskLearning: Effect.Effect<void, BotError>;
+    /**
+     * Maintenance's learning change: the same per-Bot lock and Bot transaction as user changes.
+     * `change` may write only the Bot database; it commits or rolls back with its lessons.
+     */
+    readonly maintainLearning: <A>(
+      scope: BotContinuationScope,
+      change: (current: {
+        readonly policy: BotLearningPolicy;
+        readonly rows: ReadonlyArray<BotStore.BotLearningRow>;
+        readonly record: (
+          policy: BotLearningPolicy,
+          input: BotLearning.RecordLearningInput,
+        ) => Effect.Effect<BotLearning.RecordLearningResult, BotError | BotStore.BotStoreError>;
+      }) => Effect.Effect<A, BotError | BotStore.BotStoreError | SqlError.SqlError>,
+    ) => Effect.Effect<A, BotError>;
     /**
      * The attached project to use when a caller names none: the only one, or an
      * error listing the choices so the caller can ask the user.
@@ -631,7 +648,9 @@ const make = Effect.gen(function* () {
 
   const changeLearning = <A>(
     botId: BotId,
-    change: (bot: BotStore.BotRow) => Effect.Effect<A, BotError | BotStore.BotStoreError>,
+    change: (
+      bot: BotStore.BotRow,
+    ) => Effect.Effect<A, BotError | BotStore.BotStoreError | SqlError.SqlError>,
   ) =>
     learningLocks
       .withLock(
@@ -666,6 +685,21 @@ const make = Effect.gen(function* () {
     );
     return { bot: yield* readDetail(input.botId), learned };
   });
+
+  const maintainLearning: BotService["Service"]["maintainLearning"] = (scope, change) =>
+    changeLearning(scope.botId, (bot) =>
+      Effect.gen(function* () {
+        const context = yield* store.getContext(scope.botId, scope.projectId);
+        if (context === undefined || context.detached_at !== null) {
+          return yield* botError("The Bot is not attached to this project.", scope.botId)();
+        }
+        if (!isLearningPolicy(bot.learning_policy)) {
+          return yield* botError("The Bot's learning policy is unreadable.", scope.botId)();
+        }
+        const rows = yield* store.listLearning(scope.botId);
+        return yield* change({ policy: bot.learning_policy, rows, record: learning.record });
+      }),
+    ).pipe(Effect.withSpan("BotService.maintainLearning"));
 
   const decideLearning: BotService["Service"]["decideLearning"] = Effect.fn(
     "BotService.decideLearning",
@@ -774,6 +808,7 @@ const make = Effect.gen(function* () {
     retireLearning,
     restoreLearning,
     reconcileTaskLearning,
+    maintainLearning,
   });
 });
 
