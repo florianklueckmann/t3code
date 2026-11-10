@@ -200,7 +200,8 @@ function looksLikeCredential(text: string): boolean {
     SECRET_ASSIGNMENT.test(text) ||
     SECRET_SCHEME.test(text) ||
     URL_USERINFO.test(text) ||
-    hasCredentialQuery(text)
+    hasCredentialQuery(text) ||
+    hasCredentialQuery(text.slice(text.indexOf("=") + 1))
   );
 }
 

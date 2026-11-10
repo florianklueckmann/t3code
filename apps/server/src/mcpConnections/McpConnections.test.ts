@@ -213,6 +213,15 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("MCP connections"
             "argument-secret",
           ],
           [
+            {
+              type: "stdio",
+              command: "mcp-server",
+              args: [`--endpoint=https://mcp.example.test/mcp?api_key=${SENTINEL}`],
+              env: {},
+            },
+            "argument-secret",
+          ],
+          [
             { type: "stdio", command: "mcp-server", args: [], env: { "BAD-NAME": "x" } },
             "binding-name-invalid",
           ],
