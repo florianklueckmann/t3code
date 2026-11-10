@@ -1501,6 +1501,17 @@ it.effect.each<{
     modelSelection: { ...codex, options: [{ id: "reasoningEffort", value: "max" }] },
     error: "Option reasoningEffort must be one of: low, high.",
   },
+  {
+    name: "an option given twice",
+    modelSelection: {
+      ...codex,
+      options: [
+        { id: "reasoningEffort", value: "low" },
+        { id: "reasoningEffort", value: "high" },
+      ],
+    },
+    error: "Option reasoningEffort was specified more than once.",
+  },
 ])("refuses a task on $name before admitting it", ({ modelSelection, error }) =>
   Effect.gen(function* () {
     yield* TestClock.setTime(START);

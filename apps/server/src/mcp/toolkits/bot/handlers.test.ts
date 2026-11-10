@@ -19,6 +19,7 @@ import * as Stream from "effect/Stream";
 import * as BotService from "../../../bots/BotService.ts";
 import * as BotTaskService from "../../../bots/BotTaskService.ts";
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
+import { advertisedJsonSchema } from "../../advertisedJsonSchema.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import { liveThreadShell } from "../../McpToolAccess.testkit.ts";
@@ -273,6 +274,36 @@ it.effect("starts a task on its own model without updating the Bot", () =>
     expect(started.result).toMatchObject({ task: { modelSelection } });
     const inherited = yield* callTool({ action: "start_task", botId, task: "Recap." }, undefined);
     expect(inherited.calls).toEqual(["start:null"]);
+    const malformed = yield* callTool(
+      {
+        action: "start_task",
+        botId,
+        task: "Recap.",
+        modelSelection: { ...modelSelection, options: { reasoningEffort: 123 } },
+      } as unknown as BotToolInput,
+      undefined,
+    );
+    expect(malformed.result).toMatchObject({
+      reason: { _tag: "ToolParameterValidationError" },
+    });
+    expect(malformed.calls).toEqual([]);
+    const value = { anyOf: [{ type: "string" }, { type: "boolean" }] };
+    const options = {
+      anyOf: [
+        { type: "array", items: { properties: { value } } },
+        { type: "object", additionalProperties: value },
+      ],
+    };
+    expect(advertisedJsonSchema(BotToolkit.tools.t3_bot)).toMatchObject({
+      properties: {
+        modelSelection: {
+          anyOf: [
+            { required: ["instanceId", "model"], properties: { options } },
+            { required: ["provider", "model"], properties: { options } },
+          ],
+        },
+      },
+    });
   }),
 );
 

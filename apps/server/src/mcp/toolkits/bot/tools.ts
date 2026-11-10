@@ -68,7 +68,7 @@ const BotToolParameters = Schema.Struct({
   }),
   name: BotUpdateInput.fields.name,
   instructions: BotUpdateInput.fields.instructions,
-  modelSelection: BotUpdateInput.fields.modelSelection.annotate({
+  modelSelection: BotStartTaskInput.fields.modelSelection.annotate({
     description:
       "`create`/`update`: the Bot's model. `start_task`: this task's model and options only, such as reasoningEffort; the Bot keeps its own. Omit to use the Bot's. To change only options, copy `instanceId` and `model` from `read`.",
   }),
