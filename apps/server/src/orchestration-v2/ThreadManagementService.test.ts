@@ -74,6 +74,24 @@ it("stamps authoritative provenance on commands that create threads or messages"
   });
   expect(stamped).not.toHaveProperty("linkOrigin");
   expect(stamped).not.toHaveProperty("delegatedFrom");
+
+  // Only server maintenance sends a message that waits for an idle Home.
+  const message = ThreadManagementService.withCreationProvenance(
+    {
+      type: "message.dispatch",
+      createdBy: "user",
+      creationSource: "web",
+      commandId: CommandId.make("command:thread-management:message"),
+      threadId: ThreadId.make("thread:thread-management:create"),
+      messageId: MessageId.make("message:thread-management"),
+      text: "/compact",
+      attachments: [],
+      dispatchMode: { type: "start_immediately" },
+      ifIdleAtSequence: 3,
+    },
+    { createdBy: "user", creationSource: "web" },
+  );
+  expect(message).not.toHaveProperty("ifIdleAtSequence");
 });
 
 const layerReceiptsTest = CommandReceiptStore.layer.pipe(
