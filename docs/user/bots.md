@@ -198,6 +198,16 @@ is skipped while the Bot's conversation or its tasks are still busy, while the
 conversation is snoozed or archived, while maintenance is paused, or
 while its model can't run.
 
+**Daily Home check**, next to Maintenance, has the Bot look over that
+project's conversation once a day at the time you choose (08:00 server time by
+default). It adds to **Waiting on you** what needs your decision or preparation
+before the next check, each item quoting your message or naming its task, and
+does nothing else: it starts no task and sends nothing. When it adds something,
+the conversation turns unread; when there is nothing to add, you notice
+nothing. A check waits until the conversation has been quiet for ten minutes,
+skips while it is snoozed or archived, and runs only once after days the server
+was off. It needs a Codex model on a Mac server.
+
 The Bot gets its current learning at the start of each turn, not its whole
 history. Learning does not add preferred sources, settle project decisions or
 give the Bot more access. Research it did for one task stays in the

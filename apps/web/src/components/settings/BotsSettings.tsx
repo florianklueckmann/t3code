@@ -55,7 +55,7 @@ import {
   PlusIcon,
   Trash2Icon,
 } from "lucide-react";
-import { type ReactNode, useContext, useState } from "react";
+import { Fragment, type ReactNode, useContext, useState } from "react";
 
 import { useEnvironmentSettings } from "../../hooks/useSettings";
 import { randomUUID } from "../../lib/utils";
@@ -92,6 +92,7 @@ import { Textarea } from "../ui/textarea";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { BotAppearancePicker } from "./BotAppearancePicker";
 import { BotContinuationNotes } from "./BotContinuationNotes";
+import { BotHomeCheckSetting } from "./BotHomeCheckSetting";
 import { BotMaintenanceSetting } from "./BotMaintenanceSetting";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import {
@@ -736,14 +737,22 @@ function BotEditorForm({
         {current !== null && maintenanceSupported ? (
           <div className="mt-5 space-y-3">
             {current.projects.map((context) => (
-              <BotMaintenanceSetting
-                key={context.projectId}
-                environmentId={environmentId}
-                botId={current.id}
-                projectId={context.projectId}
-                title={titleOf(context.projectId)}
-                formLocked={saving || archived}
-              />
+              <Fragment key={context.projectId}>
+                <BotMaintenanceSetting
+                  environmentId={environmentId}
+                  botId={current.id}
+                  projectId={context.projectId}
+                  title={titleOf(context.projectId)}
+                  formLocked={saving || archived}
+                />
+                <BotHomeCheckSetting
+                  environmentId={environmentId}
+                  botId={current.id}
+                  projectId={context.projectId}
+                  title={titleOf(context.projectId)}
+                  formLocked={saving || archived}
+                />
+              </Fragment>
             ))}
           </div>
         ) : null}

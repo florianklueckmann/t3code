@@ -4,6 +4,7 @@ import {
   type BotContinuationView,
   type BotContinuationHistory,
   type BotMaintenanceView,
+  type BotHomeCheckView,
   type EnvironmentId,
   type BotSummary,
   type BotTaskResult,
@@ -1369,6 +1370,27 @@ export function createServerEnvironmentAtoms<R, E>(
       (refresh) => refresh(query),
     );
   });
+  const botHomeCheckQuery = createEnvironmentRpcQueryAtomFamily(runtime, {
+    label: "environment-data:server:bots:botHomeCheck",
+    tag: WS_METHODS.botsGetHomeCheck,
+    staleTimeMs: 0,
+    idleTtlMs: 0,
+    refreshTrigger: (target) =>
+      botContinuationActiveFamily(JSON.stringify([target.environmentId, target.input])),
+  });
+  const botHomeCheckFamily = Atom.family((key: string) => {
+    const [environmentId, input] = JSON.parse(key) as [EnvironmentId, BotContinuationScope];
+    const query = botHomeCheckQuery({ environmentId, input });
+    return Atom.readable(
+      (get): AsyncResult.AsyncResult<BotHomeCheckView | null, unknown> => {
+        const config = get(configValueAtom(environmentId));
+        if (config === null) return AsyncResult.initial(true);
+        if (config.environment.capabilities.botHomeCheck !== true) return AsyncResult.success(null);
+        return get(query);
+      },
+      (refresh) => refresh(query),
+    );
+  });
   const workThreadBotFamily = Atom.family((key: string) => {
     const [environmentId, threadId] = JSON.parse(key) as [EnvironmentId, string];
     return Atom.make((get): BotSummary | null => {
@@ -1591,6 +1613,10 @@ export function createServerEnvironmentAtoms<R, E>(
       readonly environmentId: EnvironmentId;
       readonly input: BotContinuationScope;
     }) => botMaintenanceFamily(JSON.stringify([target.environmentId, target.input])),
+    botHomeCheck: (target: {
+      readonly environmentId: EnvironmentId;
+      readonly input: BotContinuationScope;
+    }) => botHomeCheckFamily(JSON.stringify([target.environmentId, target.input])),
     botDetail: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:server:bots:detail",
       tag: WS_METHODS.botsGet,
@@ -1899,6 +1925,12 @@ export function createServerEnvironmentAtoms<R, E>(
     configureBotMaintenance: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:bots:configure-maintenance",
       tag: WS_METHODS.botsConfigureMaintenance,
+      scheduler: configScheduler,
+      concurrency: configConcurrency,
+    }),
+    configureBotHomeCheck: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bots:configure-home-check",
+      tag: WS_METHODS.botsConfigureHomeCheck,
       scheduler: configScheduler,
       concurrency: configConcurrency,
     }),

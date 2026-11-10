@@ -5,6 +5,7 @@ import {
   type BotContinuationRef,
   type BotContinuationRevision,
   type BotMaintenanceView,
+  type BotHomeCheckView,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import * as Option from "effect/Option";
@@ -619,5 +620,47 @@ function botMaintenanceState(view: BotMaintenanceView, unavailable: boolean): st
 }
 /** Turning off is always allowed; turning on needs an editable form, an active Bot and a server that can generate. */
 export function canToggleBotMaintenance(view: BotMaintenanceView, formLocked: boolean): boolean {
+  return view.enabled || (!formLocked && view.writable && view.unavailableReason === null);
+}
+
+export const BOT_HOME_CHECK_DESCRIPTION =
+  "Once a day, the Bot looks over this project's Home and adds to Waiting on you what needs your decision or preparation. It never acts on its own.";
+const BOT_HOME_CHECK_UNAVAILABLE_LABELS: ReadonlyMap<string, string> = new Map([
+  ["provider", "Needs a Codex model. Pick a Codex model for this Bot to turn the check on."],
+  ["platform", "Runs only when this server is a Mac."],
+]);
+/** Settings caption for a Home check; unknown reasons from newer servers stay readable. */
+export function botHomeCheckStatusLabel(view: BotHomeCheckView): string {
+  const state = !view.enabled
+    ? "Off"
+    : !view.writable
+      ? "On · stopped while detached or archived"
+      : view.unavailableReason !== null
+        ? "On · stopped"
+        : `On · daily at ${view.timeOfDay}`;
+  if (view.unavailableReason === null) return state;
+  return `${state} · ${BOT_HOME_CHECK_UNAVAILABLE_LABELS.get(view.unavailableReason) ?? "Not available on this server."}`;
+}
+/** What the latest check did, or null before the first one. */
+export function botHomeCheckLastLabel(view: BotHomeCheckView): string | null {
+  const last = view.lastCheck;
+  if (last === null) return null;
+  switch (last.outcome) {
+    case "running":
+      return "Checking now";
+    case "proposed":
+      return `Last check: added ${last.added ?? 0} to Waiting on you`;
+    case "noop":
+      return "Last check: nothing to add";
+    case "failed":
+    case "interrupted":
+    case "stopped":
+    case "unsupported":
+      return "Last check: couldn't check";
+    default:
+      return "Last check finished";
+  }
+}
+export function canToggleBotHomeCheck(view: BotHomeCheckView, formLocked: boolean): boolean {
   return view.enabled || (!formLocked && view.writable && view.unavailableReason === null);
 }
