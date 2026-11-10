@@ -22,6 +22,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as SqlClient from "effect/sql/SqlClient";
+import type * as SqlError from "effect/sql/SqlError";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import * as ServerConfig from "../config.ts";
@@ -66,9 +67,10 @@ const database = Sqlite.layerMemory.pipe(
 );
 const storeOnly = BotStore.layer.pipe(Layer.provideMerge(database));
 // Settings tests never learn, so the learning and task services are inert here.
-const inertLearning = Layer.merge(
+const inertLearning = Layer.mergeAll(
   Layer.mock(BotService.BotService)({}),
   Layer.mock(BotTaskService.BotTaskService)({}),
+  Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({}),
 );
 const production = BotMaintenance.layer.pipe(
   Layer.provide(Layer.mergeAll(EventStore.layer, ThreadCommandExecutor.layer, inertLearning)),
@@ -470,25 +472,45 @@ const recordingGenerator = Effect.fn("fixture.recordingGenerator")(function* (
   return { packets, generate };
 });
 
-/** Fresh services over the same database each call, as a server restart builds them. */
+/**
+ * Fresh services over the same database each call, as a server restart builds them. The Home's
+ * event sequence and the provider runtime's background-work probe are synthetic.
+ */
 const withEngine = <A, E, R>(
   generate: BotMaintenance.Generator,
   body: (services: {
     readonly maintenance: BotMaintenance.BotMaintenance["Service"];
     readonly turnContext: BotTurnContext.BotTurnContext["Service"];
     readonly bots: BotService.BotService["Service"];
+    readonly homeSequence: Ref.Ref<number>;
+    readonly runtimeBackgroundWork: Ref.Ref<boolean>;
   }) => Effect.Effect<A, E, R>,
   taskResults: Readonly<Record<string, string>> = {},
 ) =>
   Effect.gen(function* () {
     const executor = yield* KeyedLock.make<ThreadId>();
+    const homeSequence = yield* Ref.make(0);
+    const runtimeBackgroundWork = yield* Ref.make(false);
     const maintenance = yield* BotMaintenance.make({ unavailableReason: null, generate }).pipe(
       Effect.provideService(ThreadCommandExecutor.ThreadCommandExecutor, executor),
+      Effect.provide(
+        Layer.merge(
+          Layer.mock(EventStore.EventStoreV2)({ latestSequence: () => Ref.get(homeSequence) }),
+          Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
+            get: () =>
+              Effect.succeedSome({
+                hasPendingBackgroundWorkForThread: () => Ref.get(runtimeBackgroundWork),
+              } as never),
+          }),
+        ),
+      ),
     );
     return yield* body({
       maintenance,
       turnContext: yield* BotTurnContext.BotTurnContext,
       bots: yield* BotService.BotService,
+      homeSequence,
+      runtimeBackgroundWork,
     });
   }).pipe(
     Effect.provide(
@@ -670,8 +692,12 @@ it.effect(
             yield* finishedTask("task-cancelled", "cancelled");
             yield* finishedTask("task-interrupted", "interrupted");
 
-            const first = yield* maintenance.runNow(scope);
-            assert.equal(first.status, "noop");
+            const busy = yield* maintenance.runNow(scope);
+            assert.deepEqual(busy.status === "deferred" && busy.reason, "home_active");
+            assert.deepEqual(yield* Ref.get(packets), []);
+
+            yield* main`UPDATE orchestration_v2_projection_runs SET status = 'completed' WHERE run_id = 'run-still-running'`;
+            assert.equal((yield* maintenance.runNow(scope)).status, "noop");
             assert.deepEqual(
               (yield* Ref.get(packets)).map((packet) =>
                 packet.sources.map((source) => [source.key, source.text]),
@@ -682,6 +708,7 @@ it.effect(
                   ["i2", "Name the files after the session date."],
                   ["i3", "Also list the loot."],
                   ["t1", "Moved the notes. The index lives in Index.md."],
+                  ["i4", "Also track loot."],
                 ],
               ],
             );
@@ -694,37 +721,256 @@ it.effect(
               "rolled-back": "rolled_back",
               "steer-failed": "pending",
               steered: "applied",
-              "still-running": "pending",
+              "still-running": "applied",
               "task-return": "not_user_input",
               "task-cancelled": "task_cancelled",
               "task-completed": "applied",
               "task-failed": "task_failed",
               "task-interrupted": "task_interrupted",
             });
-
             assert.deepEqual(yield* maintenance.runNow(scope), { status: "idle" });
-            yield* main`UPDATE orchestration_v2_projection_runs SET status = 'completed' WHERE run_id = 'run-still-running'`;
-            assert.equal((yield* maintenance.runNow(scope)).status, "noop");
-            assert.deepEqual(
-              (yield* Ref.get(packets)).map((packet) =>
-                packet.sources.map((source) => source.text),
-              ),
-              [
-                [
-                  "Keep the vault index in Index.md.",
-                  "Name the files after the session date.",
-                  "Also list the loot.",
-                  "Moved the notes. The index lives in Index.md.",
-                ],
-                ["Also track loot."],
-              ],
-            );
           }),
         {
           "task-completed": "Moved the notes. The index lives in Index.md.",
           // A failed run can still leave a final answer behind; it is not evidence.
           "task-failed": "Ran the risky migration; it broke the vault.",
         },
+      );
+    }).pipe(Effect.provide(storeOnly)),
+);
+
+const runOutcomes = Effect.gen(function* () {
+  const bots = yield* BotDatabase.BotDatabase;
+  const rows = yield* bots<{
+    readonly status: string;
+    readonly outcome_json: string | null;
+  }>`SELECT status, outcome_json FROM bot_maintenance_runs WHERE home_thread_id = ${home} ORDER BY started_at, rowid`;
+  return rows.map((row) => ({
+    status: row.status,
+    outcome: row.outcome_json === null ? null : JSON.parse(row.outcome_json),
+  }));
+});
+
+const homeRun = Effect.fn("fixture.homeRun")(function* (id: string, status: string) {
+  const main = yield* SqlClient.SqlClient;
+  yield* main`INSERT INTO orchestration_v2_projection_runs (run_id, thread_id, ordinal, provider, status, requested_at, payload_json)
+    VALUES (${id}, ${home}, (SELECT COALESCE(MAX(ordinal), 0) + 1 FROM orchestration_v2_projection_runs WHERE thread_id = ${home}), 'codex', ${status}, ${now}, '{}')`;
+});
+
+const homeTurnItem = Effect.fn("fixture.homeTurnItem")(function* (
+  id: string,
+  item: {
+    readonly run: string;
+    readonly type: string;
+    readonly status: string;
+    readonly input: unknown;
+  },
+) {
+  const main = yield* SqlClient.SqlClient;
+  yield* main`INSERT INTO orchestration_v2_projection_turn_items (turn_item_id, thread_id, run_id, node_id, provider_turn_id, ordinal, type, status, updated_at, payload_json)
+    VALUES (${id}, ${home}, ${item.run}, 'node-busy', NULL, (SELECT COALESCE(MAX(ordinal), 0) + 1 FROM orchestration_v2_projection_turn_items WHERE thread_id = ${home}), ${item.type}, ${item.status}, ${now}, ${JSON.stringify({ input: item.input })})`;
+});
+
+/** A Home provider thread on a live session, so the runtime's background-work probe runs. */
+const homeProviderThread = Effect.gen(function* () {
+  const main = yield* SqlClient.SqlClient;
+  const payload = {
+    id: "provider-thread-home",
+    driver: "codex",
+    providerInstanceId: "codex",
+    providerSessionId: "session",
+    appThreadId: home,
+    ownerNodeId: null,
+    nativeThreadRef: null,
+    nativeConversationHeadRef: null,
+    status: "idle",
+    firstRunOrdinal: null,
+    lastRunOrdinal: null,
+    handoffIds: [],
+    forkedFrom: null,
+    createdAt: now,
+    updatedAt: now,
+  };
+  yield* main`INSERT INTO orchestration_v2_projection_provider_threads (provider_thread_id, thread_id, provider, provider_session_id, status, updated_at, payload_json)
+    VALUES ('provider-thread-home', ${home}, 'codex', 'session', 'idle', ${now}, ${JSON.stringify(payload)})`;
+});
+
+it.effect.each<{
+  readonly name: string;
+  readonly activity: string | null;
+  readonly arrange: (
+    runtimeBackgroundWork: Ref.Ref<boolean>,
+  ) => Effect.Effect<void, SqlError.SqlError, SqlClient.SqlClient | BotDatabase.BotDatabase>;
+}>([
+  { name: "a queued run", activity: "run", arrange: () => homeRun("busy", "queued") },
+  { name: "a preparing run", activity: "run", arrange: () => homeRun("busy", "preparing") },
+  { name: "a running run", activity: "run", arrange: () => homeRun("busy", "running") },
+  {
+    name: "a run awaiting checkpoints",
+    activity: "run",
+    arrange: () => homeRun("busy", "waiting"),
+  },
+  {
+    name: "a pending approval",
+    activity: "request",
+    arrange: () =>
+      SqlClient.SqlClient.pipe(
+        Effect.flatMap(
+          (main) =>
+            main`INSERT INTO orchestration_v2_projection_runtime_requests (runtime_request_id, thread_id, node_id, kind, status, created_at, payload_json)
+              VALUES ('request', ${home}, 'node-busy', 'approval', 'pending', ${now}, '{}')`,
+        ),
+      ),
+  },
+  {
+    name: "a running child",
+    activity: "child",
+    arrange: () =>
+      SqlClient.SqlClient.pipe(
+        Effect.flatMap(
+          (main) =>
+            main`INSERT INTO orchestration_v2_projection_subagents (subagent_id, thread_id, parent_node_id, provider, origin, status, updated_at, payload_json)
+              VALUES ('child', ${home}, 'node-busy', 'codex', 'app_owned', 'running', ${now}, '{}')`,
+        ),
+      ),
+  },
+  { name: "an unfinished Bot task", activity: "task", arrange: () => task("work", "running") },
+  {
+    name: "a background command",
+    activity: "background",
+    arrange: () =>
+      homeTurnItem("command", {
+        run: "run-ask",
+        type: "command_execution",
+        status: "running",
+        input: "vp run dev",
+      }),
+  },
+  {
+    name: "background work only the provider runtime knows",
+    activity: "background",
+    arrange: (runtimeBackgroundWork) =>
+      homeProviderThread.pipe(Effect.andThen(Ref.set(runtimeBackgroundWork, true))),
+  },
+  {
+    name: "only settled activity, a persistent tool and a rolled-back command",
+    activity: null,
+    arrange: (runtimeBackgroundWork) =>
+      Effect.gen(function* () {
+        const main = yield* SqlClient.SqlClient;
+        yield* homeRun("done", "completed");
+        yield* main`INSERT INTO orchestration_v2_projection_runtime_requests (runtime_request_id, thread_id, node_id, kind, status, created_at, payload_json)
+          VALUES ('request', ${home}, 'node-busy', 'approval', 'resolved', ${now}, '{}')`;
+        yield* main`INSERT INTO orchestration_v2_projection_subagents (subagent_id, thread_id, parent_node_id, provider, origin, status, updated_at, payload_json)
+          VALUES ('child', ${home}, 'node-busy', 'codex', 'app_owned', 'completed', ${now}, '{}')`;
+        yield* task("work", "completed");
+        yield* homeTurnItem("watch", {
+          run: "done",
+          type: "dynamic_tool",
+          status: "running",
+          input: { persistent: true },
+        });
+        yield* homeRun("undone", "rolled_back");
+        yield* homeTurnItem("command", {
+          run: "undone",
+          type: "command_execution",
+          status: "running",
+          input: "vp run dev",
+        });
+        yield* homeProviderThread;
+        yield* Ref.set(runtimeBackgroundWork, false);
+      }),
+  },
+])("defers a pass without a model call while the Home has $name", ({ activity, arrange }) =>
+  Effect.gen(function* () {
+    yield* seedBot("automatic");
+    const { packets, generate } = yield* recordingGenerator(() =>
+      Effect.succeed({ operations: [add("i1", "open every session recap", goldLesson)] }),
+    );
+    yield* withEngine(generate, ({ maintenance, runtimeBackgroundWork }) =>
+      Effect.gen(function* () {
+        yield* enable(maintenance);
+        yield* input("ask", gold);
+        yield* arrange(runtimeBackgroundWork);
+        const pass = yield* maintenance.runNow(scope);
+        const [run, ...otherRuns] = yield* runOutcomes;
+        assert.deepEqual(otherRuns, []);
+        assert.deepEqual(
+          {
+            status: pass.status,
+            reason: pass.status === "deferred" ? pass.reason : null,
+            activity: (run?.outcome?.activity as string | undefined) ?? null,
+            calls: (yield* Ref.get(packets)).length,
+            lessons: (yield* learningRows).length,
+            ask: (yield* sourceStates).ask ?? "missing",
+          },
+          {
+            status: activity === null ? "applied" : "deferred",
+            reason: activity === null ? null : "home_active",
+            activity,
+            calls: activity === null ? 1 : 0,
+            lessons: activity === null ? 1 : 0,
+            ask: activity === null ? "applied" : "pending",
+          },
+        );
+      }),
+    );
+  }).pipe(Effect.provide(storeOnly)),
+);
+
+it.effect.each<{
+  readonly name: string;
+  readonly meanwhile: (
+    homeSequence: Ref.Ref<number>,
+  ) => Effect.Effect<void, SqlError.SqlError, SqlClient.SqlClient>;
+}>([
+  {
+    // Provider events commit without the Home command lock, so only the sequence shows them.
+    name: "a whole turn ran and settled",
+    meanwhile: (homeSequence) =>
+      input("meanwhile", "Keep recaps under a page.").pipe(
+        Effect.andThen(Ref.update(homeSequence, (sequence) => sequence + 3)),
+      ),
+  },
+  {
+    name: "a turn is still running",
+    meanwhile: () => homeRun("meanwhile", "running"),
+  },
+])(
+  "defers applying a proposal when the Home was busy while the model worked: $name",
+  ({ meanwhile }) =>
+    Effect.gen(function* () {
+      yield* seedBot("automatic");
+      const duringGeneration = yield* Ref.make<Effect.Effect<void>>(Effect.void);
+      yield* withEngine(
+        () =>
+          Ref.get(duringGeneration).pipe(
+            Effect.flatten,
+            Effect.as({ operations: [add("i1", "open every session recap", goldLesson)] }),
+          ),
+        ({ maintenance, homeSequence }) =>
+          Effect.gen(function* () {
+            yield* enable(maintenance);
+            yield* input("ask", gold);
+            const main = yield* SqlClient.SqlClient;
+            yield* Ref.set(
+              duringGeneration,
+              meanwhile(homeSequence).pipe(
+                Effect.provideService(SqlClient.SqlClient, main),
+                Effect.orDie,
+              ),
+            );
+            const pass = yield* maintenance.runNow(scope);
+            assert.deepEqual(
+              {
+                status: pass.status,
+                reason: pass.status === "deferred" ? pass.reason : null,
+                lessons: (yield* learningRows).length,
+                receipts: (yield* sourceStates).ask,
+              },
+              { status: "deferred", reason: "home_active", lessons: 0, receipts: "pending" },
+            );
+          }),
       );
     }).pipe(Effect.provide(storeOnly)),
 );
@@ -805,7 +1051,10 @@ it.effect.each([
           if (paused && !observed) assert.equal(yield* pause, "saved");
           yield* input("steer", gold, { runStatus: "running", steer: "succeeded" });
           if (observed) {
-            assert.deepEqual(yield* maintenance.runNow(scope), { status: "idle" });
+            // Discovery records the receipt even though the busy Home defers the pass.
+            const busy = yield* maintenance.runNow(scope);
+            assert.deepEqual(busy.status === "deferred" && busy.reason, "home_active");
+            assert.deepEqual(yield* sourceStates, { steer: "pending" });
             if (paused) assert.equal(yield* pause, "saved");
           }
           if (paused)
@@ -1273,10 +1522,11 @@ it.effect(
           yield* input("after", "Keep recaps under a page.", { at: later(2) });
           assert.equal((yield* maintenance.runNow(scope)).status, "noop");
 
-          // A retry in progress holds back what was admitted after it, like any settling input.
+          // A retry in progress keeps the Home busy, so nothing admitted after it is learned yet.
           yield* main`UPDATE orchestration_v2_projection_runs SET status = 'preparing' WHERE run_id = 'run-retried'`;
           yield* input("during", "Use the party's names.", { at: later(3) });
-          assert.deepEqual(yield* maintenance.runNow(scope), { status: "idle" });
+          const busy = yield* maintenance.runNow(scope);
+          assert.deepEqual(busy.status === "deferred" && busy.reason, "home_active");
 
           yield* main`UPDATE orchestration_v2_projection_runs SET status = 'completed' WHERE run_id = 'run-retried'`;
           yield* deliver("retried");
@@ -1310,7 +1560,8 @@ it.effect("orders input admitted at the same instant by the Home's own turn orde
           delivered: false,
         });
         yield* input("a-later", "Actually use short recaps.");
-        assert.deepEqual(yield* maintenance.runNow(scope), { status: "idle" });
+        const busy = yield* maintenance.runNow(scope);
+        assert.deepEqual(busy.status === "deferred" && busy.reason, "home_active");
         assert.deepEqual(yield* Ref.get(packets), []);
 
         yield* main`UPDATE orchestration_v2_projection_runs SET status = 'completed' WHERE run_id = 'run-z-earlier'`;

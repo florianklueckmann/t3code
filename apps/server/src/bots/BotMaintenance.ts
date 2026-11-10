@@ -9,6 +9,8 @@ import {
   BotTaskId,
   MessageId,
   OrchestrationV2ConversationMessageJson,
+  OrchestrationV2ProviderThreadJson,
+  ProviderSessionId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -22,6 +24,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as EventStore from "../orchestration-v2/EventStore.ts";
+import * as ProviderSessionManager from "../orchestration-v2/ProviderSessionManager.ts";
 import * as ThreadCommandExecutor from "../orchestration-v2/ThreadCommandExecutor.ts";
 import * as BotDatabase from "./persistence/BotDatabase.ts";
 import * as Evidence from "./BotMaintenanceEvidence.ts";
@@ -46,6 +49,8 @@ export interface Outcome {
 }
 
 export type DeferReason =
+  /** The Home was busy at the start, or its history moved while the model worked. */
+  | "home_active"
   | "oversized_evidence"
   | "instructions_exceed_packet"
   | "source_changed"
@@ -99,6 +104,9 @@ const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const decodeMessage = Schema.decodeUnknownOption(
   Schema.fromJsonString(OrchestrationV2ConversationMessageJson),
 );
+const decodeProviderThread = Schema.decodeUnknownOption(
+  Schema.fromJsonString(OrchestrationV2ProviderThreadJson),
+);
 const terminalTaskStatuses = encodeJson([...BOT_TASK_TERMINAL_STATUSES]);
 const RETAINED_RUNS = 30;
 const DISCOVERY_PAGE = 500;
@@ -136,7 +144,67 @@ export const make = Effect.fn("BotMaintenance.make")(function* (generation: Gene
   const bots = yield* BotService.BotService;
   const tasks = yield* BotTaskService.BotTaskService;
   const random = yield* SecureRandom.SecureRandom;
+  const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
   const passLocks = yield* KeyedLock.make<ThreadId>();
+
+  /** What keeps the Home busy, or null when it is idle. Mirrors `isLiveSubagentShell` plus owned work. */
+  const homeActivity = Effect.fn("BotMaintenance.homeActivity")(function* (home: ThreadId) {
+    const [projected] = yield* main<{
+      readonly run: number;
+      readonly request: number;
+      readonly child: number;
+      readonly background: number;
+    }>`SELECT
+        EXISTS (SELECT 1 FROM orchestration_v2_projection_runs WHERE thread_id = ${home}
+          AND status IN ('queued', 'preparing', 'starting', 'running', 'waiting')) AS run,
+        EXISTS (SELECT 1 FROM orchestration_v2_projection_runtime_requests WHERE thread_id = ${home}
+          AND status = 'pending') AS request,
+        EXISTS (SELECT 1 FROM orchestration_v2_projection_subagents WHERE thread_id = ${home}
+          AND status IN ('pending', 'running', 'waiting')) AS child,
+        EXISTS (SELECT 1 FROM orchestration_v2_projection_turn_items i WHERE i.thread_id = ${home}
+          AND i.type IN ('command_execution', 'dynamic_tool', 'subagent')
+          AND i.status IN ('pending', 'running', 'waiting')
+          AND NOT (i.type = 'dynamic_tool' AND json_extract(i.payload_json, '$.input.persistent') IS 1)
+          AND NOT EXISTS (SELECT 1 FROM orchestration_v2_projection_runs r
+            WHERE r.run_id = i.run_id AND r.status = 'rolled_back')) AS background`;
+    if (projected?.run === 1) return "run";
+    if (projected?.request === 1) return "request";
+    if (projected?.child === 1) return "child";
+    if (projected?.background === 1) return "background";
+    const [task] = yield* sql<{ readonly task_id: string }>`SELECT task_id FROM bot_tasks
+      WHERE home_thread_id = ${home} AND status NOT IN (SELECT value FROM json_each(${terminalTaskStatuses})) LIMIT 1`;
+    if (task !== undefined) return "task";
+    // Some background work, such as Claude background Bash, lives only in the provider runtime.
+    const threads = yield* main<{
+      readonly provider_session_id: string;
+      readonly payload_json: string;
+    }>`SELECT provider_session_id, payload_json FROM orchestration_v2_projection_provider_threads
+      WHERE thread_id = ${home} AND provider_session_id IS NOT NULL`;
+    for (const row of threads) {
+      const session = yield* providerSessions
+        .get(ProviderSessionId.make(row.provider_session_id))
+        .pipe(Effect.orElseSucceed(() => Option.none()));
+      if (Option.isNone(session)) continue;
+      const thread = decodeProviderThread(row.payload_json);
+      const probe =
+        Option.isSome(thread) && session.value.hasPendingBackgroundWorkForThread !== undefined
+          ? session.value.hasPendingBackgroundWorkForThread(thread.value)
+          : session.value.hasPendingBackgroundWork;
+      // A failed probe cannot confirm that the work ended.
+      if (probe !== undefined && (yield* probe.pipe(Effect.catchCause(() => Effect.succeed(true)))))
+        return "background";
+    }
+    return null;
+  });
+
+  /**
+   * Read under the Home command lock. Provider events commit without that lock, so a pass
+   * applies only if the Home's event sequence is still the one it started from.
+   */
+  const homeAdmission = Effect.fn("BotMaintenance.homeAdmission")(function* (home: ThreadId) {
+    const sequence = yield* events.latestSequence({ threadId: home });
+    return { sequence, activity: yield* homeActivity(home) };
+  });
 
   const scopeOf = Effect.fn("BotMaintenance.scope")(function* (scope: BotContinuationScope) {
     const context = yield* store.getContext(scope.botId, scope.projectId);
@@ -427,6 +495,23 @@ export const make = Effect.fn("BotMaintenance.make")(function* (generation: Gene
       return yield* invalid("This Bot is archived or detached, so maintenance does not run.");
 
     yield* discover(home, now);
+    const runId = yield* random.uuidV4();
+    const recordRun = (status: string, outcome: unknown) =>
+      sql.withTransaction(
+        Effect.gen(function* () {
+          yield* sql`INSERT INTO bot_maintenance_runs (run_id, home_thread_id, status, started_at, finished_at, outcome_json)
+            VALUES (${runId}, ${home}, ${status}, ${now}, ${status === "running" ? null : now}, ${encodeJson(outcome)})`;
+          yield* sql`DELETE FROM bot_maintenance_runs WHERE home_thread_id = ${home} AND run_id NOT IN (
+            SELECT run_id FROM bot_maintenance_runs WHERE home_thread_id = ${home} ORDER BY started_at DESC, rowid DESC LIMIT ${RETAINED_RUNS})`;
+        }),
+      );
+    // Discovery only records receipts; nothing is classified or consumed while the Home is busy.
+    const admitted = yield* homeCommands.withLock(home, homeAdmission(home));
+    if (admitted.activity !== null) {
+      yield* recordRun("deferred", { reason: "home_active", activity: admitted.activity });
+      return { status: "deferred", runId, reason: "home_active" } as const;
+    }
+
     const { eligible, excluded } = yield* frontier(home);
     if (excluded.length > 0)
       yield* sql`UPDATE bot_maintenance_sources SET state = 'excluded', exclusion_reason = (SELECT json_extract(value, '$.reason') FROM json_each(${encodeJson(excluded)}) WHERE json_extract(value, '$.kind') = kind AND json_extract(value, '$.source_id') = source_id)
@@ -443,16 +528,6 @@ export const make = Effect.fn("BotMaintenance.make")(function* (generation: Gene
       sources: eligible,
       learning: yield* store.listLearning(scope.botId),
     });
-    const runId = yield* random.uuidV4();
-    const recordRun = (status: string, outcome: unknown) =>
-      sql.withTransaction(
-        Effect.gen(function* () {
-          yield* sql`INSERT INTO bot_maintenance_runs (run_id, home_thread_id, status, started_at, finished_at, outcome_json)
-            VALUES (${runId}, ${home}, ${status}, ${now}, ${status === "running" ? null : now}, ${encodeJson(outcome)})`;
-          yield* sql`DELETE FROM bot_maintenance_runs WHERE home_thread_id = ${home} AND run_id NOT IN (
-            SELECT run_id FROM bot_maintenance_runs WHERE home_thread_id = ${home} ORDER BY started_at DESC, rowid DESC LIMIT ${RETAINED_RUNS})`;
-        }),
-      );
     if (built._tag === "blocked") {
       yield* recordRun("deferred", { reason: built.reason });
       return { status: "deferred", runId, reason: built.reason } as const;
@@ -482,6 +557,9 @@ export const make = Effect.fn("BotMaintenance.make")(function* (generation: Gene
     return yield* homeCommands.withLock(
       home,
       Effect.gen(function* () {
+        const latest = yield* homeAdmission(home);
+        if (latest.activity !== null || latest.sequence !== admitted.sequence)
+          return yield* deferred("home_active");
         const current = yield* classify(
           home,
           selected.map((source) => ({ kind: source.kind, source_id: source.id })),

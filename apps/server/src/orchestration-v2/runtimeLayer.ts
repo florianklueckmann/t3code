@@ -416,6 +416,7 @@ export const layerProduction = Layer.mergeAll(
       Layer.mergeAll(
         layerEventStoreProvided,
         ThreadCommandExecutor.layer,
+        layerProviderSessionManagerProvided,
         layerBotServiceProvided,
         layerBotTaskProvided,
       ),
