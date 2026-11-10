@@ -1,4 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
+import type { WorkThreadChanges } from "@t3tools/client-runtime/state/server";
 import type { BotSummary, EnvironmentId } from "@t3tools/contracts";
 
 import { serverEnvironment } from "../state/server";
@@ -15,6 +16,6 @@ export function useWorkThreadBot(thread: {
 export function useWorkThreadChanges(thread: {
   readonly environmentId: EnvironmentId;
   readonly id: string;
-}): "none" | null {
+}): WorkThreadChanges {
   return useAtomValue(serverEnvironment.workThreadChanges(thread));
 }

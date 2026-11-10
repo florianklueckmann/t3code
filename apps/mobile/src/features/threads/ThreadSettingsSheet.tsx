@@ -107,8 +107,8 @@ import { ModelRow, ChoiceRow } from "./ThreadSettingsRows";
 import { useWorkThreadChanges } from "../bots/useWorkThreadBot";
 import {
   compatibleRuntimeModeForChoices,
-  noChangesRuntimeModeChoices,
   runtimeModeChoicesForSupportedModes,
+  taskRuntimeModeChoices,
   withManagedRuntimeModeLimits,
   type RuntimeModeChoice,
   selectableChoices,
@@ -122,6 +122,7 @@ import {
   providerSectionIsCollapsed,
 } from "./thread-settings-sheet-state";
 import { formatProviderUpdateRequiredNotice } from "@t3tools/client-runtime/providerUpdateRequiredModels";
+import type { WorkThreadChanges } from "@t3tools/client-runtime/state/server";
 
 const PRIMARY_PROVIDER_DRIVERS: ReadonlySet<string> = new Set([
   "claudeAgent",
@@ -278,8 +279,8 @@ type ThreadSettingsSessionProps = {
   readonly runtime?: {
     readonly mode: RuntimeMode;
     readonly onUpdate: (mode: RuntimeMode) => void;
-    /** "none" for a No changes routine task, whose fixed permission replaces the choices. */
-    readonly changes?: "none" | null;
+    /** A Bot task's No changes or not-yet-known permission, which replaces the choices. */
+    readonly changes?: WorkThreadChanges;
   };
 };
 
@@ -508,8 +509,8 @@ function ThreadSettingsSessionProvider(
     props.providerGroups.flatMap((group) => group.models).find((option) => isApplied(option)) ??
     null;
   const runtimeModeChoices =
-    props.runtime?.changes === "none"
-      ? noChangesRuntimeModeChoices(props.runtime.mode)
+    props.runtime?.changes != null
+      ? taskRuntimeModeChoices(props.runtime.mode, props.runtime.changes)
       : withManagedRuntimeModeLimits(
           runtimeModeChoicesForSupportedModes(displayedModel?.supportedRuntimeModes),
           [config?.managedPolicy],

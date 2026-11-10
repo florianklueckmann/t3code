@@ -4,8 +4,8 @@ import { insertAttachmentReferencesForDraft } from "./composerAttachmentReferenc
 import { DESKTOP_PASTE_AS_TEXT_EVENT } from "../../lib/desktopPasteAsText";
 import { BackgroundThreadContext } from "./backgroundThread";
 import {
-  noChangesRuntimeModeOptions,
   resolveCompatibleRuntimeMode,
+  taskRuntimeModeOptions,
   runtimeModeConfig,
   resolveRuntimeModeOptions,
 } from "./runtimeModeConfig";
@@ -885,9 +885,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const managedPolicy = useManagedPolicy(environmentId);
   const taskChanges = useWorkThreadChanges({ environmentId, id: activeThread?.id ?? "" });
   const compatibleRuntimeModeOptions =
-    taskChanges === "none"
-      ? noChangesRuntimeModeOptions(compatibleRuntimeMode)
-      : resolveRuntimeModeOptions(compatibleRuntimeModes, managedPolicy);
+    taskChanges === null
+      ? resolveRuntimeModeOptions(compatibleRuntimeModes, managedPolicy)
+      : taskRuntimeModeOptions(compatibleRuntimeMode, taskChanges);
   // A thread or draft already above the ceiling would be refused; offer the broadest mode left.
   const runtimeModeCeilingDenial = managedRuntimeModeDenial(managedPolicy, compatibleRuntimeMode);
   const runtimeModeCeilingFallback =
@@ -2382,8 +2382,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       promptUltrathink={promptUltrathink}
       onPromptEdit={editPromptFromTraitsStable}
       compatibleRuntimeMode={compatibleRuntimeMode}
-      // A No changes task always shows its permission, whatever the user's default mode.
-      defaultRuntimeMode={taskChanges === "none" ? undefined : props.defaultRuntimeMode}
+      // A task's fixed or unknown permission always shows, whatever the user's default mode.
+      defaultRuntimeMode={taskChanges === null ? props.defaultRuntimeMode : undefined}
       compatibleRuntimeModeOptions={compatibleRuntimeModeOptions}
       handleRuntimeModeChange={handleRuntimeModeChange}
       composerControlsCollapsed={composerControlsCollapsed}
