@@ -8,7 +8,9 @@ import {
 } from "@t3tools/contracts";
 import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
 import { assert, it } from "@effect/vitest";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
@@ -35,13 +37,19 @@ const harness = Effect.gen(function* () {
   const secrets = new Map<string, string>();
   const reads: string[] = [];
   const invalidated: string[] = [];
+  // A read of a held reference waits on its effect before answering.
+  const holds = new Map<string, Effect.Effect<void>>();
   const resolver = SecretResolver.SecretResolver.of({
     read: (references) =>
-      Effect.sync(() =>
-        references.map(({ reference }) => {
-          reads.push(reference);
-          return secrets.get(reference);
-        }),
+      Effect.forEach(references, ({ reference }) =>
+        (holds.get(reference) ?? Effect.void).pipe(
+          Effect.andThen(
+            Effect.sync(() => {
+              reads.push(reference);
+              return secrets.get(reference);
+            }),
+          ),
+        ),
       ),
     invalidate: (references) =>
       Effect.sync(() => {
@@ -56,7 +64,7 @@ const harness = Effect.gen(function* () {
       ),
     ),
   );
-  return { connections, secrets, reads, invalidated };
+  return { connections, secrets, reads, invalidated, holds };
 });
 
 const accountA = McpConnectionId.make("1a1a1a1a-0000-4000-8000-00000000001a");
@@ -136,6 +144,17 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("MCP connections"
             .pipe(Effect.flip)).reason,
           "id-unavailable",
         );
+        assert.equal(
+          (yield* connections
+            .create({
+              connectionId: accountA,
+              label: "Work",
+              enabled: true,
+              transport: http(`Bearer ${SENTINEL}`),
+            })
+            .pipe(Effect.flip)).reason,
+          "id-unavailable",
+        );
 
         // Two edits of revision 1: exactly one saves, the other sees the conflict.
         const [first, second] = yield* Effect.all(
@@ -182,6 +201,15 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("MCP connections"
           ],
           [
             { type: "stdio", command: "mcp-server", args: ["--token", SENTINEL], env: {} },
+            "argument-secret",
+          ],
+          [
+            {
+              type: "stdio",
+              command: "mcp-server",
+              args: ["--endpoint", `https://mcp.example.test/mcp?api_key=${SENTINEL}`],
+              env: {},
+            },
             "argument-secret",
           ],
           [
@@ -298,6 +326,46 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("MCP connections"
           .enabled,
         false,
       );
+    }).pipe(Effect.provide(layerSettings)),
+  );
+
+  it.effect("keeps a newer revision's check when an older refresh finishes late", () =>
+    Effect.gen(function* () {
+      const { connections, secrets, holds } = yield* harness;
+      const rotated = { ...tokenB, reference: "op://Private/Docs/token-b-rotated" };
+      secrets.set(tokenB.reference, "Bearer account-b");
+      secrets.set(rotated.reference, "Bearer account-b-rotated");
+      const entered = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      holds.set(
+        tokenB.reference,
+        Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release))),
+      );
+      yield* connections.create({
+        connectionId: accountB,
+        label: "Personal",
+        enabled: true,
+        transport: http(tokenB),
+      });
+
+      const oldRefresh = yield* connections
+        .refresh({ connectionIds: [accountB] })
+        .pipe(Effect.forkChild);
+      yield* Deferred.await(entered);
+      yield* connections.update({
+        connectionId: accountB,
+        expectedRevision: 1,
+        bindings: { Authorization: rotated },
+      });
+      const fresh = (yield* connections.refresh({ connectionIds: [accountB] })).connections[0];
+      assert.equal(fresh?.revision, 2);
+      assert.equal(fresh?.status.state, "ready");
+
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(oldRefresh);
+      const current = (yield* connections.list).connections[0];
+      assert.equal(current?.revision, 2);
+      assert.equal(current?.status.state, "ready");
     }).pipe(Effect.provide(layerSettings)),
   );
 });

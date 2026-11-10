@@ -61,7 +61,7 @@ const blocked = (problem: McpConnectionProblem): McpConnectionStatus => ({
 const settingsUnavailable = (cause: ServerSettingsError) =>
   new McpConnectionError({ reason: "settings-unavailable", cause });
 
-// What a retried create must match to count as the same request; literal values are redacted here.
+// What a retried create must match to count as the same request. Holds literal values: compare only.
 const creationShape = (definition: {
   readonly label: string;
   readonly enabled: boolean;
@@ -76,10 +76,7 @@ const creationShape = (definition: {
         ? [definition.transport.command, ...definition.transport.args]
         : [definition.transport.url],
     slot,
-    bindings: Object.entries(bindings).map(([key, value]) => [
-      key,
-      isSecretReference(value) ? value : null,
-    ]),
+    bindings: Object.entries(bindings),
   });
 };
 
@@ -153,7 +150,8 @@ const make = Effect.gen(function* () {
   const updateCatalog = (
     update: (
       current: ServerSettings,
-    ) => Effect.Effect<Settings.McpConnectionCatalog, McpConnectionError>,
+      withSecrets: Effect.Effect<ServerSettings, ServerSettingsError>,
+    ) => Effect.Effect<Settings.McpConnectionCatalog, McpConnectionError | ServerSettingsError>,
   ) =>
     settings.updateMcpConnections(update).pipe(
       Effect.catchTags({
@@ -183,17 +181,21 @@ const make = Effect.gen(function* () {
     if (problem !== undefined) {
       return yield* new McpConnectionError({ reason: "invalid-definition", problem });
     }
-    const saved = yield* updateCatalog((current) => {
+    const saved = yield* updateCatalog((current, withSecrets) => {
       const catalog = {
         mcpConnections: current.mcpConnections,
         retiredMcpConnectionIds: current.retiredMcpConnectionIds,
       };
-      const existing = current.mcpConnections[id];
-      if (existing !== undefined) {
-        return existing.revision === requested.revision &&
-          creationShape(existing) === creationShape(requested)
-          ? Effect.succeed(catalog)
-          : Effect.fail(new McpConnectionError({ reason: "id-unavailable", connectionId: id }));
+      if (current.mcpConnections[id] !== undefined) {
+        return withSecrets.pipe(
+          Effect.flatMap(({ mcpConnections }) => {
+            const existing = mcpConnections[id];
+            return existing?.revision === requested.revision &&
+              creationShape(existing) === creationShape(requested)
+              ? Effect.succeed(catalog)
+              : Effect.fail(new McpConnectionError({ reason: "id-unavailable", connectionId: id }));
+          }),
+        );
       }
       if (current.retiredMcpConnectionIds.includes(id)) {
         return Effect.fail(new McpConnectionError({ reason: "id-unavailable", connectionId: id }));
@@ -297,7 +299,11 @@ const make = Effect.gen(function* () {
       ),
     );
     for (const [id, definition] of connections) {
-      checks.set(id, { revision: definition.revision, status: yield* resolveStatus(definition) });
+      const status = yield* resolveStatus(definition);
+      // A refresh of an older revision can finish after one of a newer revision.
+      if ((checks.get(id)?.revision ?? 0) <= definition.revision) {
+        checks.set(id, { revision: definition.revision, status });
+      }
     }
     return { connections: connections.map(([id, definition]) => summaryOf(id, definition)) };
   });

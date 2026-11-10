@@ -285,10 +285,14 @@ export class ServerSettingsService extends Context.Service<
 
     /**
      * The only writer of the MCP connection catalog. `update` sees the stored settings under the
-     * write lock, so a revision it checks cannot change before its result is saved.
+     * write lock, so a revision it checks cannot change before its result is saved. Stored literal
+     * secrets are redacted in `current`; `withSecrets` reads them, from the same snapshot.
      */
     readonly updateMcpConnections: <E>(
-      update: (current: ServerSettings) => Effect.Effect<McpConnectionCatalog, E>,
+      update: (
+        current: ServerSettings,
+        withSecrets: Effect.Effect<ServerSettings, ServerSettingsError>,
+      ) => Effect.Effect<McpConnectionCatalog, E>,
     ) => Effect.Effect<ServerSettings, E | ServerSettingsError>;
 
     readonly withSettingsSnapshot: <A, E, R>(
@@ -360,7 +364,9 @@ const makeTest = Effect.fn("serverSettings.makeTest")(function* (
       ),
     updateMcpConnections: (update) =>
       updateTestSettings((currentSettings) =>
-        update(currentSettings).pipe(Effect.map((catalog) => ({ ...currentSettings, ...catalog }))),
+        update(currentSettings, Effect.succeed(currentSettings)).pipe(
+          Effect.map((catalog) => ({ ...currentSettings, ...catalog })),
+        ),
       ),
     withSettingsSnapshot: (use) =>
       writeSemaphore.withPermits(1)(getSettings.pipe(Effect.flatMap(use))),
@@ -1410,7 +1416,9 @@ const make = Effect.gen(function* () {
       ),
     updateMcpConnections: (update) =>
       updateAndPersistSettings({}, (current) =>
-        update(current).pipe(Effect.map((catalog) => ({ ...current, ...catalog }))),
+        update(current, materializeSettingsSecrets(current)).pipe(
+          Effect.map((catalog) => ({ ...current, ...catalog })),
+        ),
       ),
     withSettingsSnapshot,
     get streamChanges() {

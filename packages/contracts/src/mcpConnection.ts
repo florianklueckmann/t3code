@@ -180,10 +180,18 @@ function urlProblem(raw: string): McpConnectionProblem | undefined {
     return { reason: "url-invalid" };
   }
   if (url.username !== "" || url.password !== "") return { reason: "url-credentials" };
-  for (const name of url.searchParams.keys()) {
-    if (SECRET_QUERY.test(name)) return { reason: "url-credentials" };
-  }
+  if (hasCredentialQuery(raw)) return { reason: "url-credentials" };
   return undefined;
+}
+
+function hasCredentialQuery(raw: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return false;
+  }
+  return [...url.searchParams.keys()].some((name) => SECRET_QUERY.test(name));
 }
 
 function looksLikeCredential(text: string): boolean {
@@ -191,7 +199,8 @@ function looksLikeCredential(text: string): boolean {
     SECRET_FLAG.test(text) ||
     SECRET_ASSIGNMENT.test(text) ||
     SECRET_SCHEME.test(text) ||
-    URL_USERINFO.test(text)
+    URL_USERINFO.test(text) ||
+    hasCredentialQuery(text)
   );
 }
 
