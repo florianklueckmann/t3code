@@ -27,6 +27,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import type * as EffectOutbox from "../orchestration-v2/EffectOutbox.ts";
 import * as EventStore from "../orchestration-v2/EventStore.ts";
 import * as ProviderSessionManager from "../orchestration-v2/ProviderSessionManager.ts";
 import * as ThreadCommandExecutor from "../orchestration-v2/ThreadCommandExecutor.ts";
@@ -110,6 +111,14 @@ const decodeProviderThread = Schema.decodeUnknownOption(
   Schema.fromJsonString(OrchestrationV2ProviderThreadJson),
 );
 const terminalTaskStatuses = encodeJson([...BOT_TASK_TERMINAL_STATUSES]);
+/** Outbox effects that tidy up or retitle; every other unsettled effect is Home work. */
+const housekeepingEffects = encodeJson([
+  "scheduled-tasks.cleanup",
+  "terminal.cleanup",
+  "preview.cleanup",
+  "attachment.cleanup",
+  "thread-title.generate",
+] satisfies ReadonlyArray<EffectOutbox.OrchestrationEffectRequestV2["type"]>);
 const RETAINED_RUNS = 30;
 /** In the server's own time zone; an unattended pass runs while the person is likely away. */
 const NIGHTLY: ScheduledTaskSchedule = { type: "fixed_time", timeOfDay: "03:00" };
@@ -178,14 +187,27 @@ export const make = Effect.gen(function* () {
     return { unavailableReason: null, generate } as const;
   });
 
-  /** What keeps the Home busy, or null when it is idle. Mirrors `isLiveSubagentShell` plus owned work. */
+  /**
+   * What keeps the Home busy or unavailable, or null when it is idle. Mirrors the orchestrator's
+   * idle-child check plus the Home's lifecycle and owned work. Workspace setup runs while the run
+   * is `preparing`; rollback, restart and delegated continuations wait as outbox effects.
+   */
   const homeActivity = Effect.fn("BotMaintenance.homeActivity")(function* (home: ThreadId) {
+    const now = DateTime.formatIso(yield* DateTime.now);
     const [projected] = yield* main<{
+      readonly lifecycle: number;
       readonly run: number;
       readonly request: number;
       readonly child: number;
       readonly background: number;
+      readonly provider: number;
+      readonly transfer: number;
+      readonly effect: number;
     }>`SELECT
+        EXISTS (SELECT 1 FROM orchestration_v2_projection_threads WHERE thread_id = ${home}
+          AND (deleted_at IS NOT NULL OR archived_at IS NOT NULL
+            OR json_extract(payload_json, '$.settledAt') IS NOT NULL
+            OR json_extract(payload_json, '$.snoozedUntil') > ${now})) AS lifecycle,
         EXISTS (SELECT 1 FROM orchestration_v2_projection_runs WHERE thread_id = ${home}
           AND status IN ('queued', 'preparing', 'starting', 'running', 'waiting')) AS run,
         EXISTS (SELECT 1 FROM orchestration_v2_projection_runtime_requests WHERE thread_id = ${home}
@@ -197,20 +219,41 @@ export const make = Effect.gen(function* () {
           AND i.status IN ('pending', 'running', 'waiting')
           AND NOT (i.type = 'dynamic_tool' AND json_extract(i.payload_json, '$.input.persistent') IS 1)
           AND NOT EXISTS (SELECT 1 FROM orchestration_v2_projection_runs r
-            WHERE r.run_id = i.run_id AND r.status = 'rolled_back')) AS background`;
-    if (projected?.run === 1) return "run";
-    if (projected?.request === 1) return "request";
-    if (projected?.child === 1) return "child";
-    if (projected?.background === 1) return "background";
+            WHERE r.run_id = i.run_id AND r.status = 'rolled_back')) AS background,
+        EXISTS (SELECT 1 FROM orchestration_v2_projection_provider_threads WHERE thread_id = ${home}
+          AND (status = 'active' OR json_array_length(payload_json, '$.pendingBackgroundTasks') > 0)) AS provider,
+        EXISTS (SELECT 1 FROM orchestration_v2_projection_context_transfers WHERE status = 'pending'
+          AND ${home} IN (source_thread_id, target_thread_id)) AS transfer,
+        EXISTS (SELECT 1 FROM orchestration_v2_effect_outbox WHERE thread_id = ${home}
+          AND status IN ('pending', 'running') AND effect_type NOT IN (SELECT value FROM json_each(${housekeepingEffects}))) AS effect`;
+    if (projected?.lifecycle === 1) return { activity: "lifecycle", threads: [] } as const;
+    if (projected?.run === 1) return { activity: "run", threads: [] } as const;
+    if (projected?.request === 1) return { activity: "request", threads: [] } as const;
+    if (projected?.child === 1) return { activity: "child", threads: [] } as const;
+    if (projected?.background === 1) return { activity: "background", threads: [] } as const;
+    if (projected?.provider === 1) return { activity: "provider", threads: [] } as const;
+    if (projected?.transfer === 1) return { activity: "transfer", threads: [] } as const;
+    if (projected?.effect === 1) return { activity: "effect", threads: [] } as const;
+    // An unfinished return still owes the Home a message, after the task itself ended.
     const [task] = yield* sql<{ readonly task_id: string }>`SELECT task_id FROM bot_tasks
-      WHERE home_thread_id = ${home} AND status NOT IN (SELECT value FROM json_each(${terminalTaskStatuses})) LIMIT 1`;
-    if (task !== undefined) return "task";
-    // Some background work, such as Claude background Bash, lives only in the provider runtime.
+      WHERE home_thread_id = ${home} AND (status NOT IN (SELECT value FROM json_each(${terminalTaskStatuses}))
+        OR (return_home_run_id IS NOT NULL AND return_finished_at IS NULL)) LIMIT 1`;
+    if (task !== undefined) return { activity: "task", threads: [] } as const;
     const threads = yield* main<{
       readonly provider_session_id: string;
       readonly payload_json: string;
     }>`SELECT provider_session_id, payload_json FROM orchestration_v2_projection_provider_threads
       WHERE thread_id = ${home} AND provider_session_id IS NOT NULL`;
+    return { activity: (yield* runtimeActivity(threads)) ? "background" : null, threads } as const;
+  });
+
+  /**
+   * Some background work, such as Claude background Bash, lives only in the provider runtime.
+   * The probes read runtime memory, so the final one runs inside the Bot commit.
+   */
+  const runtimeActivity = Effect.fn("BotMaintenance.runtimeActivity")(function* (
+    threads: ReadonlyArray<{ readonly provider_session_id: string; readonly payload_json: string }>,
+  ) {
     for (const row of threads) {
       const session = yield* providerSessions
         .get(ProviderSessionId.make(row.provider_session_id))
@@ -223,18 +266,19 @@ export const make = Effect.gen(function* () {
           : session.value.hasPendingBackgroundWork;
       // A failed probe cannot confirm that the work ended.
       if (probe !== undefined && (yield* probe.pipe(Effect.catchCause(() => Effect.succeed(true)))))
-        return "background";
+        return true;
     }
-    return null;
+    return false;
   });
 
   /**
-   * Read under the Home command lock. Provider events commit without that lock, so a pass
-   * applies only if the Home's event sequence is still the one it started from.
+   * Read under the Home command lock. A Bot Home's activity-starting provider events take that
+   * lock too; other provider events do not, so a pass applies only if the Home's event sequence
+   * is still the one it started from.
    */
   const homeAdmission = Effect.fn("BotMaintenance.homeAdmission")(function* (home: ThreadId) {
     const sequence = yield* events.latestSequence({ threadId: home });
-    return { sequence, activity: yield* homeActivity(home) };
+    return { sequence, ...(yield* homeActivity(home)) };
   });
 
   const scopeOf = Effect.fn("BotMaintenance.scope")(function* (scope: BotContinuationScope) {
@@ -519,7 +563,6 @@ export const make = Effect.gen(function* () {
   const pass = Effect.fn("BotMaintenance.pass")(function* (
     scope: BotContinuationScope,
     home: ThreadId,
-    generate: Generator,
   ) {
     const now = DateTime.formatIso(yield* DateTime.now);
     // This Home's pass lock is held, so a running row outlived its process. Learning and
@@ -559,6 +602,9 @@ export const make = Effect.gen(function* () {
     if (bot?.learning_policy !== "automatic" && bot?.learning_policy !== "after_adoption")
       return yield* invalid("The Bot's learning policy is unreadable.");
     if (context === undefined) return yield* invalid("This Bot project context does not exist.");
+    // The same Bot row freezes the basis, so a later model change defers this pass.
+    const generation = yield* generationOf(bot);
+    if (generation.unavailableReason !== null) return yield* unavailable();
     const built = Evidence.buildBatch({
       authority: { policy: bot.learning_policy, bot, context },
       sources: eligible,
@@ -572,7 +618,7 @@ export const make = Effect.gen(function* () {
     yield* recordRun("running", { sources: batch.sources.size });
 
     // No Home, learning or SQL lock is held across the model call.
-    const output = yield* Effect.result(generate(batch.packet));
+    const output = yield* Effect.result(generation.generate(batch.packet));
     const done = DateTime.formatIso(yield* DateTime.now);
     if (output._tag === "Failure") {
       // A refusal ran no model and a discard threw its output away; either way nothing is consumed.
@@ -599,8 +645,8 @@ export const make = Effect.gen(function* () {
     return yield* homeCommands.withLock(
       home,
       Effect.gen(function* () {
-        const latest = yield* homeAdmission(home);
-        if (latest.activity !== null || latest.sequence !== admitted.sequence)
+        const admittedNow = yield* homeAdmission(home);
+        if (admittedNow.activity !== null || admittedNow.sequence !== admitted.sequence)
           return yield* deferred("home_active");
         const current = yield* classify(
           home,
@@ -613,6 +659,7 @@ export const make = Effect.gen(function* () {
         if (!unchanged) return yield* deferred("source_changed");
         return yield* bots.maintainLearning(scope, (learning) =>
           Effect.gen(function* () {
+            if (yield* runtimeActivity(admittedNow.threads)) return yield* deferred("home_active");
             const latest = yield* stateRow(home);
             if (latest?.enabled !== 1 || latest.settings_revision !== state.settings_revision)
               return yield* deferred("settings_changed");
@@ -686,9 +733,9 @@ export const make = Effect.gen(function* () {
 
   const runNow = Effect.fn("BotMaintenance.runNow")(function* (scope: BotContinuationScope) {
     const { bot, home } = yield* scopeOf(scope);
-    const generation = yield* generationOf(bot);
-    if (generation.unavailableReason !== null) return yield* unavailable();
-    return yield* passLocks.withLock(home, pass(scope, home, generation.generate));
+    // Refuses at once instead of behind a running pass; the pass resolves the model again.
+    if ((yield* generationOf(bot)).unavailableReason !== null) return yield* unavailable();
+    return yield* passLocks.withLock(home, pass(scope, home));
   }, Effect.mapError(failure));
 
   /**

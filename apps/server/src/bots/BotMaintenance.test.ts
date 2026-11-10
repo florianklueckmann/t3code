@@ -6,8 +6,11 @@ import {
   type BotLearningPolicy,
   type BotTaskResult,
   MessageId,
+  NodeId,
   ProjectId,
+  ProviderDriverKind,
   ProviderInstanceId,
+  ProviderSessionId,
   RunId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -38,9 +41,11 @@ import * as ServerConfig from "../config.ts";
 import * as CheckpointRollbackService from "../orchestration-v2/CheckpointRollbackService.ts";
 import * as EffectOutbox from "../orchestration-v2/EffectOutbox.ts";
 import * as EffectWorker from "../orchestration-v2/EffectWorker.ts";
+import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as EventStore from "../orchestration-v2/EventStore.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import * as ProviderEventIngestor from "../orchestration-v2/ProviderEventIngestor.ts";
 import * as ProviderSessionManager from "../orchestration-v2/ProviderSessionManager.ts";
 import * as ProviderTurnControlService from "../orchestration-v2/ProviderTurnControlService.ts";
 import * as ProviderTurnStartService from "../orchestration-v2/ProviderTurnStartService.ts";
@@ -56,6 +61,8 @@ import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import * as BotHomes from "./BotHomes.ts";
 import * as BotProjectGuard from "./BotProjectGuard.ts";
 import * as BotDatabase from "./persistence/BotDatabase.ts";
 import * as BotMigrations from "./persistence/Migrations.ts";
@@ -573,7 +580,12 @@ const withEngine = <A, E, R>(
     readonly homeSequence: Ref.Ref<number>;
     readonly runtimeBackgroundWork: Ref.Ref<boolean>;
     readonly availability: Ref.Ref<SealedRefusalReason | null>;
+    /** Runs once at the next availability check, before it answers. */
+    readonly availabilityHook: Ref.Ref<Effect.Effect<void>>;
     readonly sealedCalls: Ref.Ref<ReadonlyArray<SealedGenerationInput<Schema.Top>>>;
+    /** Runs once when the next pass applies, after its final Home check and before the Bot commit. */
+    readonly beforeApply: Ref.Ref<Effect.Effect<void>>;
+    readonly executor: KeyedLock.KeyedLock<ThreadId>;
     /** The source maintenance registered with the Scheduler, run by hand in UTC. */
     readonly runScheduled: Effect.Effect<void>;
   }) => Effect.Effect<A, E, R>,
@@ -584,10 +596,21 @@ const withEngine = <A, E, R>(
     const homeSequence = yield* Ref.make(0);
     const runtimeBackgroundWork = yield* Ref.make(false);
     const availability = yield* Ref.make<SealedRefusalReason | null>(null);
+    const availabilityHook = yield* Ref.make<Effect.Effect<void>>(Effect.void);
     const sealedCalls = yield* Ref.make<ReadonlyArray<SealedGenerationInput<Schema.Top>>>([]);
+    const beforeApply = yield* Ref.make<Effect.Effect<void>>(Effect.void);
     const scheduled = yield* Ref.make<ReadonlyArray<readonly [string, Effect.Effect<void>]>>([]);
+    const bots = yield* BotService.BotService;
     const maintenance = yield* BotMaintenance.make.pipe(
       Effect.provideService(ThreadCommandExecutor.ThreadCommandExecutor, executor),
+      Effect.provideService(BotService.BotService, {
+        ...bots,
+        maintainLearning: (target, change) =>
+          Ref.getAndSet(beforeApply, Effect.void).pipe(
+            Effect.flatten,
+            Effect.andThen(bots.maintainLearning(target, change)),
+          ),
+      }),
       Effect.provide(
         Layer.mergeAll(
           Layer.mock(Scheduler.Scheduler)({
@@ -604,7 +627,10 @@ const withEngine = <A, E, R>(
           DateTime.layerCurrentZoneOffset(0),
           registryOf({
             codex: sealedInstance({
-              availability: Ref.get(availability),
+              availability: Ref.getAndSet(availabilityHook, Effect.void).pipe(
+                Effect.flatten,
+                Effect.andThen(Ref.get(availability)),
+              ),
               generate,
               calls: sealedCalls,
             }),
@@ -622,11 +648,14 @@ const withEngine = <A, E, R>(
     return yield* body({
       maintenance,
       turnContext: yield* BotTurnContext.BotTurnContext,
-      bots: yield* BotService.BotService,
+      bots,
       homeSequence,
       runtimeBackgroundWork,
       availability,
+      availabilityHook,
       sealedCalls,
+      beforeApply,
+      executor,
       runScheduled: Ref.get(scheduled).pipe(
         Effect.flatMap((sources) => {
           const [entry, ...others] = sources;
@@ -928,6 +957,52 @@ const homeProviderThread = Effect.gen(function* () {
     VALUES ('provider-thread-home', ${home}, 'codex', 'session', 'idle', ${now}, ${JSON.stringify(payload)})`;
 });
 
+/** The Home's own thread row, with the lifecycle a test gives it. */
+const homeThread = Effect.fn("fixture.homeThread")(function* (lifecycle: {
+  readonly archivedAt?: string;
+  readonly deletedAt?: string;
+  readonly settledAt?: string;
+  readonly snoozedUntil?: string;
+}) {
+  const main = yield* SqlClient.SqlClient;
+  yield* main`INSERT INTO orchestration_v2_projection_threads (thread_id, project_id, title, default_provider, runtime_mode, interaction_mode, created_at, updated_at, archived_at, deleted_at, payload_json)
+    VALUES (${home}, 'project', 'Home', 'codex', 'full-access', 'default', ${now}, ${now}, ${lifecycle.archivedAt ?? null}, ${lifecycle.deletedAt ?? null},
+      ${JSON.stringify({ settledAt: lifecycle.settledAt ?? null, snoozedUntil: lifecycle.snoozedUntil ?? null })})`;
+});
+
+const homeTransfer = Effect.fn("fixture.homeTransfer")(function* (
+  type: "merge_back" | "provider_handoff",
+  status: string,
+) {
+  const main = yield* SqlClient.SqlClient;
+  yield* main`INSERT INTO orchestration_v2_projection_context_transfers (context_transfer_id, source_thread_id, target_thread_id, type, status, updated_at, payload_json)
+    VALUES (${`transfer-${type}`}, 'other', ${home}, ${type}, ${status}, ${now}, '{}')`;
+});
+
+const homeEffect = Effect.fn("fixture.homeEffect")(function* (type: string, status: string) {
+  const main = yield* SqlClient.SqlClient;
+  yield* main`INSERT INTO orchestration_v2_effect_outbox (effect_id, command_id, thread_id, effect_type, payload_json, status, available_at, created_at, updated_at, completed_at)
+    VALUES (${`effect-${type}`}, ${`command-${type}`}, ${home}, ${type}, ${JSON.stringify({ type })}, ${status}, ${now}, ${now}, ${now}, ${status === "succeeded" ? now : null})`;
+});
+
+/** A finished task whose result still has to reach the Home, or already did. */
+const returningTask = Effect.fn("fixture.returningTask")(function* (finished: boolean) {
+  const bots = yield* BotDatabase.BotDatabase;
+  yield* task("returning", "completed");
+  yield* bots`UPDATE bot_tasks SET result_run_id = 'result', work_thread_id = 'work', return_home_run_id = 'return-run',
+    return_home_message_id = 'return-message', return_finished_at = ${finished ? now : null} WHERE task_id = 'returning'`;
+});
+
+const homeProviderThreadState = Effect.fn("fixture.homeProviderThreadState")(function* (
+  status: string,
+  pendingBackgroundTasks: ReadonlyArray<unknown>,
+) {
+  const main = yield* SqlClient.SqlClient;
+  yield* main`UPDATE orchestration_v2_projection_provider_threads SET status = ${status},
+    payload_json = json_set(payload_json, '$.status', ${status}, '$.pendingBackgroundTasks', json(${JSON.stringify(pendingBackgroundTasks)}))
+    WHERE provider_thread_id = 'provider-thread-home'`;
+});
+
 it.effect.each<{
   readonly name: string;
   readonly activity: string | null;
@@ -935,6 +1010,52 @@ it.effect.each<{
     runtimeBackgroundWork: Ref.Ref<boolean>,
   ) => Effect.Effect<void, SqlError.SqlError, SqlClient.SqlClient | BotDatabase.BotDatabase>;
 }>([
+  {
+    name: "been snoozed",
+    activity: "lifecycle",
+    arrange: () => homeThread({ snoozedUntil: "2027-01-01T00:00:00.000Z" }),
+  },
+  { name: "been archived", activity: "lifecycle", arrange: () => homeThread({ archivedAt: now }) },
+  { name: "been deleted", activity: "lifecycle", arrange: () => homeThread({ deletedAt: now }) },
+  { name: "been settled", activity: "lifecycle", arrange: () => homeThread({ settledAt: now }) },
+  {
+    name: "a pending merge into it",
+    activity: "transfer",
+    arrange: () => homeTransfer("merge_back", "pending"),
+  },
+  {
+    name: "a pending provider switch",
+    activity: "transfer",
+    arrange: () => homeTransfer("provider_handoff", "pending"),
+  },
+  {
+    name: "a pending rollback",
+    activity: "effect",
+    arrange: () => homeEffect("provider-thread.rollback", "pending"),
+  },
+  {
+    name: "a restart continuation waiting to resume",
+    activity: "effect",
+    arrange: () => homeEffect("provider-runtime.continue", "running"),
+  },
+  {
+    name: "an active provider thread",
+    activity: "provider",
+    arrange: () => homeProviderThread.pipe(Effect.andThen(homeProviderThreadState("active", []))),
+  },
+  {
+    name: "background work on its provider thread's roster",
+    activity: "provider",
+    arrange: () =>
+      homeProviderThread.pipe(
+        Effect.andThen(homeProviderThreadState("idle", [{ taskId: "bash", kind: "shell" }])),
+      ),
+  },
+  {
+    name: "a Bot task result still returning to it",
+    activity: "task",
+    arrange: () => returningTask(false),
+  },
   { name: "a queued run", activity: "run", arrange: () => homeRun("busy", "queued") },
   { name: "a preparing run", activity: "run", arrange: () => homeRun("busy", "preparing") },
   { name: "a running run", activity: "run", arrange: () => homeRun("busy", "running") },
@@ -1012,6 +1133,11 @@ it.effect.each<{
         });
         yield* homeProviderThread;
         yield* Ref.set(runtimeBackgroundWork, false);
+        yield* homeThread({ snoozedUntil: "1970-01-01T00:00:00.000Z" });
+        yield* homeTransfer("merge_back", "consumed");
+        yield* homeEffect("provider-thread.rollback", "succeeded");
+        yield* homeEffect("thread-title.generate", "pending");
+        yield* returningTask(true);
       }),
   },
 ])("defers a pass without a model call while the Home has $name", ({ activity, arrange }) =>
@@ -1106,6 +1232,188 @@ it.effect.each<{
           }),
       );
     }).pipe(Effect.provide(storeOnly)),
+);
+
+it.effect(
+  "a child that starts on the Home after the final check lands after learning commits",
+  () =>
+    Effect.gen(function* () {
+      yield* seedBot("automatic");
+      const { generate } = yield* recordingGenerator(() =>
+        Effect.succeed({ operations: [add("i1", "open every session recap", goldLesson)] }),
+      );
+      yield* withEngine(generate, ({ maintenance, beforeApply, executor }) =>
+        Effect.gen(function* () {
+          yield* enable(maintenance);
+          yield* input("ask", gold);
+          const main = yield* SqlClient.SqlClient;
+          const lockRequested = yield* Deferred.make<void>();
+          const ingestorLayer = ProviderEventIngestor.layer.pipe(
+            Layer.provide(
+              Layer.mergeAll(
+                EventSink.layer.pipe(
+                  Layer.provide(Layer.mergeAll(EventStore.layer, ProjectionStore.layer)),
+                ),
+                ProjectionStore.layer,
+                IdAllocator.layer,
+                BotHomes.layer,
+                Layer.succeed(ThreadCommandExecutor.ThreadCommandExecutor, {
+                  ...executor,
+                  withLock: (key, effect) =>
+                    Deferred.succeed(lockRequested, undefined).pipe(
+                      Effect.andThen(executor.withLock(key, effect)),
+                    ),
+                }),
+                Layer.mock(GitVcsDriver.GitVcsDriver)({}),
+                registryOf({}),
+              ),
+            ),
+          );
+          const at = yield* DateTime.now;
+          const childStatus = main<{
+            readonly status: string;
+          }>`SELECT status FROM orchestration_v2_projection_subagents WHERE subagent_id = 'late-child'`.pipe(
+            Effect.map((rows) => rows[0]?.status ?? "none"),
+          );
+          const ingest = (input: ProviderEventIngestor.ProviderEventIngestInput) =>
+            ProviderEventIngestor.ProviderEventIngestorV2.pipe(
+              Effect.flatMap((ingestor) => ingestor.ingestNormalized(input)),
+              Effect.provide(ingestorLayer),
+            );
+          const childStart = ingest({
+            providerSessionId: ProviderSessionId.make("session"),
+            providerInstanceId: ProviderInstanceId.make("codex"),
+            threadId: home,
+            event: {
+              type: "subagent.updated",
+              driver: ProviderDriverKind.make("codex"),
+              subagent: {
+                id: NodeId.make("late-child"),
+                threadId: home,
+                runId: null,
+                parentNodeId: NodeId.make("parent"),
+                origin: "provider_native",
+                createdBy: "agent",
+                driver: ProviderDriverKind.make("codex"),
+                providerInstanceId: ProviderInstanceId.make("codex"),
+                providerThreadId: null,
+                childThreadId: null,
+                nativeTaskRef: null,
+                prompt: "Review",
+                title: null,
+                model: null,
+                status: "running",
+                result: null,
+                startedAt: at,
+                completedAt: null,
+                updatedAt: at,
+              },
+            },
+          });
+          const services = yield* Effect.context<SqlClient.SqlClient | BotDatabase.BotDatabase>();
+          const atFinalCheck = yield* Ref.make({ start: "never", child: "none" });
+          const started = yield* Ref.make(Option.none<Fiber.Fiber<unknown>>());
+          yield* Ref.set(
+            beforeApply,
+            Effect.gen(function* () {
+              const fiber = yield* Effect.forkChild(childStart.pipe(Effect.orDie));
+              yield* Ref.set(started, Option.some(fiber));
+              const start = yield* Effect.raceFirst(
+                Fiber.join(fiber).pipe(Effect.as("landed")),
+                Deferred.await(lockRequested).pipe(Effect.as("waits for the Home lock")),
+              );
+              yield* Ref.set(atFinalCheck, { start, child: yield* childStatus });
+            }).pipe(Effect.orDie, Effect.provideContext(services)),
+          );
+          const pass = yield* maintenance.runNow(scope);
+          assert.deepEqual(yield* Ref.get(atFinalCheck), {
+            start: "waits for the Home lock",
+            child: "none",
+          });
+          assert.deepEqual(
+            {
+              status: pass.status,
+              lessons: (yield* learningRows).length,
+              ask: (yield* sourceStates).ask,
+            },
+            { status: "applied", lessons: 1, ask: "applied" },
+          );
+          const fiber = Option.getOrThrow(yield* Ref.get(started));
+          yield* Fiber.join(fiber);
+          assert.equal(yield* childStatus, "running");
+        }),
+      );
+    }).pipe(Effect.provide(storeOnly)),
+);
+
+it.effect("defers when runtime-only background work starts after the final Home check", () =>
+  Effect.gen(function* () {
+    yield* seedBot("automatic");
+    const { generate } = yield* recordingGenerator(() =>
+      Effect.succeed({ operations: [add("i1", "open every session recap", goldLesson)] }),
+    );
+    yield* withEngine(generate, ({ maintenance, beforeApply, runtimeBackgroundWork }) =>
+      Effect.gen(function* () {
+        yield* enable(maintenance);
+        yield* input("ask", gold);
+        yield* homeProviderThread;
+        yield* Ref.set(beforeApply, Ref.set(runtimeBackgroundWork, true));
+        const pass = yield* maintenance.runNow(scope);
+        assert.deepEqual(
+          {
+            status: pass.status,
+            reason: pass.status === "deferred" ? pass.reason : null,
+            lessons: (yield* learningRows).length,
+            ask: (yield* sourceStates).ask,
+          },
+          { status: "deferred", reason: "home_active", lessons: 0, ask: "pending" },
+        );
+      }),
+    );
+  }).pipe(Effect.provide(storeOnly)),
+);
+
+it.effect("a queued pass generates with the model the Bot has when the pass starts", () =>
+  Effect.gen(function* () {
+    yield* seedBot("automatic");
+    const started = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    const secondAsked = yield* Deferred.make<void>();
+    const calls = yield* Ref.make(0);
+    const { generate } = yield* recordingGenerator(() =>
+      Ref.getAndUpdate(calls, (count) => count + 1).pipe(
+        Effect.flatMap((count) =>
+          count === 0
+            ? Deferred.succeed(started, undefined).pipe(Effect.andThen(Deferred.await(release)))
+            : Effect.void,
+        ),
+        Effect.as({ operations: [add("i1", "open every session recap", goldLesson)] }),
+      ),
+    );
+    yield* withEngine(generate, ({ maintenance, availabilityHook, sealedCalls }) =>
+      Effect.gen(function* () {
+        yield* enable(maintenance);
+        yield* input("ask", gold);
+        const first = yield* maintenance.runNow(scope).pipe(Effect.forkChild);
+        yield* Deferred.await(started);
+        yield* Ref.set(
+          availabilityHook,
+          Deferred.succeed(secondAsked, undefined).pipe(Effect.asVoid),
+        );
+        const second = yield* maintenance.runNow(scope).pipe(Effect.forkChild);
+        yield* Deferred.await(secondAsked);
+        const bots = yield* BotDatabase.BotDatabase;
+        yield* bots`UPDATE bots SET model_selection_json = '{"instanceId":"codex","model":"new-selected-model"}' WHERE bot_id = 'bot'`;
+        yield* Deferred.succeed(release, undefined);
+        assert.equal((yield* Fiber.join(first)).status, "deferred");
+        assert.equal((yield* Fiber.join(second)).status, "applied");
+        assert.deepEqual(
+          (yield* Ref.get(sealedCalls)).map((call) => call.selection.model),
+          ["gpt-6-luna", "new-selected-model"],
+        );
+      }),
+    );
+  }).pipe(Effect.provide(storeOnly)),
 );
 
 it.effect.each([

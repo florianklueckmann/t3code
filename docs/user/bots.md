@@ -196,8 +196,9 @@ codebase does not leak into another. You see it under each project in
 project's new messages and newly finished tasks once a night at 03:00 server
 time and records lessons by the same **Learning** option. It needs the Bot on a
 signed-in Codex model, and starts with what comes after you turn it on. A night
-is skipped while the Bot's conversation or its tasks are still busy, while it
-is paused, or while its model can't run.
+is skipped while the Bot's conversation or its tasks are still busy, while the
+conversation is snoozed, settled or archived, while maintenance is paused, or
+while its model can't run.
 
 The Bot gets its current learning at the start of each turn, not its whole
 history. Learning does not add preferred sources, settle project decisions or

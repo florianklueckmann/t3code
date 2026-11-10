@@ -6,6 +6,7 @@ import * as BotProjectGuard from "../bots/BotProjectGuard.ts";
 import * as BotContinuation from "../bots/BotContinuation.ts";
 import * as BotMaintenance from "../bots/BotMaintenance.ts";
 import * as BotExecutionConstraint from "../bots/BotExecutionConstraint.ts";
+import * as BotHomes from "../bots/BotHomes.ts";
 import * as BotService from "../bots/BotService.ts";
 import * as BotRuntimePolicy from "../bots/BotRuntimePolicy.ts";
 import * as BotTaskService from "../bots/BotTaskService.ts";
@@ -125,6 +126,7 @@ const layerProviderEventIngestorProvided = ProviderEventIngestor.layer.pipe(
       IdAllocator.layer,
       ProjectionStore.layer,
       ThreadCommandExecutor.layer,
+      BotHomes.layer,
       GitVcsDriver.layer,
     ),
   ),
