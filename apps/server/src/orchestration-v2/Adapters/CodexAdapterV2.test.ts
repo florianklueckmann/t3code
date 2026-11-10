@@ -3604,15 +3604,84 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         excludeTurns: true,
         config: CodexAdapterV2.CODEX_THREAD_CONFIG,
       },
+      // As Codex 0.166.0 reports them: `launch` comes from launch arguments, not a config file.
       configRead: {
-        config: { mcp_servers: { probe: { command: "probe" }, "t3-code": {} } },
+        config: {
+          mcp_servers: {
+            probe: {
+              command: "probe",
+              args: ["serve"],
+              environment_id: "local",
+              enabled: true,
+              tool_timeout_sec: null,
+            },
+            launch: {
+              command: "node",
+              args: ["launch.mjs"],
+              environment_id: "local",
+              enabled: true,
+              tool_timeout_sec: null,
+            },
+            remote: {
+              url: "https://mcp.example.test/mcp",
+              environment_id: "local",
+              enabled: true,
+              tool_timeout_sec: null,
+            },
+            "t3-code": {},
+          },
+        },
         origins: {},
+      },
+      // Codex refuses the whole load for an entry with no transport, which a launch-argument
+      // server's entry would be without its own, or for a reported null it reads back as "".
+      disabledUserServers: {
+        probe: { command: "probe", enabled: false },
+        launch: { command: "node", enabled: false },
+        remote: { url: "https://mcp.example.test/mcp", enabled: false },
       },
       sealedPolicy: {
         ...CODEX_TEST_RUNTIME_POLICY,
         nativeMemory: "disabled",
         nativeTools: "t3BotOnly",
       } as const,
+      readOnlyPolicy: {
+        ...CODEX_TEST_RUNTIME_POLICY,
+        nativeMemory: "disabled",
+        nativeTools: "readOnly",
+      } as const,
+      // The shell stays for reading; everything that acts outside the sandbox is off.
+      readOnlyLoad: {
+        sandbox: "read-only",
+        approvalPolicy: "never",
+        approvalsReviewer: "user",
+        config: {
+          ...CodexAdapterV2.CODEX_THREAD_CONFIG,
+          "features.memories": false,
+          "memories.use_memories": false,
+          "memories.generate_memories": false,
+          ...Object.fromEntries(
+            [
+              "multi_agent",
+              "multi_agent_v2",
+              "goals",
+              "apps",
+              "plugins",
+              "remote_plugin",
+              "hooks",
+              "browser_use",
+              "browser_use_external",
+              "computer_use",
+              "in_app_browser",
+              "in_app_local_automation",
+              "image_generation",
+              "tool_suggest",
+              "skill_mcp_dependency_install",
+            ].map((name) => [`features.${name}`, false]),
+          ),
+          notify: [],
+        },
+      },
     };
   };
 
@@ -3631,6 +3700,15 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             prompt: "unused-prompt",
           }).slice(0, 5),
         );
+        const userDirect = {
+          ...configRead,
+          config: {
+            mcp_servers: {
+              ...configRead.config.mcp_servers,
+              "t3-code-direct": { url: "http://user" },
+            },
+          },
+        };
         const transcript = makeCodexReplayTranscript({
           scenario,
           entries: [
@@ -3644,11 +3722,13 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             ),
             ...step(4, "config/read", { includeLayers: false, cwd: "/workspace" }, configRead),
             ...step(5, "thread/resume", sealedResume, resumed),
+            // Read again, so a server added while it loaded is found.
+            ...step(6, "config/read", { includeLayers: false, cwd: "/workspace" }, configRead),
             {
               type: "expect_outbound",
-              label: "thread/memoryMode/set 6",
+              label: "thread/memoryMode/set 7",
               frame: {
-                id: 6,
+                id: 7,
                 method: "thread/memoryMode/set",
                 params: { threadId: nativeThreadId, mode: "disabled" },
               },
@@ -3677,61 +3757,54 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             },
             {
               type: "emit_inbound",
-              label: "thread/memoryMode/set 6",
-              frame: { id: 6, result: {} },
+              label: "thread/memoryMode/set 7",
+              frame: { id: 7, result: {} },
             },
             // Same seal again: no release.
             // This time the user's own config also defines T3's direct server name.
+            ...step(8, "config/read", { includeLayers: false, cwd: "/workspace" }, userDirect),
+            ...step(9, "thread/resume", sealedResume, resumed),
+            ...step(10, "config/read", { includeLayers: false, cwd: "/workspace" }, userDirect),
             ...step(
-              7,
-              "config/read",
-              { includeLayers: false, cwd: "/workspace" },
-              {
-                ...configRead,
-                config: {
-                  mcp_servers: {
-                    ...configRead.config.mcp_servers,
-                    "t3-code-direct": { url: "http://user" },
-                  },
-                },
-              },
+              11,
+              "thread/memoryMode/set",
+              { threadId: nativeThreadId, mode: "disabled" },
+              {},
             ),
-            ...step(8, "thread/resume", sealedResume, resumed),
-            ...step(9, "thread/memoryMode/set", { threadId: nativeThreadId, mode: "disabled" }, {}),
             // Sealed to normal: release, then an ordinary load.
-            ...step(
-              10,
-              "thread/unsubscribe",
-              { threadId: nativeThreadId },
-              { status: "unsubscribed" },
-            ),
-            ...step(11, "thread/resume", ordinaryResume, resumed),
-            // A sealed load that fails after its release leaves the thread unknown.
             ...step(
               12,
               "thread/unsubscribe",
               { threadId: nativeThreadId },
               { status: "unsubscribed" },
             ),
-            ...step(13, "config/read", { includeLayers: false, cwd: "/workspace" }, configRead),
+            ...step(13, "thread/resume", ordinaryResume, resumed),
+            // A sealed load that fails after its release leaves the thread unknown.
+            ...step(
+              14,
+              "thread/unsubscribe",
+              { threadId: nativeThreadId },
+              { status: "unsubscribed" },
+            ),
+            ...step(15, "config/read", { includeLayers: false, cwd: "/workspace" }, configRead),
             {
               type: "expect_outbound",
-              label: "thread/resume 14",
-              frame: { id: 14, method: "thread/resume", params: sealedResume },
+              label: "thread/resume 16",
+              frame: { id: 16, method: "thread/resume", params: sealedResume },
             },
             {
               type: "emit_inbound",
-              label: "thread/resume 14",
-              frame: { id: 14, error: { code: -32603, message: "resume failed" } },
+              label: "thread/resume 16",
+              frame: { id: 16, error: { code: -32603, message: "resume failed" } },
             },
             // Unknown is released before the next ordinary load too.
             ...step(
-              15,
+              17,
               "thread/unsubscribe",
               { threadId: nativeThreadId },
               { status: "notLoaded" },
             ),
-            ...step(16, "thread/resume", ordinaryResume, resumed),
+            ...step(18, "thread/resume", ordinaryResume, resumed),
           ],
         });
         const resumeParams: Array<unknown> = [];
@@ -3777,12 +3850,10 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         yield* resume(CODEX_TEST_RUNTIME_POLICY);
 
         // The sealed load keeps only t3_bot on T3 Code's server and turns the user's servers off.
-        // Codex 0.166.0 refuses the whole load for an entry with no transport in its config, so
-        // only servers config/read reported are named.
         const sealedServers = (resumeParams[0] as { config: { mcp_servers: unknown } }).config
           .mcp_servers;
         assert.deepEqual(sealedServers, {
-          probe: { enabled: false },
+          ...seal.disabledUserServers,
           "t3-code": {
             url: "http://127.0.0.1:43123/mcp",
             tool_timeout_sec: 65 * 60,
@@ -3794,7 +3865,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         assert.deepEqual(
           (resumeParams[1] as { config: { mcp_servers: Record<string, unknown> } }).config
             .mcp_servers["t3-code-direct"],
-          { enabled: false },
+          { url: "http://user", enabled: false },
         );
         assert.notProperty((resumeParams[2] as { config: object }).config, "mcp_servers");
       }).pipe(
@@ -3821,7 +3892,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           const workNativeThreadId = `native-${scenario}-work`;
           const workThreadId = ThreadId.make(`thread-${scenario}-work`);
           const seal = codexHomeSealReplay(scenario, nativeThreadId);
-          const { step, configRead } = seal;
+          const { step, configRead, readOnlyPolicy, readOnlyLoad } = seal;
           yield* (yield* McpProviderSessions.McpProviderSessions).set({
             environmentId: EnvironmentId.make("environment-codex-read-only-seal"),
             threadId: workThreadId,
@@ -3831,43 +3902,6 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             authorizationHeader: "Bearer routine-token",
             browserToolsAvailable: false,
           });
-          const readOnlyPolicy = {
-            ...CODEX_TEST_RUNTIME_POLICY,
-            nativeMemory: "disabled",
-            nativeTools: "readOnly",
-          } as const;
-          // The shell stays for reading; everything that acts outside the sandbox is off.
-          const readOnlyLoad = {
-            sandbox: "read-only",
-            approvalPolicy: "never",
-            approvalsReviewer: "user",
-            config: {
-              ...CodexAdapterV2.CODEX_THREAD_CONFIG,
-              "features.memories": false,
-              "memories.use_memories": false,
-              "memories.generate_memories": false,
-              ...Object.fromEntries(
-                [
-                  "multi_agent",
-                  "multi_agent_v2",
-                  "goals",
-                  "apps",
-                  "plugins",
-                  "remote_plugin",
-                  "hooks",
-                  "browser_use",
-                  "browser_use_external",
-                  "computer_use",
-                  "in_app_browser",
-                  "in_app_local_automation",
-                  "image_generation",
-                  "tool_suggest",
-                  "skill_mcp_dependency_install",
-                ].map((name) => [`features.${name}`, false]),
-              ),
-              notify: [],
-            },
-          };
           const preamble = seal.onMeasuredVersion(
             codexReplayPreamble({
               nativeThreadId,
@@ -3884,31 +3918,37 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             nativeThreadId: workNativeThreadId,
             forkedFromId: null,
           });
+          const readConfig = (id: number) =>
+            step(id, "config/read", { includeLayers: false, cwd: "/workspace" }, configRead);
           const transcript = makeCodexReplayTranscript({
             scenario,
             entries: [
               ...preamble,
-              ...step(3, "config/read", { includeLayers: false, cwd: "/workspace" }, configRead),
+              // Each sealed load reads the user's servers before and after it.
+              ...readConfig(3),
               ...step(4, "thread/start", readOnlyLoad, workStart),
+              ...readConfig(5),
               // Same seal again: no release.
-              ...step(5, "config/read", { includeLayers: false, cwd: "/workspace" }, configRead),
+              ...readConfig(6),
               ...step(
-                6,
+                7,
                 "thread/resume",
                 { threadId: workNativeThreadId, excludeTurns: true, ...readOnlyLoad },
                 { thread: { id: workNativeThreadId, updatedAt: 1782622450 } },
               ),
+              ...readConfig(8),
               ...step(
-                7,
+                9,
                 "thread/memoryMode/set",
                 { threadId: workNativeThreadId, mode: "disabled" },
                 {},
               ),
               // The ordinary thread beside it keeps its ordinary load: no release.
-              ...step(8, "thread/resume", seal.ordinaryResume, seal.resumed),
-              // A rollback loads an unloaded work thread with the session's own, ordinary config.
+              ...step(10, "thread/resume", seal.ordinaryResume, seal.resumed),
+              // A rollback loads an unloaded work thread with the work thread's own seal, not the
+              // ordinary session's.
               ...step(
-                9,
+                11,
                 "thread/read",
                 { threadId: workNativeThreadId, includeTurns: false },
                 {
@@ -3919,18 +3959,16 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                   },
                 },
               ),
+              ...readConfig(12),
               ...step(
-                10,
+                13,
                 "thread/resume",
-                {
-                  threadId: workNativeThreadId,
-                  excludeTurns: true,
-                  config: CodexAdapterV2.CODEX_THREAD_CONFIG,
-                },
+                { threadId: workNativeThreadId, excludeTurns: true, ...readOnlyLoad },
                 workThreadResult,
               ),
+              ...readConfig(14),
               ...step(
-                11,
+                15,
                 "thread/turns/list",
                 {
                   threadId: workNativeThreadId,
@@ -3945,27 +3983,22 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                 },
               ),
               ...step(
-                12,
+                16,
                 "thread/revert",
                 { threadId: workNativeThreadId, beforeTurnId: "native-turn-second" },
                 workThreadResult,
               ),
-              // So the next routine turn releases that load before sealing it again.
+              // So the next routine turn finds it already sealed: no release.
+              ...readConfig(17),
               ...step(
-                13,
-                "thread/unsubscribe",
-                { threadId: workNativeThreadId },
-                { status: "unsubscribed" },
-              ),
-              ...step(14, "config/read", { includeLayers: false, cwd: "/workspace" }, configRead),
-              ...step(
-                15,
+                18,
                 "thread/resume",
                 { threadId: workNativeThreadId, excludeTurns: true, ...readOnlyLoad },
                 { thread: { id: workNativeThreadId, updatedAt: 1782622450 } },
               ),
+              ...readConfig(19),
               ...step(
-                16,
+                20,
                 "thread/memoryMode/set",
                 { threadId: workNativeThreadId, mode: "disabled" },
                 {},
@@ -4037,6 +4070,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
               providerTurn: firstTurn,
             },
             providerThreadTurns: [firstTurn, secondTurn],
+            runtimePolicy: readOnlyPolicy,
           });
           yield* harness.runtime.resumeThread({
             providerThread: workThread,
@@ -4051,11 +4085,11 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             tool_timeout_sec: 65 * 60,
             http_headers: { Authorization: "Bearer routine-token" },
           };
-          for (const index of [1, 2]) {
+          for (const index of [1, 2, 4, 5]) {
             assert.deepEqual(
               (loadParams[index] as { config: { mcp_servers: unknown } }).config.mcp_servers,
               {
-                probe: { enabled: false },
+                ...seal.disabledUserServers,
                 "t3-code": { ...t3Server, disabled_tools: ["t3_thread_wait"] },
                 "t3-code-direct": {
                   ...t3Server,
@@ -4078,6 +4112,117 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           ),
         ),
       ),
+  );
+
+  it.effect("releases and refuses a sealed load a user MCP server joined while it loaded", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const scenario = "codex-seal-config-race";
+        const nativeThreadId = `native-${scenario}-thread`;
+        const workNativeThreadId = `native-${scenario}-work`;
+        const seal = codexHomeSealReplay(scenario, nativeThreadId);
+        const { step, configRead, readOnlyPolicy, readOnlyLoad, resumed } = seal;
+        // Another writer adds a server after the seal read the config, before Codex loads it.
+        const joined = {
+          ...configRead,
+          config: {
+            mcp_servers: { ...configRead.config.mcp_servers, newly_added: { command: "added" } },
+          },
+        };
+        const preamble = seal.onMeasuredVersion(
+          codexReplayPreamble({
+            nativeThreadId,
+            nativeTurnId: "unused-turn",
+            prompt: "unused-prompt",
+          }).slice(0, 5),
+        );
+        const ordinaryStart = preamble[4] as { frame: { result: { thread: object } } };
+        const workStart = {
+          ...ordinaryStart.frame.result,
+          thread: { ...ordinaryStart.frame.result.thread, id: workNativeThreadId },
+        };
+        const sealedResume = { threadId: nativeThreadId, excludeTurns: true, ...readOnlyLoad };
+        const unsubscribe = (id: number, threadId: string) =>
+          step(id, "thread/unsubscribe", { threadId }, { status: "unsubscribed" });
+        const transcript = makeCodexReplayTranscript({
+          scenario,
+          entries: [
+            ...preamble,
+            // A fresh routine thread.
+            ...step(3, "config/read", { includeLayers: false, cwd: "/workspace" }, configRead),
+            ...step(4, "thread/start", readOnlyLoad, workStart),
+            ...step(5, "config/read", { includeLayers: false, cwd: "/workspace" }, joined),
+            ...unsubscribe(6, workNativeThreadId),
+            // An existing thread.
+            ...unsubscribe(7, nativeThreadId),
+            ...step(8, "config/read", { includeLayers: false, cwd: "/workspace" }, configRead),
+            ...step(9, "thread/resume", sealedResume, resumed),
+            ...step(10, "config/read", { includeLayers: false, cwd: "/workspace" }, joined),
+            ...unsubscribe(11, nativeThreadId),
+            // The next sealed load names the new server too, and runs.
+            ...unsubscribe(12, nativeThreadId),
+            ...step(13, "config/read", { includeLayers: false, cwd: "/workspace" }, joined),
+            ...step(14, "thread/resume", sealedResume, resumed),
+            ...step(15, "config/read", { includeLayers: false, cwd: "/workspace" }, joined),
+            ...step(
+              16,
+              "thread/memoryMode/set",
+              { threadId: nativeThreadId, mode: "disabled" },
+              {},
+            ),
+          ],
+        });
+        const loadParams: Array<unknown> = [];
+        const harness = yield* makeCodexReplayHarness(transcript, undefined, (method, params) =>
+          Effect.sync(() => {
+            if (method === "thread/resume") loadParams.push(params);
+          }),
+        );
+        const fresh = yield* Effect.flip(
+          harness.runtime.ensureThread({
+            threadId: ThreadId.make(`thread-${scenario}-work`),
+            modelSelection: CODEX_TEST_MODEL_SELECTION,
+            runtimePolicy: readOnlyPolicy,
+          }),
+        );
+        assert.equal(fresh._tag, "ProviderAdapterSealRefusedError");
+        const resume = harness.runtime.resumeThread({
+          providerThread: harness.providerThread,
+          modelSelection: CODEX_TEST_MODEL_SELECTION,
+          runtimePolicy: readOnlyPolicy,
+        });
+        assert.equal((yield* Effect.flip(resume))._tag, "ProviderAdapterSealRefusedError");
+        const turn = makeCodexTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make("config-race-check"),
+          text: "work",
+        });
+        assert.equal(
+          (yield* Effect.flip(
+            harness.runtime.startTurn({ ...turn, runtimePolicy: readOnlyPolicy }),
+          ))._tag,
+          "ProviderAdapterSealRefusedError",
+        );
+        yield* resume;
+        assert.deepEqual(
+          (loadParams[1] as { config: { mcp_servers: Record<string, unknown> } }).config
+            .mcp_servers["newly_added"],
+          { command: "added", enabled: false },
+        );
+      }).pipe(
+        Effect.provideService(HostProcess.Platform, "darwin"),
+        Effect.provide(
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            NodeCrypto.layer,
+          ),
+        ),
+      ),
+    ),
   );
 
   it.effect.each([
@@ -8734,6 +8879,12 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                       ...step(8, "thread/resume", seal.sealedResume, seal.resumed),
                       ...step(
                         9,
+                        "config/read",
+                        { includeLayers: false, cwd: "/workspace" },
+                        seal.configRead,
+                      ),
+                      ...step(
+                        10,
                         "thread/memoryMode/set",
                         { threadId: RESUME_NATIVE_THREAD, mode: "disabled" },
                         {},
@@ -8818,6 +8969,12 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                 ...step(5, "thread/resume", seal.sealedResume, seal.resumed),
                 ...step(
                   6,
+                  "config/read",
+                  { includeLayers: false, cwd: "/workspace" },
+                  seal.configRead,
+                ),
+                ...step(
+                  7,
                   "thread/memoryMode/set",
                   { threadId: RESUME_NATIVE_THREAD, mode: "disabled" },
                   {},
@@ -8826,7 +8983,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                   type: "expect_outbound",
                   label: "sealed turn/start",
                   frame: {
-                    id: 7,
+                    id: 8,
                     method: "turn/start",
                     params: {
                       threadId: RESUME_NATIVE_THREAD,
@@ -8845,7 +9002,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                   type: "emit_inbound",
                   label: "sealed turn/start",
                   frame: {
-                    id: 7,
+                    id: 8,
                     result: {
                       turn: makeCodexReplayTurn({ id: RESUME_NATIVE_TURN, status: "inProgress" }),
                     },
@@ -8855,33 +9012,33 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                 ...spawned.slice(7),
                 {
                   type: "expect_outbound",
-                  label: "turn/interrupt 8",
+                  label: "turn/interrupt 9",
                   frame: {
-                    id: 8,
+                    id: 9,
                     method: "turn/interrupt",
                     params: { threadId: RESUME_CHILD_THREAD, turnId: RESUME_CHILD_TURN_1 },
                   },
                 },
                 {
                   type: "emit_inbound",
-                  label: "turn/interrupt 8",
+                  label: "turn/interrupt 9",
                   frame:
                     stop === "confirmed"
-                      ? { id: 8, result: {} }
-                      : { id: 8, error: { code: -32603, message: "interrupt failed" } },
+                      ? { id: 9, result: {} }
+                      : { id: 9, error: { code: -32603, message: "interrupt failed" } },
                 },
                 ...rootFinished,
                 ...(stop === "confirmed" ? [childTurnCompleted(RESUME_CHILD_TURN_1)] : []),
                 ...step(
-                  9,
+                  10,
                   "thread/unsubscribe",
                   { threadId: RESUME_NATIVE_THREAD },
                   { status: "unsubscribed" },
                 ),
                 {
                   type: "expect_outbound",
-                  label: "thread/resume 10",
-                  frame: { id: 10, method: "thread/resume", params: seal.ordinaryResume },
+                  label: "thread/resume 11",
+                  frame: { id: 11, method: "thread/resume", params: seal.ordinaryResume },
                 },
                 // The child asks while its parent is being loaded for ordinary work.
                 {
@@ -8909,8 +9066,8 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                 },
                 {
                   type: "emit_inbound",
-                  label: "thread/resume 10",
-                  frame: { id: 10, result: seal.resumed },
+                  label: "thread/resume 11",
+                  frame: { id: 11, result: seal.resumed },
                 },
               ],
             }),

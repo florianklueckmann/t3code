@@ -1472,13 +1472,26 @@ const codexThreadSealOf = (
   policy: ProviderAdapter.ProviderAdapterV2RuntimePolicy | undefined,
 ): CodexThreadSeal => policy?.nativeTools ?? "ordinary";
 
+/**
+ * Codex refuses the whole load for a server entry with no transport, and a launch-argument
+ * server's entry has none unless restated. It also reads a reported `null` back as "", so a
+ * disabled entry restates only the transport (measured on 0.166.0 and 0.167.0).
+ */
+type CodexMcpTransport = { readonly command?: string; readonly url?: string };
+const codexMcpTransport = (server: unknown): CodexMcpTransport => {
+  if (typeof server !== "object" || server === null) return {};
+  if ("url" in server && typeof server.url === "string") return { url: server.url };
+  if ("command" in server && typeof server.command === "string") return { command: server.command };
+  return {};
+};
+
 function codexThreadRuntimeParams(input: {
   readonly threadId: ThreadId | null;
   readonly mcpSession: McpProviderSession.McpProviderSessionConfig | undefined;
   readonly modelSelection?: { readonly model: string };
   readonly runtimePolicy?: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
-  /** The user's own MCP servers, which a sealed load turns off by name. */
-  readonly userMcpServerNames?: ReadonlyArray<string>;
+  /** The user's own MCP servers, which a sealed load turns off. */
+  readonly userMcpServers?: Readonly<Record<string, CodexMcpTransport>>;
 }): {
   readonly cwd?: string;
   readonly model?: string;
@@ -1531,11 +1544,13 @@ function codexThreadRuntimeParams(input: {
         ...CODEX_SEAL_THREAD_CONFIG[seal],
         notify: [],
         ...threadEnvironment,
-        // One object, not dotted keys: server names can contain dots. Codex refuses the whole load
-        // for an entry with no transport, so only servers its config defines are turned off.
+        // One object, not dotted keys: server names can contain dots.
         mcp_servers: {
           ...Object.fromEntries(
-            (input.userMcpServerNames ?? []).map((name) => [name, { enabled: false }]),
+            Object.entries(input.userMcpServers ?? {}).map(([name, transport]) => [
+              name,
+              { ...transport, enabled: false },
+            ]),
           ),
           ...(seal === "readOnly" || t3Server === undefined
             ? t3Servers
@@ -2169,16 +2184,51 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             ? Effect.void
             : Effect.fail(refuseSeal(held, "seal"));
         };
-        const readUserMcpServerNames = (seal: CodexSeal, cwd: string | null) =>
+        const readUserMcpServers = (seal: CodexSeal, cwd: string | null) =>
           client.request("config/read", { includeLayers: false, cwd }).pipe(
-            Effect.map((response) => {
+            Effect.map((response): Record<string, CodexMcpTransport> => {
               const servers: unknown = response.config["mcp_servers"];
               return typeof servers === "object" && servers !== null
-                ? Object.keys(servers).filter((name) => name !== "t3-code")
-                : [];
+                ? Object.fromEntries(
+                    Object.entries(servers)
+                      .filter(([name]) => name !== "t3-code")
+                      .map(([name, server]) => [name, codexMcpTransport(server)]),
+                  )
+                : {};
             }),
             Effect.mapError((cause) => refuseSeal(seal, "seal", cause)),
           );
+        /**
+         * A server added to the user's config between the read and the load is loaded but not
+         * turned off. Reading again after the load finds it, and the thread is released before
+         * any turn can call it.
+         */
+        const requireUnchangedUserMcpServers = Effect.fn(
+          "CodexAdapterV2.requireUnchangedUserMcpServers",
+        )(
+          function* (
+            seal: CodexSeal,
+            nativeThreadId: string,
+            cwd: string | null,
+            turnedOff: Readonly<Record<string, CodexMcpTransport>>,
+          ) {
+            const current = yield* readUserMcpServers(seal, cwd);
+            if (Object.keys(current).every((name) => Object.hasOwn(turnedOff, name))) return;
+            yield* client
+              .request("thread/unsubscribe", { threadId: nativeThreadId })
+              .pipe(Effect.mapError((cause) => refuseSeal(seal, "seal", cause)));
+            return yield* refuseSeal(seal, "seal");
+          },
+          (effect, _seal, nativeThreadId) =>
+            effect.pipe(
+              Effect.onError(() =>
+                Effect.sync(() => {
+                  threadSeals.set(nativeThreadId, "unknown");
+                  sessionApprovals.delete(nativeThreadId);
+                }),
+              ),
+            ),
+        );
         const runningCommandItemsByTurn = yield* Ref.make(
           new Map<string, Map<string, TrackedRunningCommandItem>>(),
         );
@@ -7162,6 +7212,54 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           );
         });
 
+        /** Loads a stored thread with exactly the given policy's seal. */
+        const loadNativeThread = Effect.fn("CodexAdapterV2.loadNativeThread")(function* (load: {
+          readonly nativeThreadId: string;
+          readonly appThreadId: ThreadId | null;
+          readonly providerThread: OrchestrationV2ProviderThread;
+          readonly modelSelection: { readonly model: string } | undefined;
+          readonly runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy | undefined;
+        }) {
+          const { nativeThreadId } = load;
+          const mcpSession = yield* readMcpSession(load.appThreadId);
+          const seal = codexThreadSealOf(load.runtimePolicy);
+          return yield* withSealLock(
+            nativeThreadId,
+            Effect.gen(function* () {
+              yield* ensureInitialized;
+              if (seal !== "ordinary") yield* prepareSeal(seal, load.providerThread, mcpSession);
+              // Codex ignores a resume's config while the thread is loaded, so a seal change
+              // releases it first. Unknown state is released before any seal.
+              if ((threadSeals.get(nativeThreadId) ?? "ordinary") !== seal) {
+                threadSeals.set(nativeThreadId, "unknown");
+                sessionApprovals.delete(nativeThreadId);
+                yield* client.request("thread/unsubscribe", { threadId: nativeThreadId });
+              }
+              const cwd = load.runtimePolicy?.cwd ?? null;
+              const userMcpServers =
+                seal === "ordinary" ? {} : yield* readUserMcpServers(seal, cwd);
+              const resumed = yield* resumeNativeThread(nativeThreadId, {
+                excludeTurns: true,
+                ...codexThreadRuntimeParams({
+                  threadId: load.appThreadId,
+                  mcpSession,
+                  userMcpServers,
+                  ...(load.modelSelection === undefined
+                    ? {}
+                    : { modelSelection: load.modelSelection }),
+                  ...(load.runtimePolicy === undefined
+                    ? {}
+                    : { runtimePolicy: load.runtimePolicy }),
+                }),
+              });
+              threadSeals.set(nativeThreadId, seal);
+              if (seal !== "ordinary")
+                yield* requireUnchangedUserMcpServers(seal, nativeThreadId, cwd, userMcpServers);
+              return resumed;
+            }),
+          );
+        });
+
         const startNativeTurn = Effect.fn("CodexAdapterV2.startNativeTurn")(
           function* (
             turnInput: ProviderAdapter.ProviderAdapterV2TurnInput,
@@ -7491,6 +7589,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               yield* ensureInitialized;
               const mcpSession = yield* mcpSessions.read(threadInput.threadId);
               if (seal !== "ordinary") yield* refuseUnmeasuredSeal(seal, mcpSession);
+              const { cwd } = threadInput.runtimePolicy;
+              const userMcpServers =
+                seal === "ordinary" ? {} : yield* readUserMcpServers(seal, cwd);
               const response = yield* client.request(
                 "thread/start",
                 codexThreadRuntimeParams({
@@ -7498,13 +7599,18 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   mcpSession,
                   modelSelection: threadInput.modelSelection,
                   runtimePolicy: threadInput.runtimePolicy,
-                  userMcpServerNames:
-                    seal === "ordinary"
-                      ? []
-                      : yield* readUserMcpServerNames(seal, threadInput.runtimePolicy.cwd),
+                  userMcpServers,
                 }),
               );
-              if (seal !== "ordinary") threadSeals.set(response.thread.id, seal);
+              if (seal !== "ordinary") {
+                threadSeals.set(response.thread.id, seal);
+                yield* requireUnchangedUserMcpServers(
+                  seal,
+                  response.thread.id,
+                  cwd,
+                  userMcpServers,
+                );
+              }
               return providerThreadFromCodexThread({
                 appThreadId: threadInput.threadId,
                 idAllocator,
@@ -7529,45 +7635,13 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           ),
           resumeThread: Effect.fn("CodexAdapterV2.resumeThread")(
             function* (threadInput) {
-              const nativeThreadId = yield* getNativeThreadId(threadInput.providerThread);
-              const appThreadId = threadInput.threadId ?? threadInput.providerThread.appThreadId;
-              const mcpSession = yield* readMcpSession(appThreadId);
-              const seal = codexThreadSealOf(threadInput.runtimePolicy);
-              const response = yield* withSealLock(
-                nativeThreadId,
-                Effect.gen(function* () {
-                  yield* ensureInitialized;
-                  if (seal !== "ordinary")
-                    yield* prepareSeal(seal, threadInput.providerThread, mcpSession);
-                  // Codex ignores a resume's config while the thread is loaded, so a seal change
-                  // releases it first. Unknown state is released before any seal.
-                  if ((threadSeals.get(nativeThreadId) ?? "ordinary") !== seal) {
-                    threadSeals.set(nativeThreadId, "unknown");
-                    sessionApprovals.delete(nativeThreadId);
-                    yield* client.request("thread/unsubscribe", { threadId: nativeThreadId });
-                  }
-                  const userMcpServerNames =
-                    seal === "ordinary"
-                      ? []
-                      : yield* readUserMcpServerNames(seal, threadInput.runtimePolicy?.cwd ?? null);
-                  const resumed = yield* resumeNativeThread(nativeThreadId, {
-                    excludeTurns: true,
-                    ...codexThreadRuntimeParams({
-                      threadId: appThreadId,
-                      mcpSession,
-                      userMcpServerNames,
-                      ...(threadInput.modelSelection === undefined
-                        ? {}
-                        : { modelSelection: threadInput.modelSelection }),
-                      ...(threadInput.runtimePolicy === undefined
-                        ? {}
-                        : { runtimePolicy: threadInput.runtimePolicy }),
-                    }),
-                  }).pipe(Effect.flatMap(decodeCodexResumeMetadata));
-                  threadSeals.set(nativeThreadId, seal);
-                  return resumed;
-                }),
-              );
+              const response = yield* loadNativeThread({
+                nativeThreadId: yield* getNativeThreadId(threadInput.providerThread),
+                appThreadId: threadInput.threadId ?? threadInput.providerThread.appThreadId,
+                providerThread: threadInput.providerThread,
+                modelSelection: threadInput.modelSelection,
+                runtimePolicy: threadInput.runtimePolicy,
+              }).pipe(Effect.flatMap(decodeCodexResumeMetadata));
               if (threadInput.runtimePolicy?.nativeMemory === "disabled") {
                 // Resume does not rewrite a stored thread's memory_mode, so a thread that began
                 // with memory on would otherwise stay eligible for extraction.
@@ -8377,26 +8451,15 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               }
               // thread/revert requires the thread loaded in this app-server; resume after restart or idle release.
               if (!loaded) {
-                const mcpSession = yield* readMcpSession(threadInput.providerThread.appThreadId);
-                // The session's own policy loads it, so a later run releases it unless that matches.
-                yield* withSealLock(
-                  threadId,
-                  resumeNativeThread(threadId, {
-                    excludeTurns: true,
-                    ...codexThreadRuntimeParams({
-                      threadId: threadInput.providerThread.appThreadId,
-                      mcpSession,
-                      modelSelection: input.modelSelection,
-                      runtimePolicy: input.runtimePolicy,
-                    }),
-                  }).pipe(
-                    Effect.tap(() =>
-                      Effect.sync(() =>
-                        threadSeals.set(threadId, codexThreadSealOf(input.runtimePolicy)),
-                      ),
-                    ),
-                  ),
-                );
+                // The session may be shared with ordinary threads, so its own policy is not this
+                // thread's.
+                yield* loadNativeThread({
+                  nativeThreadId: threadId,
+                  appThreadId: threadInput.providerThread.appThreadId,
+                  providerThread: threadInput.providerThread,
+                  modelSelection: input.modelSelection,
+                  runtimePolicy: threadInput.runtimePolicy ?? input.runtimePolicy,
+                });
               }
               const response = yield* ensureInitialized.pipe(
                 Effect.andThen(revertCodexThread(client, threadId, numTurns)),

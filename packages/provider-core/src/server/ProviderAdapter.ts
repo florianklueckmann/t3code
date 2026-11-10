@@ -599,6 +599,8 @@ export interface ProviderAdapterV2RollbackThreadInput {
   readonly providerThread: OrchestrationV2ProviderThread;
   readonly target: ProviderAdapterV2RollbackTarget;
   readonly providerThreadTurns: ReadonlyArray<OrchestrationV2ProviderTurn>;
+  /** The rolled-back thread's own policy, which a reload must use instead of the session's. */
+  readonly runtimePolicy?: ProviderAdapterV2RuntimePolicy;
 }
 
 export interface ProviderAdapterV2ForkThreadInput {
