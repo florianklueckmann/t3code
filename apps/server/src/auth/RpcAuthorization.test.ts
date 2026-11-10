@@ -35,7 +35,7 @@ describe("RPC authorization scopes", () => {
     expect(new Set(Object.keys(RPC_REQUIRED_SCOPES))).toEqual(new Set(WsRpcGroup.requests.keys()));
   });
 
-  it("allows continuation inspection with read and guards user edits with operate", () => {
+  it("allows continuation and maintenance inspection with read and guards user edits with operate", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.botsGetContinuation)).toBe(
       AuthOrchestrationReadScope,
     );
@@ -43,6 +43,12 @@ describe("RPC authorization scopes", () => {
       AuthOrchestrationReadScope,
     );
     expect(requiredScopeForRpcMethod(WS_METHODS.botsSaveContinuation)).toBe(
+      AuthOrchestrationOperateScope,
+    );
+    expect(requiredScopeForRpcMethod(WS_METHODS.botsGetMaintenance)).toBe(
+      AuthOrchestrationReadScope,
+    );
+    expect(requiredScopeForRpcMethod(WS_METHODS.botsConfigureMaintenance)).toBe(
       AuthOrchestrationOperateScope,
     );
   });

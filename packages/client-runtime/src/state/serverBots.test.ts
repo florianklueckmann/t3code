@@ -38,7 +38,9 @@ import type { RpcSession } from "../rpc/session.ts";
 import { createServerEnvironmentAtoms } from "./server.ts";
 
 const CONFIG = {
-  environment: { capabilities: { bots: true, botTaskResults: true, botContinuation: true } },
+  environment: {
+    capabilities: { bots: true, botTaskResults: true, botContinuation: true, botMaintenance: true },
+  },
   providers: [],
 } as unknown as ServerConfig;
 
@@ -58,6 +60,7 @@ const makeHarness = Effect.gen(function* () {
                   const {
                     botTaskResults: _resultSupport,
                     botContinuation: _noteSupport,
+                    botMaintenance: _maintenanceSupport,
                     ...capabilities
                   } = CONFIG.environment.capabilities;
                   return { ...capabilities, bots: name !== "unsupported" };
@@ -121,6 +124,21 @@ const makeHarness = Effect.gen(function* () {
             ...all,
             `history:${input.botId}:${input.projectId}`,
           ]).pipe(Effect.as({ revisions: [] })),
+        [WS_METHODS.botsGetMaintenance]: (input: BotContinuationScope) =>
+          Ref.update(continuationReads, (all) => [
+            ...all,
+            `maintenance:${input.botId}:${input.projectId}`,
+          ]).pipe(
+            Effect.as({
+              ...input,
+              homeThreadId: ThreadId.make(`home-${environmentId}`),
+              revision: 0,
+              enabled: false,
+              startedAt: null,
+              unavailableReason: "no_tool_profile_unavailable",
+              writable: true,
+            }),
+          ),
         [WS_METHODS.botsGetTaskResult]: (input: BotTaskResultInput) =>
           Effect.gen(function* () {
             yield* Ref.update(resultReads, (all) => [...all, input]);
@@ -366,6 +384,9 @@ it.effect("loads continuation details in the destination and never calls old-ser
         Atom.map(atoms.botContinuationHistory(target), (result) =>
           AsyncResult.map(result, (value) => value !== null),
         ),
+        Atom.map(atoms.botMaintenance(target), (result) =>
+          AsyncResult.map(result, (value) => value !== null),
+        ),
       ]) {
         yield* Effect.acquireRelease(
           Effect.sync(() => registry.mount(atom)),
@@ -381,7 +402,11 @@ it.effect("loads continuation details in the destination and never calls old-ser
       }
       expect(yield* Ref.get(continuationReads)).toEqual(
         environmentId === "first" || environmentId === "second"
-          ? ["get:same-bot:same-project", "history:same-bot:same-project"]
+          ? [
+              "get:same-bot:same-project",
+              "history:same-bot:same-project",
+              "maintenance:same-bot:same-project",
+            ]
           : [],
       );
     }

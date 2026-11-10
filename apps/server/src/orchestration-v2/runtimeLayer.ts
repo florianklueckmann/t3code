@@ -4,6 +4,7 @@ import * as UsageLimitRecoveryWorker from "./UsageLimitRecoveryWorker.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as BotProjectGuard from "../bots/BotProjectGuard.ts";
 import * as BotContinuation from "../bots/BotContinuation.ts";
+import * as BotMaintenance from "../bots/BotMaintenance.ts";
 import * as BotService from "../bots/BotService.ts";
 import * as BotRuntimePolicy from "../bots/BotRuntimePolicy.ts";
 import * as BotTaskService from "../bots/BotTaskService.ts";
@@ -407,6 +408,10 @@ export const layerProduction = Layer.mergeAll(
   layerScheduledTaskProvided,
   layerBotServiceProvided,
   BotContinuation.layer,
+  // The Orchestrator's executor reference, so the baseline snapshot takes the same Home lock.
+  BotMaintenance.layer.pipe(
+    Layer.provide(Layer.merge(layerEventStoreProvided, ThreadCommandExecutor.layer)),
+  ),
   layerBotTaskProvided,
   // The MCP schedule tool reads it to set up routines on a Bot's model.
   BotTaskService.layerRoutineTarget.pipe(Layer.provide(layerBotTaskProvided)),

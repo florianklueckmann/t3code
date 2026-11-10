@@ -189,6 +189,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   botContinuation: Schema.optionalKey(Schema.Boolean),
   /** Serves `mcpConnections.*`; older servers have no MCP connection catalog. */
   mcpConnections: Schema.optionalKey(Schema.Boolean),
+  /** Server answers bots.getMaintenance and bots.configureMaintenance. */
+  botMaintenance: Schema.optionalKey(Schema.Boolean),
 });
 export type ExecutionEnvironmentCapabilities = typeof ExecutionEnvironmentCapabilities.Type;
 
