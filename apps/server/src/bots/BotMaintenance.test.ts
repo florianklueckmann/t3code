@@ -136,6 +136,7 @@ const productionWith = (instances: Readonly<Record<string, ProviderInstance>>) =
       Layer.mergeAll(
         EventStore.layer,
         ThreadCommandExecutor.layer,
+        EffectOutbox.layer,
         inertLearning,
         registryOf(instances),
       ),
@@ -228,6 +229,7 @@ const withReadyGeneration = Effect.gen(function* () {
             ),
         }),
         inertLearning,
+        EffectOutbox.layer,
         DateTime.layerCurrentZoneOffset(0),
       ),
     ),
@@ -611,6 +613,8 @@ const withEngine = <A, E, R>(
     >;
     /** The Home's persisted and live events, as maintenance's subscription reads them. */
     readonly homeEvents: Queue.Queue<OrchestrationV2StoredEvent>;
+    /** Each outbox effect maintenance starts waiting on to settle. */
+    readonly settling: Queue.Queue<string>;
   }) => Effect.Effect<A, E, R>,
   taskResults: Readonly<Record<string, string>> = {},
 ) =>
@@ -630,9 +634,16 @@ const withEngine = <A, E, R>(
       ThreadManagementService.ThreadManagementService["Service"]["dispatch"]
     >(() => Effect.die("this test starts no Home turn"));
     const homeEvents = yield* Queue.unbounded<OrchestrationV2StoredEvent>();
+    const settling = yield* Queue.unbounded<string>();
     const bots = yield* BotService.BotService;
+    const outbox = yield* EffectOutbox.EffectOutboxV2;
     const maintenance = yield* BotMaintenance.make.pipe(
       Effect.provideService(ThreadCommandExecutor.ThreadCommandExecutor, executor),
+      Effect.provideService(EffectOutbox.EffectOutboxV2, {
+        ...outbox,
+        awaitSettled: (effectId) =>
+          Queue.offer(settling, effectId).pipe(Effect.andThen(outbox.awaitSettled(effectId))),
+      }),
       Effect.provideService(ThreadManagementService.ThreadManagementService, {
         dispatch: (command) => Ref.get(homeTurns).pipe(Effect.flatMap((turn) => turn(command))),
       } as ThreadManagementService.ThreadManagementService["Service"]),
@@ -724,6 +735,7 @@ const withEngine = <A, E, R>(
       executor,
       homeTurns,
       homeEvents,
+      settling,
       runScheduled: Ref.get(scheduled).pipe(
         Effect.flatMap((sources) => {
           const [entry, ...others] = sources;
@@ -735,7 +747,12 @@ const withEngine = <A, E, R>(
     });
   }).pipe(
     Effect.provide(
-      Layer.mergeAll(BotService.layer, BotTurnContext.layer, BotContinuation.layer).pipe(
+      Layer.mergeAll(
+        BotService.layer,
+        BotTurnContext.layer,
+        BotContinuation.layer,
+        EffectOutbox.layer,
+      ).pipe(
         Layer.provideMerge(
           Layer.mergeAll(
             Layer.mock(BotTaskService.BotTaskService)({
@@ -2505,6 +2522,7 @@ const saveNoteAsBot = Effect.fn("fixture.saveNoteAsBot")(function* (
       baseRevision: view.revision,
       note: { requests: [{ text: "Harbor checklist" }], waiting: [], decided: [], context: [] },
       basis: view.basis!,
+      acks: view.uncovered?.sources.flatMap((source) => source.parts.map((part) => part.ack)),
     },
     { kind: "bot", threadId: home },
   );
@@ -2633,61 +2651,86 @@ it.effect(
     Effect.gen(function* () {
       yield* refreshHome();
       const { generate } = yield* recordingGenerator(() => Effect.succeed({ operations: [] }));
-      yield* withEngine(generate, ({ maintenance, homeSequence, homeTurns, homeEvents }) =>
-        Effect.gen(function* () {
-          yield* enable(maintenance);
-          const turns = yield* scopedTurns(homeSequence);
-          yield* Ref.set(homeTurns, turns.dispatch);
-          // Each input fills a refresh page of its own.
-          for (const id of ["one", "two", "three", "four", "five"])
-            yield* input(id, `${id}: ${"Harbor detail. ".repeat(1_300)}`);
-          let learned = yield* maintenance.runNow(scope);
-          while (learned.status === "partial") learned = yield* maintenance.runNow(scope);
-          const notes = yield* BotContinuation.BotContinuation;
-          const night = Effect.fn("fixture.night")(function* (
-            pages: number,
-            busyAfterLast = false,
-          ) {
-            // As the nightly pass does, learning runs first.
-            assert.equal((yield* maintenance.runNow(scope)).status, "idle");
-            const refresh = yield* maintenance
-              .refreshNote(scope)
-              .pipe(Effect.forkChild({ startImmediately: true }));
-            const runs: Array<string> = [];
-            for (let page = 1; page <= pages; page += 1) {
-              const runId = yield* Queue.take(turns.started);
-              runs.push(runId);
-              assert.equal((yield* saveNoteAsBot(`${runId}-save`))._tag, "saved");
-              if (busyAfterLast && page === pages) yield* homeRun("busy", "running");
-              yield* endScopedRun(runId, "completed", homeSequence, homeEvents);
-            }
-            return { result: yield* Fiber.join(refresh), runs };
-          });
+      yield* withEngine(
+        generate,
+        ({ maintenance, homeSequence, homeTurns, homeEvents, settling }) =>
+          Effect.gen(function* () {
+            yield* enable(maintenance);
+            const turns = yield* scopedTurns(homeSequence);
+            yield* Ref.set(homeTurns, turns.dispatch);
+            // Each input fills a refresh page of its own.
+            for (const id of ["one", "two", "three", "four", "five"])
+              yield* input(id, `${id}: ${"Harbor detail. ".repeat(1_300)}`);
+            let learned = yield* maintenance.runNow(scope);
+            while (learned.status === "partial") learned = yield* maintenance.runNow(scope);
+            const notes = yield* BotContinuation.BotContinuation;
+            const outbox = yield* EffectOutbox.EffectOutboxV2;
+            const main = yield* SqlClient.SqlClient;
+            const night = Effect.fn("fixture.night")(function* (
+              pages: number,
+              busyAfterLast = false,
+            ) {
+              // As the nightly pass does, learning runs first.
+              assert.equal((yield* maintenance.runNow(scope)).status, "idle");
+              const refresh = yield* maintenance
+                .refreshNote(scope)
+                .pipe(Effect.forkChild({ startImmediately: true }));
+              const runs: Array<string> = [];
+              for (let page = 1; page <= pages; page += 1) {
+                const runId = yield* Queue.take(turns.started);
+                runs.push(runId);
+                assert.equal((yield* saveNoteAsBot(`${runId}-save`))._tag, "saved");
+                if (busyAfterLast && page === pages) yield* homeRun("busy", "running");
+                // The run completes while its own checkpoint capture and workspace refresh run on.
+                const checkpoint = `effect:checkpoint.capture:${runId}`;
+                yield* main`INSERT INTO orchestration_v2_effect_outbox
+                  (effect_id, command_id, thread_id, effect_type, payload_json, status, lease_owner, available_at, created_at, updated_at)
+                  VALUES (${checkpoint}, ${`command:${checkpoint}`}, ${home}, 'checkpoint.capture',
+                    ${JSON.stringify({ type: "checkpoint.capture", runId, scopeId: "scope" })}, 'running', 'worker', ${now}, ${now}, ${now})`;
+                yield* endScopedRun(runId, "completed", homeSequence, homeEvents);
+                // The night's last page needs no wait; every earlier one waits for its own effect.
+                if (page < 3)
+                  assert.equal(
+                    yield* Effect.raceFirst(Queue.take(settling), Fiber.join(refresh)),
+                    checkpoint,
+                  );
+                assert.isTrue(yield* outbox.succeed({ effectId: checkpoint, workerId: "worker" }));
+              }
+              return { result: yield* Fiber.join(refresh), runs };
+            });
 
-          const first = yield* night(3);
-          assert.deepEqual(
-            first.result.status === "refreshed" && first.result.homeRunId,
-            first.runs[2],
-          );
-          assert.deepEqual(yield* notes.coverage(scope), { _tag: "behind", inputs: 2, results: 0 });
-          const second = yield* night(1, true);
-          assert.deepEqual(
-            second.result.status === "deferred" && second.result.reason,
-            "home_active",
-          );
-          assert.deepEqual(
-            (yield* noteOutcomes).map((row) => row.outcome),
-            [
-              ...[...first.runs, ...second.runs].map((homeRunId) => ({
-                note: "refreshed",
-                homeRunId,
-              })),
-              { note: "deferred", reason: "home_active" },
-            ],
-          );
-          assert.deepEqual(yield* notes.coverage(scope), { _tag: "behind", inputs: 1, results: 0 });
-          assert.lengthOf(yield* Ref.get(turns.commands), 4);
-        }),
+            const first = yield* night(3);
+            assert.deepEqual(
+              first.result.status === "refreshed" && first.result.homeRunId,
+              first.runs[2],
+            );
+            assert.deepEqual(yield* notes.coverage(scope), {
+              _tag: "behind",
+              inputs: 2,
+              results: 0,
+            });
+            const second = yield* night(1, true);
+            assert.deepEqual(
+              second.result.status === "deferred" && second.result.reason,
+              "home_active",
+            );
+            assert.deepEqual(
+              (yield* noteOutcomes).map((row) => row.outcome),
+              [
+                ...[...first.runs, ...second.runs].map((homeRunId) => ({
+                  note: "refreshed",
+                  homeRunId,
+                })),
+                { note: "deferred", reason: "home_active" },
+              ],
+            );
+            assert.deepEqual(yield* notes.coverage(scope), {
+              _tag: "behind",
+              inputs: 1,
+              results: 0,
+            });
+            assert.lengthOf(yield* Ref.get(turns.commands), 4);
+          }),
       );
     }).pipe(Effect.provide(storeOnly), Effect.provideService(HostProcess.Platform, "darwin")),
 );

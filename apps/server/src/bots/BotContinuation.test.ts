@@ -748,12 +748,18 @@ const refreshRead = Effect.fn("fixture.refreshRead")(function* () {
   yield* main`UPDATE orchestration_v2_projection_runs SET payload_json = json_set(payload_json, '$.restriction', 'botNote') WHERE thread_id = ${home} AND status = 'running'`;
   return yield* (yield* BotContinuation.BotContinuation).get(scope, { page: true });
 });
+type PageSource = NonNullable<BotContinuationView["uncovered"]>["sources"][number];
+const shownText = (source: PageSource | undefined) =>
+  source?.parts.map((part) => part.text).join("");
+/** The acknowledgements of a page read whole. */
+const acksOf = (read: BotContinuationView) =>
+  read.uncovered?.sources.flatMap((source) => source.parts.map((part) => part.ack)) ?? [];
 /** Saves the current note with the basis of the refresh read that showed the unsaved page. */
 const saveShown = Effect.fn("fixture.saveShown")(function* (updateId: string) {
   const notes = yield* BotContinuation.BotContinuation;
   const read = yield* refreshRead();
   return yield* notes.save(
-    { ...userSave(updateId, read.revision, empty()), basis: read.basis! },
+    { ...userSave(updateId, read.revision, empty()), basis: read.basis!, acks: acksOf(read) },
     bot,
   );
 });
@@ -784,7 +790,7 @@ it.effect("certifies only the Home input a read actually showed to the saving ru
       read.uncovered?.sources.map((source) => [source.messageId, source.kind]),
       Array.from({ length: 9 }, (_, index) => [`message-${index + 1}`, "input"]),
     );
-    assert.equal(read.uncovered?.sources[0]?.text, harbor);
+    assert.equal(shownText(read.uncovered?.sources[0]), harbor);
     assert.equal((yield* saveShown("shown"))._tag, "saved");
     assert.deepEqual(yield* notes.coverage(scope), { _tag: "current" });
   }).pipe(Effect.provide(services.pipe(Layer.provideMerge(database)))),
@@ -894,12 +900,16 @@ it.effect.each([
     assert.isAbove(shown.length, 0);
     assert.isBelow(shown.length, 40);
     assert.deepEqual(
-      shown.map((source) => [source.text, source.tooLarge]),
+      shown.map((source) => [shownText(source), source.tooLarge]),
       shown.map((_, index) => [fixture.input(index + 1), undefined]),
     );
     assert.equal(read.uncovered!.remaining, 40 - shown.length);
     const saved = yield* notes.save(
-      { ...userSave("page", read.revision, { ...empty(), requests }), basis: read.basis! },
+      {
+        ...userSave("page", read.revision, { ...empty(), requests }),
+        basis: read.basis!,
+        acks: acksOf(read),
+      },
       bot,
     );
     assert.equal(saved._tag, "saved");
@@ -920,10 +930,10 @@ it.effect("saves an old approval shown on a catch-up page as a decision", () =>
       yield* input(ordinal, `Unrelated Home input ${ordinal}`, { directUser: true });
     const notes = yield* BotContinuation.BotContinuation;
     const read = yield* refreshRead();
-    assert.equal(read.uncovered?.sources[0]?.text, quote);
+    assert.equal(shownText(read.uncovered?.sources[0]), quote);
     const decided = { ...empty(), decided: [{ text: "Ship Harbor on Friday", quote }] };
     const saved = yield* notes.save(
-      { ...userSave("old-decision", null, decided), basis: read.basis! },
+      { ...userSave("old-decision", null, decided), basis: read.basis!, acks: acksOf(read) },
       bot,
     );
     assert.equal(saved._tag, "saved");
@@ -951,6 +961,7 @@ it.effect("sources a note item in a returned result shown on the page, never a d
             decided: [{ text: "Use it", quote }],
           }),
           basis: read.basis!,
+          acks: acksOf(read),
         },
         bot,
       )
@@ -958,7 +969,7 @@ it.effect("sources a note item in a returned result shown on the page, never a d
     assert.include(approval.message, "a proposal is not approval");
     const waiting = { ...empty(), waiting: [{ text: "Decide on the vendor's second quote" }] };
     const saved = yield* notes.save(
-      { ...userSave("result-only-note", null, waiting), basis: read.basis! },
+      { ...userSave("result-only-note", null, waiting), basis: read.basis!, acks: acksOf(read) },
       bot,
     );
     assert.equal(saved._tag, "saved");
@@ -983,12 +994,16 @@ it.effect(
       assert.isAtMost(toolResultBytes(read), refreshResponseBytes);
       const [reference, next] = read.uncovered!.sources;
       assert.deepEqual(reference?.tooLarge, { bytes: utf8Bytes(large), createdAt: now });
-      assert.isTrue(large.startsWith(reference!.text) && reference!.text.endsWith("\n"));
-      assert.isAtMost(utf8Bytes(reference!.text), 2_000);
-      assert.equal(next?.text, "Keep the Harbor date open.");
+      const preview = shownText(reference)!;
+      assert.isTrue(large.startsWith(preview) && preview.endsWith("\n"));
+      assert.isAtMost(utf8Bytes(preview), 2_000);
+      assert.equal(shownText(next), "Keep the Harbor date open.");
 
       const unlisted = yield* notes
-        .save({ ...userSave("unlisted", null, empty()), basis: read.basis! }, bot)
+        .save(
+          { ...userSave("unlisted", null, empty()), basis: read.basis!, acks: acksOf(read) },
+          bot,
+        )
         .pipe(Effect.flip);
       assert.include(unlisted.message, "message-1");
       const kept = {
@@ -996,15 +1011,118 @@ it.effect(
         waiting: [{ text: "Unreviewed large input message-1: a pasted Harbor patch" }],
       };
       const saved = yield* notes.save(
-        { ...userSave("listed", null, kept), basis: read.basis! },
+        { ...userSave("listed", null, kept), basis: read.basis!, acks: acksOf(read) },
         bot,
       );
       assert.equal(saved._tag, "saved");
       assert.deepInclude((yield* notes.get(scope)).note.waiting[0]!.refs[0]!, {
         messageId: MessageId.make("message-1"),
-        quote: reference!.text.slice(0, 400),
+        quote: preview.slice(0, 400),
         availability: "available",
       });
+      assert.deepEqual(yield* notes.coverage(scope), { _tag: "current" });
+    }).pipe(Effect.provide(services.pipe(Layer.provideMerge(database)))),
+);
+
+it.effect("never signs more large-input references on a page than the note can hold", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    for (let ordinal = 1; ordinal <= 21; ordinal += 1)
+      yield* input(
+        ordinal,
+        `Retain export ${ordinal} for the Harbor audit.\n${JSON.stringify({ rows: "x".repeat(35_000) })}`,
+        { directUser: true },
+      );
+    const notes = yield* BotContinuation.BotContinuation;
+    const read = yield* refreshRead();
+    const shown = read.uncovered!.sources;
+    assert.lengthOf(shown, 20);
+    assert.isTrue(shown.every((source) => source.tooLarge !== undefined));
+    const kept = {
+      ...empty(),
+      waiting: shown.map((source) => ({
+        text: `Unreviewed large input ${source.messageId}: an export for the Harbor audit`,
+      })),
+    };
+    const saved = yield* notes.save(
+      { ...userSave("all-slots", null, kept), basis: read.basis!, acks: acksOf(read) },
+      bot,
+    );
+    assert.equal(saved._tag, "saved");
+    // A full note leaves no item for the next reference, so refresh waits for the user.
+    assert.deepEqual(yield* notes.coverage(scope), {
+      _tag: "unprovable",
+      reason: "note_too_large",
+      inputs: 1,
+      results: 0,
+    });
+  }).pipe(Effect.provide(services.pipe(Layer.provideMerge(database)))),
+);
+
+/** Codex's code-mode print limit: 10,000 approximate tokens keep 20,000 bytes from each end. */
+const codexPrint = (text: string) => {
+  const bytes = new TextEncoder().encode(text);
+  if (bytes.length <= 40_000) return text;
+  let head = 20_000;
+  while ((bytes[head]! & 0xc0) === 0x80) head -= 1;
+  let tail = bytes.length - 20_000;
+  while ((bytes[tail]! & 0xc0) === 0x80) tail += 1;
+  const decoder = new TextDecoder();
+  const removed = Math.ceil((bytes.length - 40_000) / 4);
+  return `${decoder.decode(bytes.subarray(0, head))}…${removed} tokens truncated…${decoder.decode(bytes.subarray(tail))}`;
+};
+/** Every acknowledgement a model can copy from what it was shown, however it was encoded. */
+const visibleAcks = (printed: string) =>
+  [...printed.matchAll(/\\*"ack\\*":\\*"([0-9a-f]{8})\\*"/g)].map((match) => match[1]!);
+
+it.effect(
+  "certifies a page cut in the middle of its print only through the last item shown whole",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      for (let ordinal = 1; ordinal <= 3; ordinal += 1)
+        yield* input(ordinal, `Answered question ${ordinal}`, { directUser: true });
+      const qualification =
+        "Before using this data, keep the Harbor launch on hold until Mira approves its date.";
+      const rows = Array.from(
+        { length: 440 },
+        (_, row) =>
+          `${row},${Array.from({ length: 10 }, (_, column) => `"${(row + column) % 3}"`).join(",")}`,
+      );
+      rows.splice(220, 0, qualification);
+      yield* input(
+        4,
+        `Review this exported CSV and retain the approval constraint it contains.\n${rows.join("\n")}`,
+        { directUser: true },
+      );
+      yield* input(5, "Keep the Harbor date open.", { directUser: true });
+      const notes = yield* BotContinuation.BotContinuation;
+      const read = yield* refreshRead();
+      assert.deepEqual(
+        read.uncovered!.sources.map((source) => [source.ordinal, source.tooLarge]),
+        [1, 2, 3, 4, 5].map((ordinal) => [ordinal, undefined]),
+      );
+      // Printing the MCP text block encodes the read twice; Codex then cuts the CSV's middle.
+      const printed = codexPrint(
+        JSON.stringify({ type: "text", text: JSON.stringify({ continuation: read }) }),
+      );
+      assert.notInclude(printed, qualification);
+      assert.include(printed, read.basis!.token);
+      const cut = yield* notes.save(
+        { ...userSave("cut", null), basis: read.basis!, acks: visibleAcks(printed) },
+        bot,
+      );
+      assert.equal(cut._tag, "saved");
+      assert.deepEqual(yield* notes.coverage(scope), { _tag: "behind", inputs: 2, results: 0 });
+
+      const next = yield* refreshRead();
+      const whole = JSON.stringify({ continuation: next });
+      assert.equal(codexPrint(whole), whole);
+      const saved = yield* notes.save(
+        { ...userSave("whole", 1), basis: next.basis!, acks: visibleAcks(whole) },
+        bot,
+      );
+      assert.equal(saved._tag, "saved");
       assert.deepEqual(yield* notes.coverage(scope), { _tag: "current" });
     }).pipe(Effect.provide(services.pipe(Layer.provideMerge(database)))),
 );

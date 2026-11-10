@@ -38,12 +38,15 @@ const SOURCE_WINDOW = 200;
 const PAGE_ITEMS = 40;
 /**
  * Codex shows a code-mode model 10,000 approximate tokens of 4 bytes from a tool result and cuts
- * its middle beyond that. The refresh read's whole result stays a fifth below, for the wrapper,
- * transport headers and escaping, so every item it certifies reaches the model.
+ * its middle beyond that. A refresh read's compact result stays below, so a page usually arrives
+ * whole. How the model prints it can still cut it; part acks, not this budget, prove what it saw.
  */
 const REFRESH_RESPONSE_BYTES = 32_000;
 /** The most of a too-large item's first lines a page shows. */
 const PREVIEW_BYTES = 2_000;
+/** The most text before the next ack. Only a cut inside one part's text can spare every ack. */
+const PART_BYTES = 1_000;
+const ACK_CHARS = 8;
 /** A refresh read only needs to recognise each reference; the stored quote stays whole. */
 const REFRESH_QUOTE_CHARS = 100;
 // Queued starts preserve run order but can insert a lower display ordinal than older steers.
@@ -90,7 +93,7 @@ export type NoteCoverage =
   | { readonly _tag: "behind"; readonly inputs: number; readonly results: number }
   | {
       readonly _tag: "unprovable";
-      /** The note and the rest of a refresh read leave no room for even one item's reference. */
+      /** The note leaves no free item, or a refresh read no room, for even one item's reference. */
       readonly reason: "note_too_large";
       readonly inputs: number;
       readonly results: number;
@@ -120,12 +123,25 @@ const leadingBytes = (encoded: Uint8Array, cap: number) => {
   const newline = encoded.lastIndexOf(10, end - 1);
   return newline === -1 ? end : newline + 1;
 };
-const pageEntry = (source: Shown) => ({
+/** A shown text in parts of at most `PART_BYTES`, ending after whole lines where it can. */
+const textParts = (text: string) => {
+  const encoded = utf8.encode(text);
+  const parts: string[] = [];
+  for (let offset = 0; offset < encoded.length;) {
+    const rest = encoded.subarray(offset);
+    const length = rest.length <= PART_BYTES ? rest.length : leadingBytes(rest, PART_BYTES);
+    parts.push(utf8Text.decode(rest.subarray(0, length)));
+    offset += length;
+  }
+  return parts.length === 0 ? [""] : parts;
+};
+type Ack = (part: number, text: string) => string;
+const sizingAck: Ack = () => "0".repeat(ACK_CHARS);
+const pageEntry = (source: Shown, ack: Ack) => ({
   messageId: source.message.id,
   ordinal: source.ordinal,
   kind: source.result ? ("result" as const) : ("input" as const),
   directUser: source.message.createdBy === "user",
-  text: source.text,
   ...(source.preview === null
     ? {}
     : {
@@ -134,13 +150,13 @@ const pageEntry = (source: Shown) => ({
           createdAt: DateTime.formatIso(source.message.createdAt),
         },
       }),
+  parts: textParts(source.text).map((text, part) => ({ text, ack: ack(part, text) })),
 });
 const jsonBytes = (value: unknown) => utf8.encode(encodeJson(value)).byteLength;
 /**
- * The oldest uncovered items whose whole tool result, `{ continuation: view }` as the MCP text
- * content, fits the refresh budget. The base is measured with every field the page changes at
- * its largest, so the response this signs can only be smaller. An item that would not fit even
- * alone is shown by reference with the first lines that fit.
+ * The oldest uncovered items whose `{ continuation: view }` fits the refresh budget, with every
+ * page-dependent field measured at its largest. An item too large even alone is shown by
+ * reference with the first lines that fit, while the note has a free item to keep that reference.
  */
 const planPage = (view: BotContinuationView, delivered: readonly Delivered[], total: number) => {
   const base = jsonBytes({
@@ -158,7 +174,11 @@ const planPage = (view: BotContinuationView, delivered: readonly Delivered[], to
   });
   const shown: Shown[] = [];
   let bytes = base;
-  const cost = (source: Shown) => jsonBytes(pageEntry(source)) + (shown.length === 0 ? 0 : 1);
+  let freeItems =
+    BOT_CONTINUATION_LIMITS.items -
+    BOT_CONTINUATION_SECTIONS.reduce((items, section) => items + view.note[section].length, 0);
+  const cost = (source: Shown) =>
+    jsonBytes(pageEntry(source, sizingAck)) + (shown.length === 0 ? 0 : 1);
   for (const source of delivered) {
     const whole: Shown = { ...source, text: source.message.text, preview: null };
     const wholeBytes = cost(whole);
@@ -168,7 +188,9 @@ const planPage = (view: BotContinuationView, delivered: readonly Delivered[], to
       continue;
     }
     // An item that fits a page of its own starts the next one.
-    if (base + jsonBytes(pageEntry(whole)) <= REFRESH_RESPONSE_BYTES) break;
+    if (base + jsonBytes(pageEntry(whole, sizingAck)) <= REFRESH_RESPONSE_BYTES) break;
+    if (freeItems === 0) break;
+    freeItems -= 1;
     const encoded = utf8.encode(source.message.text);
     let reference: Shown | undefined;
     for (let cap = PREVIEW_BYTES; reference === undefined; cap = Math.floor(cap / 2)) {
@@ -278,6 +300,14 @@ const make = Effect.gen(function* () {
   const bases = new Map<string, typeof BasisPayload.Type>();
   const signature = (payload: string) =>
     NodeCrypto.createHmac("sha256", key).update(payload).digest("hex").slice(0, 32);
+  /** Acks for one item's parts, bound to the page that shows them. */
+  const acksFor =
+    (page: { readonly from: Frontier | null; readonly digest: string }, messageId: string): Ack =>
+    (part, text) =>
+      signature(encodeJson(["ack", page.from, page.digest, messageId, part, hash(text)])).slice(
+        0,
+        ACK_CHARS,
+      );
   const signed = (payload: typeof BasisPayload.Type): BotContinuationBasis => {
     const token = signature(encodeBasis(payload));
     bases.delete(token);
@@ -598,24 +628,28 @@ const make = Effect.gen(function* () {
     const { inputs, results, delivered } = yield* uncovered(home, revision?.frontier);
     const shown = planPage(view, delivered, inputs + results);
     const last = shown.at(-1);
+    const page =
+      last === undefined
+        ? null
+        : {
+            from: revision?.frontier ?? null,
+            through: { runOrdinal: last.runOrdinal, ordinal: last.ordinal },
+            ids: shown.map((source) => source.message.id),
+            digest: sourceDigest(shown),
+            previews: shown.flatMap((source) =>
+              source.preview === null ? [] : [{ id: source.message.id, bytes: source.preview }],
+            ),
+          };
     return {
       ...view,
-      basis: signed({
-        ...unsigned,
-        page:
-          last === undefined
-            ? null
-            : {
-                from: revision?.frontier ?? null,
-                through: { runOrdinal: last.runOrdinal, ordinal: last.ordinal },
-                ids: shown.map((source) => source.message.id),
-                digest: sourceDigest(shown),
-                previews: shown.flatMap((source) =>
-                  source.preview === null ? [] : [{ id: source.message.id, bytes: source.preview }],
-                ),
-              },
-      }),
-      uncovered: { sources: shown.map(pageEntry), remaining: inputs + results - shown.length },
+      basis: signed({ ...unsigned, page }),
+      uncovered: {
+        sources:
+          page === null
+            ? []
+            : shown.map((source) => pageEntry(source, acksFor(page, source.message.id))),
+        remaining: inputs + results - shown.length,
+      },
     } satisfies BotContinuationView;
   }, Effect.mapError(failure));
   const history = Effect.fn("BotContinuation.history")(function* (scope: BotContinuationScope) {
@@ -659,6 +693,7 @@ const make = Effect.gen(function* () {
           input.note[section].map((item) => [item.text, item.quote ?? null, item.taskIds ?? []]),
         ),
         basis: input.basis ?? null,
+        acks: input.acks ?? [],
         restoredFrom: input.restoredFrom ?? null,
         caller,
       }),
@@ -706,7 +741,7 @@ const make = Effect.gen(function* () {
       sourceIds = scopedSources.map((source) => source.message.id);
       writer = { kind: "bot", threadId: home, runId: basis.runId };
       const page = basis.page;
-      let shown: readonly Omit<Shown, "preview">[] = [];
+      let certified: readonly Omit<Shown, "preview">[] = [];
       if (page !== null) {
         const { delivered } = yield* uncovered(home, page.from, page.through);
         if (
@@ -715,7 +750,7 @@ const make = Effect.gen(function* () {
         )
           return { _tag: "conflict", reason: "basis", current: yield* get(input) } as const;
         const previews = new Map(page.previews.map((preview) => [preview.id, preview.bytes]));
-        shown = delivered.map((source) => {
+        const shown = delivered.map((source) => {
           const preview = previews.get(source.message.id);
           return {
             ...source,
@@ -723,12 +758,23 @@ const make = Effect.gen(function* () {
               preview === undefined ? source.message.text : leading(source.message.text, preview),
           };
         });
-        tooLarge = page.previews.map((preview) => preview.id);
-        if (atOrBefore(page.from, frontier)) {
+        // The page counts as read up to its first item with a part the run did not acknowledge.
+        const acked = new Set(input.acks ?? []);
+        const unread = shown.findIndex((source) => {
+          const ack = acksFor(page, source.message.id);
+          return textParts(source.text).some((text, part) => !acked.has(ack(part, text)));
+        });
+        certified = unread === -1 ? shown : shown.slice(0, unread);
+        tooLarge = certified.flatMap((source) =>
+          previews.has(source.message.id) ? [source.message.id] : [],
+        );
+        const last = certified.at(-1);
+        if (last !== undefined && atOrBefore(page.from, frontier)) {
+          const through = { runOrdinal: last.runOrdinal, ordinal: last.ordinal };
           const reached =
-            frontier !== undefined && atOrBefore(page.through, frontier) ? frontier : page.through;
+            frontier !== undefined && atOrBefore(through, frontier) ? frontier : through;
           const ids = new Set(frontier?.runOrdinal === reached.runOrdinal ? frontier.ids : []);
-          for (const source of shown)
+          for (const source of certified)
             if (source.runOrdinal === reached.runOrdinal) ids.add(source.message.id);
           frontier = {
             runOrdinal: reached.runOrdinal,
@@ -738,7 +784,7 @@ const make = Effect.gen(function* () {
         }
       }
       evidence = [
-        ...shown.toReversed(),
+        ...certified.toReversed(),
         ...scopedSources.map((source) => ({ ...source, result: false, text: source.message.text })),
       ];
     }

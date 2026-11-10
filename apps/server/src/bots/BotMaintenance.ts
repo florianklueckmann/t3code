@@ -32,7 +32,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
-import type * as EffectOutbox from "../orchestration-v2/EffectOutbox.ts";
+import * as EffectOutbox from "../orchestration-v2/EffectOutbox.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as EventStore from "../orchestration-v2/EventStore.ts";
 import * as ProviderSessionManager from "../orchestration-v2/ProviderSessionManager.ts";
@@ -111,9 +111,11 @@ export type NoteRefresh =
 
 /** The whole prompt of the scoped note refresh turn. Model-facing. */
 export const NOTE_REFRESH_PROMPT =
-  "Maintenance: bring your working notes up to date with this Home, then stop. Read them with t3_bot read_continuation. Its `uncovered` list holds, oldest first and in full, the Home input and returned task results no saved note has covered yet. Reconcile each one into the note: unfinished requests, waiting questions or proposals, decisions and task results. Keep every existing item that is still open. An item marked `tooLarge` shows only its first lines: do not guess the rest, and add a waiting item naming its messageId, such as `Unreviewed large input <messageId>: <what its first lines show>`. Then save the full note once with t3_bot save_continuation and that read's exact basis, even when nothing changed. Keep proposals in waiting until the user approves them; a new decided item needs an exact quote from the user's own message. Do nothing else: no other tool, task or message. Reply with one short line.";
+  "Maintenance: bring your working notes up to date with this Home, then stop. Read them with t3_bot read_continuation. Its `uncovered` list holds, oldest first and in full, the Home input and returned task results no saved note has covered yet. Each item's text is split into `parts`, and each part ends with an `ack`. Reconcile each one into the note: unfinished requests, waiting questions or proposals, decisions and task results. Keep every existing item that is still open. An item marked `tooLarge` shows only its first lines: do not guess the rest, and add a waiting item naming its messageId, such as `Unreviewed large input <messageId>: <what its first lines show>`. Then save the full note once with t3_bot save_continuation, that read's exact basis and `acks`: the ack of every part you saw whole. Leave out the ack of any part you saw cut or truncated; that input stays for the next refresh. Save even when nothing changed. Keep proposals in waiting until the user approves them; a new decided item needs an exact quote from the user's own message. Do nothing else: no other tool, task or message. Reply with one short line.";
 /** Refresh turns one night may run; each saves one page, and the rest waits for the next night. */
 const NIGHTLY_NOTE_PAGES = 3;
+/** How long the next page waits for the previous refresh turn's own checkpoint to settle. */
+const PAGE_CHECKPOINT_WAIT = "5 minutes";
 
 interface StateRow {
   readonly settings_revision: number;
@@ -205,6 +207,7 @@ export const make = Effect.gen(function* () {
   const notes = yield* BotContinuation.BotContinuation;
   const threads = yield* ThreadManagementService.ThreadManagementService;
   const sink = yield* EventSink.EventSinkV2;
+  const outbox = yield* EffectOutbox.EffectOutboxV2;
   const passLocks = yield* KeyedLock.make<ThreadId>();
   const refreshes = yield* FiberMap.make<ThreadId>();
 
@@ -973,6 +976,11 @@ export const make = Effect.gen(function* () {
   ) {
     let last: NoteRefresh = yield* refreshPage(scope);
     for (let page = 1; page < NIGHTLY_NOTE_PAGES && last.status === "refreshed"; page += 1) {
+      // The run completes before its checkpoint and workspace refresh settle, and admission
+      // counts that effect as Home activity. Any other activity still defers the next page.
+      yield* outbox
+        .awaitSettled(`effect:checkpoint.capture:${last.homeRunId}`)
+        .pipe(Effect.timeoutOption(PAGE_CHECKPOINT_WAIT), Effect.ignore({ log: true }));
       // Learning sets the refresh prompt aside, which otherwise holds the next page back.
       yield* runNow(scope).pipe(Effect.ignore({ log: true }));
       const next = yield* refreshPage(scope);

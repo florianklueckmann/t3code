@@ -424,6 +424,8 @@ export const layerProduction = Layer.mergeAll(
         layerBotServiceProvided,
         layerBotTaskProvided,
         BotContinuation.layer,
+        // The same memoized outbox as the effect worker, so a settle wakes the refresh loop.
+        EffectOutbox.layer,
       ),
     ),
   ),
