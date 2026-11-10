@@ -1550,12 +1550,14 @@ export function threadShellFromProjection(
   // T3 Code's own idle compactions stay out of the shell unless they fail, so thread lists,
   // notifications and the relay keep presenting the user's last turn.
   const runs = projection.runs.filter((run) => !isSilentRunForShell(run, projection));
+  // A Bot maintenance run stays live for Stop and its own MCP calls, but is never presented.
+  const presentedRuns = runs.filter((run) => !isSilentRestrictedRun(run));
   const latestRun =
     usageLimitRunPresentedAsLatest(
-      runs,
+      presentedRuns,
       projection.turnItems,
       providerSession?.lastError ?? null,
-    ) ?? latestUnheldRun(runs);
+    ) ?? latestUnheldRun(presentedRuns);
   const activeRun =
     runs
       .filter(isInterruptibleRunForShell)
@@ -1574,8 +1576,16 @@ export function threadShellFromProjection(
       )[0] ?? null,
   );
 
+  const silentPromptIds = new Set(
+    projection.runs.filter(isSilentRestrictedRun).map((run) => run.userMessageId),
+  );
   const userMessages = projection.messages
-    .filter((message) => message.role === "user" && idleCompactionOf(message) === undefined)
+    .filter(
+      (message) =>
+        message.role === "user" &&
+        idleCompactionOf(message) === undefined &&
+        !silentPromptIds.has(message.id),
+    )
     .toSorted(
       (left, right) =>
         DateTime.toEpochMillis(right.updatedAt) - DateTime.toEpochMillis(left.updatedAt),
@@ -1748,6 +1758,10 @@ function isSilentRunForShell(
       (item) => item.runId === run.id && item.type === "compaction" && item.status === "failed",
     )
   );
+}
+
+function isSilentRestrictedRun(run: OrchestrationV2ThreadProjection["runs"][number]): boolean {
+  return run.restriction !== undefined && run.status !== "failed";
 }
 
 function isInterruptibleRunForShell(run: OrchestrationV2ThreadProjection["runs"][number]): boolean {
@@ -6192,6 +6206,24 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       )`;
     };
 
+    // Mirrors isSilentRestrictedRun.
+    const isSilentRestrictedShellRun = (alias: string) => {
+      const run = sql.literal(alias);
+      return sql`(
+        ${run}.status <> 'failed'
+        AND json_extract(${run}.payload_json, '$.restriction') IS NOT NULL
+      )`;
+    };
+    const isSilentRestrictedPrompt = (alias: string) => {
+      const message = sql.literal(alias);
+      return sql`EXISTS (
+        SELECT 1 FROM orchestration_v2_projection_runs prompted
+        WHERE prompted.thread_id = ${message}.thread_id
+          AND json_extract(prompted.payload_json, '$.userMessageId') = ${message}.message_id
+          AND ${isSilentRestrictedShellRun("prompted")}
+      )`;
+    };
+
     const selectShellThreadRows = (
       threadId?: ThreadId,
       {
@@ -6328,6 +6360,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 WHERE message.thread_id = t.thread_id
                   AND message.role = 'user'
                   AND NOT ${isIdleCompactionMessage("message")}
+                  AND NOT ${isSilentRestrictedPrompt("message")}
                 ORDER BY message.updated_at DESC, message.message_id DESC
                 LIMIT 1
               ) AS latest_user_message_at,
@@ -6368,6 +6401,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   AND json_extract(candidate.payload_json, '$.queueHeld') IS 1
                 )
                 AND NOT ${isSilentShellRun("candidate")}
+                AND NOT ${isSilentRestrictedShellRun("candidate")}
               ORDER BY candidate.ordinal DESC, candidate.run_id DESC
               LIMIT 1
             )
@@ -6589,6 +6623,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 FROM orchestration_v2_projection_messages message
                 WHERE message.thread_id = t.thread_id AND message.role = 'user'
                   AND NOT ${isIdleCompactionMessage("message")}
+                  AND NOT ${isSilentRestrictedPrompt("message")}
                 ORDER BY message.updated_at DESC, message.message_id DESC
                 LIMIT 1
               ) AS latest_user_message_at,
@@ -6606,6 +6641,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               SELECT latest.run_id FROM orchestration_v2_projection_runs latest
               WHERE latest.thread_id = t.thread_id
                 AND NOT ${isSilentShellRun("latest")}
+                AND NOT ${isSilentRestrictedShellRun("latest")}
               ORDER BY latest.ordinal DESC, latest.run_id DESC
               LIMIT 1
             )
