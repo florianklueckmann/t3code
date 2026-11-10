@@ -191,6 +191,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   mcpConnections: Schema.optionalKey(Schema.Boolean),
   /** Server answers bots.getMaintenance and bots.configureMaintenance. */
   botMaintenance: Schema.optionalKey(Schema.Boolean),
+  /** Server answers bots.getHomeCheck and bots.configureHomeCheck. */
+  botHomeCheck: Schema.optionalKey(Schema.Boolean),
 });
 export type ExecutionEnvironmentCapabilities = typeof ExecutionEnvironmentCapabilities.Type;
 

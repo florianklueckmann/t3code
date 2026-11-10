@@ -430,13 +430,14 @@ it.effect(
       yield* bots`DROP TABLE bot_maintenance_sources`;
       yield* bots`DROP TABLE bot_maintenance_runs`;
       yield* bots`DROP TABLE bot_maintenance`;
+      yield* bots`DROP TABLE bot_home_checks`;
       yield* bots`DELETE FROM effect_sql_migrations WHERE migration_id >= 11`;
       yield* BotMigrations.runMigrations().pipe(Effect.provideService(SqlClient.SqlClient, bots));
       const history = yield* bots<{
         readonly migration_id: number;
         readonly name: string;
       }>`SELECT migration_id, name FROM effect_sql_migrations ORDER BY migration_id`;
-      assert.deepEqual(history.slice(-3), [
+      assert.deepEqual(history.slice(-4, -1), [
         { migration_id: 11, name: "BotMaintenance" },
         { migration_id: 12, name: "BotMaintenanceReceipts" },
         { migration_id: 13, name: "BotMaintenanceNightly" },

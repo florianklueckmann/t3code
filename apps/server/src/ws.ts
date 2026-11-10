@@ -127,6 +127,7 @@ import * as ThreadMessageIntake from "./orchestration-v2/ThreadMessageIntake.ts"
 import * as DocumentText from "./provider/DocumentText.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
+import * as BotHomeCheck from "./bots/BotHomeCheck.ts";
 import * as BotMaintenance from "./bots/BotMaintenance.ts";
 import * as BotService from "./bots/BotService.ts";
 import * as BotTaskService from "./bots/BotTaskService.ts";
@@ -1456,6 +1457,7 @@ export const layerWsRpc = (
       const botContinuation = yield* BotContinuation.BotContinuation;
       const mcpConnections = yield* McpConnections.McpConnections;
       const botMaintenance = yield* BotMaintenance.BotMaintenance;
+      const botHomeCheck = yield* BotHomeCheck.BotHomeCheck;
       const secretRequests = yield* SecretRequests.SecretRequests;
       const guestShares = yield* GuestShareService.GuestShareService;
       const pullRequests = yield* PullRequestService.PullRequestService;
@@ -2384,6 +2386,8 @@ export const layerWsRpc = (
         [WS_METHODS.botsSaveContinuation]: (input) => botContinuation.save(input, { kind: "user" }),
         [WS_METHODS.botsGetMaintenance]: (input) => botMaintenance.get(input),
         [WS_METHODS.botsConfigureMaintenance]: (input) => botMaintenance.configure(input),
+        [WS_METHODS.botsGetHomeCheck]: (input) => botHomeCheck.get(input),
+        [WS_METHODS.botsConfigureHomeCheck]: (input) => botHomeCheck.configure(input),
         [WS_METHODS.botsCreate]: (input) => bots.create(input),
         [WS_METHODS.botsUpdate]: (input) => bots.update(input),
         [WS_METHODS.botsSetArchived]: (input) => bots.setArchived(input),

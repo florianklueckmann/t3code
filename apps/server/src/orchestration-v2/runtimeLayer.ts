@@ -4,6 +4,7 @@ import * as UsageLimitRecoveryWorker from "./UsageLimitRecoveryWorker.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as BotProjectGuard from "../bots/BotProjectGuard.ts";
 import * as BotContinuation from "../bots/BotContinuation.ts";
+import * as BotHomeCheck from "../bots/BotHomeCheck.ts";
 import * as BotMaintenance from "../bots/BotMaintenance.ts";
 import * as BotExecutionConstraint from "../bots/BotExecutionConstraint.ts";
 import * as BotHomes from "../bots/BotHomes.ts";
@@ -429,6 +430,7 @@ export const layerProduction = Layer.mergeAll(
       ),
     ),
   ),
+  BotHomeCheck.layer.pipe(Layer.provide(layerThreadManagementProvided)),
   layerBotTaskProvided,
   // The MCP schedule tool reads it to set up routines on a Bot's model.
   BotTaskService.layerRoutineTarget.pipe(Layer.provide(layerBotTaskProvided)),
