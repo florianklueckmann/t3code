@@ -4,6 +4,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as PlatformError from "effect/PlatformError";
+import * as Result from "effect/Result";
 import * as Semaphore from "effect/Semaphore";
 
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
@@ -449,21 +450,27 @@ export const materializeCodexShadowHome = Effect.fn("materializeCodexShadowHome"
 export const codexAccountHomePath = (layout: CodexHomeLayout) =>
   layout.effectiveHomePath ?? layout.sharedHomePath;
 
-/** A path's physical identity, also for a store directory Codex has not created yet. */
+/**
+ * A path's physical identity, the same before and after its missing directories are created: the
+ * deepest existing ancestor resolved, then the missing names. Fails when that cannot be known.
+ */
 export const codexPhysicalPath = Effect.fn("CodexHomeLayout.codexPhysicalPath")(function* (
   target: string,
 ) {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const resolved = path.resolve(target);
-  return yield* fileSystem.realPath(resolved).pipe(
-    Effect.catch(() =>
-      fileSystem
-        .realPath(path.dirname(resolved))
-        .pipe(Effect.map((parent) => path.join(parent, path.basename(resolved)))),
-    ),
-    Effect.orElseSucceed(() => resolved),
-  );
+  const missing: Array<string> = [];
+  let existing = path.resolve(target);
+  while (true) {
+    const real = yield* Effect.result(fileSystem.realPath(existing));
+    if (Result.isSuccess(real)) return path.join(real.success, ...missing);
+    // A dangling link is not missing: its identity moves once its target appears.
+    const link = yield* Effect.result(fileSystem.readLink(existing));
+    const absent = Result.isFailure(link) && link.failure.reason._tag === "NotFound";
+    if (real.failure.reason._tag !== "NotFound" || !absent) return yield* real.failure;
+    missing.unshift(path.basename(existing));
+    existing = path.dirname(existing);
+  }
 });
 
 // One server process, one filesystem: permits are keyed by physical store, across instances.

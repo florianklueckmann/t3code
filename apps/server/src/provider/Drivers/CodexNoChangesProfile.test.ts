@@ -5,11 +5,12 @@ import type * as CodexClient from "effect-codex-app-server/client";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import type * as PlatformError from "effect/PlatformError";
 import * as Scope from "effect/Scope";
 
-import type { CodexHomeLayout } from "./CodexHomeLayout.ts";
+import { type CodexHomeLayout, codexStoreStartPermit } from "./CodexHomeLayout.ts";
 import {
   acquireCodexNoChangesHome,
   checkCodexOrdinaryStore,
@@ -47,7 +48,7 @@ it.layer(NodeServices.layer)("CodexNoChangesProfile", (it) => {
       Effect.gen(function* () {
         const fileSystem = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
-        const { shared, shadow, elsewhere, layout, homePath } = yield* fixture;
+        const { root, shared, shadow, elsewhere, layout, homePath } = yield* fixture;
         // Planted links: a config and a store pointing elsewhere.
         yield* fileSystem.makeDirectory(homePath, { recursive: true });
         yield* fileSystem.symlink(
@@ -86,6 +87,20 @@ it.layer(NodeServices.layer)("CodexNoChangesProfile", (it) => {
         yield* fileSystem.writeFileString(home.configPath, "[mcp_servers.late]\n");
         yield* materializeCodexNoChangesHome({ layout, homePath });
         assert.equal(yield* fileSystem.readFileString(home.configPath), home.configText);
+
+        // A hard link, even with equal bytes, lets another name edit the config in place.
+        const outside = path.join(root, "outside.toml");
+        yield* fileSystem.link(home.configPath, outside);
+        const refusedLive = yield* Effect.flip(
+          materializeCodexNoChangesHome({ layout, homePath, live: true }),
+        );
+        assert.equal(
+          refusedLive._tag === "ProviderAdapterNoChangesRefusedError" && refusedLive.reason,
+          "home",
+        );
+        yield* materializeCodexNoChangesHome({ layout, homePath });
+        assert.deepEqual((yield* fileSystem.stat(home.configPath)).nlink, Option.some(1n));
+        assert.equal(yield* fileSystem.readFileString(outside), home.configText);
       }).pipe(Effect.scoped),
   );
 
@@ -172,7 +187,12 @@ it.layer(NodeServices.layer)("CodexNoChangesProfile", (it) => {
       Effect.gen(function* () {
         const fileSystem = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
-        const { shared, shadow, layout, homePath } = yield* fixture;
+        const { root, shared, shadow, layout } = yield* fixture;
+        // Two components missing below a linked ancestor: the home is the same before and after.
+        const alias = path.join(root, "alias");
+        yield* fileSystem.symlink(root, alias);
+        const homePath = path.join(alias, "state", "sealed");
+        const storePermit = yield* codexStoreStartPermit(homePath);
         const configInode = fileSystem
           .stat(path.join(homePath, "config.toml"))
           .pipe(Effect.map((info) => info.ino));
@@ -186,6 +206,7 @@ it.layer(NodeServices.layer)("CodexNoChangesProfile", (it) => {
         const live = yield* Scope.make();
         yield* acquireCodexNoChangesHome({ layout, homePath }).pipe(Scope.provide(live));
         const inode = yield* configInode;
+        assert.strictEqual(yield* codexStoreStartPermit(homePath), storePermit);
 
         // A second process on the same layout: no write at all.
         yield* acquireCodexNoChangesHome({ layout, homePath }).pipe(Effect.scoped);

@@ -7,6 +7,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+import * as Option from "effect/Option";
 import type * as PlatformError from "effect/PlatformError";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
@@ -113,7 +114,9 @@ export const codexNoChangesHomePath = (input: {
 type EntryState =
   | { readonly _tag: "Missing" }
   | { readonly _tag: "Link"; readonly target: string }
-  | { readonly _tag: "File" | "Directory" | "Other" };
+  /** `hardLinked` when another name shares the file and can edit it in place. */
+  | { readonly _tag: "File"; readonly hardLinked: boolean }
+  | { readonly _tag: "Directory" | "Other" };
 
 // readLink on an entry that is not a link fails with EINVAL.
 const isNotSymlink = (cause: PlatformError.PlatformError) =>
@@ -142,10 +145,15 @@ const inspectEntry = Effect.fn("CodexNoChangesProfile.inspectEntry")(function* (
     }),
   );
   if (link !== undefined) return link;
-  const { type } = yield* fileSystem.stat(entry).pipe(Effect.mapError(fail));
-  return {
-    _tag: type === "File" ? "File" : type === "Directory" ? "Directory" : "Other",
-  } satisfies EntryState;
+  const { type, nlink } = yield* fileSystem.stat(entry).pipe(Effect.mapError(fail));
+  if (type === "File") {
+    // An unknown link count counts as shared.
+    return {
+      _tag: "File",
+      hardLinked: Option.getOrElse(nlink, () => 0n) !== 1n,
+    } satisfies EntryState;
+  }
+  return { _tag: type === "Directory" ? "Directory" : "Other" } satisfies EntryState;
 });
 
 /**
@@ -209,7 +217,7 @@ export const materializeCodexNoChangesHome = Effect.fn("materializeCodexNoChange
 
     const config = yield* inspectEntry(configPath);
     const current =
-      config._tag === "File"
+      config._tag === "File" && !config.hardLinked
         ? yield* fileSystem
             .readFileString(configPath)
             .pipe(Effect.mapError(fail("inspect", configPath)))
@@ -245,7 +253,9 @@ const profileOwners = new Map<string, ProfileOwners>();
  */
 export const acquireCodexNoChangesHome = Effect.fn("CodexNoChangesProfile.acquireHome")(
   function* (input: { readonly layout: CodexHomeLayout; readonly homePath: string }) {
-    const key = yield* codexPhysicalPath(input.homePath);
+    const key = yield* codexPhysicalPath(input.homePath).pipe(
+      Effect.mapError((cause) => refuse("home", cause)),
+    );
     let owners = profileOwners.get(key);
     if (owners === undefined) {
       owners = { permit: Semaphore.makeUnsafe(1), live: 0 };
