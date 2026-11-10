@@ -4,6 +4,8 @@ import {
   parseBotContinuationDraft,
   botContinuationWriterLabel,
   botContinuationRefCaption,
+  botMaintenanceStatusLabel,
+  canToggleBotMaintenance,
 } from "./bots.ts";
 import {
   BotId,
@@ -372,6 +374,47 @@ it("keeps working-note lines separate and rejects oversized drafts without trunc
       availability: "historical_unverified",
     }),
   ).toContain("historical/unverified");
+});
+
+it("shows a persisted enabled maintenance setting as stopped when the server cannot run it", () => {
+  const view = {
+    botId: BotId.make("bot"),
+    projectId: ProjectId.make("project"),
+    homeThreadId: ThreadId.make("home"),
+    revision: 1,
+    enabled: true,
+    startedAt: "2026-11-01T00:00:00.000Z",
+    unavailableReason: null,
+    writable: true,
+  };
+  expect(botMaintenanceStatusLabel(view)).toBe("On");
+  for (const [unavailableReason, explanation] of [
+    ["no_tool_profile_unavailable", "needs a tool-free model profile"],
+    ["reason_from_a_newer_server", "Not available on this server."],
+  ] as const) {
+    const unavailable = { ...view, unavailableReason };
+    expect(botMaintenanceStatusLabel(unavailable)).toMatch(/^On · stopped · /);
+    expect(botMaintenanceStatusLabel(unavailable)).toContain(explanation);
+    expect(canToggleBotMaintenance(unavailable, false)).toBe(true);
+  }
+});
+
+it("keeps pausing maintenance reachable while the Bot form is locked", () => {
+  const view = {
+    botId: BotId.make("bot"),
+    projectId: ProjectId.make("project"),
+    homeThreadId: ThreadId.make("home"),
+    revision: 1,
+    enabled: true,
+    startedAt: "2026-11-01T00:00:00.000Z",
+    unavailableReason: null,
+    writable: false,
+  };
+  expect(canToggleBotMaintenance(view, true)).toBe(true);
+  const paused = { ...view, enabled: false, writable: true };
+  expect(canToggleBotMaintenance(paused, false)).toBe(true);
+  expect(canToggleBotMaintenance(paused, true)).toBe(false);
+  expect(canToggleBotMaintenance({ ...paused, writable: false }, false)).toBe(false);
 });
 
 it("keeps notification results scoped to their task, project and work thread", () => {

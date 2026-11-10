@@ -504,6 +504,8 @@ function BotEditorForm({
   const environmentId = environment.environmentId;
   const appearanceSupported =
     environment.serverConfig?.environment.capabilities.botAppearance === true;
+  const maintenanceSupported =
+    environment.serverConfig?.environment.capabilities.botMaintenance === true;
   // Chosen once per form so a retried create stays idempotent.
   const [newBotId] = useState(() => BotId.make(randomUUID()));
   const savedAppearance = saved ? savedBotAppearance(saved) : null;
@@ -730,6 +732,21 @@ function BotEditorForm({
             />
           ) : null}
         </fieldset>
+        {/* Outside the fieldset so pausing stays reachable for an archived Bot or a detached project. */}
+        {current !== null && maintenanceSupported ? (
+          <div className="mt-5 space-y-3">
+            {current.projects.map((context) => (
+              <BotMaintenanceSetting
+                key={context.projectId}
+                environmentId={environmentId}
+                botId={current.id}
+                projectId={context.projectId}
+                title={titleOf(context.projectId)}
+                formLocked={saving || archived}
+              />
+            ))}
+          </div>
+        ) : null}
       </DialogPanel>
       <DialogFooter>
         <DialogClose render={<Button variant="outline" size="sm" disabled={saving} />}>
@@ -785,7 +802,6 @@ function BotProjectContexts({
   const routinesSupported =
     descriptor?.capabilities.botRoutines === true && bot.archivedAt === null;
   const notesSupported = descriptor?.capabilities.botContinuation === true;
-  const maintenanceSupported = descriptor?.capabilities.botMaintenance === true;
 
   const run = async (
     title: string,
@@ -834,14 +850,6 @@ function BotProjectContexts({
             ) : null
           }
         >
-          {maintenanceSupported ? (
-            <BotMaintenanceSetting
-              environmentId={environmentId}
-              botId={bot.id}
-              projectId={context.projectId}
-              disabled={disabled}
-            />
-          ) : null}
           {routinesSupported ? (
             <BotRoutines
               environmentId={environmentId}

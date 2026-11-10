@@ -18,17 +18,19 @@ import { Label } from "../ui/label";
 import { Switch } from "../ui/switch";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 
-/** Maintenance for one attached project; it saves apart from the Bot form. */
+/** Maintenance for one project context; it saves apart from the Bot form. */
 export function BotMaintenanceSetting({
   environmentId,
   botId,
   projectId,
-  disabled,
+  title,
+  formLocked,
 }: {
   readonly environmentId: EnvironmentId;
   readonly botId: BotId;
   readonly projectId: ProjectId;
-  readonly disabled: boolean;
+  readonly title: string;
+  readonly formLocked: boolean;
 }) {
   const scope = { botId, projectId };
   const query = useEnvironmentQuery(
@@ -75,9 +77,9 @@ export function BotMaintenanceSetting({
   };
 
   return (
-    <div className="flex items-start justify-between gap-3">
+    <div className="flex items-start justify-between gap-3 rounded-lg border p-3">
       <div className="min-w-0 space-y-1">
-        <Label htmlFor={switchId}>Maintenance</Label>
+        <Label htmlFor={switchId}>{`${title} · Maintenance`}</Label>
         <p className="text-xs text-muted-foreground">{BOT_MAINTENANCE_DESCRIPTION}</p>
         <p className="text-xs text-muted-foreground" id={`${switchId}-status`}>
           {botMaintenanceStatusLabel(view)}
@@ -87,7 +89,7 @@ export function BotMaintenanceSetting({
         id={switchId}
         aria-describedby={`${switchId}-status`}
         checked={view.enabled}
-        disabled={disabled || busy || !canConfigure || !canToggleBotMaintenance(view)}
+        disabled={busy || !canConfigure || !canToggleBotMaintenance(view, formLocked)}
         onCheckedChange={(enabled) => void toggle(enabled)}
       />
     </div>

@@ -597,13 +597,16 @@ const BOT_MAINTENANCE_UNAVAILABLE_LABELS: Readonly<Record<string, string>> = {
 };
 /** Settings caption for a maintenance view; unknown reasons from newer servers stay readable. */
 export function botMaintenanceStatusLabel(view: BotMaintenanceView): string {
-  if (view.enabled) return view.writable ? "On" : "On · stopped while detached or archived";
-  const state =
-    view.startedAt === null ? "Off" : "Paused · turning it on continues where it stopped";
-  if (view.unavailableReason === null) return state;
-  return `${state} · ${BOT_MAINTENANCE_UNAVAILABLE_LABELS[view.unavailableReason] ?? "Not available on this server."}`;
+  if (view.unavailableReason === null) return botMaintenanceState(view, false);
+  return `${botMaintenanceState(view, true)} · ${BOT_MAINTENANCE_UNAVAILABLE_LABELS[view.unavailableReason] ?? "Not available on this server."}`;
 }
-/** Turning off is always allowed; turning on needs an active Bot and a server that can generate. */
-export function canToggleBotMaintenance(view: BotMaintenanceView): boolean {
-  return view.enabled || (view.writable && view.unavailableReason === null);
+function botMaintenanceState(view: BotMaintenanceView, unavailable: boolean): string {
+  if (!view.enabled)
+    return view.startedAt === null ? "Off" : "Paused · turning it on continues where it stopped";
+  if (!view.writable) return "On · stopped while detached or archived";
+  return unavailable ? "On · stopped" : "On";
+}
+/** Turning off is always allowed; turning on needs an editable form, an active Bot and a server that can generate. */
+export function canToggleBotMaintenance(view: BotMaintenanceView, formLocked: boolean): boolean {
+  return view.enabled || (!formLocked && view.writable && view.unavailableReason === null);
 }

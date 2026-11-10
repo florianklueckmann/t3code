@@ -615,17 +615,15 @@ function BotForm({
                 disabled={readOnly || !project.attached}
               />
             ) : null}
+            {/* Shown while archived or detached so pausing stays reachable. */}
             {maintenanceSupported &&
-            project.attached &&
-            baseline.projects.some(
-              (saved) => saved.projectId === project.projectId && saved.attached,
-            ) ? (
+            baseline.projects.some((saved) => saved.projectId === project.projectId) ? (
               <BotMaintenanceSection
                 environmentId={environmentId}
                 botId={draft.botId}
                 projectId={project.projectId}
                 title={`${projectTitle(project.projectId)} · Maintenance`}
-                disabled={readOnly}
+                formLocked={readOnly || !project.attached}
               />
             ) : null}
             {routinesSupported &&

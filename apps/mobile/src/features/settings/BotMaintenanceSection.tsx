@@ -17,13 +17,13 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { reportBotFailure } from "../bots/reportBotFailure";
 import { SettingsSection } from "./components/SettingsSection";
 
-/** Maintenance for one attached project; it saves apart from the Bot form. */
+/** Maintenance for one project context; it saves apart from the Bot form. */
 export function BotMaintenanceSection(props: {
   readonly environmentId: EnvironmentId;
   readonly botId: BotId;
   readonly projectId: ProjectId;
   readonly title: string;
-  readonly disabled: boolean;
+  readonly formLocked: boolean;
 }) {
   const { environmentId, botId, projectId } = props;
   const scope = { botId, projectId };
@@ -74,7 +74,7 @@ export function BotMaintenanceSection(props: {
         <ThemedSwitch
           accessibilityLabel="Maintenance"
           value={view.enabled}
-          disabled={props.disabled || busy || !canConfigure || !canToggleBotMaintenance(view)}
+          disabled={busy || !canConfigure || !canToggleBotMaintenance(view, props.formLocked)}
           onValueChange={(enabled) => void toggle(enabled)}
         />
       </View>
