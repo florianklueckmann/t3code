@@ -70,6 +70,25 @@ const SEAL_CONFIG = {
   include_collaboration_mode_instructions: false,
 } as const;
 
+/** Exactly `functions{exec, wait}`: the tools Codex cannot switch off for code-mode models. */
+const isCodeModeDeclaration = Schema.is(
+  Schema.Struct({
+    item: Schema.Struct({
+      type: Schema.Literal("additional_tools"),
+      tools: Schema.Tuple([
+        Schema.Struct({
+          type: Schema.Literal("namespace"),
+          name: Schema.Literal("functions"),
+          tools: Schema.Tuple([
+            Schema.Struct({ type: Schema.Literal("custom"), name: Schema.Literal("exec") }),
+            Schema.Struct({ type: Schema.Literal("function"), name: Schema.Literal("wait") }),
+          ]),
+        }),
+      ]),
+    }),
+  }),
+);
+
 /** Codex 0.166.0 echoes its injected context as developer and user messages; the model answers. */
 const MESSAGE_ROLES = new Set(["developer", "user", "assistant"]);
 
@@ -219,9 +238,11 @@ export const makeCodexSealedGeneration = Effect.fn("makeCodexSealedGeneration")(
       return Effect.void;
     });
     // A raw item this client cannot decode lands here; an unknown shape counts as a tool attempt.
-    // That includes `additional_tools`, which Codex sends only when the turn offers a tool.
-    yield* client.handleUnknownServerNotification((method) =>
-      method === "rawResponseItem/completed" ? reject("tool_attempt") : Effect.void,
+    // Code-mode catalog models always declare `exec` and `wait`; any call to them still discards.
+    yield* client.handleUnknownServerNotification((method, params) =>
+      method !== "rawResponseItem/completed" || isCodeModeDeclaration(params)
+        ? Effect.void
+        : reject("tool_attempt"),
     );
     // Never answered: the rejection interrupts the turn and closes the process instead.
     yield* client.handleUnknownServerRequest(() =>
@@ -243,7 +264,10 @@ export const makeCodexSealedGeneration = Effect.fn("makeCodexSealedGeneration")(
       experimentalRawEvents: true,
       ephemeral: true,
       sandbox: "read-only",
-      approvalPolicy: "never",
+      // Code-mode `exec` runs under every policy; `on-request` makes its nested patch ask, which
+      // discards. The pinned reviewer keeps a user's `auto_review` from answering that request.
+      approvalPolicy: "on-request",
+      approvalsReviewer: "user",
       baseInstructions: input.instructions,
       developerInstructions: SEALED_DEVELOPER_INSTRUCTIONS,
       config: {
@@ -278,7 +302,7 @@ export const makeCodexSealedGeneration = Effect.fn("makeCodexSealedGeneration")(
           threadId: thread.thread.id,
           input: [{ type: "text", text: input.packet, text_elements: [] }],
           sandboxPolicy: { type: "readOnly", networkAccess: false },
-          approvalPolicy: "never",
+          approvalPolicy: "on-request",
           ...(plan.effort === undefined ? {} : { effort: plan.effort }),
           outputSchema: toJsonSchemaObject(input.schema) as Schema.Json,
         }),
