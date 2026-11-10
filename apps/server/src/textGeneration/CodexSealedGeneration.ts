@@ -27,7 +27,7 @@ import { codexStoreStartPermit } from "../provider/Drivers/CodexHomeLayout.ts";
 
 // Not `CodexTextGeneration`: `codex exec` can substitute models, keeps MCP servers when listing
 // them fails, and cannot show denied tool attempts. Raw response events show every model item,
-// so anything but reasoning or a message in a known role discards the turn.
+// so anything but reasoning, Codex's settings item or a message in a known role discards the turn.
 
 /** The oldest Codex version whose app-server was proven to accept raw events and this seal. */
 const SEALED_GENERATION_MIN_CODEX_VERSION = "0.166.0";
@@ -53,9 +53,15 @@ const SEAL_CONFIG = {
   "features.apps": false,
   "features.plugins": false,
   "features.image_generation": false,
+  // Hooks and notify run the user's programs outside the sandbox.
+  "features.hooks": false,
+  // Code-mode catalogs offer the `collaboration` sub-agent tools while this is on.
+  "agents.enabled": false,
   "tools.update_plan.enabled": false,
   "tools.view_image": false,
+  "tools.experimental_request_user_input.enabled": false,
   web_search: "disabled",
+  notify: [],
   project_doc_max_bytes: 0,
   "skills.include_instructions": false,
   include_environment_context: false,
@@ -206,12 +212,14 @@ export const makeCodexSealedGeneration = Effect.fn("makeCodexSealedGeneration")(
     let answer: string | null = null;
 
     yield* client.handleServerNotification("rawResponseItem/completed", ({ item }) => {
-      if (item.type === "reasoning") return Effect.void;
+      // `configuration_update` is Codex's injected reasoning setting, never model output.
+      if (item.type === "reasoning" || item.type === "configuration_update") return Effect.void;
       if (item.type !== "message" || !MESSAGE_ROLES.has(item.role)) return reject("tool_attempt");
       answer = assistantText(item) ?? answer;
       return Effect.void;
     });
     // A raw item this client cannot decode lands here; an unknown shape counts as a tool attempt.
+    // That includes `additional_tools`, which Codex sends only when the turn offers a tool.
     yield* client.handleUnknownServerNotification((method) =>
       method === "rawResponseItem/completed" ? reject("tool_attempt") : Effect.void,
     );

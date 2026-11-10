@@ -145,9 +145,13 @@ const SEAL_KEYS = {
   "features.apps": false,
   "features.plugins": false,
   "features.image_generation": false,
+  "features.hooks": false,
+  "agents.enabled": false,
   "tools.update_plan.enabled": false,
   "tools.view_image": false,
+  "tools.experimental_request_user_input.enabled": false,
   web_search: "disabled",
+  notify: [],
   project_doc_max_bytes: 0,
   "skills.include_instructions": false,
   include_environment_context: false,
@@ -306,6 +310,7 @@ it.layer(NodeServices.layer)("CodexSealedGeneration", (it) => {
         raw({ type: "reasoning", summary: [] }),
         raw({ type: "message", role: "developer", content: [{ type: "input_text", text: "x" }] }),
         raw({ type: "message", role: "user", content: [{ type: "input_text", text: PACKET }] }),
+        raw({ type: "configuration_update", reasoning: { effort: "high" } }),
         assistant(CLEAN_ANSWER),
         completed(),
       ]);
@@ -372,6 +377,24 @@ it.layer(NodeServices.layer)("CodexSealedGeneration", (it) => {
       item: { type: "function_call_output", call_id: "c", output: "denied" },
     },
     { label: "an undecodable item", item: { type: "computer_call", call_id: "c" } },
+    {
+      label: "code-mode tools Codex declares for the turn",
+      item: {
+        type: "additional_tools",
+        role: "developer",
+        tools: [
+          {
+            type: "namespace",
+            name: "functions",
+            description: "",
+            tools: [
+              { type: "custom", name: "exec", description: "Run JavaScript" },
+              { type: "function", name: "wait", description: "Wait on exec", parameters: {} },
+            ],
+          },
+        ],
+      },
+    },
   ])("discards $label next to a valid answer and interrupts the turn", ({ item }) =>
     Effect.gen(function* () {
       const { generation, replayState, closed } = yield* harness((cwd) => [
