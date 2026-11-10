@@ -145,9 +145,13 @@ const SEAL_KEYS = {
   "features.apps": false,
   "features.plugins": false,
   "features.image_generation": false,
+  "features.hooks": false,
+  "agents.enabled": false,
   "tools.update_plan.enabled": false,
   "tools.view_image": false,
+  "tools.experimental_request_user_input.enabled": false,
   web_search: "disabled",
+  notify: [],
   project_doc_max_bytes: 0,
   "skills.include_instructions": false,
   include_environment_context: false,
@@ -181,7 +185,8 @@ const preamble = (
         experimentalRawEvents: true,
         ephemeral: true,
         sandbox: "read-only",
-        approvalPolicy: "never",
+        approvalPolicy: "on-request",
+        approvalsReviewer: "user",
         baseInstructions: POLICY,
         developerInstructions: SEALED_DEVELOPER_INSTRUCTIONS,
         config: SEAL_KEYS,
@@ -207,6 +212,7 @@ const preamble = (
               threadId: THREAD,
               input: [{ type: "text", text: PACKET, text_elements: [] }],
               sandboxPolicy: { type: "readOnly", networkAccess: false },
+              approvalPolicy: "on-request",
               effort: "high",
               outputSchema: toJsonSchemaObject(Proposal),
             },
@@ -218,6 +224,22 @@ const preamble = (
 
 const raw = (item: unknown) =>
   notify("rawResponseItem/completed", { threadId: THREAD, turnId: TURN, item });
+const codeModeTools = (namespaces: ReadonlyArray<unknown>) => ({
+  type: "additional_tools",
+  id: "at_1",
+  role: "developer",
+  tools: namespaces,
+});
+const EXEC = { type: "custom", name: "exec", description: "Run JavaScript" };
+const WAIT = { type: "function", name: "wait", description: "Wait on exec", parameters: {} };
+const functionsNamespace = (tools: ReadonlyArray<unknown>) => ({
+  type: "namespace",
+  name: "functions",
+  description: "",
+  tools,
+});
+/** What Codex declares on every turn of a code-mode-only catalog model. */
+const CODE_MODE_TOOLS = codeModeTools([functionsNamespace([EXEC, WAIT])]);
 const assistant = (text: string) =>
   raw({ type: "message", role: "assistant", content: [{ type: "output_text", text }] });
 const completed = (status = "completed", error: unknown = null) =>
@@ -306,6 +328,8 @@ it.layer(NodeServices.layer)("CodexSealedGeneration", (it) => {
         raw({ type: "reasoning", summary: [] }),
         raw({ type: "message", role: "developer", content: [{ type: "input_text", text: "x" }] }),
         raw({ type: "message", role: "user", content: [{ type: "input_text", text: PACKET }] }),
+        raw({ type: "configuration_update", reasoning: { effort: "high" } }),
+        raw(CODE_MODE_TOOLS),
         assistant(CLEAN_ANSWER),
         completed(),
       ]);
@@ -334,15 +358,28 @@ it.layer(NodeServices.layer)("CodexSealedGeneration", (it) => {
         mcp_servers: { "dotted.name": { enabled: false }, github: { enabled: false } },
       });
       const turnStart = sent.get("turn/start") as Record<string, unknown>;
-      assert.equal(turnStart.approvalPolicy, "never");
       assert.deepEqual(turnStart.input, [{ type: "text", text: PACKET, text_elements: [] }]);
     }),
   );
 
-  it.effect.each([
+  const discardRows: ReadonlyArray<{
+    readonly label: string;
+    readonly item: unknown;
+    readonly afterCodeModeTools?: true;
+  }> = [
     {
       label: "function_call",
       item: { type: "function_call", name: "exec_command", arguments: "{}", call_id: "c" },
+    },
+    {
+      label: "an exec call after the code-mode declaration",
+      item: { type: "custom_tool_call", name: "exec", input: "text('x')", call_id: "c" },
+      afterCodeModeTools: true,
+    },
+    {
+      label: "a wait call after the code-mode declaration",
+      item: { type: "function_call", name: "wait", arguments: "{}", call_id: "c" },
+      afterCodeModeTools: true,
     },
     {
       label: "mcp function_call",
@@ -372,19 +409,41 @@ it.layer(NodeServices.layer)("CodexSealedGeneration", (it) => {
       item: { type: "function_call_output", call_id: "c", output: "denied" },
     },
     { label: "an undecodable item", item: { type: "computer_call", call_id: "c" } },
-  ])("discards $label next to a valid answer and interrupts the turn", ({ item }) =>
-    Effect.gen(function* () {
-      const { generation, replayState, closed } = yield* harness((cwd) => [
-        ...preamble(cwd),
-        raw(item),
-        assistant(CLEAN_ANSWER),
-        ...interrupt,
-      ]);
-      const error = yield* generation.generate(generateInput).pipe(Effect.flip);
-      assert.deepInclude(error, { _tag: "SealedGenerationDiscarded", reason: "tool_attempt" });
-      assert.isNull((yield* replayState).failure);
-      assert.isTrue(yield* Ref.get(closed));
-    }),
+    {
+      label: "a code-mode declaration with another function",
+      item: codeModeTools([
+        functionsNamespace([EXEC, WAIT, { type: "function", name: "exec_command" }]),
+      ]),
+    },
+    {
+      label: "a code-mode declaration with another namespace",
+      item: codeModeTools([
+        functionsNamespace([EXEC, WAIT]),
+        { type: "namespace", name: "collaboration", tools: [{ type: "function", name: "spawn" }] },
+      ]),
+    },
+    {
+      label: "a code-mode declaration whose exec is a plain function",
+      item: codeModeTools([functionsNamespace([{ ...EXEC, type: "function" }, WAIT])]),
+    },
+    { label: "a declaration of exec alone", item: codeModeTools([functionsNamespace([EXEC])]) },
+  ];
+  it.effect.each(discardRows)(
+    "discards $label next to a valid answer and interrupts the turn",
+    ({ item, afterCodeModeTools }) =>
+      Effect.gen(function* () {
+        const { generation, replayState, closed } = yield* harness((cwd) => [
+          ...preamble(cwd),
+          ...(afterCodeModeTools ? [raw(CODE_MODE_TOOLS)] : []),
+          raw(item),
+          assistant(CLEAN_ANSWER),
+          ...interrupt,
+        ]);
+        const error = yield* generation.generate(generateInput).pipe(Effect.flip);
+        assert.deepInclude(error, { _tag: "SealedGenerationDiscarded", reason: "tool_attempt" });
+        assert.isNull((yield* replayState).failure);
+        assert.isTrue(yield* Ref.get(closed));
+      }),
   );
 
   it.effect.each([
@@ -422,6 +481,11 @@ it.layer(NodeServices.layer)("CodexSealedGeneration", (it) => {
       label: "approval",
       method: "item/commandExecution/requestApproval",
       params: { threadId: THREAD, turnId: TURN },
+    },
+    {
+      label: "nested exec patch approval",
+      method: "item/fileChange/requestApproval",
+      params: { threadId: THREAD, turnId: TURN, itemId: "i" },
     },
   ])("leaves the $label request unanswered and interrupts the turn", ({ method, params }) =>
     Effect.gen(function* () {

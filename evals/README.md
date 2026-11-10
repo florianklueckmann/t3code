@@ -17,6 +17,8 @@ Write or run an eval when a change affects what a model sees or does: agent inst
 
 | [bot-continuation](bot-continuation/) | Whether Home captures and resumes unfinished business without promoting proposals or inventing work. |
 
+| [bot-maintenance](bot-maintenance/) | Whether nightly Bot maintenance learns durable, evidenced lessons through the sealed Codex call. |
+
 ## Run an eval
 
 1. Run `vp i` at the repo root.

@@ -14,7 +14,8 @@
     "test-signal": "node --env-file-if-exists=../.env test-signal/run.ts",
     "typecheck": "effect-tsgo tsrs --noEmit",
     "test": "vp test run --config ../vite.config.ts --dir .",
-    "bot-continuation": "node bot-continuation/run.ts"
+    "bot-continuation": "node bot-continuation/run.ts",
+    "bot-maintenance": "node bot-maintenance/run.ts"
   },
   "dependencies": {
     "@effect/platform-node": "catalog:",
