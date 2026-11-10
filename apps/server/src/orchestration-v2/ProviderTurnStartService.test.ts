@@ -1697,39 +1697,6 @@ effectIt.effect.each([false, true])(
     }),
 );
 
-effectIt.effect.each([false, true])(
-  "never carries a No changes run into a session opened for other work (retry: %s)",
-  (willRetry) =>
-    Effect.gen(function* () {
-      // A conversation from before enforcement still names the ordinary shared session.
-      const legacy = makeLocalCommandHarness({ text: "Continue" });
-      legacy.resolveRuntimePolicy.mockReturnValue(
-        Effect.succeed({
-          cwd: "/tmp/native-account-command",
-          runtimeMode: "full-access",
-          changes: "none",
-        } as never),
-      );
-      yield* willRetry ? legacy.startWithRetry : legacy.start;
-      expect(legacy.open).not.toHaveBeenCalled();
-      expect(legacy.settledRuns).toEqual(["failed"]);
-
-      // The provider could not prove it would enforce the profile: one visible failure, no retry.
-      const refusal = new ProviderAdapter.ProviderAdapterNoChangesRefusedError({
-        driver: ProviderDriverKind.make("codex"),
-        reason: "sandbox",
-      });
-      const refused = makeLocalCommandHarness({ text: "Continue", openFailure: refusal });
-      yield* willRetry ? refused.startWithRetry : refused.start;
-      expect(refused.open).toHaveBeenCalledOnce();
-      expect(refused.startRootRun).not.toHaveBeenCalled();
-      expect(refused.settledRuns).toEqual(["failed"]);
-      expect(refused.projection().turnItems).toMatchObject([
-        { type: "error", status: "failed", failure: { message: refusal.message } },
-      ]);
-    }),
-);
-
 effectIt.effect("leaves the run starting when a session-open failure will be retried", () =>
   Effect.gen(function* () {
     const harness = makeLocalCommandHarness({

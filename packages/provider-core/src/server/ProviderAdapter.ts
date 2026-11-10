@@ -45,6 +45,8 @@ import type {
   ProviderSelectionTransitionPlan,
 } from "./selectionTransition.ts";
 
+const ProviderAdapterNativeTools = Schema.Literals(["t3BotOnly", "readOnly"]);
+
 export const ProviderAdapterV2RuntimePolicy = Schema.Struct({
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
@@ -62,15 +64,12 @@ export const ProviderAdapterV2RuntimePolicy = Schema.Struct({
    */
   nativeMemory: Schema.optional(Schema.Literal("disabled")),
   /**
-   * "none": this run is unattended and may change nothing. Only a provider verified to enforce it
-   * receives it; an adapter enforces it or refuses the run, and never widens it.
+   * Both mean a read-only, approval-never turn with no user MCP servers, hooks or notify.
+   * "t3BotOnly" also removes every native side-effect tool and keeps only T3 Code's `t3_bot`.
+   * "readOnly" keeps the shell for reading, without network, and T3 Code's tools, whose writes
+   * the caller's task refuses. An adapter enforces it or refuses the run, and never widens it.
    */
-  changes: Schema.optional(Schema.Literal("none")),
-  /**
-   * "t3BotOnly": no native side-effect tools, user MCP servers, hooks or notify, a read-only
-   * approval-never turn, and only T3 Code's `t3_bot` tool. An adapter enforces it or refuses.
-   */
-  nativeTools: Schema.optional(Schema.Literal("t3BotOnly")),
+  nativeTools: Schema.optional(ProviderAdapterNativeTools),
 });
 export type ProviderAdapterV2RuntimePolicy = typeof ProviderAdapterV2RuntimePolicy.Type;
 
@@ -231,56 +230,7 @@ export class ProviderAdapterOpenSessionError extends Schema.TaggedError<Provider
   }
 }
 
-const ProviderAdapterNoChangesRefusal = Schema.Literals([
-  "launch-args",
-  "managed-sign-in",
-  "account",
-  "chatgpt-account",
-  "version",
-  "config",
-  "hooks",
-  "sandbox",
-  "profile",
-  "home",
-  "store",
-]);
-
-const noChangesRefusalText: Record<typeof ProviderAdapterNoChangesRefusal.Type, string> = {
-  "launch-args": "it uses custom launch arguments",
-  "managed-sign-in": "it signs in through T3 Code",
-  account: "its signed-in account couldn't be confirmed",
-  "chatgpt-account": "it can't share a ChatGPT sign-in safely yet",
-  version: "this check has not verified its Codex version",
-  config: "its configuration adds settings that couldn't be verified",
-  hooks: "it has hooks configured",
-  sandbox: "its read-only sandbox check failed",
-  profile: "its session was opened for other work",
-  home: "its No changes profile folder holds entries T3 Code did not create, or is in use with other settings",
-  store: "its conversation history is kept in a custom location this check can't share",
-};
-
-/**
- * The provider could not prove it would enforce `changes: "none"`, so nothing started. Retrying
- * cannot help; the reason names what to change.
- */
-export class ProviderAdapterNoChangesRefusedError extends Schema.TaggedError<ProviderAdapterNoChangesRefusedError>()(
-  "ProviderAdapterNoChangesRefusedError",
-  {
-    driver: ProviderDriverKind,
-    reason: ProviderAdapterNoChangesRefusal,
-    cause: Schema.optional(Schema.Defect()),
-  },
-) {
-  override get message(): string {
-    return `This routine task is set to No changes, which its provider can't enforce here because ${noChangesRefusalText[this.reason]}, so nothing ran. Start a new routine task once that is fixed, or ask the Bot directly.`;
-  }
-}
-
-export const isProviderAdapterNoChangesRefusedError = Schema.is(
-  ProviderAdapterNoChangesRefusedError,
-);
-
-const homeSealRefusalText = {
+const sealRefusalText = {
   version: "this Codex version's tools have not been verified",
   platform: "it is only verified on macOS",
   children: "this conversation already has agents it could reach",
@@ -288,17 +238,20 @@ const homeSealRefusalText = {
   unavailable: "it needs an existing conversation with T3 Code's tools connected",
 } as const;
 
-/** A `nativeTools: "t3BotOnly"` load or turn the adapter could not enforce. Nothing ran. */
-export class ProviderAdapterHomeSealRefusedError extends Schema.TaggedError<ProviderAdapterHomeSealRefusedError>()(
-  "ProviderAdapterHomeSealRefusedError",
+/** A `nativeTools` load or turn the adapter could not enforce. Nothing ran. */
+export class ProviderAdapterSealRefusedError extends Schema.TaggedError<ProviderAdapterSealRefusedError>()(
+  "ProviderAdapterSealRefusedError",
   {
     driver: ProviderDriverKind,
+    seal: ProviderAdapterNativeTools,
     reason: Schema.Literals(["version", "platform", "children", "seal", "unavailable"]),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {
   override get message(): string {
-    return `This Bot maintenance turn can't be restricted here because ${homeSealRefusalText[this.reason]}, so nothing ran.`;
+    return this.seal === "readOnly"
+      ? `This routine task is set to No changes, which its provider can't enforce here because ${sealRefusalText[this.reason]}, so nothing ran. Start a new routine task once that is fixed, or ask the Bot directly.`
+      : `This Bot maintenance turn can't be restricted here because ${sealRefusalText[this.reason]}, so nothing ran.`;
   }
 }
 
@@ -530,8 +483,7 @@ export class ProviderAdapterSessionStoppedError extends Schema.TaggedError<Provi
 export const ProviderAdapterV2Error = Schema.Union([
   ProviderAdapterCapabilitiesError,
   ProviderAdapterOpenSessionError,
-  ProviderAdapterNoChangesRefusedError,
-  ProviderAdapterHomeSealRefusedError,
+  ProviderAdapterSealRefusedError,
   ProviderAdapterCloseSessionError,
   ProviderAdapterResumeThreadError,
   ProviderAdapterThreadInUseError,

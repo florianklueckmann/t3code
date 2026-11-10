@@ -119,9 +119,6 @@ const usePolicy = <A, E>(
 const resolveFor = (threadId: ThreadId, options: PolicyOptions = {}) =>
   usePolicy(threadId, options, (policy, input) => policy.resolve(input));
 
-const changesFor = (threadId: ThreadId, options: PolicyOptions = {}) =>
-  usePolicy(threadId, options, (policy, input) => policy.resolveChanges(input));
-
 it.effect("turns provider memory off for Bot conversations only", () =>
   Effect.gen(function* () {
     assert.equal((yield* resolveFor(botThread)).nativeMemory, "disabled");
@@ -140,7 +137,7 @@ it.effect("never resolves a No changes task to a policy that can change things",
   Effect.gen(function* () {
     for (const threadId of [noChangesThread, archivedNoChangesThread]) {
       const restricted = yield* resolveFor(threadId);
-      assert.equal(restricted.changes, "none");
+      assert.equal(restricted.nativeTools, "readOnly");
       assert.equal(restricted.nativeMemory, "disabled");
       for (const [options, reason] of [
         [{ instanceId: "codex" }, "provider"],
@@ -150,21 +147,13 @@ it.effect("never resolves a No changes task to a policy that can change things",
         const refused = yield* resolveFor(threadId, options).pipe(Effect.flip);
         assert.equal(refused._tag, "RuntimePolicyUnsupportedError");
         assert.equal(refused._tag === "RuntimePolicyUnsupportedError" && refused.reason, reason);
-        // Dispatch still picks the restricted process; the turn start settles the refusal.
-        assert.equal(yield* changesFor(threadId, options), "none");
       }
-      assert.equal(yield* changesFor(threadId), "none");
     }
-    for (const unreadable of [
-      yield* resolveFor(unreadableTaskThread).pipe(Effect.flip),
-      yield* changesFor(unreadableTaskThread).pipe(Effect.flip),
-    ]) {
-      assert.equal(unreadable._tag, "RuntimePolicyResolveError");
-    }
+    const unreadable = yield* resolveFor(unreadableTaskThread).pipe(Effect.flip);
+    assert.equal(unreadable._tag, "RuntimePolicyResolveError");
     // Changes allowed, direct tasks (also stored with allow_changes = 0) and Home are unchanged.
     for (const threadId of [workThread, botThread, ThreadId.make("plain")]) {
-      assert.isUndefined((yield* resolveFor(threadId)).changes);
-      assert.isUndefined(yield* changesFor(threadId));
+      assert.isUndefined((yield* resolveFor(threadId)).nativeTools);
     }
   }),
 );
@@ -174,8 +163,6 @@ it.effect("seals a restricted run only in an active Bot Home on Codex and macOS"
     const sealed = yield* resolveFor(botThread, { restriction: "botNote" });
     assert.equal(sealed.nativeTools, "t3BotOnly");
     assert.equal(sealed.nativeMemory, "disabled");
-    // The ordinary Home process: a restricted run never opens the No changes profile.
-    assert.isUndefined(sealed.changes);
     assert.isUndefined((yield* resolveFor(botThread)).nativeTools);
     for (const [threadId, options, reason] of [
       [workThread, {}, "home"],

@@ -460,7 +460,7 @@ export const codexAccountHomePath = (layout: CodexHomeLayout) =>
  * A path's physical identity, the same before and after its missing directories are created: the
  * deepest existing ancestor resolved, then the missing names. Fails when that cannot be known.
  */
-export const codexPhysicalPath = Effect.fn("CodexHomeLayout.codexPhysicalPath")(function* (
+const codexPhysicalPath = Effect.fn("CodexHomeLayout.codexPhysicalPath")(function* (
   target: string,
 ) {
   const fileSystem = yield* FileSystem.FileSystem;

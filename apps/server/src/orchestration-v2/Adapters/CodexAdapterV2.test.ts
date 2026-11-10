@@ -236,7 +236,7 @@ describe("CodexAdapterV2 runtime policy", () => {
           runtimeMode: "full-access",
           interactionMode: "default",
           cwd: null,
-          changes: "none",
+          nativeTools: "readOnly",
           approvalPolicy: "on-request",
           sandboxPolicy: { type: "dangerFullAccess" },
         },
@@ -1664,20 +1664,17 @@ describe("CodexAdapterV2 store start permit", () => {
           readonly launchHome: string | undefined;
         }>();
         const instanceId = ProviderInstanceId.make("codex-store-permit");
-        const adapter = yield* CodexAdapterV2.createCodexAdapterV2(
-          {
-            instanceId,
-            displayName: undefined,
-            enabled: true,
-            environment: [{ name: "CODEX_HOME", value: accountHome, sensitive: false }],
-            config: {
-              ...DEFAULT_CODEX_SETTINGS,
-              homePath: mode === "explicit" ? accountHome : "",
-              shadowHomePath: "",
-            },
+        const adapter = yield* CodexAdapterV2.createCodexAdapterV2({
+          instanceId,
+          displayName: undefined,
+          enabled: true,
+          environment: [{ name: "CODEX_HOME", value: accountHome, sensitive: false }],
+          config: {
+            ...DEFAULT_CODEX_SETTINGS,
+            homePath: mode === "explicit" ? accountHome : "",
+            shadowHomePath: "",
           },
-          { noChangesAccount: Effect.succeed({ status: "authenticated", type: "chatgpt" }) },
-        ).pipe(
+        }).pipe(
           Effect.provideService(HostProcess.HomeDirectory, home),
           Effect.provideService(HostProcess.Environment, {}),
           Effect.provideService(CodexAdapterV2.CodexAppServerClientFactory, {
@@ -3764,18 +3761,18 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         yield* resume(sealedPolicy);
         assert.equal(
           (yield* turnWith(CODEX_TEST_RUNTIME_POLICY))._tag,
-          "ProviderAdapterHomeSealRefusedError",
+          "ProviderAdapterSealRefusedError",
         );
         yield* resume(sealedPolicy);
         yield* resume(CODEX_TEST_RUNTIME_POLICY);
-        assert.equal((yield* turnWith(sealedPolicy))._tag, "ProviderAdapterHomeSealRefusedError");
+        assert.equal((yield* turnWith(sealedPolicy))._tag, "ProviderAdapterSealRefusedError");
         assert.equal(
           (yield* Effect.flip(resume(sealedPolicy)))._tag,
           "ProviderAdapterResumeThreadError",
         );
         assert.equal(
           (yield* turnWith(CODEX_TEST_RUNTIME_POLICY))._tag,
-          "ProviderAdapterHomeSealRefusedError",
+          "ProviderAdapterSealRefusedError",
         );
         yield* resume(CODEX_TEST_RUNTIME_POLICY);
 
@@ -3812,6 +3809,275 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         ),
       ),
     ),
+  );
+
+  it.effect(
+    "starts a No changes work thread read-only in the process its ordinary threads use",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const scenario = "codex-read-only-seal";
+          const nativeThreadId = `native-${scenario}-thread`;
+          const workNativeThreadId = `native-${scenario}-work`;
+          const workThreadId = ThreadId.make(`thread-${scenario}-work`);
+          const seal = codexHomeSealReplay(scenario, nativeThreadId);
+          const { step, configRead } = seal;
+          yield* (yield* McpProviderSessions.McpProviderSessions).set({
+            environmentId: EnvironmentId.make("environment-codex-read-only-seal"),
+            threadId: workThreadId,
+            providerSessionId: `provider-session-${scenario}`,
+            providerInstanceId: ProviderInstanceId.make("codex"),
+            endpoint: "http://127.0.0.1:43123/mcp",
+            authorizationHeader: "Bearer routine-token",
+            browserToolsAvailable: false,
+          });
+          const readOnlyPolicy = {
+            ...CODEX_TEST_RUNTIME_POLICY,
+            nativeMemory: "disabled",
+            nativeTools: "readOnly",
+          } as const;
+          // The shell stays for reading; everything that acts outside the sandbox is off.
+          const readOnlyLoad = {
+            sandbox: "read-only",
+            approvalPolicy: "never",
+            approvalsReviewer: "user",
+            config: {
+              ...CodexAdapterV2.CODEX_THREAD_CONFIG,
+              "features.memories": false,
+              "memories.use_memories": false,
+              "memories.generate_memories": false,
+              ...Object.fromEntries(
+                [
+                  "multi_agent",
+                  "multi_agent_v2",
+                  "goals",
+                  "apps",
+                  "plugins",
+                  "remote_plugin",
+                  "hooks",
+                  "browser_use",
+                  "browser_use_external",
+                  "computer_use",
+                  "in_app_browser",
+                  "in_app_local_automation",
+                  "image_generation",
+                  "tool_suggest",
+                  "skill_mcp_dependency_install",
+                ].map((name) => [`features.${name}`, false]),
+              ),
+              notify: [],
+            },
+          };
+          const preamble = seal.onMeasuredVersion(
+            codexReplayPreamble({
+              nativeThreadId,
+              nativeTurnId: "unused-turn",
+              prompt: "unused-prompt",
+            }).slice(0, 5),
+          );
+          const ordinaryStart = preamble[4] as { frame: { result: { thread: object } } };
+          const workStart = {
+            ...ordinaryStart.frame.result,
+            thread: { ...ordinaryStart.frame.result.thread, id: workNativeThreadId },
+          };
+          const workThreadResult = codexReplayThreadResult({
+            nativeThreadId: workNativeThreadId,
+            forkedFromId: null,
+          });
+          const transcript = makeCodexReplayTranscript({
+            scenario,
+            entries: [
+              ...preamble,
+              ...step(3, "config/read", { includeLayers: false, cwd: "/workspace" }, configRead),
+              ...step(4, "thread/start", readOnlyLoad, workStart),
+              // Same seal again: no release.
+              ...step(5, "config/read", { includeLayers: false, cwd: "/workspace" }, configRead),
+              ...step(
+                6,
+                "thread/resume",
+                { threadId: workNativeThreadId, excludeTurns: true, ...readOnlyLoad },
+                { thread: { id: workNativeThreadId, updatedAt: 1782622450 } },
+              ),
+              ...step(
+                7,
+                "thread/memoryMode/set",
+                { threadId: workNativeThreadId, mode: "disabled" },
+                {},
+              ),
+              // The ordinary thread beside it keeps its ordinary load: no release.
+              ...step(8, "thread/resume", seal.ordinaryResume, seal.resumed),
+              // A rollback loads an unloaded work thread with the session's own, ordinary config.
+              ...step(
+                9,
+                "thread/read",
+                { threadId: workNativeThreadId, includeTurns: false },
+                {
+                  thread: {
+                    id: workNativeThreadId,
+                    historyMode: "paginated",
+                    status: { type: "notLoaded" },
+                  },
+                },
+              ),
+              ...step(
+                10,
+                "thread/resume",
+                {
+                  threadId: workNativeThreadId,
+                  excludeTurns: true,
+                  config: CodexAdapterV2.CODEX_THREAD_CONFIG,
+                },
+                workThreadResult,
+              ),
+              ...step(
+                11,
+                "thread/turns/list",
+                {
+                  threadId: workNativeThreadId,
+                  cursor: null,
+                  limit: 1,
+                  sortDirection: "desc",
+                  itemsView: "summary",
+                },
+                {
+                  data: [{ id: "native-turn-second", items: [], status: "completed", error: null }],
+                  nextCursor: null,
+                },
+              ),
+              ...step(
+                12,
+                "thread/revert",
+                { threadId: workNativeThreadId, beforeTurnId: "native-turn-second" },
+                workThreadResult,
+              ),
+              // So the next routine turn releases that load before sealing it again.
+              ...step(
+                13,
+                "thread/unsubscribe",
+                { threadId: workNativeThreadId },
+                { status: "unsubscribed" },
+              ),
+              ...step(14, "config/read", { includeLayers: false, cwd: "/workspace" }, configRead),
+              ...step(
+                15,
+                "thread/resume",
+                { threadId: workNativeThreadId, excludeTurns: true, ...readOnlyLoad },
+                { thread: { id: workNativeThreadId, updatedAt: 1782622450 } },
+              ),
+              ...step(
+                16,
+                "thread/memoryMode/set",
+                { threadId: workNativeThreadId, mode: "disabled" },
+                {},
+              ),
+            ],
+          });
+          const loadParams: Array<unknown> = [];
+          const harness = yield* makeCodexReplayHarness(transcript, undefined, (method, params) =>
+            Effect.sync(() => {
+              if (method === "thread/start" || method === "thread/resume") loadParams.push(params);
+            }),
+          );
+          const workThread = yield* harness.runtime.ensureThread({
+            threadId: workThreadId,
+            modelSelection: CODEX_TEST_MODEL_SELECTION,
+            runtimePolicy: readOnlyPolicy,
+          });
+          assert.equal(workThread.nativeThreadRef?.nativeId, workNativeThreadId);
+          const turnOn = (
+            providerThread: OrchestrationV2ProviderThread,
+            runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy,
+          ) =>
+            Effect.gen(function* () {
+              const turn = makeCodexTestTurnInput({
+                threadId: providerThread.appThreadId ?? harness.threadId,
+                providerThread,
+                now: yield* DateTime.now,
+                attemptId: RunAttemptId.make("read-only-seal-check"),
+                text: "work",
+              });
+              return yield* harness.runtime.startTurn({ ...turn, runtimePolicy }).pipe(Effect.flip);
+            });
+          // A turn runs only on a thread loaded with its own run's seal.
+          assert.equal(
+            (yield* turnOn(workThread, CODEX_TEST_RUNTIME_POLICY))._tag,
+            "ProviderAdapterSealRefusedError",
+          );
+          assert.equal(
+            (yield* turnOn(harness.providerThread, readOnlyPolicy))._tag,
+            "ProviderAdapterSealRefusedError",
+          );
+          yield* harness.runtime.resumeThread({
+            providerThread: workThread,
+            threadId: workThreadId,
+            modelSelection: CODEX_TEST_MODEL_SELECTION,
+            runtimePolicy: readOnlyPolicy,
+          });
+          yield* harness.runtime.resumeThread({
+            providerThread: harness.providerThread,
+            modelSelection: CODEX_TEST_MODEL_SELECTION,
+            runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+          });
+          const now = yield* DateTime.now;
+          const [firstTurn, secondTurn] = [1, 2].map((ordinal) =>
+            codexReplaySourceTurn({
+              id: `provider-turn-${ordinal}`,
+              ordinal,
+              nativeId: ordinal === 1 ? "native-turn-first" : "native-turn-second",
+              providerThreadId: workThread.id,
+              now,
+            }),
+          ) as [OrchestrationV2ProviderTurn, OrchestrationV2ProviderTurn];
+          yield* harness.runtime.rollbackThread({
+            providerThread: workThread,
+            target: {
+              type: "provider_turn",
+              checkpointId: CheckpointId.make("checkpoint-read-only-rollback"),
+              appRunOrdinal: 1,
+              providerTurn: firstTurn,
+            },
+            providerThreadTurns: [firstTurn, secondTurn],
+          });
+          yield* harness.runtime.resumeThread({
+            providerThread: workThread,
+            threadId: workThreadId,
+            modelSelection: CODEX_TEST_MODEL_SELECTION,
+            runtimePolicy: readOnlyPolicy,
+          });
+
+          // The user's servers are off; T3 Code's server stays whole, and its writes refuse the task.
+          const t3Server = {
+            url: "http://127.0.0.1:43123/mcp",
+            tool_timeout_sec: 65 * 60,
+            http_headers: { Authorization: "Bearer routine-token" },
+          };
+          for (const index of [1, 2]) {
+            assert.deepEqual(
+              (loadParams[index] as { config: { mcp_servers: unknown } }).config.mcp_servers,
+              {
+                probe: { enabled: false },
+                "t3-code": { ...t3Server, disabled_tools: ["t3_thread_wait"] },
+                "t3-code-direct": {
+                  ...t3Server,
+                  enabled_tools: ["t3_thread_wait"],
+                  omit_tools_from: ["code_mode", "deferred"],
+                },
+              },
+            );
+          }
+          assert.notProperty((loadParams[3] as { config: object }).config, "mcp_servers");
+        }).pipe(
+          Effect.provideService(HostProcess.Platform, "darwin"),
+          Effect.provide(
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              NodeCrypto.layer,
+            ),
+          ),
+        ),
+      ),
   );
 
   it.effect.each([
@@ -3862,6 +4128,10 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           });
           const harness = yield* makeCodexReplayHarness(transcript);
           const sealed = { ...CODEX_TEST_RUNTIME_POLICY, nativeTools: "t3BotOnly" } as const;
+          const reasonOf = (error: { readonly _tag: string }) =>
+            error._tag === "ProviderAdapterSealRefusedError" && "reason" in error
+              ? error.reason
+              : error._tag;
           // Refused before anything reaches Codex: the transcript has no release or load.
           const refused = yield* harness.runtime
             .resumeThread({
@@ -3870,11 +4140,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
               runtimePolicy: sealed,
             })
             .pipe(Effect.flip, Effect.provideService(HostProcess.Platform, platform));
-          assert.equal(refused._tag, "ProviderAdapterHomeSealRefusedError");
-          assert.equal(
-            refused._tag === "ProviderAdapterHomeSealRefusedError" && refused.reason,
-            name,
-          );
+          assert.equal(reasonOf(refused), name);
           // A sealed run never starts a fresh native conversation instead.
           const fresh = yield* harness.runtime
             .ensureThread({
@@ -3883,7 +4149,32 @@ describe("CodexAdapterV2 post-settle continuation", () => {
               runtimePolicy: sealed,
             })
             .pipe(Effect.flip);
-          assert.equal(fresh._tag, "ProviderAdapterHomeSealRefusedError");
+          assert.equal(reasonOf(fresh), "unavailable");
+          // A No changes routine needs no T3 Code tools, but the same version and platform.
+          if (name === "unavailable") return;
+          const readOnly = { ...CODEX_TEST_RUNTIME_POLICY, nativeTools: "readOnly" } as const;
+          for (const load of [
+            harness.runtime.ensureThread({
+              threadId: harness.threadId,
+              modelSelection: CODEX_TEST_MODEL_SELECTION,
+              runtimePolicy: readOnly,
+            }),
+            harness.runtime.resumeThread({
+              providerThread: harness.providerThread,
+              modelSelection: CODEX_TEST_MODEL_SELECTION,
+              runtimePolicy: readOnly,
+            }),
+          ]) {
+            const refusal = yield* load.pipe(
+              Effect.flip,
+              Effect.provideService(HostProcess.Platform, platform),
+            );
+            assert.equal(reasonOf(refusal), name);
+            assert.equal(
+              refusal.message,
+              `This routine task is set to No changes, which its provider can't enforce here because ${name === "version" ? "this Codex version's tools have not been verified" : "it is only verified on macOS"}, so nothing ran. Start a new routine task once that is fixed, or ask the Bot directly.`,
+            );
+          }
         }).pipe(
           Effect.provide(
             Layer.mergeAll(
@@ -8472,7 +8763,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           assert.equal(
             sealed._tag === "Success"
               ? "sealed"
-              : sealed.failure._tag === "ProviderAdapterHomeSealRefusedError"
+              : sealed.failure._tag === "ProviderAdapterSealRefusedError"
                 ? sealed.failure.reason
                 : sealed.failure._tag,
             child === "live" ? "children" : "sealed",

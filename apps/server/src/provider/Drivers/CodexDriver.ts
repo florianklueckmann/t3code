@@ -213,10 +213,6 @@ export const CodexDriver: ProviderDriver<
       {
         onUsageLimits: (update) => snapshot.applyUsageLimits(update),
         compatibility: installation.compatibility,
-        // The restricted process must run as the account this instance reports, never another.
-        noChangesAccount: Effect.suspend(() => snapshot.getSnapshot).pipe(
-          Effect.map((current) => current.auth),
-        ),
       },
     ).pipe(
       Effect.mapError(

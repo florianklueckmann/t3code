@@ -27,16 +27,15 @@ export const layer: Layer.Layer<
     const providerInstances = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
     const botTurnContext = yield* BotTurnContext.BotTurnContext;
     const executionConstraint = yield* BotExecutionConstraint.BotExecutionConstraint;
-    const resolveErrorFor = (input: RuntimePolicy.RuntimePolicyV2Input) => (cause: unknown) =>
-      new RuntimePolicy.RuntimePolicyResolveError({
-        projectId: input.thread.projectId,
-        providerInstanceId: input.modelSelection.instanceId,
-        cause,
-      });
     return RuntimePolicy.RuntimePolicyV2.of({
       resolve: Effect.fn("BotRuntimePolicy.resolve")(function* (input) {
         const policy = yield* base.resolve(input);
-        const resolveError = resolveErrorFor(input);
+        const resolveError = (cause: unknown) =>
+          new RuntimePolicy.RuntimePolicyResolveError({
+            projectId: input.thread.projectId,
+            providerInstanceId: input.modelSelection.instanceId,
+            cause,
+          });
         // Inactive Bot conversations count too: a failed read must not leave memory on.
         const bot = yield* botTurnContext
           .forThread(input.thread.id)
@@ -87,7 +86,7 @@ export const layer: Layer.Layer<
           return ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
             ...policy,
             nativeMemory: "disabled",
-            changes: "none",
+            nativeTools: "readOnly",
           });
         }
         return bot._tag === "none"
@@ -96,12 +95,6 @@ export const layer: Layer.Layer<
               ...policy,
               nativeMemory: "disabled",
             });
-      }),
-      resolveChanges: Effect.fn("BotRuntimePolicy.resolveChanges")(function* (input) {
-        const constraint = yield* executionConstraint
-          .forThread(input.thread.id)
-          .pipe(Effect.mapError(resolveErrorFor(input)));
-        return constraint === "no-changes" ? "none" : yield* base.resolveChanges(input);
       }),
     });
   }),

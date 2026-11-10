@@ -63,7 +63,6 @@ import {
 } from "./fixtures/shared.ts";
 import * as ProviderReplayHarness from "./ProviderReplayHarness.ts";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
-import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
@@ -3786,121 +3785,5 @@ describe("orchestration v2 provider switching", () => {
   it.live(
     "reissues imported v1 context when a queued provider starts after the first provider fails",
     () => importedFailureScenario(true),
-  );
-
-  // A first run, then another shared-session instance by switch or queue: each allocates its
-  // session on a separate path, and a restricted run must land in the no-changes one.
-  it.live.each([
-    ["standard", "start_immediately"],
-    ["none", "start_immediately"],
-    ["standard", "queue_after_active"],
-    ["none", "queue_after_active"],
-  ] as const)(
-    "allocates the %s session for a first run and a second instance's %s run",
-    ([changes, secondMode]) =>
-      Effect.scoped(
-        Effect.gen(function* () {
-          const name = `no-changes-session-${changes}-${secondMode}`;
-          const cwd = yield* checkpointWorkspace(name);
-          const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
-          const started = yield* Deferred.make<void>();
-          const release = yield* Deferred.make<void>();
-          const behindActive = secondMode !== "start_immediately";
-          const workSelection = {
-            ...CODEX_MODEL_SELECTION,
-            instanceId: ProviderInstanceId.make("codex_work"),
-          } satisfies ModelSelection;
-          const layerRegistry = ProviderAdapterRegistry.layerFromAdapters(
-            [CODEX_MODEL_SELECTION, workSelection].map((modelSelection) =>
-              makeTestAdapter({
-                instanceId: modelSelection.instanceId,
-                driver: CODEX_DRIVER,
-                capabilities: CodexProviderCapabilitiesV2,
-                modelSelection,
-                responseByRunOrdinal: {},
-                capturedTurns,
-                ...(behindActive && modelSelection === CODEX_MODEL_SELECTION
-                  ? { holdFirstTurn: started, releaseFirstTurn: release }
-                  : {}),
-              }),
-            ),
-          );
-          yield* Effect.gen(function* () {
-            const orchestrator = yield* Orchestrator.OrchestratorV2;
-            const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
-            yield* orchestrator.dispatch({
-              type: "thread.create",
-              commandId: CommandId.make("no-changes-session:create"),
-              threadId,
-              projectId,
-              createdBy: "user",
-              creationSource: "web",
-              title: "No changes sessions",
-              modelSelection: CODEX_MODEL_SELECTION,
-              runtimeMode: "full-access",
-              interactionMode: "default",
-              branch: null,
-              worktreePath: null,
-            });
-            const dispatch = (
-              ordinal: number,
-              modelSelection: ModelSelection,
-              dispatchMode: { readonly type: typeof secondMode },
-            ) =>
-              orchestrator.dispatch({
-                type: "message.dispatch",
-                commandId: CommandId.make(`no-changes-session:${ordinal}`),
-                threadId,
-                messageId: MessageId.make(`no-changes-session:${ordinal}`),
-                createdBy: "user",
-                creationSource: "web",
-                text: `Turn ${ordinal}`,
-                attachments: [],
-                modelSelection,
-                dispatchMode,
-              });
-            yield* dispatch(1, CODEX_MODEL_SELECTION, { type: "start_immediately" });
-            if (behindActive) {
-              yield* Deferred.await(started);
-              yield* worker.drain();
-              yield* dispatch(2, workSelection, { type: secondMode });
-              yield* Deferred.succeed(release, undefined);
-            } else {
-              yield* worker.drain();
-              yield* waitForIdle(threadId);
-              yield* dispatch(2, workSelection, { type: secondMode });
-            }
-            yield* worker.drain();
-            yield* waitForIdle(threadId);
-            const projection = yield* orchestrator.getThreadProjection(threadId);
-            assert.deepEqual(
-              projection.providerThreads.map((providerThread) => [
-                providerThread.providerInstanceId,
-                providerThread.providerSessionId,
-              ]),
-              [CODEX_MODEL_SELECTION, workSelection].map(({ instanceId }) => [
-                instanceId,
-                IdAllocator.derive.providerSession({
-                  providerInstanceId: instanceId,
-                  ...(changes === "none" ? { profile: "no-changes" as const } : {}),
-                }),
-              ]),
-            );
-          }).pipe(
-            Effect.provide(
-              ProviderReplayHarness.layerWithRegistry(
-                {
-                  name,
-                  runtimePolicyOverride: {
-                    cwd,
-                    ...(changes === "none" ? { changes } : {}),
-                  },
-                },
-                layerRegistry,
-              ),
-            ),
-          );
-        }),
-      ),
   );
 });

@@ -118,18 +118,16 @@ default to **No changes** until you choose otherwise. The brief determines
 the result's content and format.
 
 **Changes allowed** runs in **Full access** without approval prompts. **No changes**
-is enforced, not only requested: the routine's task runs in a separate Codex
-process with a read-only sandbox, no network for its commands, and no approval
-prompts. It can read files and search the web, but it cannot write files, reach
-other machines from the shell, use your MCP servers, apps, plugins or hooks, or
-use T3 Code actions that change something, such as sending to threads,
-scheduling, delegating or saving what the Bot learned. It still signs in with
-the provider account you selected for the Bot and shares its conversation
-history. The task's result is saved as usual.
+is enforced, not only requested: the routine's task runs with a read-only
+sandbox, no network for its commands, and no approval prompts. It can read files
+and search the web, but it cannot write files, reach other machines from the
+shell, run subagents, use your MCP servers, apps, plugins or hooks, or use T3
+Code actions that change something, such as sending to threads, scheduling,
+delegating or saving what the Bot learned. It uses the provider account you
+selected for the Bot, including a ChatGPT sign-in. The task's result is saved
+as usual.
 
-No changes currently works only on macOS, with Codex 0.167.0 signed in with an
-API key, the built-in OpenAI provider, no custom launch arguments, and its
-conversation history in the account's Codex home (no custom `sqlite_home`).
+No changes currently works only on macOS, with Codex 0.166.0 or 0.167.0.
 Anywhere else the routine's task fails with the reason instead of running with
 more access. Follow-up messages in a routine's task stay No changes, and its
 work thread shows No changes as its fixed permission; to have the
