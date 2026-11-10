@@ -40,13 +40,22 @@ const activeScope = (id: ThreadId) =>
     },
   }) as const;
 
-const resolveFor = (
+interface PolicyOptions {
+  readonly instanceId?: string;
+  readonly platform?: NodeJS.Platform;
+}
+
+const usePolicy = <A, E>(
   threadId: ThreadId,
-  options: { readonly instanceId?: string; readonly platform?: NodeJS.Platform } = {},
+  options: PolicyOptions,
+  use: (
+    policy: RuntimePolicy.RuntimePolicyV2Shape,
+    input: RuntimePolicy.RuntimePolicyV2Input,
+  ) => Effect.Effect<A, E>,
 ) =>
   Effect.gen(function* () {
     const policy = yield* RuntimePolicy.RuntimePolicyV2;
-    return yield* policy.resolve({
+    return yield* use(policy, {
       thread: {
         id: threadId,
         projectId: ProjectId.make("campaign"),
@@ -104,6 +113,12 @@ const resolveFor = (
     ),
   );
 
+const resolveFor = (threadId: ThreadId, options: PolicyOptions = {}) =>
+  usePolicy(threadId, options, (policy, input) => policy.resolve(input));
+
+const changesFor = (threadId: ThreadId, options: PolicyOptions = {}) =>
+  usePolicy(threadId, options, (policy, input) => policy.resolveChanges(input));
+
 it.effect("turns provider memory off for Bot conversations only", () =>
   Effect.gen(function* () {
     assert.equal((yield* resolveFor(botThread)).nativeMemory, "disabled");
@@ -132,13 +147,21 @@ it.effect("never resolves a No changes task to a policy that can change things",
         const refused = yield* resolveFor(threadId, options).pipe(Effect.flip);
         assert.equal(refused._tag, "RuntimePolicyUnsupportedError");
         assert.equal(refused._tag === "RuntimePolicyUnsupportedError" && refused.reason, reason);
+        // Dispatch still picks the restricted process; the turn start settles the refusal.
+        assert.equal(yield* changesFor(threadId, options), "none");
       }
+      assert.equal(yield* changesFor(threadId), "none");
     }
-    const unreadable = yield* resolveFor(unreadableTaskThread).pipe(Effect.flip);
-    assert.equal(unreadable._tag, "RuntimePolicyResolveError");
+    for (const unreadable of [
+      yield* resolveFor(unreadableTaskThread).pipe(Effect.flip),
+      yield* changesFor(unreadableTaskThread).pipe(Effect.flip),
+    ]) {
+      assert.equal(unreadable._tag, "RuntimePolicyResolveError");
+    }
     // Changes allowed, direct tasks (also stored with allow_changes = 0) and Home are unchanged.
     for (const threadId of [workThread, botThread, ThreadId.make("plain")]) {
       assert.isUndefined((yield* resolveFor(threadId)).changes);
+      assert.isUndefined(yield* changesFor(threadId));
     }
   }),
 );

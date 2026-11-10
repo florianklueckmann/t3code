@@ -179,7 +179,7 @@ import { isAutomaticCompletionRun, queuedRunsInDeliveryOrder } from "./QueuedRun
 import {
   isRuntimePolicyAboveCeilingError,
   RuntimePolicyV2,
-  type RuntimePolicyV2Shape,
+  type RuntimePolicyV2Input,
 } from "./RuntimePolicy.ts";
 import {
   endOrphanedNativeSubagent,
@@ -1219,7 +1219,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     readonly providerInstanceId: ProviderInstanceId;
     readonly threadId: ThreadId;
     /** A run that may change nothing gets its own shared process, never the ordinary one. */
-    readonly policyFor: Parameters<RuntimePolicyV2Shape["resolve"]>[0];
+    readonly policyFor: RuntimePolicyV2Input;
   }) {
     const capabilities = yield* input.adapter.getCapabilities();
     if (!capabilities.sessions.supportsMultipleProviderThreadsPerSession) {
@@ -1228,10 +1228,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         threadId: input.threadId,
       });
     }
-    const policy = yield* runtimePolicy.resolve(input.policyFor);
+    const changes = yield* runtimePolicy.resolveChanges(input.policyFor);
     return idAllocator.derive.providerSession({
       providerInstanceId: input.providerInstanceId,
-      ...(policy.changes === "none" ? { profile: "no-changes" as const } : {}),
+      ...(changes === "none" ? { profile: "no-changes" as const } : {}),
     });
   });
 
