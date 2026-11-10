@@ -64,12 +64,14 @@ export class CodexAppServerClient extends Context.Service<
         payload: CodexRpc.ServerNotificationParamsByMethod[M],
       ) => Effect.Effect<void, CodexError.CodexAppServerError>,
     ) => Effect.Effect<void>;
+    /** Also receives known requests with no typed handler or a payload that fails to decode. */
     readonly handleUnknownServerRequest: (
       handler: (
         method: string,
         params: unknown,
       ) => Effect.Effect<unknown, CodexError.CodexAppServerError>,
     ) => Effect.Effect<void>;
+    /** Also receives known notifications whose payload fails to decode. */
     readonly handleUnknownServerNotification: (
       handler: (
         method: string,
@@ -92,6 +94,14 @@ const V2TurnStartParamsWithCollaborationMode = CodexSchema.V2TurnStartParams.pip
     additionalContext: Schema.optionalKey(
       Schema.Record(Schema.String, CodexSchema.V2TurnStartParams__AdditionalContextEntry),
     ),
+  }),
+);
+
+/** Experimental fields the generated stable schema omits; encoding would otherwise drop them. */
+export const V2ThreadStartParamsWithExperimental = CodexSchema.V2ThreadStartParams.pipe(
+  Schema.fieldsAssign({
+    experimentalRawEvents: Schema.optionalKey(Schema.Boolean),
+    allowProviderModelFallback: Schema.optionalKey(Schema.Boolean),
   }),
 );
 
@@ -132,7 +142,9 @@ export const make = Effect.fn("effect-codex-app-server/CodexAppServerClient.make
     | undefined =>
     method === "turn/start"
       ? (V2TurnStartParamsWithCollaborationMode as never)
-      : (CodexRpc.CLIENT_REQUEST_PARAMS[method] as never);
+      : method === "thread/start"
+        ? (V2ThreadStartParamsWithExperimental as never)
+        : (CodexRpc.CLIENT_REQUEST_PARAMS[method] as never);
 
   const getClientRequestResponseSchema = <M extends CodexRpc.ClientRequestMethod>(
     method: M,
@@ -185,20 +197,23 @@ export const make = Effect.fn("effect-codex-app-server/CodexAppServerClient.make
           ]
         : undefined;
     const handlers = notificationHandlers.get(notification.method) ?? [];
+    const dispatchUnknown = unknownNotificationHandler
+      ? unknownNotificationHandler(notification.method, notification.params).pipe(Effect.ignore)
+      : Effect.void;
 
     if (schema) {
       return decodeNotificationPayload(notification.method, schema, notification.params).pipe(
         Effect.tapError(warnUndecodableNotification),
-        Effect.flatMap((decoded) =>
-          Effect.forEach(handlers, (handler) => handler(decoded), { discard: true }),
-        ),
+        Effect.matchEffect({
+          onFailure: () => dispatchUnknown,
+          onSuccess: (decoded) =>
+            Effect.forEach(handlers, (handler) => handler(decoded), { discard: true }),
+        }),
         Effect.ignore,
       );
     }
 
-    return unknownNotificationHandler
-      ? unknownNotificationHandler(notification.method, notification.params).pipe(Effect.ignore)
-      : Effect.void;
+    return dispatchUnknown;
   };
 
   const dispatchRequest = (
@@ -209,10 +224,19 @@ export const make = Effect.fn("effect-codex-app-server/CodexAppServerClient.make
       const payloadSchema = getServerRequestParamSchema(method);
       const responseSchema = getServerRequestResponseSchema(method);
       const handler = requestHandlers.get(method);
+      const fallback = unknownRequestHandler;
 
       return decodeOptionalPayload(method, payloadSchema, request.params).pipe(
-        Effect.flatMap((decoded) => runHandler(handler, decoded, method)),
-        Effect.flatMap((result) => encodeOptionalPayload(method, responseSchema, result)),
+        Effect.matchEffect({
+          onFailure: (error) =>
+            fallback ? fallback(request.method, request.params) : Effect.fail(error),
+          onSuccess: (payload) =>
+            !handler && fallback
+              ? fallback(request.method, request.params)
+              : runHandler(handler, payload, method).pipe(
+                  Effect.flatMap((result) => encodeOptionalPayload(method, responseSchema, result)),
+                ),
+        }),
       );
     }
 

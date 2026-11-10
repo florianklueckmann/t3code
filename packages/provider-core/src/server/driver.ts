@@ -18,6 +18,7 @@ import type * as Scope from "effect/Scope";
 import type * as ProviderAdapter from "./ProviderAdapter.ts";
 import type { ProviderAuthController } from "./auth.ts";
 import type { ProviderDriverError } from "./errors.ts";
+import type { SealedGeneration } from "./sealedGeneration.ts";
 import type { ManagedServerProvider } from "./snapshot.ts";
 import type { ProviderTextGeneration } from "./textGeneration.ts";
 import type { ProviderUsageReader } from "./usage.ts";
@@ -51,6 +52,8 @@ export interface ProviderInstance {
   >;
   readonly orchestrationAdapter: ProviderAdapter.ProviderAdapterV2["Service"];
   readonly textGeneration: ProviderTextGeneration;
+  /** Absent means the driver cannot run a sealed generation (`codex_required`). */
+  readonly sealedGeneration?: SealedGeneration;
   readonly auth?: ProviderAuthController;
   readonly acpSessionManagement?: {
     readonly listSessions: (input: {

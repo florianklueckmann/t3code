@@ -594,6 +594,12 @@ export const BOT_MAINTENANCE_DESCRIPTION =
 const BOT_MAINTENANCE_UNAVAILABLE_LABELS: Readonly<Record<string, string>> = {
   no_tool_profile_unavailable:
     "Not available yet. It needs a tool-free model profile, which this server doesn't provide.",
+  codex_required: "Needs a Codex model. Pick a Codex model for this Bot to turn maintenance on.",
+  instance_unavailable: "This Bot's Codex provider is off or missing.",
+  provider_signed_out: "Sign in to Codex to run maintenance.",
+  codex_version_unsupported: "Update Codex to run maintenance.",
+  selected_model_unavailable: "This Bot's model isn't available on its Codex account.",
+  option_unsupported: "One of this Bot's model options isn't supported for maintenance.",
 };
 /** Settings caption for a maintenance view; unknown reasons from newer servers stay readable. */
 export function botMaintenanceStatusLabel(view: BotMaintenanceView): string {

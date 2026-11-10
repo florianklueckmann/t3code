@@ -390,6 +390,12 @@ it("shows a persisted enabled maintenance setting as stopped when the server can
   expect(botMaintenanceStatusLabel(view)).toBe("On");
   for (const [unavailableReason, explanation] of [
     ["no_tool_profile_unavailable", "needs a tool-free model profile"],
+    ["codex_required", "Pick a Codex model for this Bot"],
+    ["instance_unavailable", "Codex provider is off or missing"],
+    ["provider_signed_out", "Sign in to Codex"],
+    ["codex_version_unsupported", "Update Codex"],
+    ["selected_model_unavailable", "model isn't available on its Codex account"],
+    ["option_unsupported", "model options isn't supported"],
     ["reason_from_a_newer_server", "Not available on this server."],
   ] as const) {
     const unavailable = { ...view, unavailableReason };
