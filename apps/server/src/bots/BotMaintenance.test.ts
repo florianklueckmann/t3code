@@ -33,6 +33,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import type * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 import * as SqlClient from "effect/sql/SqlClient";
 import type * as SqlError from "effect/sql/SqlError";
 import * as Stream from "effect/Stream";
@@ -585,6 +586,10 @@ const withEngine = <A, E, R>(
     readonly sealedCalls: Ref.Ref<ReadonlyArray<SealedGenerationInput<Schema.Top>>>;
     /** Runs once when the next pass applies, after its final Home check and before the Bot commit. */
     readonly beforeApply: Ref.Ref<Effect.Effect<void>>;
+    /** Runs once at the next lesson write, inside the Bot commit and after its runtime probe. */
+    readonly beforeRecord: Ref.Ref<Effect.Effect<void>>;
+    /** The provider runtime's start gate, which a background start takes around its roster change. */
+    readonly runtimeStarts: Semaphore.Semaphore;
     readonly executor: KeyedLock.KeyedLock<ThreadId>;
     /** The source maintenance registered with the Scheduler, run by hand in UTC. */
     readonly runScheduled: Effect.Effect<void>;
@@ -599,6 +604,8 @@ const withEngine = <A, E, R>(
     const availabilityHook = yield* Ref.make<Effect.Effect<void>>(Effect.void);
     const sealedCalls = yield* Ref.make<ReadonlyArray<SealedGenerationInput<Schema.Top>>>([]);
     const beforeApply = yield* Ref.make<Effect.Effect<void>>(Effect.void);
+    const beforeRecord = yield* Ref.make<Effect.Effect<void>>(Effect.void);
+    const runtimeStarts = yield* Semaphore.make(1);
     const scheduled = yield* Ref.make<ReadonlyArray<readonly [string, Effect.Effect<void>]>>([]);
     const bots = yield* BotService.BotService;
     const maintenance = yield* BotMaintenance.make.pipe(
@@ -608,7 +615,18 @@ const withEngine = <A, E, R>(
         maintainLearning: (target, change) =>
           Ref.getAndSet(beforeApply, Effect.void).pipe(
             Effect.flatten,
-            Effect.andThen(bots.maintainLearning(target, change)),
+            Effect.andThen(
+              bots.maintainLearning(target, (learning) =>
+                change({
+                  ...learning,
+                  record: (policy, entry) =>
+                    Ref.getAndSet(beforeRecord, Effect.void).pipe(
+                      Effect.flatten,
+                      Effect.andThen(learning.record(policy, entry)),
+                    ),
+                }),
+              ),
+            ),
           ),
       }),
       Effect.provide(
@@ -640,6 +658,8 @@ const withEngine = <A, E, R>(
             get: () =>
               Effect.succeedSome({
                 hasPendingBackgroundWorkForThread: () => Ref.get(runtimeBackgroundWork),
+                holdBackgroundStarts: <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+                  runtimeStarts.withPermit(effect),
               } as never),
           }),
         ),
@@ -655,6 +675,8 @@ const withEngine = <A, E, R>(
       availabilityHook,
       sealedCalls,
       beforeApply,
+      beforeRecord,
+      runtimeStarts,
       executor,
       runScheduled: Ref.get(scheduled).pipe(
         Effect.flatMap((sources) => {
@@ -1017,7 +1039,11 @@ it.effect.each<{
   },
   { name: "been archived", activity: "lifecycle", arrange: () => homeThread({ archivedAt: now }) },
   { name: "been deleted", activity: "lifecycle", arrange: () => homeThread({ deletedAt: now }) },
-  { name: "been settled", activity: "lifecycle", arrange: () => homeThread({ settledAt: now }) },
+  {
+    name: "been settled while idle",
+    activity: null,
+    arrange: () => homeThread({ settledAt: now }),
+  },
   {
     name: "a pending merge into it",
     activity: "transfer",
@@ -1371,6 +1397,61 @@ it.effect("defers when runtime-only background work starts after the final Home 
       }),
     );
   }).pipe(Effect.provide(storeOnly)),
+);
+
+it.effect.each([true, false])(
+  "a runtime-only start after the commit's probe lands after learning commits (starts: %s)",
+  (starts) =>
+    Effect.gen(function* () {
+      yield* seedBot("automatic");
+      const { generate } = yield* recordingGenerator(() =>
+        Effect.succeed({ operations: [add("i1", "open every session recap", goldLesson)] }),
+      );
+      yield* withEngine(
+        generate,
+        ({ maintenance, beforeRecord, runtimeBackgroundWork, runtimeStarts, executor }) =>
+          Effect.gen(function* () {
+            yield* enable(maintenance);
+            yield* input("ask", gold);
+            yield* homeProviderThread;
+            const backgroundAtCommit = yield* Ref.make(false);
+            const waiting = yield* Ref.make(Option.none<Fiber.Fiber<void>>());
+            const start = Ref.set(runtimeBackgroundWork, starts);
+            yield* Ref.set(
+              beforeRecord,
+              Effect.gen(function* () {
+                assert.include(yield* executor.activeKeys, home);
+                const landed = yield* runtimeStarts.withPermitsIfAvailable(1)(start);
+                if (Option.isNone(landed))
+                  yield* Ref.set(
+                    waiting,
+                    Option.some(yield* Effect.forkChild(runtimeStarts.withPermit(start))),
+                  );
+                yield* Ref.set(backgroundAtCommit, yield* Ref.get(runtimeBackgroundWork));
+              }),
+            );
+            const pass = yield* maintenance.runNow(scope);
+            const fiber = yield* Ref.get(waiting);
+            if (Option.isSome(fiber)) yield* Fiber.join(fiber.value);
+            assert.deepEqual(
+              {
+                backgroundAtCommit: yield* Ref.get(backgroundAtCommit),
+                status: pass.status,
+                lessons: (yield* learningRows).length,
+                ask: (yield* sourceStates).ask,
+                background: yield* Ref.get(runtimeBackgroundWork),
+              },
+              {
+                backgroundAtCommit: false,
+                status: "applied",
+                lessons: 1,
+                ask: "applied",
+                background: starts,
+              },
+            );
+          }),
+      );
+    }).pipe(Effect.provide(storeOnly)),
 );
 
 it.effect("a queued pass generates with the model the Bot has when the pass starts", () =>

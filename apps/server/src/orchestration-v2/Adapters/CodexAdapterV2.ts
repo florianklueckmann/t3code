@@ -2112,6 +2112,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
         };
         /** Retain settled contexts while background commands run so late item events still project. */
         const settledTurns = yield* Ref.make(new Map<string, ActiveCodexTurnContext>());
+        // Taken only where a turn gains background work, so a held runtime's thread probe stays right.
+        const backgroundStarts = yield* Semaphore.make(1);
         const runningCommandItemsByTurn = yield* Ref.make(
           new Map<string, Map<string, TrackedRunningCommandItem>>(),
         );
@@ -2414,13 +2416,15 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           });
 
         const trackRunningCommandItem = (nativeTurnId: string, item: TrackedRunningCommandItem) =>
-          Ref.update(runningCommandItemsByTurn, (current) => {
-            const updated = new Map(current);
-            const items = new Map(updated.get(nativeTurnId) ?? []);
-            items.set(item.id, item);
-            updated.set(nativeTurnId, items);
-            return updated;
-          });
+          backgroundStarts.withPermit(
+            Ref.update(runningCommandItemsByTurn, (current) => {
+              const updated = new Map(current);
+              const items = new Map(updated.get(nativeTurnId) ?? []);
+              items.set(item.id, item);
+              updated.set(nativeTurnId, items);
+              return updated;
+            }),
+          );
 
         const clearRunningCommandItem = (nativeTurnId: string, nativeItemId: string) =>
           Ref.modify(runningCommandItemsByTurn, (current) => {
@@ -2461,13 +2465,15 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           });
 
         const trackRunningDynamicTool = (nativeTurnId: string, item: CodexDynamicToolItem) =>
-          Ref.update(runningDynamicToolsByTurn, (current) => {
-            const updated = new Map(current);
-            const items = new Map(updated.get(nativeTurnId) ?? []);
-            items.set(item.id, item);
-            updated.set(nativeTurnId, items);
-            return updated;
-          });
+          backgroundStarts.withPermit(
+            Ref.update(runningDynamicToolsByTurn, (current) => {
+              const updated = new Map(current);
+              const items = new Map(updated.get(nativeTurnId) ?? []);
+              items.set(item.id, item);
+              updated.set(nativeTurnId, items);
+              return updated;
+            }),
+          );
 
         const clearRunningDynamicTool = (nativeTurnId: string, nativeItemId: string) =>
           Ref.update(runningDynamicToolsByTurn, (current) => {
@@ -2931,11 +2937,13 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             };
             beginTurnTokenUsage(activeContext);
             endSessionApprovalsOnModeChange(activeContext);
-            yield* Ref.update(activeTurns, (current) => {
-              const updated = new Map(current);
-              updated.set(turn.nativeTurnId, activeContext);
-              return updated;
-            });
+            yield* backgroundStarts.withPermit(
+              Ref.update(activeTurns, (current) => {
+                const updated = new Map(current);
+                updated.set(turn.nativeTurnId, activeContext);
+                return updated;
+              }),
+            );
             yield* emitSubagentTaskUpdate({
               subagent,
               status: "running",
@@ -4094,14 +4102,16 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             Effect.andThen(captureMcpAppItem(context, nativeTurnId, item, resourceUri)),
             Effect.forkIn(scope, { startImmediately: true }),
           );
-          yield* Ref.update(pendingMcpAppCaptures, (current) => {
-            const updated = new Map(current);
-            updated.set(
-              nativeTurnId,
-              new Map(current.get(nativeTurnId) ?? []).set(item.id, { item, fiber }),
-            );
-            return updated;
-          });
+          yield* backgroundStarts.withPermit(
+            Ref.update(pendingMcpAppCaptures, (current) => {
+              const updated = new Map(current);
+              updated.set(
+                nativeTurnId,
+                new Map(current.get(nativeTurnId) ?? []).set(item.id, { item, fiber }),
+              );
+              return updated;
+            }),
+          );
           yield* Deferred.succeed(started, undefined);
         });
 
@@ -5111,7 +5121,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
 
             if (payload.item.type === "imageGeneration") {
               if (!(yield* Ref.get(interruptingNativeTurns)).has(payload.turnId)) {
-                imageTurn(payload.turnId).running.add(payload.item.id);
+                yield* backgroundStarts.withPermit(
+                  Effect.sync(() => imageTurn(payload.turnId).running.add(payload.item.id)),
+                );
                 yield* emitImageWorkState(context, true);
               }
               return;
@@ -5400,7 +5412,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               const { id, savedPath, status, failure } = payload.item;
               const state = imageTurn(payload.turnId);
               if (savedPath?.trim() && status === "completed" && failure == null) {
-                state.saved.set(id, savedPath);
+                yield* backgroundStarts.withPermit(
+                  Effect.sync(() => state.saved.set(id, savedPath)),
+                );
               }
               // Idle release runs concurrently, so keep this work pending through projection.
               if (settled) {
@@ -7352,6 +7366,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             }
             return false;
           }),
+          holdBackgroundStarts: (effect) => backgroundStarts.withPermit(effect),
           ensureThread: (threadInput) =>
             ensureInitialized.pipe(
               Effect.andThen(mcpSessions.read(threadInput.threadId)),

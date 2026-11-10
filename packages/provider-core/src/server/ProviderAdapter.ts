@@ -696,6 +696,13 @@ export interface ProviderAdapterV2SessionRuntime {
     providerThread: OrchestrationV2ProviderThread,
     options?: { readonly includeSubagents?: boolean },
   ) => Effect.Effect<boolean>;
+  /**
+   * Runs `effect` while no background work can start in this runtime, so a probe inside it that
+   * finds none stays right until `effect` ends. A start waits for it. Not reentrant.
+   */
+  readonly holdBackgroundStarts?: <A, E, R>(
+    effect: Effect.Effect<A, E, R>,
+  ) => Effect.Effect<A, E, R>;
   /** Set only if all session background tasks end with its process; otherwise threads must keep Waiting. */
   readonly backgroundTasksEndWithProcess?: true;
   readonly getModelContextWindow?: (

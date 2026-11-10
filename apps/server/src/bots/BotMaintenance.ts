@@ -17,6 +17,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
+import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import type { SealedGenerationFailure } from "@t3tools/provider-core/server/sealedGeneration";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import * as Context from "effect/Context";
@@ -191,6 +192,7 @@ export const make = Effect.gen(function* () {
    * What keeps the Home busy or unavailable, or null when it is idle. Mirrors the orchestrator's
    * idle-child check plus the Home's lifecycle and owned work. Workspace setup runs while the run
    * is `preparing`; rollback, restart and delegated continuations wait as outbox effects.
+   * Settling only tidies the sidebar, so a settled idle Home is still maintained.
    */
   const homeActivity = Effect.fn("BotMaintenance.homeActivity")(function* (home: ThreadId) {
     const now = DateTime.formatIso(yield* DateTime.now);
@@ -206,7 +208,6 @@ export const make = Effect.gen(function* () {
     }>`SELECT
         EXISTS (SELECT 1 FROM orchestration_v2_projection_threads WHERE thread_id = ${home}
           AND (deleted_at IS NOT NULL OR archived_at IS NOT NULL
-            OR json_extract(payload_json, '$.settledAt') IS NOT NULL
             OR json_extract(payload_json, '$.snoozedUntil') > ${now})) AS lifecycle,
         EXISTS (SELECT 1 FROM orchestration_v2_projection_runs WHERE thread_id = ${home}
           AND status IN ('queued', 'preparing', 'starting', 'running', 'waiting')) AS run,
@@ -226,50 +227,73 @@ export const make = Effect.gen(function* () {
           AND ${home} IN (source_thread_id, target_thread_id)) AS transfer,
         EXISTS (SELECT 1 FROM orchestration_v2_effect_outbox WHERE thread_id = ${home}
           AND status IN ('pending', 'running') AND effect_type NOT IN (SELECT value FROM json_each(${housekeepingEffects}))) AS effect`;
-    if (projected?.lifecycle === 1) return { activity: "lifecycle", threads: [] } as const;
-    if (projected?.run === 1) return { activity: "run", threads: [] } as const;
-    if (projected?.request === 1) return { activity: "request", threads: [] } as const;
-    if (projected?.child === 1) return { activity: "child", threads: [] } as const;
-    if (projected?.background === 1) return { activity: "background", threads: [] } as const;
-    if (projected?.provider === 1) return { activity: "provider", threads: [] } as const;
-    if (projected?.transfer === 1) return { activity: "transfer", threads: [] } as const;
-    if (projected?.effect === 1) return { activity: "effect", threads: [] } as const;
+    if (projected?.lifecycle === 1) return { activity: "lifecycle", runtimes: [] } as const;
+    if (projected?.run === 1) return { activity: "run", runtimes: [] } as const;
+    if (projected?.request === 1) return { activity: "request", runtimes: [] } as const;
+    if (projected?.child === 1) return { activity: "child", runtimes: [] } as const;
+    if (projected?.background === 1) return { activity: "background", runtimes: [] } as const;
+    if (projected?.provider === 1) return { activity: "provider", runtimes: [] } as const;
+    if (projected?.transfer === 1) return { activity: "transfer", runtimes: [] } as const;
+    if (projected?.effect === 1) return { activity: "effect", runtimes: [] } as const;
     // An unfinished return still owes the Home a message, after the task itself ended.
     const [task] = yield* sql<{ readonly task_id: string }>`SELECT task_id FROM bot_tasks
       WHERE home_thread_id = ${home} AND (status NOT IN (SELECT value FROM json_each(${terminalTaskStatuses}))
         OR (return_home_run_id IS NOT NULL AND return_finished_at IS NULL)) LIMIT 1`;
-    if (task !== undefined) return { activity: "task", threads: [] } as const;
-    const threads = yield* main<{
+    if (task !== undefined) return { activity: "task", runtimes: [] } as const;
+    const runtimes = yield* homeRuntimes(home);
+    return {
+      activity: (yield* runtimeActivity(runtimes)) ? "background" : null,
+      runtimes,
+    } as const;
+  });
+
+  /** The live provider runtime behind each of the Home's provider threads. */
+  const homeRuntimes = Effect.fn("BotMaintenance.homeRuntimes")(function* (home: ThreadId) {
+    const rows = yield* main<{
       readonly provider_session_id: string;
       readonly payload_json: string;
     }>`SELECT provider_session_id, payload_json FROM orchestration_v2_projection_provider_threads
       WHERE thread_id = ${home} AND provider_session_id IS NOT NULL`;
-    return { activity: (yield* runtimeActivity(threads)) ? "background" : null, threads } as const;
+    const found = yield* Effect.forEach(rows, (row) =>
+      providerSessions.get(ProviderSessionId.make(row.provider_session_id)).pipe(
+        Effect.orElseSucceed(() => Option.none<ProviderAdapter.ProviderAdapterV2SessionRuntime>()),
+        Effect.map(
+          Option.map((runtime) => ({ runtime, thread: decodeProviderThread(row.payload_json) })),
+        ),
+      ),
+    );
+    return found.filter(Option.isSome).map((runtime) => runtime.value);
   });
+  type HomeRuntimes = Effect.Success<ReturnType<typeof homeRuntimes>>;
 
   /**
    * Some background work, such as Claude background Bash, lives only in the provider runtime.
-   * The probes read runtime memory, so the final one runs inside the Bot commit.
+   * The final probe runs inside the Bot commit, while the runtimes hold back new starts.
    */
   const runtimeActivity = Effect.fn("BotMaintenance.runtimeActivity")(function* (
-    threads: ReadonlyArray<{ readonly provider_session_id: string; readonly payload_json: string }>,
+    runtimes: HomeRuntimes,
   ) {
-    for (const row of threads) {
-      const session = yield* providerSessions
-        .get(ProviderSessionId.make(row.provider_session_id))
-        .pipe(Effect.orElseSucceed(() => Option.none()));
-      if (Option.isNone(session)) continue;
-      const thread = decodeProviderThread(row.payload_json);
+    for (const { runtime, thread } of runtimes) {
       const probe =
-        Option.isSome(thread) && session.value.hasPendingBackgroundWorkForThread !== undefined
-          ? session.value.hasPendingBackgroundWorkForThread(thread.value)
-          : session.value.hasPendingBackgroundWork;
+        Option.isSome(thread) && runtime.hasPendingBackgroundWorkForThread !== undefined
+          ? runtime.hasPendingBackgroundWorkForThread(thread.value)
+          : runtime.hasPendingBackgroundWork;
       // A failed probe cannot confirm that the work ended.
       if (probe !== undefined && (yield* probe.pipe(Effect.catchCause(() => Effect.succeed(true)))))
         return true;
     }
     return false;
   });
+
+  /** Runtime-only work cannot start on the Home until `effect` ends; each runtime once. */
+  const holdingBackgroundStarts = <A, E, R>(
+    runtimes: HomeRuntimes,
+    effect: Effect.Effect<A, E, R>,
+  ) =>
+    [...new Set(runtimes.map(({ runtime }) => runtime))].reduce(
+      (held, runtime) => runtime.holdBackgroundStarts?.(held) ?? held,
+      effect,
+    );
 
   /**
    * Read under the Home command lock. A Bot Home's activity-starting provider events take that
@@ -657,9 +681,9 @@ export const make = Effect.gen(function* () {
           return latest?._tag === "eligible" && latest.source.text === source.text;
         });
         if (!unchanged) return yield* deferred("source_changed");
-        return yield* bots.maintainLearning(scope, (learning) =>
+        const apply = bots.maintainLearning(scope, (learning) =>
           Effect.gen(function* () {
-            if (yield* runtimeActivity(admittedNow.threads)) return yield* deferred("home_active");
+            if (yield* runtimeActivity(admittedNow.runtimes)) return yield* deferred("home_active");
             const latest = yield* stateRow(home);
             if (latest?.enabled !== 1 || latest.settings_revision !== state.settings_revision)
               return yield* deferred("settings_changed");
@@ -712,7 +736,9 @@ export const make = Effect.gen(function* () {
               source_id: source.id,
               digest: Evidence.digest(source.text),
             }));
-            const marked = yield* sql<{ readonly source_id: string }>`UPDATE bot_maintenance_sources
+            const marked = yield* sql<{
+              readonly source_id: string;
+            }>`UPDATE bot_maintenance_sources
               SET state = 'applied', run_id = ${runId}, digest = (SELECT json_extract(value, '$.digest') FROM json_each(${encodeJson(receipts)}) WHERE json_extract(value, '$.kind') = kind AND json_extract(value, '$.source_id') = source_id)
               WHERE home_thread_id = ${home} AND state = 'pending' AND EXISTS (SELECT 1 FROM json_each(${encodeJson(receipts)}) WHERE json_extract(value, '$.kind') = kind AND json_extract(value, '$.source_id') = source_id)
               RETURNING source_id`;
@@ -727,6 +753,7 @@ export const make = Effect.gen(function* () {
             return { status, runId, outcome } as const;
           }),
         );
+        return yield* holdingBackgroundStarts(admittedNow.runtimes, apply);
       }),
     );
   });
