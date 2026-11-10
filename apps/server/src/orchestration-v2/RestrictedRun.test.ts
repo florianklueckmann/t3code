@@ -383,7 +383,7 @@ const seedSteerableRestricted = (name: string) =>
           payload: {
             id: ProviderTurnId.make(`provider-turn:${name}`),
             providerThreadId: providerThread.id,
-            nodeId: home.run.rootNodeId,
+            nodeId: home.run.rootNodeId!,
             runAttemptId: attemptId,
             nativeTurnRef: { driver, nativeId: `native-turn:${name}`, strength: "strong" },
             ordinal: 2,
