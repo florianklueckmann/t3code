@@ -15,9 +15,13 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  ProviderSessionId,
   ProviderThreadId,
+  ProviderTurnId,
+  RunAttemptId,
   RunId,
   ThreadId,
+  TurnItemId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -40,6 +44,7 @@ import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as EventSink from "./EventSink.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
+import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ProviderTurnStartServiceTestkit from "./ProviderTurnStartService.testkit.ts";
 import * as RuntimeLayer from "./runtimeLayer.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
@@ -58,12 +63,43 @@ const modelSelection = {
   model: "gpt-5.4",
 } satisfies ModelSelection;
 const driver = ProviderDriverKind.make("codex");
+const unused = (name: string) => () => Effect.die(`restricted run tests do not ${name}`);
+/** A live session that can steer, so only the restriction keeps input out of a running run. */
 const orchestrationAdapter = {
   instanceId: modelSelection.instanceId,
   driver,
   getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
   planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" }),
-  openSession: () => Effect.die("restricted run tests do not open sessions"),
+  openSession: (input) =>
+    DateTime.now.pipe(
+      Effect.map((now) => ({
+        instanceId: modelSelection.instanceId,
+        driver,
+        providerSessionId: input.providerSessionId,
+        providerSession: {
+          id: input.providerSessionId,
+          driver,
+          providerInstanceId: modelSelection.instanceId,
+          status: "ready" as const,
+          cwd: "/workspace",
+          model: modelSelection.model,
+          capabilities: CodexProviderCapabilitiesV2,
+          createdAt: now,
+          updatedAt: now,
+          lastError: null,
+        },
+        events: Stream.never,
+        ensureThread: unused("start provider threads"),
+        resumeThread: unused("resume provider threads"),
+        startTurn: unused("start turns"),
+        steerTurn: unused("steer"),
+        interruptTurn: unused("interrupt"),
+        respondToRuntimeRequest: unused("answer requests"),
+        readThreadSnapshot: unused("read snapshots"),
+        rollbackThread: unused("roll back"),
+        forkThread: unused("fork"),
+      })),
+    ),
 } as ProviderAdapter.ProviderAdapterV2["Service"];
 const providerInstance = {
   instanceId: modelSelection.instanceId,
@@ -301,6 +337,66 @@ const seedRunningRestricted = (name: string) =>
     return { ...home, run: (yield* restrictedRunOf(home.threadId))! };
   });
 
+/** A running restricted run whose provider turn is live on a session that can steer. */
+const seedSteerableRestricted = (name: string) =>
+  Effect.gen(function* () {
+    const home = yield* seedRunningRestricted(name);
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const sink = yield* EventSink.EventSinkV2;
+    const now = yield* DateTime.now;
+    const providerSessionId = ProviderSessionId.make(`provider-session:${name}`);
+    yield* (yield* ProviderSessionManager.ProviderSessionManagerV2).open({
+      threadId: home.threadId,
+      providerSessionId,
+      modelSelection,
+      runtimePolicy: { runtimeMode: "full-access", interactionMode: "default", cwd: null },
+    });
+    const providerThread = (yield* orchestrator.getThreadProjection(home.threadId))
+      .providerThreads[0]!;
+    const attemptId = RunAttemptId.make(`restricted-attempt:${name}`);
+    yield* sink.write({
+      commandId: CommandId.make(`seed-steerable:${name}`),
+      events: [
+        {
+          id: EventId.make(`seed-steerable-thread:${name}`),
+          type: "provider-thread.updated",
+          threadId: home.threadId,
+          driver,
+          providerInstanceId: modelSelection.instanceId,
+          occurredAt: now,
+          payload: { ...providerThread, providerSessionId },
+        },
+        {
+          id: EventId.make(`seed-steerable-run:${name}`),
+          type: "run.updated",
+          threadId: home.threadId,
+          runId: home.run.id,
+          providerInstanceId: modelSelection.instanceId,
+          occurredAt: now,
+          payload: { ...home.run, activeAttemptId: attemptId },
+        },
+        {
+          id: EventId.make(`seed-steerable-turn:${name}`),
+          type: "provider-turn.updated",
+          threadId: home.threadId,
+          occurredAt: now,
+          payload: {
+            id: ProviderTurnId.make(`provider-turn:${name}`),
+            providerThreadId: providerThread.id,
+            nodeId: home.run.rootNodeId,
+            runAttemptId: attemptId,
+            nativeTurnRef: { driver, nativeId: `native-turn:${name}`, strength: "strong" },
+            ordinal: 2,
+            status: "running",
+            startedAt: now,
+            completedAt: null,
+          },
+        },
+      ],
+    });
+    return { ...home, run: (yield* restrictedRunOf(home.threadId))! };
+  });
+
 it.layer(layerTest)("restricted Bot Home runs", (it) => {
   it.effect("starts a restricted run that keeps its restriction on the projected run", () =>
     Effect.gen(function* () {
@@ -361,7 +457,7 @@ it.layer(layerTest)("restricted Bot Home runs", (it) => {
   ])("queues user input sent during a restricted run: $name", ({ name, deliveryIntent }) =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
-      const home = yield* seedRunningRestricted(`input-${name}`);
+      const home = yield* seedSteerableRestricted(`input-${name}`);
       const messageId = MessageId.make(`user-input:${name}`);
       yield* orchestrator.dispatch({
         type: "message.dispatch",
@@ -391,7 +487,7 @@ it.layer(layerTest)("restricted Bot Home runs", (it) => {
   it.effect("queues a delegated task notification instead of steering a restricted run", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
-      const home = yield* seedRunningRestricted("notification");
+      const home = yield* seedSteerableRestricted("notification");
       const messageId = MessageId.make("delegated-notification");
       yield* orchestrator.dispatch({
         type: "message.dispatch",
@@ -457,7 +553,70 @@ it.layer(layerTest)("restricted Bot Home runs", (it) => {
       Effect.gen(function* () {
         const orchestrator = yield* Orchestrator.OrchestratorV2;
         const home = yield* seedRunningRestricted(`continue-${kind}`);
-        yield* setRunStatus(`continue-${kind}`, home.run, "interrupted");
+        // Each continuation gets a source it would accept from an ordinary run.
+        yield* setRunStatus(
+          `continue-${kind}`,
+          home.run,
+          kind === "manual" ? "interrupted" : kind === "restart" ? "cancelled" : "failed",
+        );
+        const recoveryRequestId = CommandId.make(`limit-recovery:${kind}`);
+        if (kind === "usage-limit") {
+          const sink = yield* EventSink.EventSinkV2;
+          const now = yield* DateTime.now;
+          const resetAt = DateTime.formatIso(now);
+          const { thread } = yield* orchestrator.getThreadProjection(home.threadId);
+          yield* sink.write({
+            commandId: CommandId.make(`seed-usage-limit:${kind}`),
+            events: [
+              {
+                id: EventId.make(`seed-usage-limit-error:${kind}`),
+                type: "turn-item.updated",
+                threadId: home.threadId,
+                occurredAt: now,
+                payload: {
+                  id: TurnItemId.make(`usage-limit-error:${kind}`),
+                  type: "error",
+                  threadId: home.threadId,
+                  runId: home.run.id,
+                  nodeId: home.run.rootNodeId,
+                  providerThreadId: null,
+                  providerTurnId: null,
+                  nativeItemRef: null,
+                  parentItemId: null,
+                  ordinal: 2,
+                  status: "failed",
+                  title: "Usage limit reached",
+                  startedAt: now,
+                  completedAt: now,
+                  updatedAt: now,
+                  failure: {
+                    class: "usage_limit",
+                    message: "Plan limit reached.",
+                    code: "usageLimitExceeded",
+                    retryable: null,
+                    resetAt,
+                  },
+                },
+              },
+              {
+                id: EventId.make(`seed-usage-limit-recovery:${kind}`),
+                type: "thread.metadata-updated",
+                threadId: home.threadId,
+                occurredAt: now,
+                payload: {
+                  ...thread,
+                  limitRecovery: {
+                    runId: home.run.id,
+                    resetAt,
+                    autoResume: true,
+                    snooze: false,
+                    requestId: recoveryRequestId,
+                  },
+                },
+              },
+            ],
+          });
+        }
         const messageId = MessageId.make(`continue:${kind}`);
         const dispatched = yield* Effect.exit(
           orchestrator.dispatch({
@@ -474,7 +633,10 @@ it.layer(layerTest)("restricted Bot Home runs", (it) => {
               ? { manualContinuationOfRunId: home.run.id }
               : kind === "restart"
                 ? { restartContinuationOfRunId: home.run.id }
-                : { usageLimitContinuationOfRunId: home.run.id }),
+                : {
+                    usageLimitContinuationOfRunId: home.run.id,
+                    usageLimitRecoveryRequestId: recoveryRequestId,
+                  }),
           }),
         );
         // A client resume is refused; automatic producers get an accepted no-op so they stop.
