@@ -12,6 +12,7 @@ import {
 } from "@t3tools/contracts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
+import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -20,7 +21,9 @@ import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import * as ServerConfig from "../config.ts";
+import * as EffectOutbox from "../orchestration-v2/EffectOutbox.ts";
 import * as EventStore from "../orchestration-v2/EventStore.ts";
 import * as ThreadCommandExecutor from "../orchestration-v2/ThreadCommandExecutor.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
@@ -380,7 +383,7 @@ const input = Effect.fn("fixture.input")(function* (
     readonly thread?: ThreadId;
     readonly runStatus?: string;
     readonly delivered?: boolean;
-    readonly steer?: "succeeded" | "failed";
+    readonly steer?: "pending" | "succeeded" | "failed";
     readonly createdBy?: "user" | "agent";
     readonly creationSource?: string;
   } = {},
@@ -412,9 +415,11 @@ const input = Effect.fn("fixture.input")(function* (
   yield* main`INSERT INTO orchestration_v2_projection_turn_items (turn_item_id, thread_id, run_id, node_id, provider_turn_id, ordinal, type, status, updated_at, payload_json)
     VALUES (${IdAllocator.derive.userTurnItem({ messageId: MessageId.make(id) })}, ${thread}, ${run}, ${node}, ${turn}, (SELECT COALESCE(MAX(ordinal), 0) + 1 FROM orchestration_v2_projection_turn_items WHERE thread_id = ${thread}), 'user_message', 'completed', ${at}, ${JSON.stringify({ messageId: id, inputIntent: turn === null ? "turn_start" : "steer" })})`;
   if (options.delivered ?? true) yield* deliver(id, thread);
-  if (options.steer !== undefined)
-    yield* main`INSERT INTO orchestration_v2_effect_outbox (effect_id, command_id, thread_id, effect_type, payload_json, status, available_at, created_at, updated_at)
-      VALUES (${`effect-${id}`}, ${`command-${id}`}, ${thread}, 'provider-turn.steer', ${JSON.stringify({ type: "provider-turn.steer", providerSessionId: "session", providerThreadId: "provider-thread", providerTurnId: turn, messageId: id })}, ${options.steer}, ${at}, ${at}, ${at})`;
+  if (options.steer !== undefined) {
+    const settledAt = options.steer === "pending" ? null : DateTime.formatIso(yield* DateTime.now);
+    yield* main`INSERT INTO orchestration_v2_effect_outbox (effect_id, command_id, thread_id, effect_type, payload_json, status, available_at, created_at, updated_at, completed_at)
+      VALUES (${`effect-${id}`}, ${`command-${id}`}, ${thread}, 'provider-turn.steer', ${JSON.stringify({ type: "provider-turn.steer", providerSessionId: "session", providerThreadId: "provider-thread", providerTurnId: turn, messageId: id })}, ${options.steer}, ${at}, ${at}, ${at}, ${settledAt})`;
+  }
 });
 
 /** The provider turn that accepted this input on its run's root node. */
@@ -705,6 +710,84 @@ it.effect(
         },
       );
     }).pipe(Effect.provide(storeOnly)),
+);
+
+const pruneSettledEffects = EffectOutbox.EffectOutboxV2.pipe(
+  Effect.flatMap((outbox) => outbox.pruneSettled),
+  Effect.provide(EffectOutbox.layer),
+);
+
+it.effect.each([
+  { runStatus: "failed", pruned: false },
+  { runStatus: "cancelled", pruned: false },
+  { runStatus: "failed", pruned: true },
+  { runStatus: "cancelled", pruned: true },
+] as const)(
+  "never learns a steer cancelled before delivery after its run ended $runStatus (pruned: $pruned)",
+  ({ runStatus, pruned }) =>
+    Effect.gen(function* () {
+      yield* seedBot("automatic");
+      const { packets, generate } = yield* recordingGenerator(() =>
+        Effect.succeed({ operations: [add("i1", "open every session recap", goldLesson)] }),
+      );
+      yield* withEngine(generate, ({ maintenance }) =>
+        Effect.gen(function* () {
+          yield* enable(maintenance);
+          yield* input("steer", gold, { runStatus, steer: "pending" });
+          const cancelled = yield* EffectOutbox.EffectOutboxV2.pipe(
+            Effect.flatMap((outbox) =>
+              outbox.cancelUnsettled({
+                threadId: home,
+                effectTypes: ["provider-turn.steer"],
+                reason: "Provider process lost before the steer reached it.",
+              }),
+            ),
+            Effect.provide(EffectOutbox.layer),
+          );
+          assert.deepEqual(cancelled, ["effect-steer"]);
+          if (pruned) yield* TestClock.adjust("8 days");
+          assert.equal(yield* pruneSettledEffects, pruned ? 1 : 0);
+
+          const result = yield* maintenance.runNow(scope);
+          assert.deepEqual(
+            {
+              status: result.status,
+              calls: (yield* Ref.get(packets)).length,
+              lessons: (yield* learningRows).length,
+            },
+            { status: "idle", calls: 0, lessons: 0 },
+          );
+        }),
+      );
+    }).pipe(Effect.provide(storeOnly)),
+);
+
+it.effect("learns an accepted steer after the outbox prunes its settled row", () =>
+  Effect.gen(function* () {
+    yield* seedBot("automatic");
+    const { packets, generate } = yield* recordingGenerator(() =>
+      Effect.succeed({ operations: [add("i1", "open every session recap", goldLesson)] }),
+    );
+    yield* withEngine(generate, ({ maintenance }) =>
+      Effect.gen(function* () {
+        yield* enable(maintenance);
+        yield* input("steer", gold, { runStatus: "running", steer: "succeeded" });
+        assert.deepEqual(yield* maintenance.runNow(scope), { status: "idle" });
+
+        const main = yield* SqlClient.SqlClient;
+        yield* main`UPDATE orchestration_v2_projection_runs SET status = 'completed' WHERE run_id = 'run-steer'`;
+        yield* TestClock.adjust("8 days");
+        assert.equal(yield* pruneSettledEffects, 1);
+
+        assert.equal((yield* maintenance.runNow(scope)).status, "applied");
+        assert.deepEqual(
+          (yield* Ref.get(packets)).map((packet) => packet.sources.map((source) => source.text)),
+          [[gold]],
+        );
+        assert.deepEqual(yield* sourceStates, { steer: "applied" });
+      }),
+    );
+  }).pipe(Effect.provide(storeOnly)),
 );
 
 it.effect("keeps a project fact out of the Bot's other projects", () =>
