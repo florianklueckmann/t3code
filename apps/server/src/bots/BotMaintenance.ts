@@ -311,47 +311,24 @@ export const make = Effect.fn("BotMaintenance.make")(function* (generation: Gene
     );
   });
 
-  /**
-   * The outbox prunes settled steer effects after a week, cancelled ones included, so each
-   * pass copies native steer acceptance onto pending receipts. Unrecorded reads as undelivered.
-   */
-  const recordAcceptedSteers = Effect.fn("BotMaintenance.recordAcceptedSteers")(function* (
-    home: ThreadId,
-  ) {
-    const accepted = yield* main<{
-      readonly message_id: string;
-    }>`SELECT json_extract(payload_json, '$.messageId') AS message_id FROM orchestration_v2_effect_outbox
-      WHERE thread_id = ${home} AND status = 'succeeded' AND effect_type = 'provider-turn.steer'`;
-    if (accepted.length === 0) return;
-    yield* sql`UPDATE bot_maintenance_sources SET steer_accepted = 1
-      WHERE home_thread_id = ${home} AND kind = 'home-input' AND state = 'pending' AND steer_accepted = 0
-        AND source_id IN (SELECT value FROM json_each(${encodeJson(accepted.map((row) => row.message_id))}))`;
-  });
-
   const classify = Effect.fn("BotMaintenance.classify")(function* (
     home: ThreadId,
     refs: ReadonlyArray<SourceRef>,
   ) {
     const classified = new Map<string, Evidence.Classified>();
     const messageIds = refs.filter((row) => row.kind === "home-input").map((row) => row.source_id);
-    const steerAccepted = new Set(
-      (yield* sql<{
-        readonly source_id: string;
-      }>`SELECT source_id FROM bot_maintenance_sources WHERE home_thread_id = ${home} AND kind = 'home-input'
-        AND steer_accepted = 1 AND source_id IN (SELECT value FROM json_each(${encodeJson(messageIds)}))`).map(
-        (row) => row.source_id,
-      ),
-    );
     // Delivery is native acceptance: a provider turn on the input's root node, or for input
-    // steered into a running turn, the steer acceptance recorded on its receipt.
+    // steered into a running turn, the acceptance the effect worker recorded on its turn item.
     const inputs = yield* main<{
       readonly message_id: string;
       readonly payload_json: string;
       readonly run_status: string | null;
       readonly steered: number;
+      readonly steer_accepted: number;
       readonly turn_started: number;
     }>`SELECT m.message_id, m.payload_json, r.status AS run_status,
         i.provider_turn_id IS NOT NULL AS steered,
+        json_extract(i.payload_json, '$.steerAcceptedAt') IS NOT NULL AS steer_accepted,
         EXISTS (SELECT 1 FROM orchestration_v2_projection_provider_turns t
           WHERE t.thread_id = m.thread_id AND t.node_id = i.node_id) AS turn_started
       FROM json_each(${encodeJson(messageIds.map((id) => ({ message: id, item: turnItemOf(id) })))}) p
@@ -366,7 +343,7 @@ export const make = Effect.fn("BotMaintenance.make")(function* (generation: Gene
         Evidence.classifyHomeInput({
           message:
             row === undefined ? undefined : Option.getOrUndefined(decodeMessage(row.payload_json)),
-          delivered: row?.steered === 1 ? steerAccepted.has(id) : row?.turn_started === 1,
+          delivered: row?.steered === 1 ? row.steer_accepted === 1 : row?.turn_started === 1,
           runStatus: row?.run_status ?? null,
         }),
       );
@@ -443,7 +420,6 @@ export const make = Effect.fn("BotMaintenance.make")(function* (generation: Gene
       return yield* invalid("This Bot is archived or detached, so maintenance does not run.");
 
     yield* discover(home, now);
-    yield* recordAcceptedSteers(home);
     const { eligible, excluded } = yield* frontier(home);
     if (excluded.length > 0)
       yield* sql`UPDATE bot_maintenance_sources SET state = 'excluded', exclusion_reason = (SELECT json_extract(value, '$.reason') FROM json_each(${encodeJson(excluded)}) WHERE json_extract(value, '$.kind') = kind AND json_extract(value, '$.source_id') = source_id)

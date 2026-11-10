@@ -625,6 +625,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "checkpoint.rollback.fail":
     case "thread.background-work.settle":
     case "thread.interrupt.unresponsive":
+    case "message.steer.accept":
     case "thread.stop":
     case "provider.switch":
       return command.threadId;
@@ -11398,6 +11399,43 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     },
   );
 
+  const dispatchSteerAccept = Effect.fn("Orchestrator.dispatchSteerAccept")(function* (
+    command: Extract<OrchestrationV2InternalCommand, { readonly type: "message.steer.accept" }>,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+  ) {
+    const item = yield* projectionStore
+      .getTurnItem({
+        threadId: command.threadId,
+        itemId: idAllocator.derive.userTurnItem({ messageId: command.messageId }),
+      })
+      .pipe(mapDispatchError(command));
+    if (
+      item?.type !== "user_message" ||
+      item.runId === null ||
+      item.providerTurnId === null ||
+      item.steerAcceptedAt !== undefined
+    )
+      return;
+    const { runs } = yield* projectionStore
+      .getThreadRecords(command.threadId, ["runs"], { runIds: [item.runId] })
+      .pipe(mapDispatchError(command));
+    const run = runs[0];
+    if (run === undefined) return;
+    const now = yield* DateTime.now;
+    yield* emit(
+      events,
+      command,
+    )({
+      type: "turn-item.updated",
+      threadId: command.threadId,
+      runId: run.id,
+      ...(item.nodeId === null ? {} : { nodeId: item.nodeId }),
+      providerInstanceId: run.providerInstanceId,
+      occurredAt: now,
+      payload: { ...item, steerAcceptedAt: now, updatedAt: now },
+    });
+  });
+
   const dispatchBackgroundWorkSettle = Effect.fn("Orchestrator.dispatchBackgroundWorkSettle")(
     function* (
       command: Extract<
@@ -13815,6 +13853,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "thread.interrupt.unresponsive":
         yield* dispatchInterruptUnresponsive(command, events);
         break;
+      case "message.steer.accept":
+        yield* dispatchSteerAccept(command, events);
+        break;
       case "thread.fork":
         yield* dispatchThreadFork(command, events);
         break;
@@ -14034,6 +14075,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           command.type === "bot-task.result.deliver" ||
           command.type === "thread.background-work.settle" ||
           command.type === "thread.interrupt.unresponsive" ||
+          command.type === "message.steer.accept" ||
           command.type === "thread.stop" ||
           command.type === "subagent.stop" ||
           // Closing a share again, or after it ended, is not an error.

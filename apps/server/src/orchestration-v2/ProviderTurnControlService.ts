@@ -61,13 +61,14 @@ export interface ProviderTurnControlServiceV2Shape {
     void | ProviderAdapter.ProviderAdapterV2SubagentOutcome,
     ProviderTurnControlError
   >;
+  /** True once the provider took the message; false when no delivery was attempted. */
   readonly steer: (input: {
     readonly threadId: ThreadId;
     readonly providerSessionId: ProviderSessionId;
     readonly providerThreadId: ProviderThreadId;
     readonly providerTurnId: ProviderTurnId;
     readonly messageId: MessageId;
-  }) => Effect.Effect<void, ProviderTurnControlError>;
+  }) => Effect.Effect<boolean, ProviderTurnControlError>;
   readonly interruptAndAwaitTerminal: (input: {
     readonly threadId: ThreadId;
     readonly providerSessionId: ProviderSessionId;
@@ -353,10 +354,10 @@ export const layer: Layer.Layer<
               cohort.delivery.generation !== ownership.generation ||
               cohort.delivery.taskIds.length === 0
             )
-              return;
+              return false;
           }
           const loaded = yield* load({ ...input, operation: "steer" });
-          if (Option.isNone(loaded.session)) return;
+          if (Option.isNone(loaded.session)) return false;
           const { message, run } = loaded.context;
           if (message === undefined || run === undefined) {
             return yield* new ProviderTurnControlError({
@@ -406,6 +407,7 @@ export const layer: Layer.Layer<
                 }),
               ),
             );
+          return true;
         },
         (effect, input) =>
           effect.pipe(

@@ -3,7 +3,10 @@ import {
   CheckpointId,
   CheckpointScopeId,
   CommandId,
+  MessageId,
   NodeId,
+  ProjectId,
+  ProviderInstanceId,
   ProviderSessionId,
   ProviderThreadId,
   ProviderTurnId,
@@ -83,6 +86,7 @@ function layerExecutorFor(input: {
   readonly threads?: Partial<ThreadManagementService.ThreadManagementService["Service"]>;
   readonly continueAfterRestart?: boolean;
   readonly interrupt?: ProviderTurnControlService.ProviderTurnControlServiceV2Shape["interrupt"];
+  readonly steer?: ProviderTurnControlService.ProviderTurnControlServiceV2Shape["steer"];
   readonly rollback?: CheckpointRollbackService.CheckpointRollbackServiceV2Shape["execute"];
   readonly respond?: RuntimeRequestService.RuntimeRequestServiceV2["Service"]["respond"];
 }) {
@@ -92,7 +96,7 @@ function layerExecutorFor(input: {
       ProviderTurnControlService.ProviderTurnControlServiceV2,
       ProviderTurnControlService.ProviderTurnControlServiceV2.of({
         interrupt: input.interrupt ?? (() => Effect.void),
-        steer: () => Effect.void,
+        steer: input.steer ?? (() => Effect.succeed(true)),
         interruptAndAwaitTerminal: (request) =>
           record(
             request.replacementProviderSessionId === undefined
@@ -214,6 +218,87 @@ it.effect.each([
           providerTurnId,
         },
       });
+    }).pipe(Effect.provide(layer));
+    assert.deepEqual(yield* Ref.get(events), dispatched);
+  }),
+);
+
+const steerControlFailure = (turnCompleted: boolean) =>
+  new ProviderTurnControlService.ProviderTurnControlError({
+    threadId,
+    operation: "steer",
+    providerTurnId,
+    turnCompleted,
+    cause: "The provider turn ended before the steering message was delivered.",
+  });
+
+it.effect.each([
+  {
+    name: "records acceptance once the provider takes a steer",
+    steer: () => Effect.succeed(true),
+    dispatched: ["message.steer.accept"],
+  },
+  {
+    name: "records nothing when the control service attempted no delivery",
+    steer: () => Effect.succeed(false),
+    dispatched: [],
+  },
+  {
+    name: "records nothing when the steer fails",
+    steer: () => steerControlFailure(false),
+    dispatched: [],
+  },
+  {
+    name: "records nothing when the steer is cancelled",
+    steer: () => Effect.interrupt,
+    dispatched: [],
+  },
+  {
+    name: "records nothing when the turn ended first and the follow-up is refused",
+    steer: () => steerControlFailure(true),
+    dispatched: ["message.dispatch"],
+  },
+])("$name", ({ steer, dispatched }) =>
+  Effect.gen(function* () {
+    const now = yield* DateTime.now;
+    const events = yield* Ref.make<ReadonlyArray<string>>([]);
+    const messageId = MessageId.make("message:effect-worker-steer");
+    const layer = layerExecutorFor({
+      events,
+      steer,
+      threads: {
+        getThreadRecords: () =>
+          Effect.succeed({
+            messages: [{ id: messageId, runId, text: "Also list the loot.", attachments: [] }],
+            runs: [{ id: runId }],
+          } as never),
+        dispatch: (command) =>
+          Ref.update(events, (current) => [...current, command.type]).pipe(
+            Effect.andThen(
+              command.type === "message.dispatch"
+                ? new ThreadManagementService.ThreadManagementProviderInstanceDisabledError({
+                    projectId: ProjectId.make("project:effect-worker-steer"),
+                    instanceId: ProviderInstanceId.make("codex"),
+                  })
+                : Effect.succeed({ sequence: 1, storedEvents: [] }),
+            ),
+          ),
+      },
+    });
+    yield* Effect.gen(function* () {
+      const executor = yield* EffectWorker.OrchestrationEffectExecutorV2;
+      yield* executor
+        .execute({
+          ...restartEffect(now, { type: "detach" }),
+          request: {
+            type: "provider-turn.steer",
+            providerSessionId: oldSessionId,
+            providerThreadId,
+            providerTurnId,
+            messageId,
+          },
+        })
+        .pipe(Effect.exit);
     }).pipe(Effect.provide(layer));
     assert.deepEqual(yield* Ref.get(events), dispatched);
   }),

@@ -1635,6 +1635,8 @@ export const OrchestrationV2TurnItem = Schema.Union([
     context: Schema.optional(OrchestrationMessageContext),
     attachments: Schema.Array(ChatAttachment),
     modelSwitch: Schema.optional(OrchestrationV2ModelSwitch),
+    /** Set once the provider took this message into its running turn; unset for turn-start input. */
+    steerAcceptedAt: Schema.optionalKey(Schema.DateTimeUtc),
   }),
   Schema.Struct({
     ...OrchestrationV2TurnItemBaseFields,
@@ -2478,6 +2480,7 @@ export const OrchestrationV2TurnItemJson = Schema.Union([
     context: Schema.optional(OrchestrationMessageContext),
     attachments: Schema.Array(ChatAttachment),
     modelSwitch: Schema.optional(OrchestrationV2ModelSwitch),
+    steerAcceptedAt: Schema.optionalKey(Schema.DateTimeUtcFromString),
   }),
   Schema.Struct({
     ...OrchestrationV2TurnItemJsonBaseFields,
@@ -3537,6 +3540,13 @@ const OrchestrationV2InternalCommand = Schema.Union([
     commandId: CommandId,
     threadId: ThreadId,
     requestId: RuntimeRequestId,
+  }),
+  /** The provider took a steering message into its running turn. */
+  Schema.Struct({
+    type: Schema.Literal("message.steer.accept"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    messageId: MessageId,
   }),
   /** The provider did not confirm a Stop of this turn in time. */
   Schema.Struct({

@@ -10,7 +10,5 @@ export default Effect.gen(function* () {
   // Evidence order, frozen at discovery so later run or turn changes cannot reorder it.
   yield* sql`ALTER TABLE bot_maintenance_sources ADD COLUMN admission INTEGER`;
   yield* sql`CREATE INDEX bot_maintenance_sources_pending_idx ON bot_maintenance_sources(home_thread_id, state, admission)`;
-  // The outbox prunes settled steer effects, so native steer acceptance is kept here.
-  yield* sql`ALTER TABLE bot_maintenance_sources ADD COLUMN steer_accepted INTEGER NOT NULL DEFAULT 0`;
   yield* sql`ALTER TABLE bot_maintenance_runs ADD COLUMN outcome_json TEXT`;
 });

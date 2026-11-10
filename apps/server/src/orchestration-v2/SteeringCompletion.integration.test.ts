@@ -335,6 +335,12 @@ it.effect.each(
             continued.messages.find((message) => message.id === messageId)?.runId,
             first.runId,
           );
+          const accepted = continued.turnItems.find(
+            (item) => item.type === "user_message" && item.messageId === messageId,
+          );
+          assert.isDefined(
+            accepted?.type === "user_message" ? accepted.steerAcceptedAt : undefined,
+          );
           return;
         }
         if (timing === "after delivery") yield* worker.drain();
@@ -434,12 +440,12 @@ it.effect.each(
           assert.deepEqual(started[1]?.modelSelection, composerSelection);
         }
         if (!mailbox && !question) {
-          assert.equal(
-            final.turnItems.find(
-              (item) => item.type === "user_message" && item.messageId === messageId,
-            )?.status,
-            "completed",
+          const item = final.turnItems.find(
+            (item) => item.type === "user_message" && item.messageId === messageId,
           );
+          assert.equal(item?.status, "completed");
+          // It reached the model by starting a turn, not as a steer.
+          assert.isUndefined(item?.type === "user_message" ? item.steerAcceptedAt : "missing");
         }
         assert.equal(final.messages.filter((message) => message.id === messageId).length, 1);
         assert.equal(
