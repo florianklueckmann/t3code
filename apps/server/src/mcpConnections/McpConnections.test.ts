@@ -13,6 +13,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
@@ -21,6 +22,7 @@ import * as ServerConfig from "../config.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as McpConnectionDelivery from "./McpConnectionDelivery.ts";
 import * as McpConnections from "./McpConnections.ts";
 
 const decodeServerSettingsPatch = Schema.decodeUnknownEffect(ServerSettingsPatch);
@@ -78,7 +80,14 @@ const harness = Effect.gen(function* () {
       ),
     ),
   );
-  return { connections, secrets, reads, invalidated, holds, grantCleanup };
+  const delivery = yield* McpConnectionDelivery.McpConnectionDelivery.pipe(
+    Effect.provide(
+      McpConnectionDelivery.layer.pipe(
+        Layer.provide(Layer.succeed(SecretResolver.SecretResolver, resolver)),
+      ),
+    ),
+  );
+  return { connections, delivery, secrets, reads, invalidated, holds, grantCleanup };
 });
 
 const accountA = McpConnectionId.make("1a1a1a1a-0000-4000-8000-00000000001a");
@@ -285,6 +294,102 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("MCP connections"
             })
             .pipe(Effect.flip)).reason,
           "id-unavailable",
+        );
+      }).pipe(Effect.provide(layerSettings)),
+  );
+
+  it.effect(
+    "delivers granted connections with credentials read now, and nothing to fall back on",
+    () =>
+      Effect.gen(function* () {
+        const { connections, delivery, secrets, reads } = yield* harness;
+        const settings = yield* ServerSettings.ServerSettingsService;
+        yield* decodeServerSettingsPatch({
+          secretProviders: {
+            personal: { kind: "one_password", label: "Personal", config: { account: "my" } },
+          },
+        }).pipe(Effect.flatMap(settings.updateSettings));
+        yield* connections.create({
+          connectionId: accountA,
+          label: "Work mail",
+          enabled: true,
+          transport: http("Bearer account-a"),
+        });
+        yield* connections.create({
+          connectionId: accountB,
+          label: "Private mail",
+          enabled: true,
+          transport: {
+            type: "stdio",
+            command: "mail-mcp",
+            args: ["--stdio"],
+            env: { TOKEN: tokenB },
+          },
+        });
+        const retired = McpConnectionId.make("1e1e1e1e-0000-4000-8000-00000000001e");
+        yield* connections.create({
+          connectionId: retired,
+          label: "Old",
+          enabled: true,
+          transport: http("Bearer old"),
+        });
+        yield* connections.remove({ connectionId: retired, expectedRevision: 1 });
+        yield* connections.create({
+          connectionId: local,
+          label: "Off",
+          enabled: false,
+          transport: {
+            type: "stdio",
+            command: "off-mcp",
+            args: [],
+            env: { TOKEN: { provider: personal, reference: "op://Private/Off/token" } },
+          },
+        });
+
+        // An unreadable secret fails the whole load, naming the connection and binding only.
+        const unreadable = yield* delivery.resolve([accountA, accountB]).pipe(Effect.flip);
+        assert.deepEqual(
+          [unreadable.reason, unreadable.connectionId, unreadable.label, unreadable.problem],
+          ["invalid", accountB, "Private mail", { reason: "binding-unresolved", binding: "TOKEN" }],
+        );
+
+        secrets.set(tokenB.reference, "token-b-1");
+        // Disabled and removed connections are left out; the disabled one's secret is never read.
+        const first = yield* delivery.resolve([accountB, retired, local, accountA, accountB]);
+        assert.notInclude(reads, "op://Private/Off/token");
+        assert.deepEqual(
+          first.connections.map(({ id, label, transport }) =>
+            transport.type === "stdio"
+              ? [id, label, transport.command, transport.args, Redacted.value(transport.env)]
+              : [id, label, transport.url, Redacted.value(transport.headers)],
+          ),
+          [
+            [
+              accountA,
+              "Work mail",
+              "https://mcp.example.test/mcp",
+              { Authorization: "Bearer account-a" },
+            ],
+            [accountB, "Private mail", "mail-mcp", ["--stdio"], { TOKEN: "token-b-1" }],
+          ],
+        );
+        assert.notInclude(first.identity, "token-b-1");
+        assert.equal((yield* delivery.resolve([accountA, accountB])).identity, first.identity);
+        // A rotated secret or a rename changes the identity, so the next load reloads.
+        secrets.set(tokenB.reference, "token-b-2");
+        const rotated = yield* delivery.resolve([accountA, accountB]);
+        assert.notEqual(rotated.identity, first.identity);
+        yield* connections.update({
+          connectionId: accountA,
+          expectedRevision: 1,
+          label: "Job mail",
+        });
+        assert.notEqual((yield* delivery.resolve([accountA, accountB])).identity, rotated.identity);
+
+        const unknown = McpConnectionId.make("1f1f1f1f-0000-4000-8000-00000000001f");
+        assert.equal(
+          (yield* delivery.resolve([accountA, unknown]).pipe(Effect.flip)).reason,
+          "missing",
         );
       }).pipe(Effect.provide(layerSettings)),
   );

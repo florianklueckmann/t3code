@@ -250,8 +250,8 @@ export function mcpConnectionBindings(transport: McpConnectionTransport): {
 }
 
 /**
- * Binding resolution and definition validation only. `ready` is not reachability: nothing starts
- * the server or calls it, and Bots cannot use a connection until runtime activation ships.
+ * Binding resolution and definition validation only. `ready` is not reachability: nothing here
+ * starts the server or calls it. A Bot's thread resolves its granted connections again at load.
  */
 export const McpConnectionStatus = Schema.Union([
   Schema.Struct({ state: Schema.Literal("ready") }),

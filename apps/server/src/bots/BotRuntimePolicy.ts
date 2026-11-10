@@ -29,9 +29,9 @@ export const restrictionUnenforceable = Effect.fn("BotRuntimePolicy.restrictionU
 );
 
 /**
- * Turns off the provider's own memory in Bot conversations, so what a Bot keeps is only
- * the scoped, reviewable learning its policy governs. A routine task admitted without changes
- * runs restricted, or not at all where that cannot be enforced. Other threads keep their settings.
+ * Bot threads, forks and subagents included, run without provider memory and with only the Bot's
+ * granted MCP connections; a No changes routine task also runs restricted. Where that can't be
+ * enforced, nothing runs. Other threads keep their settings.
  */
 export const layer: Layer.Layer<
   RuntimePolicy.RuntimePolicyV2,
@@ -77,16 +77,19 @@ export const layer: Layer.Layer<
               restriction: input.restriction,
             });
           }
+          // The working note and Waiting check need no external account, so none load.
           return ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
             ...policy,
             nativeMemory: "disabled",
             nativeTools: "t3BotOnly",
+            mcpConnections: [],
           });
         }
         const constraint = yield* executionConstraint
           .forThread(input.thread.id)
           .pipe(Effect.mapError(resolveError));
-        if (constraint === "no-changes") {
+        const noChanges = constraint === "no-changes";
+        if (noChanges) {
           const reason = yield* unenforceable();
           if (reason !== undefined) {
             return yield* new RuntimePolicy.RuntimePolicyUnsupportedError({
@@ -95,18 +98,47 @@ export const layer: Layer.Layer<
               reason,
             });
           }
-          return ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
-            ...policy,
-            nativeMemory: "disabled",
-            nativeTools: "readOnly",
+        }
+        const access = yield* botTurnContext
+          .mcpAccessForThread(input.thread)
+          .pipe(Effect.mapError(resolveError));
+        if (access._tag === "none") {
+          return noChanges
+            ? ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+                ...policy,
+                nativeMemory: "disabled",
+                nativeTools: "readOnly",
+              })
+            : policy;
+        }
+        // Its own inactive conversation refuses with its Bot instructions; a derived one here.
+        if (access._tag === "refused" && bot._tag === "none") {
+          return yield* new RuntimePolicy.RuntimePolicyMcpUnsupportedError({
+            threadId: input.thread.id,
+            providerInstanceId: input.modelSelection.instanceId,
+            detail: access.message,
           });
         }
-        return bot._tag === "none"
-          ? policy
-          : ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
-              ...policy,
-              nativeMemory: "disabled",
-            });
+        const mcpConnections = access._tag === "bot" ? access.connectionIds : [];
+        // Only granted connections may load, so a provider that keeps its own MCP servers never runs.
+        const mcpReason = yield* unenforceable();
+        if (mcpReason !== undefined) {
+          const botName = access._tag === "bot" ? access.botName : "This Bot";
+          return yield* new RuntimePolicy.RuntimePolicyMcpUnsupportedError({
+            threadId: input.thread.id,
+            providerInstanceId: input.modelSelection.instanceId,
+            detail:
+              mcpReason === "provider"
+                ? `${botName} uses only the MCP connections granted to it, which only Codex can enforce, so nothing ran. Switch this thread to a Codex model.`
+                : `${botName} uses only the MCP connections granted to it, which is only verified on macOS, so nothing ran.`,
+          });
+        }
+        return ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+          ...policy,
+          nativeMemory: "disabled",
+          ...(noChanges ? { nativeTools: "readOnly" as const } : {}),
+          mcpConnections,
+        });
       }),
     });
   }),

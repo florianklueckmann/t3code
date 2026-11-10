@@ -3861,6 +3861,17 @@ it.effect(
         });
         yield* resumeSecondThread;
         assert.equal((yield* Ref.get(state)).resumeCount, 7);
+        // Granted connections can change behind the same ids, so every grant load reaches the
+        // adapter, which compares what they resolve to now.
+        const resumeGranted = secondRuntime.resumeThread({
+          providerThread: secondProviderThread,
+          threadId: secondThreadId,
+          modelSelection,
+          runtimePolicy: { ...runtimePolicy, mcpConnections: [] },
+        });
+        yield* resumeGranted;
+        yield* resumeGranted;
+        assert.equal((yield* Ref.get(state)).resumeCount, 9);
 
         assert.deepEqual((yield* Ref.get(state)).unloadedNativeThreadIds, ["native-thread"]);
 

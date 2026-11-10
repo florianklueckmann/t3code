@@ -7,6 +7,7 @@ import {
   BotId,
   BotTaskId,
   McpConnectionId,
+  type OrchestrationV2AppThreadLineage,
   type OrchestrationV2ServerCommand,
   type OrchestrationV2ThreadShell,
   type Project,
@@ -563,6 +564,81 @@ it.effect("grants only catalog connections, as a whole set guarded by its revisi
       }),
     );
   }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect(
+  "gives forks and subagents of a Bot thread that Bot's grants, and refuses lost lines",
+  () =>
+    Effect.gen(function* () {
+      yield* seedProjects;
+      const world = yield* makeThreadWorld;
+      const sql = yield* SqlClient.SqlClient;
+      const lineages = new Map<string, OrchestrationV2AppThreadLineage>();
+      const thread = (
+        id: string,
+        parent: string | null,
+        relationship: "fork" | "subagent" | null,
+      ) =>
+        Effect.gen(function* () {
+          const lineage = {
+            parentThreadId: parent === null ? null : ThreadId.make(parent),
+            relationshipToParent: relationship,
+            rootThreadId: ThreadId.make(id),
+          };
+          lineages.set(id, lineage);
+          yield* sql`
+          INSERT INTO orchestration_v2_projection_threads (
+            thread_id, project_id, title, default_provider, runtime_mode, interaction_mode,
+            created_at, updated_at, payload_json
+          ) VALUES (
+            ${id}, ${campaignA}, ${id}, 'codex', 'full-access', 'default',
+            '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', ${JSON.stringify({ lineage })}
+          )
+        `;
+        });
+      yield* withServices(world.threadLayer, ({ bots, turnContext, settings }) =>
+        Effect.gen(function* () {
+          yield* seedCatalog(settings);
+          yield* createCampaignBot(bots);
+          const home = (yield* bots.attachProject({ botId, projectId: campaignA })).projects[0]!
+            .homeThreadId;
+          yield* bots.setMcpGrants({ botId, expectedRevision: 0, connectionIds: [privateMail] });
+          yield* thread(home, null, null);
+          yield* thread("helper", home, "subagent");
+          yield* thread("helper-fork", "helper", "fork");
+          yield* thread("nested-helper", "helper-fork", "subagent");
+          yield* thread("plain", null, null);
+          yield* thread("plain-fork", "plain", "fork");
+          yield* thread("orphan", "deleted-parent", "subagent");
+          yield* thread("loop-a", "loop-b", "fork");
+          yield* thread("loop-b", "loop-a", "fork");
+          const access = (id: string) =>
+            turnContext.mcpAccessForThread({ id: ThreadId.make(id), lineage: lineages.get(id)! });
+          const granted = {
+            _tag: "bot",
+            botId,
+            botName: "Faerun Companion",
+            connectionIds: [privateMail],
+          } as const;
+          for (const id of [home, "helper", "helper-fork", "nested-helper"]) {
+            assert.deepEqual(yield* access(id), granted, id);
+          }
+          for (const id of ["plain", "plain-fork"]) {
+            assert.deepEqual(yield* access(id), { _tag: "none" }, id);
+          }
+          for (const id of ["orphan", "loop-a"]) {
+            assert.equal((yield* access(id))._tag, "refused", id);
+          }
+          // Instructions and learning do not follow the line; only MCP access does.
+          assert.equal((yield* turnContext.forThread(ThreadId.make("helper")))._tag, "none");
+
+          yield* bots.detachProject({ botId, projectId: campaignA });
+          const detached = yield* access("nested-helper");
+          assert.equal(detached._tag, "refused");
+          assert.include(detached._tag === "refused" ? detached.message : "", "detached");
+        }),
+      );
+    }).pipe(Effect.provide(layerDatabase)),
 );
 
 const correction = {
