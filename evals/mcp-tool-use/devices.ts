@@ -42,7 +42,10 @@ import type * as DeviceHost from "../../apps/server/src/device/DeviceHost.ts";
 import * as DeviceService from "../../apps/server/src/device/DeviceService.ts";
 import * as McpHttpServer from "../../apps/server/src/mcp/McpHttpServer.ts";
 import * as McpInvocationContext from "../../apps/server/src/mcp/McpInvocationContext.ts";
-import { liveThreadsLayer } from "../../apps/server/src/mcp/McpToolAccess.testkit.ts";
+import {
+  layerCallerChangesAllowed,
+  liveThreadsLayer,
+} from "../../apps/server/src/mcp/McpToolAccess.testkit.ts";
 import { DeviceToolkit } from "../../apps/server/src/mcp/toolkits/device/tools.ts";
 import * as ProjectService from "../../apps/server/src/project/ProjectService.ts";
 import { ServerSettingsService } from "../../apps/server/src/serverSettings.ts";
@@ -780,6 +783,7 @@ export const makeDeviceTools = Effect.fn("evaluateMcpToolUse.makeDeviceTools")(f
       Layer.provideMerge(
         Layer.mergeAll(
           liveThreadsLayer,
+          layerCallerChangesAllowed,
           Layer.mock(ProjectService.ProjectService)({ getById: () => Effect.succeedNone }),
           ServerSettingsService.layerTest({
             enableDeviceSupport: true,

@@ -711,16 +711,47 @@ export const layer: Layer.Layer<
         .pipe(Effect.result);
       if (resolvedPolicy._tag === "Failure") {
         const error = resolvedPolicy.failure;
-        if (error._tag !== "RuntimePolicyAboveCeilingError") return yield* error;
-        yield* settleStartFailure({
-          signal: "runtime-mode-above-ceiling",
-          title: "Thread mode is above the policy limit",
-          error,
-          message: error.message,
-        });
+        if (error._tag === "RuntimePolicyResolveError") return yield* error;
+        // Neither refusal can pass on a retry, so both settle the run now.
+        yield* settleStartFailure(
+          error._tag === "RuntimePolicyAboveCeilingError"
+            ? {
+                signal: "runtime-mode-above-ceiling",
+                title: "Thread mode is above the policy limit",
+                error,
+                message: error.message,
+              }
+            : {
+                signal: "runtime-no-changes-unsupported",
+                title: "No changes can't be enforced",
+                error,
+                message: error.message,
+              },
+        );
         return;
       }
       const resolvedRuntimePolicy = resolvedPolicy.success;
+      // A conversation that began in the ordinary process must not continue there, or carry it in.
+      if (
+        resolvedRuntimePolicy.changes === "none" &&
+        providerSessionId !==
+          idAllocator.derive.providerSession({
+            providerInstanceId: run.providerInstanceId,
+            profile: "no-changes",
+          })
+      ) {
+        yield* settleStartFailure({
+          signal: "runtime-no-changes-legacy-session",
+          title: "No changes can't continue this conversation",
+          error: new ProviderAdapter.ProviderAdapterNoChangesRefusedError({
+            driver: providerThread.driver,
+            reason: "profile",
+          }),
+          message:
+            "This routine task's conversation began before No changes was enforced, so it can't continue here. Start a new routine task, or ask the Bot directly for changes.",
+        });
+        return;
+      }
       if (!(yield* isCurrentAttemptInStatus("starting"))) return;
       const existingSessionProjection = projection.providerSessions.find(
         (candidate) => candidate.id === providerSessionId,
@@ -812,10 +843,18 @@ export const layer: Layer.Layer<
       );
       if (sessionResult._tag === "Failure") {
         const failure = sessionResult.failure;
+        const cause = "cause" in failure ? failure.cause : undefined;
+        if (ProviderAdapter.isProviderAdapterNoChangesRefusedError(cause)) {
+          yield* settleStartFailure({
+            signal: "runtime-no-changes-refused",
+            title: "No changes can't be enforced",
+            error: cause,
+            message: cause.message,
+          });
+          return;
+        }
         const requiresSignIn =
-          "cause" in failure &&
-          isProviderAdapterOpenSessionError(failure.cause) &&
-          failure.cause.requiresSignIn === true;
+          isProviderAdapterOpenSessionError(cause) && cause.requiresSignIn === true;
         if (input.willRetry === true && !requiresSignIn) return yield* failure;
         yield* settleStartFailure({
           signal: "provider-session-open-failure",

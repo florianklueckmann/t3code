@@ -61,6 +61,11 @@ export const ProviderAdapterV2RuntimePolicy = Schema.Struct({
    * and the thread is not used to build it. Bot conversations use T3 Code's scoped learning instead.
    */
   nativeMemory: Schema.optional(Schema.Literal("disabled")),
+  /**
+   * "none": this run is unattended and may change nothing. Only a provider verified to enforce it
+   * receives it; an adapter enforces it or refuses the run, and never widens it.
+   */
+  changes: Schema.optional(Schema.Literal("none")),
 });
 export type ProviderAdapterV2RuntimePolicy = typeof ProviderAdapterV2RuntimePolicy.Type;
 
@@ -220,6 +225,55 @@ export class ProviderAdapterOpenSessionError extends Schema.TaggedError<Provider
     return `Failed to open ${this.driver} provider session ${this.providerSessionId}.`;
   }
 }
+
+const ProviderAdapterNoChangesRefusal = Schema.Literals([
+  "launch-args",
+  "managed-sign-in",
+  "account",
+  "chatgpt-account",
+  "version",
+  "config",
+  "hooks",
+  "sandbox",
+  "profile",
+  "home",
+  "store",
+]);
+
+const noChangesRefusalText: Record<typeof ProviderAdapterNoChangesRefusal.Type, string> = {
+  "launch-args": "it uses custom launch arguments",
+  "managed-sign-in": "it signs in through T3 Code",
+  account: "its signed-in account couldn't be confirmed",
+  "chatgpt-account": "it can't share a ChatGPT sign-in safely yet",
+  version: "this check has not verified its Codex version",
+  config: "its configuration adds settings that couldn't be verified",
+  hooks: "it has hooks configured",
+  sandbox: "its read-only sandbox check failed",
+  profile: "its session was opened for other work",
+  home: "its No changes profile folder holds entries T3 Code did not create, or is in use with other settings",
+  store: "its conversation history is kept in a custom location this check can't share",
+};
+
+/**
+ * The provider could not prove it would enforce `changes: "none"`, so nothing started. Retrying
+ * cannot help; the reason names what to change.
+ */
+export class ProviderAdapterNoChangesRefusedError extends Schema.TaggedError<ProviderAdapterNoChangesRefusedError>()(
+  "ProviderAdapterNoChangesRefusedError",
+  {
+    driver: ProviderDriverKind,
+    reason: ProviderAdapterNoChangesRefusal,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    return `This routine task is set to No changes, which its provider can't enforce here because ${noChangesRefusalText[this.reason]}, so nothing ran. Start a new routine task once that is fixed, or ask the Bot directly.`;
+  }
+}
+
+export const isProviderAdapterNoChangesRefusedError = Schema.is(
+  ProviderAdapterNoChangesRefusedError,
+);
 
 export class ProviderAdapterCloseSessionError extends Schema.TaggedError<ProviderAdapterCloseSessionError>()(
   "ProviderAdapterCloseSessionError",
@@ -449,6 +503,7 @@ export class ProviderAdapterSessionStoppedError extends Schema.TaggedError<Provi
 export const ProviderAdapterV2Error = Schema.Union([
   ProviderAdapterCapabilitiesError,
   ProviderAdapterOpenSessionError,
+  ProviderAdapterNoChangesRefusedError,
   ProviderAdapterCloseSessionError,
   ProviderAdapterResumeThreadError,
   ProviderAdapterThreadInUseError,

@@ -148,6 +148,7 @@ const layerDeviceServiceMock = Layer.mock(DeviceService.DeviceService)({
 
 const layerTest = McpHttpServer.layerDeviceToolkit.pipe(
   Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+  Layer.provideMerge(McpToolAccessTestkit.layerCallerChangesAllowed),
   Layer.provideMerge(McpToolAccessTestkit.liveThreadsLayer),
   Layer.provideMerge(layerDeviceServiceMock),
   Layer.provide(layerProjectsMock),
@@ -273,6 +274,7 @@ it.effect("rejects unavailable agent access before booting or opening a device",
     Effect.provide(
       McpHttpServer.layerDeviceToolkit.pipe(
         Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+        Layer.provideMerge(McpToolAccessTestkit.layerCallerChangesAllowed),
         Layer.provideMerge(McpToolAccessTestkit.liveThreadsLayer),
         Layer.provide(layerUnavailable),
         Layer.provide(layerProjectsMock),
@@ -413,6 +415,7 @@ describe("device targeting across hosts", () => {
       Effect.provide(
         McpHttpServer.layerDeviceToolkit.pipe(
           Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+          Layer.provideMerge(McpToolAccessTestkit.layerCallerChangesAllowed),
           Layer.provideMerge(McpToolAccessTestkit.liveThreadsLayer),
           Layer.provide(layerDevices),
           Layer.provide(layerProjectsMock),

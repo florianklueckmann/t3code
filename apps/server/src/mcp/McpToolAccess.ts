@@ -22,6 +22,7 @@ import {
 } from "../orchestration-v2/DispatchModeLimit.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import { assertNotLinked, assertSameLink, callerLinkOrigin } from "./linkOrigin.ts";
+import * as McpCallerChanges from "./McpCallerChanges.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import { resolveInteractionMode, resolveRuntimeMode } from "./delegatedTaskModes.ts";
 import {
@@ -104,14 +105,54 @@ const refuseReadOnlyClient = McpInvocationContext.McpInvocationContext.pipe(
   ),
 );
 
+const MAX_SUBAGENT_DEPTH = 16;
+
+const noChangesRefusal = new OrchestratorMcpFailure({
+  code: "capability_denied",
+  message:
+    "This task is set to No changes, so tools that change things are refused. Report what you found, or describe the change you propose, in your result.",
+});
+
+const missingAncestorRefusal = new OrchestratorMcpFailure({
+  code: "capability_denied",
+  message:
+    "This subagent's parent thread could not be found, so tools that change things are refused.",
+});
+
+/**
+ * A subagent acts for its parents, so a restriction anywhere up its line applies to it. A
+ * recorded parent that cannot be found is unknown authority, not the end of the line.
+ */
+const refuseRestrictedCaller = Effect.fn("McpToolAccess.refuseRestrictedCaller")(function* (
+  caller: Caller,
+) {
+  if (caller.caller === undefined) return;
+  const changes = yield* McpCallerChanges.McpCallerChanges;
+  let shell = caller.caller;
+  for (let depth = 0; ; depth++) {
+    if (depth >= MAX_SUBAGENT_DEPTH) return yield* noChangesRefusal;
+    if ((yield* changes.forThread(shell.id)) === "none") return yield* noChangesRefusal;
+    const parentId =
+      shell.lineage.relationshipToParent === "subagent" ? shell.lineage.parentThreadId : null;
+    if (parentId === null) return;
+    const parent = yield* caller.threads
+      .getThreadShell(parentId)
+      .pipe(Effect.mapError(unavailable));
+    if (parent === null) return yield* missingAncestorRefusal;
+    shell = parent;
+  }
+});
+
 const writingCaller = refuseReadOnlyClient.pipe(
   Effect.andThen(loadCaller()),
   Effect.tap(assertLiveCaller),
+  Effect.tap(refuseRestrictedCaller),
 );
 
 const orchestratingCaller = refuseReadOnlyClient.pipe(
   Effect.andThen(readCaller()),
   Effect.tap(assertLiveCaller),
+  Effect.tap(refuseRestrictedCaller),
 );
 
 const requireThreadCaller = McpInvocationContext.McpInvocationContext.pipe(

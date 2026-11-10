@@ -27,6 +27,7 @@ import { Tool, Toolkit } from "effect/ai";
 import * as BotService from "../../../bots/BotService.ts";
 import * as BotTaskService from "../../../bots/BotTaskService.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
+import * as McpCallerChanges from "../../McpCallerChanges.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 
 const BotToolParameters = Schema.Struct({
@@ -111,6 +112,7 @@ const BotTool = Tool.make("t3_bot", {
   dependencies: [
     McpInvocationContext.McpInvocationContext,
     ThreadManagementService.ThreadManagementService,
+    McpCallerChanges.McpCallerChanges,
     BotService.BotService,
     BotContinuation.BotContinuation,
     BotTaskService.BotTaskService,

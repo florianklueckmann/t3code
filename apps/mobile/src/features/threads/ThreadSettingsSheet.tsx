@@ -104,9 +104,11 @@ import {
 import { useSearchToolbarInset } from "../../components/ui/useBarInset";
 import type { AppBarSearch } from "../../components/ui/AppBar";
 import { ModelRow, ChoiceRow } from "./ThreadSettingsRows";
+import { useWorkThreadChanges } from "../bots/useWorkThreadBot";
 import {
   compatibleRuntimeModeForChoices,
   runtimeModeChoicesForSupportedModes,
+  taskRuntimeModeChoices,
   withManagedRuntimeModeLimits,
   type RuntimeModeChoice,
   selectableChoices,
@@ -120,6 +122,7 @@ import {
   providerSectionIsCollapsed,
 } from "./thread-settings-sheet-state";
 import { formatProviderUpdateRequiredNotice } from "@t3tools/client-runtime/providerUpdateRequiredModels";
+import type { WorkThreadChanges } from "@t3tools/client-runtime/state/server";
 
 const PRIMARY_PROVIDER_DRIVERS: ReadonlySet<string> = new Set([
   "claudeAgent",
@@ -276,6 +279,8 @@ type ThreadSettingsSessionProps = {
   readonly runtime?: {
     readonly mode: RuntimeMode;
     readonly onUpdate: (mode: RuntimeMode) => void;
+    /** A Bot task's No changes or not-yet-known permission, which replaces the choices. */
+    readonly changes?: WorkThreadChanges;
   };
 };
 
@@ -503,10 +508,13 @@ function ThreadSettingsSessionProvider(
     pendingModel ??
     props.providerGroups.flatMap((group) => group.models).find((option) => isApplied(option)) ??
     null;
-  const runtimeModeChoices = withManagedRuntimeModeLimits(
-    runtimeModeChoicesForSupportedModes(displayedModel?.supportedRuntimeModes),
-    [config?.managedPolicy],
-  );
+  const runtimeModeChoices =
+    props.runtime?.changes != null
+      ? taskRuntimeModeChoices(props.runtime.mode, props.runtime.changes)
+      : withManagedRuntimeModeLimits(
+          runtimeModeChoicesForSupportedModes(displayedModel?.supportedRuntimeModes),
+          [config?.managedPolicy],
+        );
   const compatibleRuntimeMode = props.runtime
     ? compatibleRuntimeModeForChoices(props.runtime.mode, runtimeModeChoices)
     : undefined;
@@ -1324,6 +1332,10 @@ export function ExistingThreadSettingsRouteScreen({
   // A queued edit can end while the sheet is open; the prompt then belongs to the thread's draft.
   const draftKey = activeComposerDraftKey(threadKey, route.params.draftKey, queuedRunEdit);
   const prompt = useComposerDraft(draftKey).text;
+  const taskChanges = useWorkThreadChanges({
+    environmentId: route.params.environmentId,
+    id: route.params.threadId,
+  });
 
   if (!selectedThread) {
     return <View className="flex-1 bg-sheet" />;
@@ -1376,6 +1388,7 @@ export function ExistingThreadSettingsRouteScreen({
       runtime={{
         mode: draftSettings.runtimeMode ?? selectedThread.runtimeMode,
         onUpdate: (runtimeMode) => updateComposerDraftSettings(threadKey, { runtimeMode }),
+        changes: taskChanges,
       }}
       onClose={() => navigation.goBack()}
     />

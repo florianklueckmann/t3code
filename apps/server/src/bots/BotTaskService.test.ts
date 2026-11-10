@@ -60,6 +60,7 @@ import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import { ServerActivation } from "../serverActivation.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as BotExecutionConstraint from "./BotExecutionConstraint.ts";
 import * as BotProjectGuard from "./BotProjectGuard.ts";
 import * as BotService from "./BotService.ts";
 import * as BotTaskService from "./BotTaskService.ts";
@@ -371,6 +372,7 @@ interface Services {
   readonly tasks: BotTaskService.BotTaskService["Service"];
   readonly routines: ScheduledTaskService.ScheduledTaskService["Service"];
   readonly turnContext: BotTurnContext.BotTurnContext["Service"];
+  readonly constraint: BotExecutionConstraint.BotExecutionConstraint["Service"];
 }
 
 /**
@@ -388,10 +390,11 @@ const withServices = <A, E>(
       tasks: yield* BotTaskService.BotTaskService,
       routines: yield* ScheduledTaskService.ScheduledTaskService,
       turnContext: yield* BotTurnContext.BotTurnContext,
+      constraint: yield* BotExecutionConstraint.BotExecutionConstraint,
     });
   }).pipe(
     Effect.provide(
-      Layer.mergeAll(BotService.layer, BotTurnContext.layer).pipe(
+      Layer.mergeAll(BotService.layer, BotTurnContext.layer, BotExecutionConstraint.layer).pipe(
         Layer.provideMerge(
           ScheduledTaskService.layer.pipe(Layer.provide(BotTaskService.layerRoutineTarget)),
         ),
@@ -1162,20 +1165,52 @@ it.effect("keeps each routine run's change permission after edits and a restart"
         assert.isFalse(saved.task.bot?.allowChanges);
         yield* TestClock.adjust("1 second");
         const preparing = yield* services.routines.runNow({ id: task.id });
-        return { changingThread, preparingThread: preparing.threadId ?? assert.fail() };
+        const preparingThread = preparing.threadId ?? assert.fail();
+        // Allowing changes again applies to the next run, never to one already admitted.
+        yield* services.routines.upsert({ ...input, id: task.id });
+        // A direct task stores allow_changes = 0 too, and keeps its usual authority.
+        const direct = yield* services.tasks.start({
+          botId,
+          projectId: campaign,
+          prompt: "Fix the typo.",
+        });
+        return {
+          changingThread,
+          preparingThread,
+          directThread: direct.workThreadId ?? assert.fail(),
+        };
       }),
     );
     yield* withServices(world, (services) =>
       Effect.gen(function* () {
-        for (const [thread, permission] of [
-          [workThreads.changingThread, "Changes allowed"],
-          [workThreads.preparingThread, "No changes"],
+        for (const [thread, permission, constraint] of [
+          [workThreads.changingThread, "Changes allowed", "standard"],
+          [workThreads.preparingThread, "No changes", "no-changes"],
         ] as const) {
           const context = yield* services.turnContext.forThread(thread);
           if (context._tag !== "active") return assert.fail();
           assert.include(context.instructions, permission);
           assert.notInclude(context.instructions, "recorded play");
+          assert.equal(yield* services.constraint.forThread(thread), constraint);
         }
+        assert.equal(yield* services.constraint.forThread(workThreads.directThread), "standard");
+        assert.equal(
+          yield* services.constraint.forThread(ThreadId.make("thread:not-a-task")),
+          "standard",
+        );
+        // Clients read the same admitted answer from the task summary.
+        const changesOf = (workThreadId: ThreadId) =>
+          services.tasks
+            .list({ workThreadId })
+            .pipe(Effect.map(({ tasks }) => tasks.map((task) => task.changes)));
+        assert.deepEqual(
+          [
+            yield* changesOf(workThreads.changingThread),
+            yield* changesOf(workThreads.preparingThread),
+            yield* changesOf(workThreads.directThread),
+          ],
+          [[null], ["none"], [null]],
+        );
       }),
     );
   }).pipe(Effect.provide(layerDatabase)),
@@ -1739,6 +1774,8 @@ it.effect("detach and archive pause routines and stop their work until resumed",
         const [task] = (yield* services.tasks.list({ botId })).tasks;
         assert.equal(task?.status, "cancelled");
         assert.equal((yield* services.turnContext.forThread(workThreadId))._tag, "inactive");
+        // A detached project's task keeps No changes: its row, not the Bot, decides.
+        assert.equal(yield* services.constraint.forThread(workThreadId), "no-changes");
         // A cancelled task is not announced as a result.
         assert.lengthOf(yield* world.commandsMatching("thread.mark-unread"), 0);
 

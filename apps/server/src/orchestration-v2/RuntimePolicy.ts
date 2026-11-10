@@ -53,9 +53,33 @@ export class RuntimePolicyAboveCeilingError extends Schema.TaggedError<RuntimePo
 
 export const isRuntimePolicyAboveCeilingError = Schema.is(RuntimePolicyAboveCeilingError);
 
+const NoChangesUnsupportedReason = Schema.Literals(["provider", "platform"]);
+
+const noChangesUnsupportedText: Record<typeof NoChangesUnsupportedReason.Type, string> = {
+  provider: "only Codex can enforce",
+  platform: "is only verified on macOS",
+};
+
+/** A run that may change nothing would reach a provider that cannot enforce it. Never retried. */
+export class RuntimePolicyUnsupportedError extends Schema.TaggedError<RuntimePolicyUnsupportedError>()(
+  "RuntimePolicyUnsupportedError",
+  {
+    threadId: ThreadId,
+    providerInstanceId: ProviderInstanceId,
+    reason: NoChangesUnsupportedReason,
+  },
+) {
+  override get message(): string {
+    return `This routine task is set to No changes, which ${noChangesUnsupportedText[this.reason]}, so nothing ran. To make changes, ask the Bot directly, or allow changes on the routine for its next run.`;
+  }
+}
+
+export const isRuntimePolicyUnsupportedError = Schema.is(RuntimePolicyUnsupportedError);
+
 export const RuntimePolicyV2Error = Schema.Union([
   RuntimePolicyResolveError,
   RuntimePolicyAboveCeilingError,
+  RuntimePolicyUnsupportedError,
 ]);
 export type RuntimePolicyV2Error = typeof RuntimePolicyV2Error.Type;
 
@@ -64,15 +88,32 @@ export const RuntimePolicyV2Override = Schema.Struct({
   approvalPolicy: Schema.optional(Schema.Unknown),
   sandboxPolicy: Schema.optional(Schema.Unknown),
   reasoningEffort: Schema.optional(Schema.String),
+  changes: Schema.optional(Schema.Literal("none")),
 });
 export type RuntimePolicyV2Override = typeof RuntimePolicyV2Override.Type;
 
-export interface RuntimePolicyV2Shape {
-  readonly resolve: (input: {
-    readonly thread: OrchestrationV2AppThread;
-    readonly modelSelection: ModelSelection;
-  }) => Effect.Effect<ProviderAdapter.ProviderAdapterV2RuntimePolicy, RuntimePolicyV2Error>;
+export interface RuntimePolicyV2Input {
+  readonly thread: OrchestrationV2AppThread;
+  readonly modelSelection: ModelSelection;
 }
+
+export interface RuntimePolicyV2Shape {
+  readonly resolve: (
+    input: RuntimePolicyV2Input,
+  ) => Effect.Effect<ProviderAdapter.ProviderAdapterV2RuntimePolicy, RuntimePolicyV2Error>;
+  /**
+   * The `changes` that `resolve` would give, without its workspace or refusals: dispatch picks a
+   * run's provider process with it, before a deferred run's workspace exists.
+   */
+  readonly resolveChanges: (
+    input: RuntimePolicyV2Input,
+  ) => Effect.Effect<
+    ProviderAdapter.ProviderAdapterV2RuntimePolicy["changes"],
+    RuntimePolicyV2Error
+  >;
+}
+
+const unrestrictedChanges = () => Effect.undefined;
 
 export class RuntimePolicyV2 extends Context.Service<RuntimePolicyV2, RuntimePolicyV2Shape>()(
   "t3/orchestration-v2/RuntimePolicy/RuntimePolicyV2",
@@ -86,6 +127,7 @@ export const layer: Layer.Layer<RuntimePolicyV2> = Layer.succeed(RuntimePolicyV2
       cwd: input.thread.worktreePath,
     });
   }),
+  resolveChanges: unrestrictedChanges,
 });
 
 function providerRuntimeMode(
@@ -133,6 +175,7 @@ export const layerEnforcingCeiling: Layer.Layer<
         yield* refuseAboveCeiling(managedPolicy, input.thread);
         return yield* base.resolve(input);
       }),
+      resolveChanges: base.resolveChanges,
     });
   }),
 );
@@ -191,6 +234,7 @@ export const layerFromProjectStore: Layer.Layer<
           ...(maxRuntimeMode === undefined ? {} : { maxRuntimeMode }),
         });
       }),
+      resolveChanges: unrestrictedChanges,
     });
   }),
 );
@@ -218,9 +262,14 @@ export function layerWithOverride(
                 ...(override.reasoningEffort === undefined
                   ? {}
                   : { reasoningEffort: override.reasoningEffort }),
+                ...(override.changes === undefined ? {} : { changes: override.changes }),
               }),
             ),
           ),
+        resolveChanges: (input) =>
+          override.changes === undefined
+            ? base.resolveChanges(input)
+            : Effect.succeed(override.changes),
       } satisfies RuntimePolicyV2Shape;
     }),
   );

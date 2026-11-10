@@ -3,7 +3,15 @@ import {
   type ManagedPolicySummary,
   type RuntimeMode,
 } from "@t3tools/contracts";
-import { type LucideIcon, LockIcon, PenLineIcon, ShieldOffIcon, SparklesIcon } from "lucide-react";
+import {
+  CircleHelpIcon,
+  EyeIcon,
+  type LucideIcon,
+  LockIcon,
+  PenLineIcon,
+  ShieldOffIcon,
+  SparklesIcon,
+} from "lucide-react";
 
 export const runtimeModeConfig: Record<
   RuntimeMode,
@@ -44,6 +52,30 @@ export function resolveCompatibleRuntimeMode(
       ? runtimeModeOptions.filter((mode) => supportedRuntimeModes.includes(mode))
       : runtimeModeOptions;
   return { modes, mode: modes.includes(runtimeMode) ? runtimeMode : (modes[0] ?? runtimeMode) };
+}
+
+const taskPermissionConfig = {
+  none: {
+    label: "No changes",
+    description: "This routine task can read and report, but not change anything.",
+    icon: EyeIcon,
+    disabledReason:
+      "This routine task is set to No changes. To make the changes it proposes, ask the Bot directly.",
+  },
+  unknown: {
+    label: "Checking permission",
+    description: "Loading this task's permission.",
+    icon: CircleHelpIcon,
+    disabledReason: "Permissions stay locked until this task's permission loads.",
+  },
+};
+
+/**
+ * A Bot task's only permission while it is No changes or not yet known: fixed, so no thread mode
+ * can appear to lift it. It keeps the thread's mode as its value, which the server ignores here.
+ */
+export function taskRuntimeModeOptions(mode: RuntimeMode, changes: "none" | "unknown") {
+  return [{ mode, ...taskPermissionConfig[changes] }];
 }
 
 export function resolveRuntimeModeOptions(

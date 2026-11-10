@@ -5,9 +5,11 @@ import { DESKTOP_PASTE_AS_TEXT_EVENT } from "../../lib/desktopPasteAsText";
 import { BackgroundThreadContext } from "./backgroundThread";
 import {
   resolveCompatibleRuntimeMode,
+  taskRuntimeModeOptions,
   runtimeModeConfig,
   resolveRuntimeModeOptions,
 } from "./runtimeModeConfig";
+import { useWorkThreadChanges } from "../useWorkThreadBot";
 import { isLocalEnvironmentDisabled } from "../../localEnvironment";
 import { usePrimaryEnvironmentId } from "../../state/environments";
 import { useRightPanelStore } from "~/rightPanelStore";
@@ -881,10 +883,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     );
   // Modes above an administrator's ceiling stay listed, disabled with the reason.
   const managedPolicy = useManagedPolicy(environmentId);
-  const compatibleRuntimeModeOptions = resolveRuntimeModeOptions(
-    compatibleRuntimeModes,
-    managedPolicy,
-  );
+  const taskChanges = useWorkThreadChanges({ environmentId, id: activeThread?.id ?? "" });
+  const compatibleRuntimeModeOptions =
+    taskChanges === null
+      ? resolveRuntimeModeOptions(compatibleRuntimeModes, managedPolicy)
+      : taskRuntimeModeOptions(compatibleRuntimeMode, taskChanges);
   // A thread or draft already above the ceiling would be refused; offer the broadest mode left.
   const runtimeModeCeilingDenial = managedRuntimeModeDenial(managedPolicy, compatibleRuntimeMode);
   const runtimeModeCeilingFallback =
@@ -2379,7 +2382,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       promptUltrathink={promptUltrathink}
       onPromptEdit={editPromptFromTraitsStable}
       compatibleRuntimeMode={compatibleRuntimeMode}
-      defaultRuntimeMode={props.defaultRuntimeMode}
+      // A task's fixed or unknown permission always shows, whatever the user's default mode.
+      defaultRuntimeMode={taskChanges === null ? props.defaultRuntimeMode : undefined}
       compatibleRuntimeModeOptions={compatibleRuntimeModeOptions}
       handleRuntimeModeChange={handleRuntimeModeChange}
       composerControlsCollapsed={composerControlsCollapsed}

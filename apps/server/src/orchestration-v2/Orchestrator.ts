@@ -176,7 +176,11 @@ import * as RunExecutionService from "./RunExecutionService.ts";
 import { ProviderSessionManagerV2 } from "./ProviderSessionManager.ts";
 import { ProviderSwitchServiceV2 } from "./ProviderSwitchService.ts";
 import { isAutomaticCompletionRun, queuedRunsInDeliveryOrder } from "./QueuedRunOrder.ts";
-import { isRuntimePolicyAboveCeilingError, RuntimePolicyV2 } from "./RuntimePolicy.ts";
+import {
+  isRuntimePolicyAboveCeilingError,
+  RuntimePolicyV2,
+  type RuntimePolicyV2Input,
+} from "./RuntimePolicy.ts";
 import {
   endOrphanedNativeSubagent,
   endRunlessRootTurns,
@@ -1210,25 +1214,26 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ),
     );
 
-  const providerSessionIdFor = (input: {
+  const providerSessionIdFor = Effect.fn("Orchestrator.providerSessionIdFor")(function* (input: {
     readonly adapter: ProviderAdapter.ProviderAdapterV2["Service"];
     readonly providerInstanceId: ProviderInstanceId;
     readonly threadId: ThreadId;
-  }) =>
-    input.adapter.getCapabilities().pipe(
-      Effect.flatMap((capabilities) =>
-        capabilities.sessions.supportsMultipleProviderThreadsPerSession
-          ? Effect.succeed(
-              idAllocator.derive.providerSession({
-                providerInstanceId: input.providerInstanceId,
-              }),
-            )
-          : idAllocator.allocate.providerSession({
-              providerInstanceId: input.providerInstanceId,
-              threadId: input.threadId,
-            }),
-      ),
-    );
+    /** A run that may change nothing gets its own shared process, never the ordinary one. */
+    readonly policyFor: RuntimePolicyV2Input;
+  }) {
+    const capabilities = yield* input.adapter.getCapabilities();
+    if (!capabilities.sessions.supportsMultipleProviderThreadsPerSession) {
+      return yield* idAllocator.allocate.providerSession({
+        providerInstanceId: input.providerInstanceId,
+        threadId: input.threadId,
+      });
+    }
+    const changes = yield* runtimePolicy.resolveChanges(input.policyFor);
+    return idAllocator.derive.providerSession({
+      providerInstanceId: input.providerInstanceId,
+      ...(changes === "none" ? { profile: "no-changes" as const } : {}),
+    });
+  });
 
   const makeEvent =
     /* This helper runs for individual orchestration events; the enclosing operation owns the span. */
@@ -2234,6 +2239,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               adapter,
               providerInstanceId: queuedRun.providerInstanceId,
               threadId,
+              policyFor: { thread: projection.thread, modelSelection: queuedRun.modelSelection },
             }),
           ),
           Effect.mapError(
@@ -5397,6 +5403,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             adapter: targetAdapter,
             providerInstanceId: input.modelSelection.instanceId,
             threadId: input.command.threadId,
+            policyFor: { thread: input.projection.thread, modelSelection: input.modelSelection },
           }),
         ));
       const targetProviderThreadBase: OrchestrationV2ProviderThread =
@@ -6675,6 +6682,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             adapter,
             providerInstanceId: modelSelection.instanceId,
             threadId: command.threadId,
+            policyFor: { thread: projection.thread, modelSelection },
           }),
         ));
       const providerThreadId =
@@ -7101,6 +7109,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           adapter,
           providerInstanceId: modelSelection.instanceId,
           threadId: command.threadId,
+          policyFor: { thread: projection.thread, modelSelection },
         }),
       ));
     const existingProviderSession = projection.providerSessions.find(

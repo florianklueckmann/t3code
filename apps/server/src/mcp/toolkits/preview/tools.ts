@@ -24,6 +24,7 @@ import * as Schema from "effect/Schema";
 import * as FileSystem from "effect/FileSystem";
 import { Tool, Toolkit } from "effect/ai";
 
+import * as McpCallerChanges from "../../McpCallerChanges.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
 import * as ServerConfig from "../../../config.ts";
@@ -32,6 +33,7 @@ import * as ThreadManagementService from "../../../orchestration-v2/ThreadManage
 const dependencies = [
   McpInvocationContext.McpInvocationContext,
   ThreadManagementService.ThreadManagementService,
+  McpCallerChanges.McpCallerChanges,
   PreviewAutomationBroker.PreviewAutomationBroker,
 ];
 

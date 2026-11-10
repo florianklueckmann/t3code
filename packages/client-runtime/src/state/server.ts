@@ -74,6 +74,12 @@ import {
 
 export type { ServerConfigProjection } from "./serverConfigProjection.ts";
 
+/**
+ * A work thread's task restriction: "none" for No changes, null for none, and "unknown" until
+ * its task loads, which must not be shown as unrestricted.
+ */
+export type WorkThreadChanges = "none" | "unknown" | null;
+
 export type ServerUpdateStage = "downloading" | "installing" | "resuming";
 
 export type ServerUpdateState =
@@ -1379,10 +1385,29 @@ export function createServerEnvironmentAtoms<R, E>(
     }).pipe(Atom.withLabel(`environment-data:server:bots:work-thread:${key}`));
   });
 
+  // Reads only the admitted task, so an archived Bot or detached project keeps the restriction.
+  const workThreadChangesFamily = Atom.family((key: string) => {
+    const [environmentId, threadId] = JSON.parse(key) as [EnvironmentId, string];
+    return Atom.make((get): WorkThreadChanges => {
+      if (!mayBeBotWorkThreadId(threadId)) return null;
+      const config = get(configValueAtom(environmentId));
+      if (config === null) return "unknown";
+      if (config.environment.capabilities.bots !== true) return null;
+      const tasks = AsyncResult.value(
+        get(botTasksLive({ environmentId, input: { workThreadId: ThreadId.make(threadId) } })),
+      );
+      if (Option.isNone(tasks)) return "unknown";
+      return tasks.value.tasks.some((task) => task.changes === "none") ? "none" : null;
+    }).pipe(Atom.withLabel(`environment-data:server:bots:work-thread-changes:${key}`));
+  });
+
   return {
     configValueAtom,
     workThreadBot: (thread: { readonly environmentId: EnvironmentId; readonly id: string }) =>
       workThreadBotFamily(JSON.stringify([thread.environmentId, thread.id])),
+    /** "none" while the thread runs a No changes routine task; its mode cannot lift that. */
+    workThreadChanges: (thread: { readonly environmentId: EnvironmentId; readonly id: string }) =>
+      workThreadChangesFamily(JSON.stringify([thread.environmentId, thread.id])),
     runStorageCleanup: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:run-storage-cleanup",
       tag: WS_METHODS.serverRunStorageCleanup,
