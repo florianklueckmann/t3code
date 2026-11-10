@@ -1,0 +1,303 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import {
+  McpConnectionId,
+  type McpConnectionTransport,
+  SecretProviderId,
+  ServerSettingsPatch,
+} from "@t3tools/contracts";
+import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
+import { assert, it } from "@effect/vitest";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
+
+import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
+import * as ServerConfig from "../config.ts";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
+import * as ServerSettings from "../serverSettings.ts";
+import * as McpConnections from "./McpConnections.ts";
+
+const decodeServerSettingsPatch = Schema.decodeUnknownEffect(ServerSettingsPatch);
+
+const layerSettings = ServerSettings.layer.pipe(
+  Layer.provide(ServerSecretStore.layer),
+  Layer.provide(ManagedPolicy.layerTest()),
+  Layer.provide(Layer.fresh(SqlitePersistence.layerMemory)),
+  Layer.provide(
+    Layer.fresh(ServerConfig.layerTest(process.cwd(), { prefix: "t3code-mcp-connections-test-" })),
+  ),
+);
+
+// The secret provider is the external dependency: it records every read it is asked for.
+const harness = Effect.gen(function* () {
+  const secrets = new Map<string, string>();
+  const reads: string[] = [];
+  const invalidated: string[] = [];
+  const resolver = SecretResolver.SecretResolver.of({
+    read: (references) =>
+      Effect.sync(() =>
+        references.map(({ reference }) => {
+          reads.push(reference);
+          return secrets.get(reference);
+        }),
+      ),
+    invalidate: (references) =>
+      Effect.sync(() => {
+        for (const { reference } of references ?? []) invalidated.push(reference);
+      }),
+    label: (provider) => Effect.succeed(provider),
+  });
+  const connections = yield* McpConnections.McpConnections.pipe(
+    Effect.provide(
+      McpConnections.layer.pipe(
+        Layer.provide(Layer.succeed(SecretResolver.SecretResolver, resolver)),
+      ),
+    ),
+  );
+  return { connections, secrets, reads, invalidated };
+});
+
+const accountA = McpConnectionId.make("1a1a1a1a-0000-4000-8000-00000000001a");
+const accountB = McpConnectionId.make("1b1b1b1b-0000-4000-8000-00000000001b");
+const local = McpConnectionId.make("1c1c1c1c-0000-4000-8000-00000000001c");
+const personal = SecretProviderId.make("personal");
+const tokenB = { provider: personal, reference: "op://Private/Docs/token-b" };
+const http = (authorization: string | typeof tokenB): McpConnectionTransport => ({
+  type: "http",
+  url: "https://mcp.example.test/mcp",
+  httpHeaders: { Authorization: authorization },
+});
+const SENTINEL = "sk-sentinel-never-echoed";
+
+it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("MCP connections", (it) => {
+  it.effect(
+    "keeps same-URL accounts distinct and saves only valid edits of the current revision",
+    () =>
+      Effect.gen(function* () {
+        const { connections, reads } = yield* harness;
+        const created = yield* connections.create({
+          connectionId: accountA,
+          label: "Work",
+          enabled: true,
+          transport: http("Bearer account-a"),
+        });
+        assert.deepEqual(created, {
+          id: accountA,
+          label: "Work",
+          enabled: true,
+          revision: 1,
+          transport: "http",
+          status: { state: "ready" },
+        });
+        yield* connections.create({
+          connectionId: accountB,
+          label: "Personal",
+          enabled: true,
+          transport: http(tokenB),
+        });
+        yield* connections.create({
+          connectionId: local,
+          label: "Local",
+          enabled: false,
+          transport: {
+            type: "stdio",
+            command: "mcp-server",
+            args: ["--token-file", "/home/user/.token"],
+            env: { API_KEY: "upper", api_key: "lower" },
+          },
+        });
+        // Listing never asks a secret provider; an unread reference is reported as unchecked.
+        assert.deepEqual(
+          (yield* connections.list).connections.map(({ id, status }) => [id, status.state]),
+          [
+            [accountA, "ready"],
+            [accountB, "unchecked"],
+            [local, "ready"],
+          ],
+        );
+        assert.deepEqual(reads, []);
+
+        // A retried create is the same definition; a different one under that id is refused.
+        assert.deepEqual(
+          yield* connections.create({
+            connectionId: accountA,
+            label: "Work",
+            enabled: true,
+            transport: http("Bearer account-a"),
+          }),
+          created,
+        );
+        assert.equal((yield* connections.list).connections.length, 3);
+        assert.equal(
+          (yield* connections
+            .create({ connectionId: accountB, label: "Other", enabled: true, transport: http("x") })
+            .pipe(Effect.flip)).reason,
+          "id-unavailable",
+        );
+
+        // Two edits of revision 1: exactly one saves, the other sees the conflict.
+        const [first, second] = yield* Effect.all(
+          [
+            connections.update({ connectionId: accountA, expectedRevision: 1, label: "One" }),
+            connections.update({ connectionId: accountA, expectedRevision: 1, label: "Two" }),
+          ],
+          { concurrency: "unbounded", mode: "result" },
+        );
+        const outcomes = [first, second].map((result) =>
+          result._tag === "Success"
+            ? "saved"
+            : `${result.failure.reason}:${result.failure.currentRevision}`,
+        );
+        assert.sameMembers(outcomes, ["saved", "revision-conflict:2"]);
+
+        for (const [bindings, reason] of [
+          [{ Authorization: "a", authorization: "b" }, "binding-name-duplicate"],
+          [{ "X-Token": "a\r\nInjected: b" }, "binding-value-invalid"],
+          [{ "Bad Header": "x" }, "binding-name-invalid"],
+          [{ Authorization: "" }, "binding-value-empty"],
+        ] as const) {
+          const error = yield* connections
+            .update({ connectionId: accountA, expectedRevision: 2, bindings })
+            .pipe(Effect.flip);
+          assert.equal(error.problem?.reason, reason);
+        }
+        for (const [transport, reason] of [
+          [
+            { type: "http", url: `https://user:${SENTINEL}@mcp.example.test`, httpHeaders: {} },
+            "url-credentials",
+          ],
+          [
+            {
+              type: "http",
+              url: `https://mcp.example.test/mcp?api_key=${SENTINEL}`,
+              httpHeaders: {},
+            },
+            "url-credentials",
+          ],
+          [
+            { type: "stdio", command: "mcp-server", args: [`--api-key=${SENTINEL}`], env: {} },
+            "argument-secret",
+          ],
+          [
+            { type: "stdio", command: "mcp-server", args: ["--token", SENTINEL], env: {} },
+            "argument-secret",
+          ],
+          [
+            { type: "stdio", command: "mcp-server", args: [], env: { "BAD-NAME": "x" } },
+            "binding-name-invalid",
+          ],
+        ] as const) {
+          const error = yield* connections
+            .create({
+              connectionId: McpConnectionId.make("1d1d1d1d-0000-4000-8000-00000000001d"),
+              label: "Refused",
+              enabled: true,
+              transport,
+            })
+            .pipe(Effect.flip);
+          assert.equal(error.problem?.reason, reason);
+          assert.notInclude(`${error.message}${JSON.stringify(error)}`, SENTINEL);
+        }
+        assert.equal(
+          (yield* connections.list).connections.find(({ id }) => id === accountA)?.revision,
+          2,
+        );
+
+        // Removal is revision-checked, idempotent on retry, and retires the id for good.
+        assert.equal(
+          (yield* connections
+            .remove({ connectionId: accountA, expectedRevision: 1 })
+            .pipe(Effect.flip)).reason,
+          "revision-conflict",
+        );
+        yield* connections.remove({ connectionId: accountA, expectedRevision: 2 });
+        yield* connections.remove({ connectionId: accountA, expectedRevision: 2 });
+        assert.equal(
+          (yield* connections
+            .create({
+              connectionId: accountA,
+              label: "Work",
+              enabled: true,
+              transport: http("Bearer account-a"),
+            })
+            .pipe(Effect.flip)).reason,
+          "id-unavailable",
+        );
+      }).pipe(Effect.provide(layerSettings)),
+  );
+
+  it.effect("re-reads bindings only on refresh and refuses unreadable or removed ones", () =>
+    Effect.gen(function* () {
+      const { connections, secrets, reads, invalidated } = yield* harness;
+      const settings = yield* ServerSettings.ServerSettingsService;
+      yield* decodeServerSettingsPatch({
+        secretProviders: {
+          personal: { kind: "one_password", label: "Personal", config: { account: "my" } },
+        },
+      }).pipe(Effect.flatMap(settings.updateSettings));
+      yield* connections.create({
+        connectionId: accountB,
+        label: "Personal",
+        enabled: true,
+        transport: http(tokenB),
+      });
+
+      const refreshed = yield* connections.refresh({ connectionIds: [accountB] });
+      assert.deepEqual(refreshed.connections[0]?.status, {
+        state: "blocked",
+        problem: { reason: "binding-unresolved", binding: "Authorization" },
+      });
+      assert.deepEqual(invalidated, [tokenB.reference]);
+
+      // Unlocking alone changes nothing until the user refreshes; the failure is not retried.
+      secrets.set(tokenB.reference, "Bearer account-b");
+      const readsBeforeList = reads.length;
+      assert.equal((yield* connections.list).connections[0]?.status.state, "blocked");
+      assert.equal(reads.length, readsBeforeList);
+      assert.deepEqual(
+        (yield* connections.refresh({ connectionIds: [accountB] })).connections[0]?.status,
+        {
+          state: "ready",
+        },
+      );
+
+      secrets.set(tokenB.reference, "Bearer account-b\r\nX-Injected: 1");
+      assert.deepEqual(
+        (yield* connections.refresh({ connectionIds: [accountB] })).connections[0]?.status,
+        {
+          state: "blocked",
+          problem: { reason: "binding-value-invalid", binding: "Authorization" },
+        },
+      );
+
+      // Removing the secret provider unsets the binding as a new revision that is refused.
+      yield* settings.updateSettings({ secretProviders: { [personal]: null } });
+      const [removed] = (yield* connections.list).connections;
+      assert.deepEqual(removed, {
+        id: accountB,
+        label: "Personal",
+        enabled: true,
+        revision: 2,
+        transport: "http",
+        status: {
+          state: "blocked",
+          problem: { reason: "binding-value-empty", binding: "Authorization" },
+        },
+      });
+      assert.equal(
+        (yield* connections
+          .update({ connectionId: accountB, expectedRevision: 1, enabled: false })
+          .pipe(Effect.flip)).reason,
+        "revision-conflict",
+      );
+      // Disabling a connection whose binding is broken stays possible.
+      assert.equal(
+        (yield* connections.update({ connectionId: accountB, expectedRevision: 2, enabled: false }))
+          .enabled,
+        false,
+      );
+    }).pipe(Effect.provide(layerSettings)),
+  );
+});

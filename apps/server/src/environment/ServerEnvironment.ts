@@ -282,6 +282,7 @@ export const make = Effect.gen(function* () {
       botAppearance: true,
       botRoutines: true,
       botTaskResults: true,
+      mcpConnections: true,
       npmReleaseLookup: true,
       voiceTranscription: isSpeechPlatformSupported(hostPlatform, hostArchitecture, hostLibc),
       cloudVoiceTranscription: true,

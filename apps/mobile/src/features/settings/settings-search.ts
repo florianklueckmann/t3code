@@ -59,6 +59,7 @@ const SETTINGS_SEARCH_TERMS = {
     "routines",
     "session preparation",
   ],
+  SettingsMcpConnections: ["mcp", "mcp server", "tool", "account", "credentials", "header"],
   SettingsProjectOverview: ["project", "overview", "checkouts", "delete project"],
   SettingsOrganization: [
     "project grouping",

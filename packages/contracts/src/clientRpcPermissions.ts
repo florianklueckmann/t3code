@@ -80,6 +80,12 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.botsRetireLearning]: AuthOrchestrationOperateScope,
   [WS_METHODS.botsRestoreLearning]: AuthOrchestrationOperateScope,
   [WS_METHODS.botsSaveContinuation]: AuthOrchestrationOperateScope,
+  // MCP connection definitions hold credential bindings, like other settings secrets.
+  [WS_METHODS.mcpConnectionsCreate]: AuthSettingsWriteScope,
+  [WS_METHODS.mcpConnectionsUpdate]: AuthSettingsWriteScope,
+  [WS_METHODS.mcpConnectionsRemove]: AuthSettingsWriteScope,
+  // Refreshing may read secrets from a secret provider, which can prompt an unlock.
+  [WS_METHODS.mcpConnectionsRefresh]: AuthSettingsWriteScope,
   [ORCHESTRATION_V2_WS_METHODS.stopWorkflow]: AuthOrchestrationOperateScope,
   // Force stop kills agent processes, as Stop on a terminal does.
   [ORCHESTRATION_V2_WS_METHODS.forceStopThread]: AuthOrchestrationOperateScope,

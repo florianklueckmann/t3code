@@ -414,6 +414,17 @@ import {
 } from "./bot.ts";
 import { SecretRequestAnswerInput, SecretRequestError } from "./secretRequest.ts";
 import {
+  McpConnectionCreateInput,
+  McpConnectionError,
+  McpConnectionListInput,
+  McpConnectionListResult,
+  McpConnectionRefreshInput,
+  McpConnectionRemoveInput,
+  McpConnectionRemoveResult,
+  McpConnectionSummary,
+  McpConnectionUpdateInput,
+} from "./mcpConnection.ts";
+import {
   ProjectCloneActionInput,
   ProjectCloneActionResult,
   ProjectCloneListEvent,
@@ -606,6 +617,12 @@ export const WS_METHODS = {
   botsDecideLearning: "bots.decideLearning",
   botsRetireLearning: "bots.retireLearning",
   botsRestoreLearning: "bots.restoreLearning",
+
+  mcpConnectionsList: "mcpConnections.list",
+  mcpConnectionsCreate: "mcpConnections.create",
+  mcpConnectionsUpdate: "mcpConnections.update",
+  mcpConnectionsRemove: "mcpConnections.remove",
+  mcpConnectionsRefresh: "mcpConnections.refresh",
 
   cloudGetRelayClientStatus: "cloud.getRelayClientStatus",
   cloudInstallRelayClient: "cloud.installRelayClient",
@@ -2198,6 +2215,34 @@ const WsBotsRestoreLearningRpc = Rpc.make(WS_METHODS.botsRestoreLearning, {
   error: BotRpcError,
 });
 
+const McpConnectionRpcError = Schema.Union([McpConnectionError, EnvironmentAuthorizationError]);
+
+const WsMcpConnectionsListRpc = Rpc.make(WS_METHODS.mcpConnectionsList, {
+  payload: McpConnectionListInput,
+  success: McpConnectionListResult,
+  error: McpConnectionRpcError,
+});
+const WsMcpConnectionsCreateRpc = Rpc.make(WS_METHODS.mcpConnectionsCreate, {
+  payload: McpConnectionCreateInput,
+  success: McpConnectionSummary,
+  error: McpConnectionRpcError,
+});
+const WsMcpConnectionsUpdateRpc = Rpc.make(WS_METHODS.mcpConnectionsUpdate, {
+  payload: McpConnectionUpdateInput,
+  success: McpConnectionSummary,
+  error: McpConnectionRpcError,
+});
+const WsMcpConnectionsRemoveRpc = Rpc.make(WS_METHODS.mcpConnectionsRemove, {
+  payload: McpConnectionRemoveInput,
+  success: McpConnectionRemoveResult,
+  error: McpConnectionRpcError,
+});
+const WsMcpConnectionsRefreshRpc = Rpc.make(WS_METHODS.mcpConnectionsRefresh, {
+  payload: McpConnectionRefreshInput,
+  success: McpConnectionListResult,
+  error: McpConnectionRpcError,
+});
+
 const WsSubscribeAuthAccessRpc = Rpc.make(WS_METHODS.subscribeAuthAccess, {
   payload: Schema.Struct({}),
   success: AuthAccessStreamEvent,
@@ -2304,6 +2349,11 @@ export const WsRpcGroup = RpcGroup.make(
   WsBotsDecideLearningRpc,
   WsBotsRetireLearningRpc,
   WsBotsRestoreLearningRpc,
+  WsMcpConnectionsListRpc,
+  WsMcpConnectionsCreateRpc,
+  WsMcpConnectionsUpdateRpc,
+  WsMcpConnectionsRemoveRpc,
+  WsMcpConnectionsRefreshRpc,
   WsServerReportClientActivityRpc,
   WsCloudGetRelayClientStatusRpc,
   WsCloudInstallRelayClientRpc,

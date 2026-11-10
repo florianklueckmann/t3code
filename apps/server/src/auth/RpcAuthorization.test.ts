@@ -57,6 +57,20 @@ describe("RPC authorization scopes", () => {
     }
   });
 
+  it("lets thread readers see MCP connection statuses and keeps every connection edit behind settings", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.mcpConnectionsList)).toBe(
+      AuthOrchestrationReadScope,
+    );
+    for (const method of [
+      WS_METHODS.mcpConnectionsCreate,
+      WS_METHODS.mcpConnectionsUpdate,
+      WS_METHODS.mcpConnectionsRemove,
+      WS_METHODS.mcpConnectionsRefresh,
+    ]) {
+      expect(requiredScopeForRpcMethod(method)).toBe(AuthSettingsWriteScope);
+    }
+  });
+
   it("keeps triage, which seeds an agent that reads logs and the database, behind operate scope", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.serverPrepareTriage)).toBe(
       AuthOrchestrationOperateScope,

@@ -7,6 +7,7 @@ import {
   type BotSummary,
   type BotTaskResult,
   type BotTaskResultInput,
+  type McpConnectionListResult,
   type ProviderInstanceId,
   type ServerConfig,
   type ServerConfigStreamEvent,
@@ -34,7 +35,7 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
-import { AsyncResult, Atom } from "effect/reactivity";
+import { AsyncResult, Atom, type AtomRegistry } from "effect/reactivity";
 
 import {
   createAtomCommandScheduler,
@@ -1303,6 +1304,42 @@ export function createServerEnvironmentAtoms<R, E>(
       (refresh) => refresh(query),
     );
   });
+  // Each saved edit advances a revision in the settings snapshot, from this client or another.
+  const mcpConnectionRevisionsAtom = Atom.family((environmentId: EnvironmentId) =>
+    Atom.make((get) =>
+      JSON.stringify(
+        Object.entries(get(settingsValueAtom(environmentId))?.mcpConnections ?? {}).map(
+          ([id, definition]) => [id, definition.revision],
+        ),
+      ),
+    ).pipe(Atom.withLabel(`environment-data:server:mcp-connections:revisions:${environmentId}`)),
+  );
+  // Listing reads no secret provider on the server, so following every revision is cheap.
+  const mcpConnectionsQuery = createEnvironmentRpcQueryAtomFamily(runtime, {
+    label: "environment-data:server:mcp-connections",
+    tag: WS_METHODS.mcpConnectionsList,
+    staleTimeMs: 0,
+    idleTtlMs: 0,
+    refreshTrigger: (target) => mcpConnectionRevisionsAtom(target.environmentId),
+  });
+  const mcpConnectionsFamily = Atom.family((environmentId: EnvironmentId) => {
+    const query = mcpConnectionsQuery({ environmentId, input: {} });
+    return Atom.readable(
+      (get): AsyncResult.AsyncResult<McpConnectionListResult | null, unknown> => {
+        const config = get(configValueAtom(environmentId));
+        if (config === null) return AsyncResult.initial(true);
+        if (config.environment.capabilities.mcpConnections !== true)
+          return AsyncResult.success(null);
+        return get(query);
+      },
+      (refresh) => refresh(query),
+    ).pipe(Atom.withLabel(`environment-data:server:mcp-connections:view:${environmentId}`));
+  });
+  const refreshMcpConnections = (
+    target: { readonly environmentId: EnvironmentId },
+    registry: AtomRegistry.AtomRegistry,
+  ) => Effect.sync(() => registry.refresh(mcpConnectionsFamily(target.environmentId)));
+
   const workThreadBotFamily = Atom.family((key: string) => {
     const [environmentId, threadId] = JSON.parse(key) as [EnvironmentId, string];
     return Atom.make((get): BotSummary | null => {
@@ -1473,6 +1510,35 @@ export function createServerEnvironmentAtoms<R, E>(
       readonly environmentId: EnvironmentId;
       readonly input: BotContinuationScope;
     }) => botContinuationHistoryFamily(JSON.stringify([target.environmentId, target.input])),
+    /** Safe statuses only; `null` when the server has no catalog. Definitions come from settings. */
+    mcpConnections: mcpConnectionsFamily,
+    createMcpConnection: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:mcp-connections:create",
+      tag: WS_METHODS.mcpConnectionsCreate,
+      scheduler: configScheduler,
+      concurrency: configConcurrency,
+      onSuccess: refreshMcpConnections,
+    }),
+    updateMcpConnection: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:mcp-connections:update",
+      tag: WS_METHODS.mcpConnectionsUpdate,
+      scheduler: configScheduler,
+      concurrency: configConcurrency,
+      onSuccess: refreshMcpConnections,
+    }),
+    removeMcpConnection: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:mcp-connections:remove",
+      tag: WS_METHODS.mcpConnectionsRemove,
+      scheduler: configScheduler,
+      concurrency: configConcurrency,
+      onSuccess: refreshMcpConnections,
+    }),
+    // Off the config lane: a secret provider may wait for an unlock.
+    refreshMcpConnections: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:mcp-connections:refresh",
+      tag: WS_METHODS.mcpConnectionsRefresh,
+      onSuccess: refreshMcpConnections,
+    }),
     botDetail: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:server:bots:detail",
       tag: WS_METHODS.botsGet,

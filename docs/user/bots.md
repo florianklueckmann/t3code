@@ -191,6 +191,11 @@ Codex threads keep your Codex memory settings.
 - Bots run on Codex models only. If you switch a Bot conversation to another
   provider, its turns fail until you switch back.
 - Built-in email and calendar connections are not available.
+- Bots cannot use MCP connections yet. **Settings → MCP connections** stores them
+  for an environment: one connection per account, with its credentials as header
+  or environment variable values or secret-provider references. **Refresh**
+  checks that those credentials can be read; it does not start or contact the
+  server. To change a connection's URL or command, add a new connection.
 
 ## Detach and archive
 

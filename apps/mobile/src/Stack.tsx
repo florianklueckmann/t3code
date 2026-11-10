@@ -118,6 +118,10 @@ import {
   SettingsBotNewRouteScreen,
   SettingsBotsRouteScreen,
 } from "./features/settings/SettingsBotsRouteScreen";
+import {
+  SettingsMcpConnectionEditRouteScreen,
+  SettingsMcpConnectionsRouteScreen,
+} from "./features/settings/SettingsMcpConnectionsRouteScreen";
 import { BotLookRouteScreen } from "./features/settings/BotLookRouteScreen";
 import { SettingsBotNotesRouteScreen } from "./features/settings/SettingsBotNotesRouteScreen";
 import { SettingsBotRoutineRouteScreen } from "./features/settings/SettingsBotRoutineRouteScreen";
@@ -323,6 +327,15 @@ const SETTINGS_SCREENS = {
     screen: SettingsBotsRouteScreen,
     linking: "settings/bots",
     options: settingsPage("Bots"),
+  }),
+  SettingsMcpConnections: createNativeStackScreen({
+    screen: SettingsMcpConnectionsRouteScreen,
+    linking: "settings/mcp-connections",
+    options: settingsPage("MCP connections"),
+  }),
+  SettingsMcpConnectionEdit: createNativeStackScreen({
+    screen: SettingsMcpConnectionEditRouteScreen,
+    options: settingsPage("MCP connection"),
   }),
   SettingsBotNew: createNativeStackScreen({
     screen: SettingsBotNewRouteScreen,

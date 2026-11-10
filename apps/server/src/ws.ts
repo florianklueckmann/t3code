@@ -189,6 +189,7 @@ import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
 import * as ServerRuntimeStartup from "./serverRuntimeStartup.ts";
 import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
 import * as ServerSettings from "./serverSettings.ts";
+import * as McpConnections from "./mcpConnections/McpConnections.ts";
 import { invalidateSettingsSecrets } from "./sourceControl/sourceControlHostSecrets.ts";
 import * as DatabaseStorage from "./persistence/DatabaseStorage.ts";
 import * as StorageCleanup from "./storageCleanup.ts";
@@ -1452,6 +1453,7 @@ export const layerWsRpc = (
       const bots = yield* BotService.BotService;
       const botTasks = yield* BotTaskService.BotTaskService;
       const botContinuation = yield* BotContinuation.BotContinuation;
+      const mcpConnections = yield* McpConnections.McpConnections;
       const secretRequests = yield* SecretRequests.SecretRequests;
       const guestShares = yield* GuestShareService.GuestShareService;
       const pullRequests = yield* PullRequestService.PullRequestService;
@@ -2397,6 +2399,11 @@ export const layerWsRpc = (
         [WS_METHODS.botsRetireLearning]: (input) => bots.retireLearning(input),
         [WS_METHODS.botsRestoreLearning]: (input) =>
           bots.restoreLearning({ ...input, source: { kind: "user" } }),
+        [WS_METHODS.mcpConnectionsList]: (_input) => mcpConnections.list,
+        [WS_METHODS.mcpConnectionsCreate]: (input) => mcpConnections.create(input),
+        [WS_METHODS.mcpConnectionsUpdate]: (input) => mcpConnections.update(input),
+        [WS_METHODS.mcpConnectionsRemove]: (input) => mcpConnections.remove(input),
+        [WS_METHODS.mcpConnectionsRefresh]: (input) => mcpConnections.refresh(input),
         [WS_METHODS.guestShareCreate]: (input) =>
           Effect.annotateCurrentSpan({ "orchestration_v2.thread_id": input.threadId }).pipe(
             Effect.andThen(guestShares.create(input)),
