@@ -3,7 +3,11 @@ import {
   CheckpointId,
   CheckpointScopeId,
   CommandId,
+  MessageId,
   NodeId,
+  type OrchestrationV2ServerCommand,
+  ProjectId,
+  ProviderInstanceId,
   ProviderSessionId,
   ProviderThreadId,
   ProviderTurnId,
@@ -83,6 +87,7 @@ function layerExecutorFor(input: {
   readonly threads?: Partial<ThreadManagementService.ThreadManagementService["Service"]>;
   readonly continueAfterRestart?: boolean;
   readonly interrupt?: ProviderTurnControlService.ProviderTurnControlServiceV2Shape["interrupt"];
+  readonly steer?: ProviderTurnControlService.ProviderTurnControlServiceV2Shape["steer"];
   readonly rollback?: CheckpointRollbackService.CheckpointRollbackServiceV2Shape["execute"];
   readonly respond?: RuntimeRequestService.RuntimeRequestServiceV2["Service"]["respond"];
 }) {
@@ -92,7 +97,7 @@ function layerExecutorFor(input: {
       ProviderTurnControlService.ProviderTurnControlServiceV2,
       ProviderTurnControlService.ProviderTurnControlServiceV2.of({
         interrupt: input.interrupt ?? (() => Effect.void),
-        steer: () => Effect.void,
+        steer: input.steer ?? (() => Effect.void),
         interruptAndAwaitTerminal: (request) =>
           record(
             request.replacementProviderSessionId === undefined
@@ -216,6 +221,75 @@ it.effect.each([
       });
     }).pipe(Effect.provide(layer));
     assert.deepEqual(yield* Ref.get(events), dispatched);
+  }),
+);
+
+it.effect("marks a steer not sent when its follow-up targets a disabled provider", () =>
+  Effect.gen(function* () {
+    const now = yield* DateTime.now;
+    const messageId = MessageId.make("message:effect-worker-late-steer");
+    const dispatched = yield* Ref.make<ReadonlyArray<OrchestrationV2ServerCommand>>([]);
+    const layer = layerExecutorFor({
+      events: yield* Ref.make<ReadonlyArray<string>>([]),
+      steer: () =>
+        new ProviderTurnControlService.ProviderTurnControlError({
+          threadId,
+          operation: "steer",
+          providerTurnId,
+          turnCompleted: true,
+          cause: "The provider turn ended before the steering message was delivered.",
+        }),
+      threads: {
+        getThreadRecords: () =>
+          Effect.succeed({
+            messages: [
+              {
+                id: messageId,
+                runId,
+                text: "also check the tests",
+                attachments: [],
+                createdBy: "user",
+                creationSource: "web",
+              },
+            ],
+            runs: [{ id: runId, status: "completed" }],
+          } as never),
+        dispatch: (command) =>
+          Ref.update(dispatched, (current) => [...current, command]).pipe(
+            Effect.andThen(
+              command.type === "message.dispatch"
+                ? new ThreadManagementService.ThreadManagementProviderInstanceDisabledError({
+                    projectId: ProjectId.make("project:effect-worker"),
+                    instanceId: ProviderInstanceId.make("codex"),
+                  })
+                : Effect.succeed({ sequence: 1, storedEvents: [] }),
+            ),
+          ),
+      },
+    });
+    yield* Effect.gen(function* () {
+      const executor = yield* EffectWorker.OrchestrationEffectExecutorV2;
+      yield* executor.execute({
+        ...restartEffect(now, { type: "detach" }),
+        request: {
+          type: "provider-turn.steer",
+          providerSessionId: oldSessionId,
+          providerThreadId,
+          providerTurnId,
+          messageId,
+        },
+      });
+    }).pipe(Effect.provide(layer));
+    const commands = yield* Ref.get(dispatched);
+    assert.deepEqual(
+      commands.map((command) => command.type),
+      ["message.dispatch", "message.delivery.fail"],
+    );
+    const failed = commands[1];
+    assert.equal(
+      failed?.type === "message.delivery.fail" ? failed.messageId : undefined,
+      messageId,
+    );
   }),
 );
 
