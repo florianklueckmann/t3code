@@ -8,6 +8,7 @@ import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Metric from "effect/Metric";
 import * as Option from "effect/Option";
+import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 
 import {
@@ -268,7 +269,9 @@ export const layerExecutor: Layer.Layer<
                         messageId,
                       })
                       .pipe(
-                        // Failing would retry the effect and steer the message a second time.
+                        // Retry only the record: failing the effect would steer a second time.
+                        // The command id makes a retry of a record that did commit a no-op.
+                        Effect.retry({ times: 3, schedule: Schedule.exponential("1 second") }),
                         Effect.catch((cause) =>
                           Effect.logWarning(
                             "orchestration-v2.effect-worker.steer-acceptance-unrecorded",

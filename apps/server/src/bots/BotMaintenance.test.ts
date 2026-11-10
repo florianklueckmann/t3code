@@ -29,6 +29,7 @@ import * as CheckpointRollbackService from "../orchestration-v2/CheckpointRollba
 import * as EffectOutbox from "../orchestration-v2/EffectOutbox.ts";
 import * as EffectWorker from "../orchestration-v2/EffectWorker.ts";
 import * as EventStore from "../orchestration-v2/EventStore.ts";
+import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProviderSessionManager from "../orchestration-v2/ProviderSessionManager.ts";
 import * as ProviderTurnControlService from "../orchestration-v2/ProviderTurnControlService.ts";
@@ -833,6 +834,88 @@ it.effect.each([
     }).pipe(Effect.provide(storeOnly)),
 );
 
+/**
+ * Runs the input's pending steer effect through the real control service, executor and outbox.
+ * The provider session, the control projection and command dispatch are synthetic.
+ */
+const executeSteer = Effect.fn("fixture.executeSteer")(function* (
+  id: string,
+  options: {
+    readonly turnStatus: "running" | "completed";
+    readonly steerTurn?: Effect.Effect<void>;
+    readonly dispatch: ThreadManagementService.ThreadManagementService["Service"]["dispatch"];
+  },
+) {
+  const main = yield* SqlClient.SqlClient;
+  yield* main`UPDATE orchestration_v2_effect_outbox SET available_at = '1970-01-01T00:00:00.000Z' WHERE effect_id = ${`effect-${id}`}`;
+  const message = {
+    id,
+    runId: `run-${id}`,
+    text: gold,
+    attachments: [],
+    createdBy: "user",
+    creationSource: "web",
+  };
+  const run = { id: `run-${id}`, status: options.turnStatus };
+  const control = ProviderTurnControlService.layer.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
+          get: () =>
+            Effect.succeed(
+              options.steerTurn === undefined
+                ? Option.none()
+                : Option.some({ steerTurn: () => options.steerTurn } as never),
+            ),
+        }),
+        Layer.mock(ProjectionStore.ProjectionStoreV2)({
+          getProviderControlContext: () =>
+            Effect.succeed({
+              providerThread: { id: "provider-thread", providerSessionId: "session" },
+              providerTurn: {
+                id: `turn-${id}`,
+                providerThreadId: "provider-thread",
+                status: options.turnStatus,
+              },
+              run,
+              message,
+            } as never),
+        }),
+      ),
+    ),
+  );
+  const executor = EffectWorker.layerExecutor.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        control,
+        Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({}),
+        Layer.mock(RunFinalizationService.RunFinalizationService)({}),
+        Layer.mock(CheckpointRollbackService.CheckpointRollbackServiceV2)({}),
+        Layer.mock(ProviderTurnStartService.ProviderTurnStartServiceV2)({}),
+        Layer.mock(RuntimeRequestService.RuntimeRequestServiceV2)({}),
+        Layer.mock(ThreadTitleRegenerationService.ThreadTitleRegenerationService)({}),
+        Layer.mock(ThreadManagementService.ThreadManagementService)({
+          getThreadRecords: () => Effect.succeed({ messages: [message], runs: [run] } as never),
+          dispatch: options.dispatch,
+        }),
+        ServerSettings.layerTest(),
+      ),
+    ),
+  );
+  yield* Effect.gen(function* () {
+    const outbox = yield* EffectOutbox.EffectOutboxV2;
+    const claimed = yield* outbox.claimNext({ workerId: "worker" });
+    if (Option.isNone(claimed)) return assert.fail("the steer was not claimable");
+    const execution = yield* (yield* EffectWorker.OrchestrationEffectExecutorV2)
+      .execute(claimed.value)
+      .pipe(Effect.forkChild({ startImmediately: true }));
+    yield* TestClock.adjust("1 minute");
+    yield* Fiber.join(execution);
+    assert.isTrue(yield* outbox.succeed({ effectId: claimed.value.id, workerId: "worker" }));
+    assert.isTrue(Option.isNone(yield* outbox.claimNext({ workerId: "worker" })));
+  }).pipe(Effect.provide(Layer.merge(EffectOutbox.layer, executor)));
+});
+
 it.effect("never learns a steer whose turn ended first and whose follow-up was refused", () =>
   Effect.gen(function* () {
     yield* seedBot("automatic");
@@ -843,79 +926,22 @@ it.effect("never learns a steer whose turn ended first and whose follow-up was r
       Effect.gen(function* () {
         yield* enable(maintenance);
         yield* input("dropped", gold, { steer: "pending" });
-        const main = yield* SqlClient.SqlClient;
-        yield* main`UPDATE orchestration_v2_effect_outbox SET available_at = '1970-01-01T00:00:00.000Z' WHERE effect_id = 'effect-dropped'`;
         const dispatched = yield* Ref.make<ReadonlyArray<string>>([]);
         // The real control refuses the completed target; the project has since disabled the instance.
-        const control = ProviderTurnControlService.layer.pipe(
-          Layer.provide(
-            Layer.mergeAll(
-              Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({}),
-              Layer.mock(ProjectionStore.ProjectionStoreV2)({
-                getProviderControlContext: () =>
-                  Effect.succeed({
-                    providerThread: { id: "provider-thread", providerSessionId: "session" },
-                    providerTurn: {
-                      id: "turn-dropped",
-                      providerThreadId: "provider-thread",
-                      status: "completed",
-                    },
-                    run: { id: "run-dropped", status: "completed" },
-                  } as never),
-              }),
+        yield* executeSteer("dropped", {
+          turnStatus: "completed",
+          dispatch: (command) =>
+            Ref.update(dispatched, (all) => [...all, command.type]).pipe(
+              Effect.andThen(
+                command.type === "message.dispatch"
+                  ? new ThreadManagementService.ThreadManagementProviderInstanceDisabledError({
+                      projectId: scope.projectId,
+                      instanceId: ProviderInstanceId.make("codex"),
+                    })
+                  : Effect.succeed({ sequence: 1, storedEvents: [] }),
+              ),
             ),
-          ),
-        );
-        const executor = EffectWorker.layerExecutor.pipe(
-          Layer.provide(
-            Layer.mergeAll(
-              control,
-              Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({}),
-              Layer.mock(RunFinalizationService.RunFinalizationService)({}),
-              Layer.mock(CheckpointRollbackService.CheckpointRollbackServiceV2)({}),
-              Layer.mock(ProviderTurnStartService.ProviderTurnStartServiceV2)({}),
-              Layer.mock(RuntimeRequestService.RuntimeRequestServiceV2)({}),
-              Layer.mock(ThreadTitleRegenerationService.ThreadTitleRegenerationService)({}),
-              Layer.mock(ThreadManagementService.ThreadManagementService)({
-                getThreadRecords: () =>
-                  Effect.succeed({
-                    messages: [
-                      {
-                        id: "dropped",
-                        runId: "run-dropped",
-                        text: gold,
-                        attachments: [],
-                        createdBy: "user",
-                        creationSource: "web",
-                      },
-                    ],
-                    runs: [{ id: "run-dropped", status: "completed" }],
-                  } as never),
-                dispatch: (command) =>
-                  Ref.update(dispatched, (all) => [...all, command.type]).pipe(
-                    Effect.andThen(
-                      command.type === "message.dispatch"
-                        ? new ThreadManagementService.ThreadManagementProviderInstanceDisabledError(
-                            {
-                              projectId: scope.projectId,
-                              instanceId: ProviderInstanceId.make("codex"),
-                            },
-                          )
-                        : Effect.succeed({ sequence: 1, storedEvents: [] }),
-                    ),
-                  ),
-              }),
-              ServerSettings.layerTest(),
-            ),
-          ),
-        );
-        yield* Effect.gen(function* () {
-          const outbox = yield* EffectOutbox.EffectOutboxV2;
-          const claimed = yield* outbox.claimNext({ workerId: "worker" });
-          if (Option.isNone(claimed)) return assert.fail("the steer was not claimable");
-          yield* (yield* EffectWorker.OrchestrationEffectExecutorV2).execute(claimed.value);
-          assert.isTrue(yield* outbox.succeed({ effectId: claimed.value.id, workerId: "worker" }));
-        }).pipe(Effect.provide(Layer.merge(EffectOutbox.layer, executor)));
+        });
         assert.deepEqual(yield* Ref.get(dispatched), ["message.dispatch"]);
 
         const result = yield* maintenance.runNow(scope);
@@ -931,6 +957,68 @@ it.effect("never learns a steer whose turn ended first and whose follow-up was r
       }),
     );
   }).pipe(Effect.provide(storeOnly)),
+);
+
+it.effect(
+  "keeps a cancelled steer whose acceptance was never recorded until the record lands",
+  () =>
+    Effect.gen(function* () {
+      yield* seedBot("automatic");
+      const { packets, generate } = yield* recordingGenerator(() =>
+        Effect.succeed({ operations: [add("i1", "open every session recap", goldLesson)] }),
+      );
+      yield* withEngine(generate, ({ maintenance }) =>
+        Effect.gen(function* () {
+          yield* enable(maintenance);
+          yield* input("unrecorded", gold, { runStatus: "running", steer: "pending" });
+          const steers = yield* Ref.make(0);
+          const records = yield* Ref.make(0);
+          yield* executeSteer("unrecorded", {
+            turnStatus: "running",
+            steerTurn: Ref.update(steers, (n) => n + 1),
+            dispatch: (command) =>
+              Ref.update(records, (n) => n + 1).pipe(
+                Effect.andThen(
+                  new Orchestrator.OrchestratorDispatchError({
+                    commandId: command.commandId,
+                    commandType: command.type,
+                  }),
+                ),
+              ),
+          });
+          assert.equal(yield* Ref.get(steers), 1);
+          assert.isAbove(yield* Ref.get(records), 0);
+
+          const main = yield* SqlClient.SqlClient;
+          yield* main`UPDATE orchestration_v2_projection_runs SET status = 'cancelled' WHERE run_id = 'run-unrecorded'`;
+          const outcome = Effect.gen(function* () {
+            const result = yield* maintenance.runNow(scope);
+            return {
+              status: result.status,
+              calls: (yield* Ref.get(packets)).length,
+              lessons: (yield* learningRows).length,
+              receipts: yield* sourceStates,
+            };
+          });
+          assert.deepEqual(yield* outcome, {
+            status: "idle",
+            calls: 0,
+            lessons: 0,
+            receipts: { unrecorded: "pending" },
+          });
+
+          // The acceptance a later successful `message.steer.accept` would project.
+          yield* main`UPDATE orchestration_v2_projection_turn_items SET payload_json = json_set(payload_json, '$.steerAcceptedAt', ${now})
+          WHERE turn_item_id = ${IdAllocator.derive.userTurnItem({ messageId: MessageId.make("unrecorded") })}`;
+          assert.deepEqual(yield* outcome, {
+            status: "applied",
+            calls: 1,
+            lessons: 1,
+            receipts: { unrecorded: "applied" },
+          });
+        }),
+      );
+    }).pipe(Effect.provide(storeOnly)),
 );
 
 it.effect("keeps a project fact out of the Bot's other projects", () =>

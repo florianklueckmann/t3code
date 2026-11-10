@@ -98,8 +98,9 @@ export type Classified =
   /** Not settled yet; it and everything admitted after it wait for a later pass. */
   | { readonly _tag: "settling" }
   /**
-   * Its run ended before the model received it, so it is not part of what the model saw.
-   * It stays pending without holding back later input, and joins once a retry delivers it.
+   * Not known to have reached the model: its run ended first, or its steer's acceptance is
+   * unrecorded. It stays pending without holding back later input, and joins once a retry
+   * delivers it or the acceptance is recorded.
    */
   | { readonly _tag: "undelivered" }
   | { readonly _tag: "excluded"; readonly reason: string };
@@ -112,8 +113,11 @@ const settlingRuns = new Set(["queued", "preparing", "starting", "running", "wai
  */
 export const classifyHomeInput = (input: {
   readonly message: OrchestrationV2ConversationMessage | undefined;
-  /** The provider accepted it natively; an admission turn item alone is not delivery. */
-  readonly delivered: boolean;
+  /**
+   * Native acceptance; an admission turn item alone is not delivery. A steer whose acceptance
+   * is not recorded is `unknown`: the steer may have landed and only its record been lost.
+   */
+  readonly delivery: "delivered" | "undelivered" | "unknown";
   readonly runStatus: string | null;
 }): Classified => {
   const { message } = input;
@@ -127,10 +131,10 @@ export const classifyHomeInput = (input: {
     return { _tag: "excluded", reason: "not_user_input" };
   if (input.runStatus === "rolled_back") return { _tag: "excluded", reason: "rolled_back" };
   if (input.runStatus !== null && settlingRuns.has(input.runStatus)) return { _tag: "settling" };
-  if (input.delivered)
+  if (input.delivery === "delivered")
     return { _tag: "eligible", source: { kind: "home-input", id: message.id, text: message.text } };
   // A cancelled run is never retried; a failed one can be.
-  if (input.runStatus === "cancelled")
+  if (input.runStatus === "cancelled" && input.delivery === "undelivered")
     return { _tag: "excluded", reason: "cancelled_before_delivery" };
   return { _tag: "undelivered" };
 };

@@ -343,7 +343,14 @@ export const make = Effect.fn("BotMaintenance.make")(function* (generation: Gene
         Evidence.classifyHomeInput({
           message:
             row === undefined ? undefined : Option.getOrUndefined(decodeMessage(row.payload_json)),
-          delivered: row?.steered === 1 ? row.steer_accepted === 1 : row?.turn_started === 1,
+          delivery:
+            row?.steered === 1
+              ? row.steer_accepted === 1
+                ? "delivered"
+                : "unknown"
+              : row?.turn_started === 1
+                ? "delivered"
+                : "undelivered",
           runStatus: row?.run_status ?? null,
         }),
       );

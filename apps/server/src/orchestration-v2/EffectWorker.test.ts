@@ -21,15 +21,18 @@ import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as CheckpointRollbackService from "./CheckpointRollbackService.ts";
 import * as CheckpointService from "./CheckpointService.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EffectWorker from "./EffectWorker.ts";
+import * as Orchestrator from "./Orchestrator.ts";
 import * as RunFinalizationService from "./RunFinalizationService.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ProviderTurnControlService from "./ProviderTurnControlService.ts";
@@ -239,6 +242,12 @@ it.effect.each([
     dispatched: ["message.steer.accept"],
   },
   {
+    name: "retries a lost acceptance record without steering again",
+    steer: () => Effect.succeed(true),
+    acceptFailures: 2,
+    dispatched: ["message.steer.accept", "message.steer.accept", "message.steer.accept"],
+  },
+  {
     name: "records nothing when the control service attempted no delivery",
     steer: () => Effect.succeed(false),
     dispatched: [],
@@ -258,14 +267,16 @@ it.effect.each([
     steer: () => steerControlFailure(true),
     dispatched: ["message.dispatch"],
   },
-])("$name", ({ steer, dispatched }) =>
+])("$name", ({ steer, acceptFailures = 0, dispatched }) =>
   Effect.gen(function* () {
     const now = yield* DateTime.now;
     const events = yield* Ref.make<ReadonlyArray<string>>([]);
+    const steers = yield* Ref.make(0);
+    const failures = yield* Ref.make(acceptFailures);
     const messageId = MessageId.make("message:effect-worker-steer");
     const layer = layerExecutorFor({
       events,
-      steer,
+      steer: () => Ref.update(steers, (n) => n + 1).pipe(Effect.andThen(steer())),
       threads: {
         getThreadRecords: () =>
           Effect.succeed({
@@ -273,21 +284,27 @@ it.effect.each([
             runs: [{ id: runId }],
           } as never),
         dispatch: (command) =>
-          Ref.update(events, (current) => [...current, command.type]).pipe(
-            Effect.andThen(
-              command.type === "message.dispatch"
-                ? new ThreadManagementService.ThreadManagementProviderInstanceDisabledError({
-                    projectId: ProjectId.make("project:effect-worker-steer"),
-                    instanceId: ProviderInstanceId.make("codex"),
-                  })
-                : Effect.succeed({ sequence: 1, storedEvents: [] }),
-            ),
-          ),
+          Effect.gen(function* () {
+            yield* Ref.update(events, (current) => [...current, command.type]);
+            if (command.type === "message.dispatch")
+              return yield* new ThreadManagementService.ThreadManagementProviderInstanceDisabledError(
+                {
+                  projectId: ProjectId.make("project:effect-worker-steer"),
+                  instanceId: ProviderInstanceId.make("codex"),
+                },
+              );
+            if ((yield* Ref.getAndUpdate(failures, (n) => n - 1)) > 0)
+              return yield* new Orchestrator.OrchestratorDispatchError({
+                commandId: command.commandId,
+                commandType: command.type,
+              });
+            return { sequence: 1, storedEvents: [] };
+          }),
       },
     });
     yield* Effect.gen(function* () {
       const executor = yield* EffectWorker.OrchestrationEffectExecutorV2;
-      yield* executor
+      const run = yield* executor
         .execute({
           ...restartEffect(now, { type: "detach" }),
           request: {
@@ -298,9 +315,12 @@ it.effect.each([
             messageId,
           },
         })
-        .pipe(Effect.exit);
+        .pipe(Effect.exit, Effect.forkChild({ startImmediately: true }));
+      yield* TestClock.adjust("1 minute");
+      yield* Fiber.join(run);
     }).pipe(Effect.provide(layer));
     assert.deepEqual(yield* Ref.get(events), dispatched);
+    assert.equal(yield* Ref.get(steers), 1);
   }),
 );
 
