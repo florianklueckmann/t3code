@@ -110,7 +110,7 @@ const layerDispatchChokepointTest =
     );
 
 it.effect(
-  "the dispatch chokepoint refuses a continuation message.dispatch on a project-disabled instance before reaching the orchestrator",
+  "the dispatch chokepoint refuses a continuation message.dispatch or a scoped Home turn on a project-disabled instance before reaching the orchestrator",
   () => {
     const projectId = ProjectId.make("project:thread-management:chokepoint");
     const threadId = ThreadId.make("thread:thread-management:chokepoint");
@@ -146,6 +146,20 @@ it.effect(
         ThreadManagementService.ThreadManagementProviderInstanceDisabledError,
       );
       expect(error).toMatchObject({ projectId, instanceId });
+      const scoped = yield* Effect.flip(
+        threads.dispatch({
+          type: "restricted_run.start",
+          commandId: CommandId.make("command:thread-management:chokepoint-scoped"),
+          threadId,
+          messageId: MessageId.make("message:thread-management:chokepoint-scoped"),
+          text: "Refresh your working note.",
+          restriction: "botNote",
+          ifIdleAtSequence: 1,
+        }),
+      );
+      expect(scoped).toBeInstanceOf(
+        ThreadManagementService.ThreadManagementProviderInstanceDisabledError,
+      );
       expect(dispatched).toEqual([]);
     }).pipe(Effect.provide(layerTest));
   },

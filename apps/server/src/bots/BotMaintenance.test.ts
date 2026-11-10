@@ -7,6 +7,8 @@ import {
   type BotTaskResult,
   MessageId,
   NodeId,
+  type OrchestrationV2ServerCommand,
+  type OrchestrationV2StoredEvent,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -23,6 +25,7 @@ import {
   SealedGenerationRefused,
   type SealedRefusalReason,
 } from "@t3tools/provider-core/server/sealedGeneration";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -32,6 +35,7 @@ import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import type * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
@@ -64,6 +68,7 @@ import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import * as BotContinuation from "./BotContinuation.ts";
 import * as BotHomes from "./BotHomes.ts";
 import * as BotProjectGuard from "./BotProjectGuard.ts";
 import * as BotDatabase from "./persistence/BotDatabase.ts";
@@ -88,7 +93,10 @@ const storeOnly = BotStore.layer.pipe(Layer.provideMerge(database));
 const inertLearning = Layer.mergeAll(
   Layer.mock(BotService.BotService)({}),
   Layer.mock(BotTaskService.BotTaskService)({}),
+  Layer.mock(BotContinuation.BotContinuation)({}),
   Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({}),
+  Layer.mock(ThreadManagementService.ThreadManagementService)({}),
+  Layer.mock(EventSink.EventSinkV2)({}),
   Layer.mock(Scheduler.Scheduler)({ register: () => Effect.void }),
 );
 
@@ -101,6 +109,7 @@ const sealedInstance = (options: {
   readonly calls?: Ref.Ref<ReadonlyArray<SealedGenerationInput<Schema.Top>>>;
 }) =>
   ({
+    driverKind: ProviderDriverKind.make("codex"),
     sealedGeneration: {
       availability: () => options.availability ?? Effect.succeed(null),
       generate: (input: SealedGenerationInput<Schema.Top>) =>
@@ -596,6 +605,12 @@ const withEngine = <A, E, R>(
     readonly executor: KeyedLock.KeyedLock<ThreadId>;
     /** The source maintenance registered with the Scheduler, run by hand in UTC. */
     readonly runScheduled: Effect.Effect<void>;
+    /** Answers every orchestration command maintenance dispatches. */
+    readonly homeTurns: Ref.Ref<
+      ThreadManagementService.ThreadManagementService["Service"]["dispatch"]
+    >;
+    /** The Home's persisted and live events, as maintenance's subscription reads them. */
+    readonly homeEvents: Queue.Queue<OrchestrationV2StoredEvent>;
   }) => Effect.Effect<A, E, R>,
   taskResults: Readonly<Record<string, string>> = {},
 ) =>
@@ -611,9 +626,27 @@ const withEngine = <A, E, R>(
     const runtimeStarts = yield* Semaphore.make(1);
     const sessionRuntimes = yield* Ref.make<ReadonlyMap<string, object>>(new Map());
     const scheduled = yield* Ref.make<ReadonlyArray<readonly [string, Effect.Effect<void>]>>([]);
+    const homeTurns = yield* Ref.make<
+      ThreadManagementService.ThreadManagementService["Service"]["dispatch"]
+    >(() => Effect.die("this test starts no Home turn"));
+    const homeEvents = yield* Queue.unbounded<OrchestrationV2StoredEvent>();
     const bots = yield* BotService.BotService;
     const maintenance = yield* BotMaintenance.make.pipe(
       Effect.provideService(ThreadCommandExecutor.ThreadCommandExecutor, executor),
+      Effect.provideService(ThreadManagementService.ThreadManagementService, {
+        dispatch: (command) => Ref.get(homeTurns).pipe(Effect.flatMap((turn) => turn(command))),
+      } as ThreadManagementService.ThreadManagementService["Service"]),
+      // Like the real sink, a subscription replays what committed after its sequence.
+      Effect.provideService(EventSink.EventSinkV2, {
+        stream: (filter?: { readonly threadId?: ThreadId; readonly afterSequence?: number }) =>
+          Stream.fromQueue(homeEvents).pipe(
+            Stream.filter(
+              (stored) =>
+                stored.sequence > (filter?.afterSequence ?? 0) &&
+                stored.event.threadId === filter?.threadId,
+            ),
+          ),
+      } as unknown as EventSink.EventSinkV2["Service"]),
       Effect.provideService(BotService.BotService, {
         ...bots,
         maintainLearning: (target, change) =>
@@ -689,6 +722,8 @@ const withEngine = <A, E, R>(
       runtimeStarts,
       sessionRuntimes,
       executor,
+      homeTurns,
+      homeEvents,
       runScheduled: Ref.get(scheduled).pipe(
         Effect.flatMap((sources) => {
           const [entry, ...others] = sources;
@@ -700,7 +735,7 @@ const withEngine = <A, E, R>(
     });
   }).pipe(
     Effect.provide(
-      Layer.mergeAll(BotService.layer, BotTurnContext.layer).pipe(
+      Layer.mergeAll(BotService.layer, BotTurnContext.layer, BotContinuation.layer).pipe(
         Layer.provideMerge(
           Layer.mergeAll(
             Layer.mock(BotTaskService.BotTaskService)({
@@ -769,11 +804,12 @@ const sourceStates = Effect.gen(function* () {
   return Object.fromEntries(rows.map((row) => [row.source_id, row.exclusion_reason ?? row.state]));
 });
 
+/** Learning passes only; a nightly note refresh runs beside them and records its own rows. */
 const runStatuses = Effect.gen(function* () {
   const bots = yield* BotDatabase.BotDatabase;
   const rows = yield* bots<{
     readonly status: string;
-  }>`SELECT status FROM bot_maintenance_runs WHERE home_thread_id = ${home} ORDER BY started_at, rowid`;
+  }>`SELECT status FROM bot_maintenance_runs WHERE home_thread_id = ${home} AND json_extract(outcome_json, '$.note') IS NULL ORDER BY started_at, rowid`;
   return rows.map((row) => row.status);
 });
 
@@ -2390,6 +2426,247 @@ it.effect("orders input admitted at the same instant by the Home's own turn orde
         assert.deepEqual(
           (yield* Ref.get(packets)).map((packet) => packet.sources.map((source) => source.text)),
           [["Use detailed recaps.", "Actually use short recaps."]],
+        );
+      }),
+    );
+  }).pipe(Effect.provide(storeOnly)),
+);
+
+/** A Bot Home on the Bot's Codex instance, on a host that can scope a Home turn. */
+const refreshHome = Effect.fn("fixture.refreshHome")(function* (instance = "codex") {
+  yield* seedBot("automatic");
+  yield* homeThread({});
+  const main = yield* SqlClient.SqlClient;
+  yield* main`UPDATE orchestration_v2_projection_threads SET provider_instance_id = ${instance} WHERE thread_id = ${home}`;
+});
+
+/**
+ * Admits `restricted_run.start` the way the orchestrator does, only at the captured Home
+ * sequence, and opens its scoped run. The test then plays the provider turn.
+ */
+const scopedTurns = Effect.fn("fixture.scopedTurns")(function* (homeSequence: Ref.Ref<number>) {
+  const main = yield* SqlClient.SqlClient;
+  const commands = yield* Ref.make<ReadonlyArray<OrchestrationV2ServerCommand>>([]);
+  const started = yield* Queue.unbounded<string>();
+  const dispatch: ThreadManagementService.ThreadManagementService["Service"]["dispatch"] = (
+    command,
+  ) =>
+    Effect.gen(function* () {
+      yield* Ref.update(commands, (all) => [...all, command]);
+      const sequence = yield* Ref.get(homeSequence);
+      if (command.type !== "restricted_run.start" || command.ifIdleAtSequence !== sequence)
+        return { sequence, storedEvents: [], deferred: true } as const;
+      const runId = `scoped-${command.messageId}`;
+      yield* main`INSERT INTO orchestration_v2_projection_runs (run_id, thread_id, ordinal, provider, status, requested_at, payload_json)
+        VALUES (${runId}, ${home}, (SELECT COALESCE(MAX(ordinal), 0) + 1 FROM orchestration_v2_projection_runs WHERE thread_id = ${home}), 'codex', 'running', ${now},
+          ${JSON.stringify({ userMessageId: command.messageId, restriction: command.restriction })})`;
+      yield* main`INSERT INTO orchestration_v2_projection_messages (message_id, thread_id, run_id, role, streaming, created_at, updated_at, payload_json)
+        VALUES (${command.messageId}, ${home}, ${runId}, 'user', 0, ${now}, ${now},
+          ${JSON.stringify({ id: command.messageId, threadId: home, runId, nodeId: null, role: "user", text: command.text, attachments: [], streaming: false, createdAt: now, updatedAt: now, createdBy: "agent", creationSource: "server" })})`;
+      yield* Ref.set(homeSequence, sequence + 1);
+      yield* Queue.offer(started, runId);
+      return { sequence: sequence + 1, storedEvents: [] };
+    }).pipe(Effect.orDie);
+  return { dispatch, commands, started };
+});
+
+/** Ends the scoped run as its provider turn would, committing and then publishing the event. */
+const endScopedRun = Effect.fn("fixture.endScopedRun")(function* (
+  runId: string,
+  status: string,
+  homeSequence: Ref.Ref<number>,
+  homeEvents: Queue.Queue<OrchestrationV2StoredEvent>,
+) {
+  const main = yield* SqlClient.SqlClient;
+  yield* main`UPDATE orchestration_v2_projection_runs SET status = ${status} WHERE run_id = ${runId}`;
+  const sequence = (yield* Ref.get(homeSequence)) + 1;
+  yield* Ref.set(homeSequence, sequence);
+  yield* Queue.offer(homeEvents, {
+    sequence,
+    commandId: null,
+    event: { type: "run.updated", threadId: home, runId, payload: { status } },
+  } as unknown as OrchestrationV2StoredEvent);
+});
+
+/** The save the scoped turn's model makes through t3_bot, with the basis its run was given. */
+const saveNoteAsBot = Effect.fn("fixture.saveNoteAsBot")(function* (updateId: string) {
+  const notes = yield* BotContinuation.BotContinuation;
+  const view = yield* notes.get(scope);
+  return yield* notes.save(
+    {
+      ...scope,
+      updateId,
+      baseRevision: view.revision,
+      note: { requests: [{ text: "Harbor checklist" }], waiting: [], decided: [], context: [] },
+      basis: view.basis!,
+    },
+    { kind: "bot", threadId: home },
+  );
+});
+
+const noteOutcomes = runOutcomes.pipe(
+  Effect.map((rows) => rows.filter((row) => row.outcome?.note !== undefined)),
+);
+
+it.effect(
+  "refreshes a note behind the Home in one scoped turn once learning is done, then finds it current",
+  () =>
+    Effect.gen(function* () {
+      yield* refreshHome();
+      const { generate } = yield* recordingGenerator(() => Effect.succeed({ operations: [] }));
+      yield* withEngine(generate, ({ maintenance, homeSequence, homeTurns, homeEvents }) =>
+        Effect.gen(function* () {
+          yield* enable(maintenance);
+          const turns = yield* scopedTurns(homeSequence);
+          yield* Ref.set(homeTurns, turns.dispatch);
+          yield* input("ask", "Draft the Harbor checklist once I send the dates.");
+          // Learning still owes this input, so the note waits for it.
+          const early = yield* maintenance.refreshNote(scope);
+          assert.deepEqual(early.status === "deferred" && early.reason, "learning_pending");
+          assert.equal((yield* maintenance.runNow(scope)).status, "noop");
+
+          yield* Ref.set(homeSequence, 7);
+          const refresh = yield* maintenance
+            .refreshNote(scope)
+            .pipe(Effect.forkChild({ startImmediately: true }));
+          const runId = yield* Queue.take(turns.started);
+          const messageId = `bot-maintenance:note:${home}:7`;
+          assert.deepEqual((yield* Ref.get(turns.commands)) as ReadonlyArray<unknown>, [
+            {
+              type: "restricted_run.start",
+              commandId: messageId,
+              threadId: home,
+              messageId,
+              text: BotMaintenance.NOTE_REFRESH_PROMPT,
+              restriction: "botNote",
+              ifIdleAtSequence: 7,
+            },
+          ]);
+          assert.equal((yield* saveNoteAsBot("refresh"))._tag, "saved");
+          yield* endScopedRun(runId, "completed", homeSequence, homeEvents);
+          const refreshed = yield* Fiber.join(refresh);
+          assert.deepEqual(
+            refreshed.status === "refreshed" && refreshed.homeRunId,
+            `scoped-${messageId}`,
+          );
+          assert.deepEqual(
+            (yield* noteOutcomes).map((row) => row.outcome),
+            [
+              { note: "deferred", reason: "learning_pending" },
+              { note: "refreshed", homeRunId: runId },
+            ],
+          );
+
+          // Learning sets the refresh prompt aside as not the user's; then nothing is owed.
+          assert.deepEqual(yield* maintenance.runNow(scope), { status: "idle" });
+          assert.deepEqual(yield* sourceStates, { ask: "applied", [messageId]: "not_user_input" });
+          assert.deepEqual(yield* maintenance.refreshNote(scope), { status: "current" });
+          assert.lengthOf(yield* Ref.get(turns.commands), 1);
+          assert.lengthOf(yield* noteOutcomes, 2);
+        }),
+      );
+    }).pipe(Effect.provide(storeOnly), Effect.provideService(HostProcess.Platform, "darwin")),
+);
+
+it.effect.each([
+  { ending: "failed", saves: true, reason: "run_failed" },
+  { ending: "interrupted", saves: false, reason: "run_interrupted" },
+  { ending: "completed", saves: false, reason: "not_saved" },
+] as const)(
+  "keeps the evidence for the next refresh when the scoped turn ends $ending (saved: $saves)",
+  ({ ending, saves, reason }) =>
+    Effect.gen(function* () {
+      yield* refreshHome();
+      const { generate } = yield* recordingGenerator(() => Effect.succeed({ operations: [] }));
+      yield* withEngine(generate, ({ maintenance, homeSequence, homeTurns, homeEvents }) =>
+        Effect.gen(function* () {
+          yield* enable(maintenance);
+          const turns = yield* scopedTurns(homeSequence);
+          yield* Ref.set(homeTurns, turns.dispatch);
+          yield* input("ask", "Draft the Harbor checklist once I send the dates.");
+          yield* maintenance.runNow(scope);
+          const refresh = yield* maintenance
+            .refreshNote(scope)
+            .pipe(Effect.forkChild({ startImmediately: true }));
+          const runId = yield* Queue.take(turns.started);
+          if (saves) assert.equal((yield* saveNoteAsBot("refresh"))._tag, "saved");
+          yield* endScopedRun(runId, ending, homeSequence, homeEvents);
+          const result = yield* Fiber.join(refresh);
+          assert.deepEqual(result.status === "not_refreshed" && result.reason, reason);
+          assert.deepEqual(
+            (yield* noteOutcomes).map((row) => [row.status, row.outcome]),
+            [["failed", { note: "not_refreshed", reason, homeRunId: runId }]],
+          );
+          // A save made before the run failed still stands; only the outcome reports the failure.
+          const notes = yield* BotContinuation.BotContinuation;
+          assert.equal((yield* notes.coverage(scope))._tag, saves ? "current" : "behind");
+
+          // Nothing was consumed: the next attempt is a new turn at the Home's new sequence.
+          if (saves) return;
+          yield* maintenance.runNow(scope);
+          const retry = yield* maintenance
+            .refreshNote(scope)
+            .pipe(Effect.forkChild({ startImmediately: true }));
+          const retried = yield* Queue.take(turns.started);
+          assert.notEqual(retried, runId);
+          assert.equal((yield* saveNoteAsBot("retry"))._tag, "saved");
+          yield* endScopedRun(retried, "completed", homeSequence, homeEvents);
+          assert.equal((yield* Fiber.join(retry)).status, "refreshed");
+        }),
+      );
+    }).pipe(Effect.provide(storeOnly), Effect.provideService(HostProcess.Platform, "darwin")),
+);
+
+it.effect.each([
+  { name: "a running Home turn", reason: "home_active" },
+  { name: "Home input after the captured sequence", reason: "home_active" },
+  { name: "more new input than one save holds", reason: "input_overflow" },
+  { name: "a Linux host", reason: "unsupported" },
+  { name: "a Home on another provider", reason: "unsupported" },
+] as const)("defers the refresh without a lasting turn for $name", ({ name, reason }) =>
+  Effect.gen(function* () {
+    yield* refreshHome(name === "a Home on another provider" ? "claude" : "codex");
+    const { generate } = yield* recordingGenerator(() => Effect.succeed({ operations: [] }));
+    yield* withEngine(generate, ({ maintenance, homeSequence, homeTurns }) =>
+      Effect.gen(function* () {
+        const turns = yield* scopedTurns(homeSequence);
+        if (name === "more new input than one save holds")
+          for (let index = 0; index <= 200; index += 1)
+            yield* input(`old-${index}`, `Request ${index}`);
+        yield* enable(maintenance);
+        yield* input("ask", "Draft the Harbor checklist once I send the dates.");
+        yield* maintenance.runNow(scope);
+        if (name === "a running Home turn") yield* homeRun("busy", "running");
+        // The admission refuses because an event committed after the sequence was read.
+        const lateInput: typeof turns.dispatch = (command) =>
+          Ref.update(homeSequence, (sequence) => sequence + 1).pipe(
+            Effect.andThen(turns.dispatch(command)),
+          );
+        yield* Ref.set(
+          homeTurns,
+          name === "Home input after the captured sequence" ? lateInput : turns.dispatch,
+        );
+        const result = yield* maintenance
+          .refreshNote(scope)
+          .pipe(
+            Effect.provideService(
+              HostProcess.Platform,
+              name === "a Linux host" ? "linux" : "darwin",
+            ),
+          );
+        assert.deepEqual(result.status === "deferred" && result.reason, reason);
+        assert.deepEqual(
+          (yield* noteOutcomes).map((row) => [row.status, row.outcome]),
+          [["deferred", { note: "deferred", reason }]],
+        );
+        const main = yield* SqlClient.SqlClient;
+        assert.deepEqual(
+          yield* main`SELECT run_id FROM orchestration_v2_projection_runs WHERE run_id LIKE 'scoped-%'`,
+          [],
+        );
+        assert.lengthOf(
+          yield* Ref.get(turns.commands),
+          name === "Home input after the captured sequence" ? 1 : 0,
         );
       }),
     );

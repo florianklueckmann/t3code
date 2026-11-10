@@ -8,10 +8,12 @@ import {
   BotLearningEntryId,
   type BotMaintenanceView,
   BotTaskId,
+  CommandId,
   MessageId,
   OrchestrationV2ConversationMessageJson,
   OrchestrationV2ProviderThreadJson,
   ProjectId,
+  ProviderInstanceId,
   ProviderSessionId,
   type ScheduledTaskSchedule,
   ThreadId,
@@ -24,19 +26,25 @@ import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as FiberMap from "effect/FiberMap";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Stream from "effect/Stream";
 import type * as EffectOutbox from "../orchestration-v2/EffectOutbox.ts";
+import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as EventStore from "../orchestration-v2/EventStore.ts";
 import * as ProviderSessionManager from "../orchestration-v2/ProviderSessionManager.ts";
 import * as ThreadCommandExecutor from "../orchestration-v2/ThreadCommandExecutor.ts";
+import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import { nextScheduledRunAt } from "../scheduledTasks/Schedule.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as BotDatabase from "./persistence/BotDatabase.ts";
+import * as BotContinuation from "./BotContinuation.ts";
 import * as Evidence from "./BotMaintenanceEvidence.ts";
+import * as BotRuntimePolicy from "./BotRuntimePolicy.ts";
 import * as BotService from "./BotService.ts";
 import * as BotStore from "./BotStore.ts";
 import * as BotTaskService from "./BotTaskService.ts";
@@ -77,6 +85,34 @@ export type BotMaintenancePass =
       readonly reason: "generation_failed" | Evidence.RejectReason;
     };
 
+export type NoteDeferReason =
+  | "home_active"
+  | "learning_pending"
+  | Extract<BotContinuation.NoteCoverage, { readonly _tag: "unprovable" }>["reason"]
+  /** The Home's provider or host cannot enforce the scoped turn, so it would only fail. */
+  | "unsupported";
+
+export type NoteRefresh =
+  /** The note provably covers every direct input and returned result; no turn ran. */
+  | { readonly status: "current" }
+  | { readonly status: "refreshed"; readonly runId: string; readonly homeRunId: string }
+  | {
+      readonly status: "not_refreshed";
+      readonly runId: string;
+      /** `run_<status>` when the scoped run ended any way but completed. */
+      readonly reason:
+        | "start_refused"
+        | "run_missing"
+        | "not_saved"
+        | "source_gap"
+        | `run_${string}`;
+    }
+  | { readonly status: "deferred"; readonly runId: string; readonly reason: NoteDeferReason };
+
+/** The whole prompt of the scoped note refresh turn. Model-facing. */
+export const NOTE_REFRESH_PROMPT =
+  "Maintenance: bring your working notes up to date with this Home, then stop. Read them with t3_bot read_continuation and reconcile every unfinished request, waiting question or proposal, decision and returned task result since the saved source boundary. Then save the full note once with t3_bot save_continuation and that exact basis, even when nothing changed. Keep proposals in waiting until the user approves them; a new decided item needs an exact quote from the user's own message. Do nothing else: no other tool, task or message. Reply with one short line.";
+
 interface StateRow {
   readonly settings_revision: number;
   readonly enabled: number;
@@ -101,6 +137,8 @@ export class BotMaintenance extends Context.Service<
     ) => Effect.Effect<BotConfigureMaintenanceResult, BotError>;
     /** One learning pass over new evidence; serialized per Home with every other pass. */
     readonly runNow: (scope: BotContinuationScope) => Effect.Effect<BotMaintenancePass, BotError>;
+    /** Runs a scoped Home turn that saves the working note, unless it already covers the Home. */
+    readonly refreshNote: (scope: BotContinuationScope) => Effect.Effect<NoteRefresh, BotError>;
   }
 >()("t3/bots/BotMaintenance") {}
 
@@ -162,7 +200,11 @@ export const make = Effect.gen(function* () {
   const providers = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
   const scheduler = yield* Scheduler.Scheduler;
   const zone = yield* DateTime.CurrentTimeZone;
+  const notes = yield* BotContinuation.BotContinuation;
+  const threads = yield* ThreadManagementService.ThreadManagementService;
+  const sink = yield* EventSink.EventSinkV2;
   const passLocks = yield* KeyedLock.make<ThreadId>();
+  const refreshes = yield* FiberMap.make<ThreadId>();
 
   /**
    * The Bot's own selected instance and model, never a fallback. Availability reads the
@@ -587,6 +629,24 @@ export const make = Effect.gen(function* () {
 
   const finishRun = (runId: string, status: string, outcome: unknown, now: string) =>
     sql`UPDATE bot_maintenance_runs SET status = ${status}, outcome_json = ${encodeJson(outcome)}, finished_at = ${now} WHERE run_id = ${runId}`;
+  const insertRun = (
+    home: ThreadId,
+    run: {
+      readonly runId: string;
+      readonly status: string;
+      readonly outcome: unknown;
+      readonly startedAt: string;
+      readonly finishedAt: string | null;
+    },
+  ) =>
+    sql.withTransaction(
+      Effect.gen(function* () {
+        yield* sql`INSERT INTO bot_maintenance_runs (run_id, home_thread_id, status, started_at, finished_at, outcome_json)
+          VALUES (${run.runId}, ${home}, ${run.status}, ${run.startedAt}, ${run.finishedAt}, ${encodeJson(run.outcome)})`;
+        yield* sql`DELETE FROM bot_maintenance_runs WHERE home_thread_id = ${home} AND run_id NOT IN (
+          SELECT run_id FROM bot_maintenance_runs WHERE home_thread_id = ${home} ORDER BY started_at DESC, rowid DESC LIMIT ${RETAINED_RUNS})`;
+      }),
+    );
 
   const pass = Effect.fn("BotMaintenance.pass")(function* (
     scope: BotContinuationScope,
@@ -604,14 +664,13 @@ export const make = Effect.gen(function* () {
     yield* discover(home, now);
     const runId = yield* random.uuidV4();
     const recordRun = (status: string, outcome: unknown) =>
-      sql.withTransaction(
-        Effect.gen(function* () {
-          yield* sql`INSERT INTO bot_maintenance_runs (run_id, home_thread_id, status, started_at, finished_at, outcome_json)
-            VALUES (${runId}, ${home}, ${status}, ${now}, ${status === "running" ? null : now}, ${encodeJson(outcome)})`;
-          yield* sql`DELETE FROM bot_maintenance_runs WHERE home_thread_id = ${home} AND run_id NOT IN (
-            SELECT run_id FROM bot_maintenance_runs WHERE home_thread_id = ${home} ORDER BY started_at DESC, rowid DESC LIMIT ${RETAINED_RUNS})`;
-        }),
-      );
+      insertRun(home, {
+        runId,
+        status,
+        outcome,
+        startedAt: now,
+        finishedAt: status === "running" ? null : now,
+      });
     // Discovery only records receipts; nothing is classified or consumed while the Home is busy.
     const admitted = yield* homeCommands.withLock(home, homeAdmission(home));
     if (admitted.activity !== null) {
@@ -770,6 +829,135 @@ export const make = Effect.gen(function* () {
   }, Effect.mapError(failure));
 
   /**
+   * Coverage is derived from the note and the Home, never stored here, so a refresh that fails
+   * consumes nothing and the next one sees the same evidence. One outcome row per attempt.
+   */
+  const refreshNote = Effect.fn("BotMaintenance.refreshNote")(function* (
+    scope: BotContinuationScope,
+  ) {
+    const { home, active } = yield* scopeOf(scope);
+    if ((yield* stateRow(home))?.enabled !== 1 || !active)
+      return yield* invalid("Bot maintenance is off for this project.");
+    const startedAt = DateTime.formatIso(yield* DateTime.now);
+    const runId = yield* random.uuidV4();
+    const settle = (status: string, outcome: object, result: NoteRefresh) =>
+      DateTime.now.pipe(
+        Effect.flatMap((finished) =>
+          insertRun(home, {
+            runId,
+            status,
+            outcome,
+            startedAt,
+            finishedAt: DateTime.formatIso(finished),
+          }),
+        ),
+        Effect.as(result),
+      );
+    const deferred = (reason: NoteDeferReason) =>
+      settle("deferred", { note: "deferred", reason }, {
+        status: "deferred",
+        runId,
+        reason,
+      } as const);
+    const notRefreshed = (
+      reason: Extract<NoteRefresh, { readonly status: "not_refreshed" }>["reason"],
+      homeRunId: string | null,
+    ) =>
+      settle("failed", { note: "not_refreshed", reason, homeRunId }, {
+        status: "not_refreshed",
+        runId,
+        reason,
+      } as const);
+
+    // The sequence comes first, so any Home event after these reads refuses the start below.
+    const read = yield* passLocks.withLock(
+      home,
+      homeCommands.withLock(
+        home,
+        Effect.gen(function* () {
+          const admitted = yield* homeAdmission(home);
+          if (admitted.activity !== null) return { _tag: "busy" } as const;
+          yield* discover(home, startedAt);
+          const pending =
+            yield* sql`SELECT 1 FROM bot_maintenance_sources WHERE home_thread_id = ${home} AND state = 'pending' LIMIT 1`;
+          if (pending.length > 0) return { _tag: "learning_pending" } as const;
+          return {
+            _tag: "read",
+            sequence: admitted.sequence,
+            coverage: yield* notes.coverage(scope),
+          } as const;
+        }),
+      ),
+    );
+    if (read._tag === "busy") return yield* deferred("home_active");
+    if (read._tag === "learning_pending") return yield* deferred("learning_pending");
+    const { coverage, sequence } = read;
+    if (coverage._tag === "current") return { status: "current" } as const;
+    if (coverage._tag === "unprovable") return yield* deferred(coverage.reason);
+    const [thread] = yield* main<{
+      readonly provider_instance_id: string | null;
+    }>`SELECT provider_instance_id FROM orchestration_v2_projection_threads WHERE thread_id = ${home}`;
+    if (
+      thread?.provider_instance_id == null ||
+      (yield* BotRuntimePolicy.restrictionUnenforceable(
+        providers,
+        ProviderInstanceId.make(thread.provider_instance_id),
+      )) !== undefined
+    )
+      return yield* deferred("unsupported");
+
+    const messageId = MessageId.make(`bot-maintenance:note:${home}:${sequence}`);
+    const started = yield* Effect.result(
+      threads.dispatch({
+        type: "restricted_run.start",
+        commandId: CommandId.make(messageId),
+        threadId: home,
+        messageId,
+        text: NOTE_REFRESH_PROMPT,
+        restriction: "botNote",
+        ifIdleAtSequence: sequence,
+      }),
+    );
+    if (started._tag === "Failure") {
+      yield* Effect.logWarning("Bot note refresh was refused", { home, cause: started.failure });
+      return yield* notRefreshed("start_refused", null);
+    }
+    if (started.success.deferred === true) return yield* deferred("home_active");
+    const [run] = yield* main<{
+      readonly run_id: string;
+    }>`SELECT run_id FROM orchestration_v2_projection_runs WHERE thread_id = ${home} AND json_extract(payload_json, '$.userMessageId') = ${messageId}`;
+    if (run === undefined) return yield* notRefreshed("run_missing", null);
+    // The stream replays persisted events after the sequence, so a run that already ended still arrives.
+    yield* sink.stream({ threadId: home, afterSequence: sequence, eventType: "run.updated" }).pipe(
+      Stream.filter(
+        (stored) =>
+          stored.event.type === "run.updated" &&
+          stored.event.runId === run.run_id &&
+          ThreadManagementService.isTerminalRunStatus(stored.event.payload.status),
+      ),
+      Stream.runHead,
+    );
+
+    const [settled] = yield* main<{
+      readonly status: string;
+    }>`SELECT status FROM orchestration_v2_projection_runs WHERE run_id = ${run.run_id}`;
+    if (settled?.status !== "completed")
+      return yield* notRefreshed(`run_${settled?.status ?? "missing"}`, run.run_id);
+    const [saved] = yield* sql<{
+      readonly complete: number | null;
+    }>`SELECT json_extract(revision_json, '$.inspected.complete') AS complete FROM bot_continuation_revisions
+      WHERE home_thread_id = ${home} AND json_extract(revision_json, '$.updatedBy.runId') = ${run.run_id}
+      ORDER BY revision DESC LIMIT 1`;
+    if (saved === undefined) return yield* notRefreshed("not_saved", run.run_id);
+    if (saved.complete !== 1) return yield* notRefreshed("source_gap", run.run_id);
+    return yield* settle("applied", { note: "refreshed", homeRunId: run.run_id }, {
+      status: "refreshed",
+      runId,
+      homeRunId: run.run_id,
+    } as const);
+  }, Effect.mapError(failure));
+
+  /**
    * One attempt a night per enabled Home, after missed nights too. The night is claimed before
    * the pass, so a paused, unavailable or busy Bot skips it and a crash never repeats it.
    * Polled every few seconds, so only a due pass is traced, through `runNow`.
@@ -791,15 +979,20 @@ export const make = Effect.gen(function* () {
       );
       if (due === null || DateTime.isGreaterThan(due, now)) continue;
       yield* sql`UPDATE bot_maintenance SET nightly_at = ${DateTime.formatIso(now)} WHERE home_thread_id = ${row.home_thread_id}`;
-      yield* runNow({
-        botId: BotId.make(row.bot_id),
-        projectId: ProjectId.make(row.project_id),
-      }).pipe(Effect.ignore({ log: true }));
+      const scope = { botId: BotId.make(row.bot_id), projectId: ProjectId.make(row.project_id) };
+      yield* runNow(scope).pipe(Effect.ignore({ log: true }));
+      // The refresh waits on a Home turn, so the other Homes' passes do not wait for it.
+      yield* FiberMap.run(
+        refreshes,
+        ThreadId.make(row.home_thread_id),
+        refreshNote(scope).pipe(Effect.ignore({ log: true })),
+        { onlyIfMissing: true },
+      );
     }
   });
   yield* scheduler.register("bot-maintenance", runNightly);
 
-  return BotMaintenance.of({ get, configure, runNow });
+  return BotMaintenance.of({ get, configure, runNow, refreshNote });
 });
 
 export const layer = Layer.effect(BotMaintenance, make).pipe(

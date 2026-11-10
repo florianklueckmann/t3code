@@ -725,6 +725,7 @@ const make = Effect.gen(function* () {
     switch (command.type) {
       case "message.dispatch":
       case "bot-task.result.deliver":
+      case "restricted_run.start":
         return orchestrator.getThreadRecords(command.threadId, []).pipe(
           Effect.flatMap((projection) =>
             assertProviderInstanceEnabled({

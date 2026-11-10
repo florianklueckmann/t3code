@@ -1,3 +1,4 @@
+import type { ProviderInstanceId } from "@t3tools/contracts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
@@ -7,6 +8,25 @@ import * as RuntimePolicy from "../orchestration-v2/RuntimePolicy.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as BotExecutionConstraint from "./BotExecutionConstraint.ts";
 import * as BotTurnContext from "./BotTurnContext.ts";
+
+/**
+ * Why a restricted Bot run cannot be enforced on this instance here, or undefined. Only Codex
+ * enforces a restriction, and only where it was verified natively. An instance id is not a
+ * driver, so the registry says which driver runs it.
+ */
+export const restrictionUnenforceable = Effect.fn("BotRuntimePolicy.restrictionUnenforceable")(
+  function* (
+    providerInstances: ProviderInstanceRegistry.ProviderInstanceRegistry["Service"],
+    instanceId: ProviderInstanceId,
+  ) {
+    const instance = yield* providerInstances.getInstance(instanceId);
+    return instance?.driverKind !== "codex"
+      ? ("provider" as const)
+      : (yield* HostProcess.Platform) !== "darwin"
+        ? ("platform" as const)
+        : undefined;
+  },
+);
 
 /**
  * Turns off the provider's own memory in Bot conversations, so what a Bot keeps is only
@@ -41,16 +61,8 @@ export const layer: Layer.Layer<
         const bot = yield* botTurnContext
           .forThread(input.thread.id)
           .pipe(Effect.mapError(resolveError));
-        // Only Codex enforces either restriction, and only where it was verified natively. An
-        // instance id is not a driver, so the registry says which driver runs it.
-        const unenforceable = Effect.fn("BotRuntimePolicy.unenforceable")(function* () {
-          const instance = yield* providerInstances.getInstance(input.modelSelection.instanceId);
-          return instance?.driverKind !== "codex"
-            ? ("provider" as const)
-            : (yield* HostProcess.Platform) !== "darwin"
-              ? ("platform" as const)
-              : undefined;
-        });
+        const unenforceable = () =>
+          restrictionUnenforceable(providerInstances, input.modelSelection.instanceId);
         if (input.restriction !== undefined) {
           const reason =
             bot._tag !== "active" ||
