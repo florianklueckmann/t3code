@@ -84,6 +84,8 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.mcpConnectionsCreate]: AuthSettingsWriteScope,
   [WS_METHODS.mcpConnectionsUpdate]: AuthSettingsWriteScope,
   [WS_METHODS.mcpConnectionsRemove]: AuthSettingsWriteScope,
+  // A grant hands a Bot those credentials, so it needs the authority that manages them.
+  [WS_METHODS.botsSetMcpGrants]: AuthSettingsWriteScope,
   // Refreshing may read secrets from a secret provider, which can prompt an unlock.
   [WS_METHODS.mcpConnectionsRefresh]: AuthSettingsWriteScope,
   [WS_METHODS.botsConfigureMaintenance]: AuthOrchestrationOperateScope,

@@ -5,7 +5,9 @@ import {
   type BotLearningPolicy,
   BotLearningSource,
   type BotLearningStatus,
+  type BotMcpGrants,
   BotSourcePreference,
+  type McpConnectionId,
   type ModelSelection,
   type ProjectId,
   ReceivedBotAppearance,
@@ -128,6 +130,19 @@ export class BotStore extends Context.Service<
       readonly status: BotLearningStatus;
       readonly decidedAt: string;
     }) => Effect.Effect<void, BotStoreError>;
+    /** Every Bot's grants, or one Bot's; a Bot without any has revision 0 or its last one. */
+    readonly listMcpGrants: (
+      botId?: string,
+    ) => Effect.Effect<ReadonlyMap<string, BotMcpGrants>, BotStoreError>;
+    /** Replaces the set and advances its revision; run it in the caller's transaction. */
+    readonly replaceMcpGrants: (input: {
+      readonly botId: string;
+      readonly connectionIds: ReadonlyArray<McpConnectionId>;
+    }) => Effect.Effect<void, BotStoreError>;
+    /** Removes a connection from every Bot that has it and returns those Bots. */
+    readonly forgetMcpConnection: (
+      connectionId: McpConnectionId,
+    ) => Effect.Effect<ReadonlyArray<string>, BotStoreError>;
   }
 >()("t3/bots/BotStore") {}
 
@@ -176,6 +191,7 @@ export const toDetail = Effect.fn("BotStore.toDetail")(function* (
   bot: BotRow,
   contexts: ReadonlyArray<BotContextRow>,
   learning: ReadonlyArray<BotLearningRow>,
+  mcpGrants?: BotMcpGrants,
 ) {
   const projects = yield* Effect.forEach(contexts, (context) =>
     decodeSources(context.sources_json).pipe(
@@ -197,6 +213,7 @@ export const toDetail = Effect.fn("BotStore.toDetail")(function* (
     modelSelection: yield* decodeModelSelection(bot.model_selection_json),
     learningPolicy: bot.learning_policy,
     appearance: bot.appearance_json === null ? null : yield* decodeAppearance(bot.appearance_json),
+    ...(mcpGrants === undefined ? {} : { mcpGrants }),
     createdAt: bot.created_at,
     updatedAt: bot.updated_at,
     archivedAt: bot.archived_at,
@@ -419,6 +436,75 @@ export const layer = Layer.effect(
       Effect.mapError(fail("set-learning-status")),
     );
 
+    const listMcpGrants = Effect.fn("BotStore.listMcpGrants")(
+      function* (botId?: string) {
+        const rows = yield* sql<{
+          readonly bot_id: string;
+          readonly mcp_grant_revision: number;
+          readonly connection_id: string | null;
+        }>`
+          SELECT bots.bot_id, bots.mcp_grant_revision, bot_mcp_grants.connection_id
+          FROM bots LEFT JOIN bot_mcp_grants ON bot_mcp_grants.bot_id = bots.bot_id
+          WHERE ${botId ?? null} IS NULL OR bots.bot_id = ${botId ?? null}
+          ORDER BY bots.bot_id, bot_mcp_grants.connection_id
+        `;
+        const grants = new Map<string, { revision: number; connectionIds: McpConnectionId[] }>();
+        for (const row of rows) {
+          let entry = grants.get(row.bot_id);
+          if (entry === undefined) {
+            entry = { revision: row.mcp_grant_revision, connectionIds: [] };
+            grants.set(row.bot_id, entry);
+          }
+          if (row.connection_id !== null) {
+            entry.connectionIds.push(row.connection_id as McpConnectionId);
+          }
+        }
+        return grants as ReadonlyMap<string, BotMcpGrants>;
+      },
+      Effect.mapError(fail("list-mcp-grants")),
+    );
+
+    const replaceMcpGrants = Effect.fn("BotStore.replaceMcpGrants")(
+      function* (input: {
+        readonly botId: string;
+        readonly connectionIds: ReadonlyArray<McpConnectionId>;
+      }) {
+        yield* sql`DELETE FROM bot_mcp_grants WHERE bot_id = ${input.botId}`;
+        for (const connectionId of input.connectionIds) {
+          yield* sql`
+            INSERT INTO bot_mcp_grants (bot_id, connection_id) VALUES (${input.botId}, ${connectionId})
+          `;
+        }
+        yield* sql`
+          UPDATE bots SET mcp_grant_revision = mcp_grant_revision + 1 WHERE bot_id = ${input.botId}
+        `;
+      },
+      Effect.mapError(fail("replace-mcp-grants")),
+    );
+
+    const forgetMcpConnection = Effect.fn("BotStore.forgetMcpConnection")(
+      function* (connectionId: McpConnectionId) {
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const rows = yield* sql<{ readonly bot_id: string }>`
+              SELECT bot_id FROM bot_mcp_grants WHERE connection_id = ${connectionId}
+            `;
+            for (const { bot_id } of rows) {
+              yield* sql`
+                DELETE FROM bot_mcp_grants
+                WHERE bot_id = ${bot_id} AND connection_id = ${connectionId}
+              `;
+              yield* sql`
+                UPDATE bots SET mcp_grant_revision = mcp_grant_revision + 1 WHERE bot_id = ${bot_id}
+              `;
+            }
+            return rows.map((row) => row.bot_id);
+          }),
+        );
+      },
+      Effect.mapError(fail("forget-mcp-connection")),
+    );
+
     return BotStore.of({
       listBots: sql<BotRow>`SELECT * FROM bots ORDER BY created_at, bot_id`.pipe(
         Effect.mapError(fail("list-bots")),
@@ -446,6 +532,9 @@ export const layer = Layer.effect(
       ),
       insertLearning,
       setLearningStatus,
+      listMcpGrants,
+      replaceMcpGrants,
+      forgetMcpConnection,
     });
   }),
 );

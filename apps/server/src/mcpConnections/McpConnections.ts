@@ -25,6 +25,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
+import * as BotService from "../bots/BotService.ts";
 import * as Settings from "../serverSettings.ts";
 import { requireSettingsSecret } from "../secrets/settingsSecretValue.ts";
 
@@ -91,6 +92,7 @@ const withBindings = (
 const make = Effect.gen(function* () {
   const settings = yield* Settings.ServerSettingsService;
   const resolver = yield* SecretResolver.SecretResolver;
+  const bots = yield* BotService.BotService;
   // Results of the last explicit refresh, valid only for the revision they checked.
   const checks = new Map<
     McpConnectionId,
@@ -280,6 +282,14 @@ const make = Effect.gen(function* () {
       });
     });
     checks.delete(id);
+    // Retiring first means no Bot can load it even if this cleanup is lost; a retry repeats it.
+    yield* bots
+      .forgetMcpConnection(id)
+      .pipe(
+        Effect.mapError(
+          (cause) => new McpConnectionError({ reason: "settings-unavailable", cause }),
+        ),
+      );
     return { connectionId: id };
   });
 

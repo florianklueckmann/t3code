@@ -1,6 +1,7 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
+  BotError,
   McpConnectionId,
   type McpConnectionTransport,
   SecretProviderId,
@@ -15,6 +16,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
+import * as BotService from "../bots/BotService.ts";
 import * as ServerConfig from "../config.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
@@ -57,14 +59,26 @@ const harness = Effect.gen(function* () {
       }),
     label: (provider) => Effect.succeed(provider),
   });
+  // Grants live in the Bot database; the catalog only asks it to forget a removed connection.
+  const grantCleanup = { forgotten: [] as string[], failNext: false };
+  const bots = Layer.mock(BotService.BotService)({
+    forgetMcpConnection: (connectionId) =>
+      Effect.suspend(() => {
+        if (!grantCleanup.failNext)
+          return Effect.sync(() => grantCleanup.forgotten.push(connectionId));
+        grantCleanup.failNext = false;
+        return Effect.fail(new BotError({ message: "injected Bot database failure" }));
+      }),
+  });
   const connections = yield* McpConnections.McpConnections.pipe(
     Effect.provide(
       McpConnections.layer.pipe(
         Layer.provide(Layer.succeed(SecretResolver.SecretResolver, resolver)),
+        Layer.provide(bots),
       ),
     ),
   );
-  return { connections, secrets, reads, invalidated, holds };
+  return { connections, secrets, reads, invalidated, holds, grantCleanup };
 });
 
 const accountA = McpConnectionId.make("1a1a1a1a-0000-4000-8000-00000000001a");
@@ -84,7 +98,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("MCP connections"
     "keeps same-URL accounts distinct and saves only valid edits of the current revision",
     () =>
       Effect.gen(function* () {
-        const { connections, reads } = yield* harness;
+        const { connections, reads, grantCleanup } = yield* harness;
         const created = yield* connections.create({
           connectionId: accountA,
           label: "Work",
@@ -249,8 +263,18 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("MCP connections"
             .pipe(Effect.flip)).reason,
           "revision-conflict",
         );
+        // A lost grant cleanup fails the removal after retiring the id; the retry repeats it.
+        grantCleanup.failNext = true;
+        assert.equal(
+          (yield* connections
+            .remove({ connectionId: accountA, expectedRevision: 2 })
+            .pipe(Effect.flip)).reason,
+          "settings-unavailable",
+        );
+        assert.deepEqual(grantCleanup.forgotten, []);
         yield* connections.remove({ connectionId: accountA, expectedRevision: 2 });
         yield* connections.remove({ connectionId: accountA, expectedRevision: 2 });
+        assert.deepEqual(grantCleanup.forgotten, [accountA, accountA]);
         assert.equal(
           (yield* connections
             .create({

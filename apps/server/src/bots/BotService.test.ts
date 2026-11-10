@@ -6,6 +6,7 @@ import {
   type BotDetail,
   BotId,
   BotTaskId,
+  McpConnectionId,
   type OrchestrationV2ServerCommand,
   type OrchestrationV2ThreadShell,
   type Project,
@@ -172,18 +173,20 @@ const withServices = <A, E>(
     readonly bots: BotService.BotService["Service"];
     readonly turnContext: BotTurnContext.BotTurnContext["Service"];
     readonly continuation: BotContinuation.BotContinuation["Service"];
+    readonly settings: ServerSettings.ServerSettingsService["Service"];
   }) => Effect.Effect<A, E>,
 ) =>
   Effect.gen(function* () {
     const bots = yield* BotService.BotService;
     const turnContext = yield* BotTurnContext.BotTurnContext;
     const continuation = yield* BotContinuation.BotContinuation;
-    return yield* body({ bots, turnContext, continuation });
+    const settings = yield* ServerSettings.ServerSettingsService;
+    return yield* body({ bots, turnContext, continuation, settings });
   }).pipe(
     Effect.provide(
       Layer.mergeAll(BotService.layer, BotTurnContext.layer, BotContinuation.layer).pipe(
         Layer.provide(BotTaskService.layer),
-        Layer.provide(Layer.merge(threadLayer, layerSupport)),
+        Layer.provideMerge(Layer.merge(threadLayer, layerSupport)),
       ),
     ),
     Effect.scoped,
@@ -470,6 +473,94 @@ it.effect("pushes a rename to open Bot list subscriptions without renaming the c
         );
         assert.notInclude(yield* Ref.get(world.commands), "thread.metadata.update");
       }).pipe(Effect.scoped),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
+const privateMail = McpConnectionId.make("2a2a2a2a-0000-4000-8000-00000000002a");
+const workMail = McpConnectionId.make("2b2b2b2b-0000-4000-8000-00000000002b");
+const retiredMail = McpConnectionId.make("2c2c2c2c-0000-4000-8000-00000000002c");
+const mailDefinition = (label: string) => ({
+  label,
+  enabled: true,
+  revision: 1,
+  transport: { type: "stdio" as const, command: "mail-mcp", args: [], env: {} },
+  authentication: { type: "bindings" as const },
+});
+const seedCatalog = (settings: ServerSettings.ServerSettingsService["Service"]) =>
+  settings.updateMcpConnections(() =>
+    Effect.succeed({
+      mcpConnections: {
+        [privateMail]: mailDefinition("Private mail"),
+        [workMail]: mailDefinition("Work mail"),
+      },
+      retiredMcpConnectionIds: [retiredMail],
+    }),
+  );
+
+it.effect("grants only catalog connections, as a whole set guarded by its revision", () =>
+  Effect.gen(function* () {
+    const world = yield* makeThreadWorld;
+    const twinId = BotId.make("faerun-companion-twin");
+    yield* withServices(world.threadLayer, ({ bots, settings }) =>
+      Effect.gen(function* () {
+        yield* seedCatalog(settings);
+        const created = yield* createCampaignBot(bots);
+        yield* createCampaignBot(bots, twinId);
+        assert.deepEqual(created.mcpGrants, { revision: 0, connectionIds: [] });
+
+        const granted = yield* bots.setMcpGrants({
+          botId,
+          expectedRevision: 0,
+          connectionIds: [workMail, privateMail, workMail],
+        });
+        assert.deepEqual(granted.mcpGrants, {
+          revision: 1,
+          connectionIds: [privateMail, workMail],
+        });
+
+        const stale = yield* bots
+          .setMcpGrants({ botId, expectedRevision: 0, connectionIds: [] })
+          .pipe(Effect.flip);
+        assert.include(stale.message, "changed since you opened them");
+        for (const unknown of [
+          retiredMail,
+          McpConnectionId.make("2d2d2d2d-0000-4000-8000-00000000002d"),
+        ]) {
+          const refused = yield* bots
+            .setMcpGrants({ botId, expectedRevision: 1, connectionIds: [unknown] })
+            .pipe(Effect.flip);
+          assert.include(refused.message, "no longer exists");
+        }
+        yield* bots.setMcpGrants({ botId: twinId, expectedRevision: 0, connectionIds: [workMail] });
+
+        // Removing a catalog connection drops it from every Bot that had it.
+        const pull = yield* Stream.toPull(bots.subscribeList());
+        yield* pull;
+        yield* bots.forgetMcpConnection(workMail);
+        const [listed] = yield* pull;
+        assert.deepEqual(
+          listed?.bots.map((bot) => [bot.id, bot.mcpGrants]),
+          [
+            [botId, { revision: 2, connectionIds: [privateMail] }],
+            [twinId, { revision: 2, connectionIds: [] }],
+          ],
+        );
+
+        yield* bots.setArchived({ botId: twinId, archived: true });
+        const archived = yield* bots
+          .setMcpGrants({ botId: twinId, expectedRevision: 2, connectionIds: [privateMail] })
+          .pipe(Effect.flip);
+        assert.include(archived.message, "archived");
+      }).pipe(Effect.scoped),
+    );
+    yield* withServices(world.threadLayer, ({ bots }) =>
+      Effect.gen(function* () {
+        assert.deepEqual((yield* bots.get({ botId })).mcpGrants, {
+          revision: 2,
+          connectionIds: [privateMail],
+        });
+      }),
     );
   }).pipe(Effect.provide(layerDatabase)),
 );
