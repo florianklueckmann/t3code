@@ -66,6 +66,11 @@ export const ProviderAdapterV2RuntimePolicy = Schema.Struct({
    * receives it; an adapter enforces it or refuses the run, and never widens it.
    */
   changes: Schema.optional(Schema.Literal("none")),
+  /**
+   * "t3BotOnly": no native side-effect tools, user MCP servers, hooks or notify, a read-only
+   * approval-never turn, and only T3 Code's `t3_bot` tool. An adapter enforces it or refuses.
+   */
+  nativeTools: Schema.optional(Schema.Literal("t3BotOnly")),
 });
 export type ProviderAdapterV2RuntimePolicy = typeof ProviderAdapterV2RuntimePolicy.Type;
 
@@ -274,6 +279,28 @@ export class ProviderAdapterNoChangesRefusedError extends Schema.TaggedError<Pro
 export const isProviderAdapterNoChangesRefusedError = Schema.is(
   ProviderAdapterNoChangesRefusedError,
 );
+
+const homeSealRefusalText = {
+  version: "this Codex version's tools have not been verified",
+  platform: "it is only verified on macOS",
+  children: "this conversation already has agents it could reach",
+  seal: "the conversation's current tool setup could not be confirmed",
+  unavailable: "it needs an existing conversation with T3 Code's tools connected",
+} as const;
+
+/** A `nativeTools: "t3BotOnly"` load or turn the adapter could not enforce. Nothing ran. */
+export class ProviderAdapterHomeSealRefusedError extends Schema.TaggedError<ProviderAdapterHomeSealRefusedError>()(
+  "ProviderAdapterHomeSealRefusedError",
+  {
+    driver: ProviderDriverKind,
+    reason: Schema.Literals(["version", "platform", "children", "seal", "unavailable"]),
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    return `This Bot maintenance turn can't be restricted here because ${homeSealRefusalText[this.reason]}, so nothing ran.`;
+  }
+}
 
 export class ProviderAdapterCloseSessionError extends Schema.TaggedError<ProviderAdapterCloseSessionError>()(
   "ProviderAdapterCloseSessionError",
@@ -504,6 +531,7 @@ export const ProviderAdapterV2Error = Schema.Union([
   ProviderAdapterCapabilitiesError,
   ProviderAdapterOpenSessionError,
   ProviderAdapterNoChangesRefusedError,
+  ProviderAdapterHomeSealRefusedError,
   ProviderAdapterCloseSessionError,
   ProviderAdapterResumeThreadError,
   ProviderAdapterThreadInUseError,

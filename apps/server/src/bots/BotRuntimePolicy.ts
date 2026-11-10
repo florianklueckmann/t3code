@@ -41,19 +41,42 @@ export const layer: Layer.Layer<
         const bot = yield* botTurnContext
           .forThread(input.thread.id)
           .pipe(Effect.mapError(resolveError));
+        // Only Codex enforces either restriction, and only where it was verified natively. An
+        // instance id is not a driver, so the registry says which driver runs it.
+        const unenforceable = Effect.fn("BotRuntimePolicy.unenforceable")(function* () {
+          const instance = yield* providerInstances.getInstance(input.modelSelection.instanceId);
+          return instance?.driverKind !== "codex"
+            ? ("provider" as const)
+            : (yield* HostProcess.Platform) !== "darwin"
+              ? ("platform" as const)
+              : undefined;
+        });
+        if (input.restriction !== undefined) {
+          const reason =
+            bot._tag !== "active" ||
+            bot.scope.taskId !== null ||
+            bot.scope.homeThreadId !== input.thread.id
+              ? ("home" as const)
+              : yield* unenforceable();
+          if (reason !== undefined) {
+            return yield* new RuntimePolicy.RuntimePolicyUnsupportedError({
+              threadId: input.thread.id,
+              providerInstanceId: input.modelSelection.instanceId,
+              reason,
+              restriction: input.restriction,
+            });
+          }
+          return ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+            ...policy,
+            nativeMemory: "disabled",
+            nativeTools: "t3BotOnly",
+          });
+        }
         const constraint = yield* executionConstraint
           .forThread(input.thread.id)
           .pipe(Effect.mapError(resolveError));
         if (constraint === "no-changes") {
-          // Only Codex enforces it, and only where its sandbox was verified. An instance id is
-          // not a driver, so the registry says which driver runs it.
-          const instance = yield* providerInstances.getInstance(input.modelSelection.instanceId);
-          const reason =
-            instance?.driverKind !== "codex"
-              ? "provider"
-              : (yield* HostProcess.Platform) !== "darwin"
-                ? "platform"
-                : undefined;
+          const reason = yield* unenforceable();
           if (reason !== undefined) {
             return yield* new RuntimePolicy.RuntimePolicyUnsupportedError({
               threadId: input.thread.id,

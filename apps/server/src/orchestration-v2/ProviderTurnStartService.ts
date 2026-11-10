@@ -707,6 +707,7 @@ export const layer: Layer.Layer<
         .resolve({
           thread: projection.thread,
           modelSelection: run.modelSelection,
+          ...(run.restriction === undefined ? {} : { restriction: run.restriction }),
         })
         .pipe(Effect.result);
       if (resolvedPolicy._tag === "Failure") {
@@ -723,7 +724,10 @@ export const layer: Layer.Layer<
               }
             : {
                 signal: "runtime-no-changes-unsupported",
-                title: "No changes can't be enforced",
+                title:
+                  run.restriction === undefined
+                    ? "No changes can't be enforced"
+                    : "Bot maintenance can't be restricted",
                 error,
                 message: error.message,
               },
@@ -731,6 +735,22 @@ export const layer: Layer.Layer<
         return;
       }
       const resolvedRuntimePolicy = resolvedPolicy.success;
+      // Any policy layer that does not seal a restricted run refuses it, whatever its stack.
+      if (run.restriction !== undefined && resolvedRuntimePolicy.nativeTools !== "t3BotOnly") {
+        const error = new RuntimePolicy.RuntimePolicyUnsupportedError({
+          threadId: projection.thread.id,
+          providerInstanceId: run.providerInstanceId,
+          reason: "home",
+          restriction: run.restriction,
+        });
+        yield* settleStartFailure({
+          signal: "runtime-no-changes-unsupported",
+          title: "Bot maintenance can't be restricted",
+          error,
+          message: error.message,
+        });
+        return;
+      }
       // A conversation that began in the ordinary process must not continue there, or carry it in.
       if (
         resolvedRuntimePolicy.changes === "none" &&
@@ -1374,9 +1394,11 @@ export const layer: Layer.Layer<
         if (!(yield* isCurrentAttemptInStatus("starting"))) return undefined;
         // Another client is still writing to the native thread. A fresh
         // session here would silently split the conversation from it.
+        // A refused seal must not fall back to a fresh, unsealed native thread.
         if (
           resumed._tag === "Failure" &&
-          resumed.failure._tag === "ProviderAdapterThreadInUseError"
+          (resumed.failure._tag === "ProviderAdapterThreadInUseError" ||
+            resumed.failure._tag === "ProviderAdapterHomeSealRefusedError")
         ) {
           return yield* loadFromProvider(Effect.fail(resumed.failure));
         }

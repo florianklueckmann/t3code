@@ -3,6 +3,7 @@ import {
   managedRuntimeModeCeilingMessage,
   ModelSelection,
   OrchestrationV2AppThread,
+  OrchestrationV2RunRestriction,
   ProjectId,
   ProviderInstanceId,
   RuntimeMode,
@@ -53,11 +54,18 @@ export class RuntimePolicyAboveCeilingError extends Schema.TaggedError<RuntimePo
 
 export const isRuntimePolicyAboveCeilingError = Schema.is(RuntimePolicyAboveCeilingError);
 
-const NoChangesUnsupportedReason = Schema.Literals(["provider", "platform"]);
+const NoChangesUnsupportedReason = Schema.Literals(["provider", "platform", "home"]);
 
 const noChangesUnsupportedText: Record<typeof NoChangesUnsupportedReason.Type, string> = {
   provider: "only Codex can enforce",
   platform: "is only verified on macOS",
+  home: "only applies to an active Bot conversation",
+};
+
+const restrictionUnsupportedText: Record<typeof NoChangesUnsupportedReason.Type, string> = {
+  provider: "only Codex can restrict it",
+  platform: "it is only verified on macOS",
+  home: "it only runs in an active Bot's own conversation",
 };
 
 /** A run that may change nothing would reach a provider that cannot enforce it. Never retried. */
@@ -67,10 +75,13 @@ export class RuntimePolicyUnsupportedError extends Schema.TaggedError<RuntimePol
     threadId: ThreadId,
     providerInstanceId: ProviderInstanceId,
     reason: NoChangesUnsupportedReason,
+    restriction: Schema.optional(OrchestrationV2RunRestriction),
   },
 ) {
   override get message(): string {
-    return `This routine task is set to No changes, which ${noChangesUnsupportedText[this.reason]}, so nothing ran. To make changes, ask the Bot directly, or allow changes on the routine for its next run.`;
+    return this.restriction === undefined
+      ? `This routine task is set to No changes, which ${noChangesUnsupportedText[this.reason]}, so nothing ran. To make changes, ask the Bot directly, or allow changes on the routine for its next run.`
+      : `This Bot maintenance turn can't be restricted because ${restrictionUnsupportedText[this.reason]}, so nothing ran.`;
   }
 }
 
@@ -95,6 +106,8 @@ export type RuntimePolicyV2Override = typeof RuntimePolicyV2Override.Type;
 export interface RuntimePolicyV2Input {
   readonly thread: OrchestrationV2AppThread;
   readonly modelSelection: ModelSelection;
+  /** The run's own restriction; a policy that cannot enforce it refuses. */
+  readonly restriction?: OrchestrationV2RunRestriction;
 }
 
 export interface RuntimePolicyV2Shape {

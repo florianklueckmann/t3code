@@ -3,6 +3,7 @@ import {
   BotId,
   BotTaskId,
   type OrchestrationV2AppThread,
+  type OrchestrationV2RunRestriction,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -43,6 +44,7 @@ const activeScope = (id: ThreadId) =>
 interface PolicyOptions {
   readonly instanceId?: string;
   readonly platform?: NodeJS.Platform;
+  readonly restriction?: OrchestrationV2RunRestriction;
 }
 
 const usePolicy = <A, E>(
@@ -67,6 +69,7 @@ const usePolicy = <A, E>(
         instanceId: ProviderInstanceId.make(options.instanceId ?? "codex_work"),
         model: "gpt-5",
       },
+      ...(options.restriction === undefined ? {} : { restriction: options.restriction }),
     });
   }).pipe(
     Effect.provideService(HostProcess.Platform, options.platform ?? "darwin"),
@@ -162,6 +165,32 @@ it.effect("never resolves a No changes task to a policy that can change things",
     for (const threadId of [workThread, botThread, ThreadId.make("plain")]) {
       assert.isUndefined((yield* resolveFor(threadId)).changes);
       assert.isUndefined(yield* changesFor(threadId));
+    }
+  }),
+);
+
+it.effect("seals a restricted run only in an active Bot Home on Codex and macOS", () =>
+  Effect.gen(function* () {
+    const sealed = yield* resolveFor(botThread, { restriction: "botNote" });
+    assert.equal(sealed.nativeTools, "t3BotOnly");
+    assert.equal(sealed.nativeMemory, "disabled");
+    // The ordinary Home process: a restricted run never opens the No changes profile.
+    assert.isUndefined(sealed.changes);
+    assert.isUndefined((yield* resolveFor(botThread)).nativeTools);
+    for (const [threadId, options, reason] of [
+      [workThread, {}, "home"],
+      [noChangesThread, {}, "home"],
+      [archivedBotThread, {}, "home"],
+      [ThreadId.make("plain"), {}, "home"],
+      [botThread, { instanceId: "codex" }, "provider"],
+      [botThread, { instanceId: "missing" }, "provider"],
+      [botThread, { platform: "linux" }, "platform"],
+    ] as const) {
+      const refused = yield* resolveFor(threadId, { ...options, restriction: "botWaiting" }).pipe(
+        Effect.flip,
+      );
+      assert.equal(refused._tag, "RuntimePolicyUnsupportedError");
+      assert.equal(refused._tag === "RuntimePolicyUnsupportedError" && refused.reason, reason);
     }
   }),
 );
