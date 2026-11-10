@@ -417,10 +417,15 @@ export const layerProduction = Layer.mergeAll(
     Layer.provide(
       Layer.mergeAll(
         layerEventStoreProvided,
+        layerEventSink,
         ThreadCommandExecutor.layer,
         layerProviderSessionManagerProvided,
+        layerThreadManagementProvided,
         layerBotServiceProvided,
         layerBotTaskProvided,
+        BotContinuation.layer,
+        // The same memoized outbox as the effect worker, so a settle wakes the refresh loop.
+        EffectOutbox.layer,
       ),
     ),
   ),

@@ -158,6 +158,29 @@ export const BotContinuationView = Schema.Struct({
     }),
   ),
   moreSources: NonNegativeInt,
+  /** Oldest first and in full: the Home input and returned results no shown save covers yet. */
+  uncovered: Schema.optional(
+    Schema.Struct({
+      sources: Schema.Array(
+        Schema.Struct({
+          messageId: MessageId,
+          ordinal: NonNegativeInt,
+          kind: Schema.Literals(["input", "result"]),
+          directUser: Schema.Boolean,
+          /** Too large for any read: `parts` hold only its first lines. */
+          tooLarge: Schema.optional(
+            Schema.Struct({ bytes: NonNegativeInt, createdAt: IsoDateTime }),
+          ),
+          /**
+           * The text in order. Each part ends with its acknowledgement, so a part cut from what
+           * the model saw loses its ack and a save cannot certify the item.
+           */
+          parts: Schema.Array(Schema.Struct({ text: Schema.String, ack: Schema.String })),
+        }),
+      ),
+      remaining: NonNegativeInt,
+    }),
+  ),
   activeTasks: Schema.Array(
     Schema.Struct({
       taskId: BotTaskId,
@@ -180,6 +203,10 @@ export const BotSaveContinuationInput = Schema.Struct({
   updateId: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
   note: BotContinuationNoteInput,
   basis: Schema.optional(BotContinuationBasis),
+  /** The acks of every `uncovered` part the saving run read whole. */
+  acks: Schema.optional(
+    Schema.Array(Schema.String.check(Schema.isMaxLength(16))).check(Schema.isMaxLength(512)),
+  ),
   restoredFrom: Schema.optional(PositiveInt),
 });
 export type BotSaveContinuationInput = typeof BotSaveContinuationInput.Type;

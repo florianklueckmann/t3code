@@ -93,6 +93,7 @@ const BotToolParameters = Schema.Struct({
       updateId: BotSaveContinuationInput.fields.updateId,
       note: BotSaveContinuationInput.fields.note,
       basis: BotSaveContinuationInput.fields.basis,
+      acks: BotSaveContinuationInput.fields.acks,
     }),
   ).annotate({
     description: `Before save_continuation, preflight the full replacement note: at most ${BOT_CONTINUATION_LIMITS.items} items across sections, ${BOT_CONTINUATION_LIMITS.textChars} total text UTF-16 code units (JavaScript string.length), and ${BOT_CONTINUATION_LIMITS.itemChars} per text or quote. Quotes are outside the total text budget. Shorten and merge items rather than retrying an unchanged rejected draft.`,
