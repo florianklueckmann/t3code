@@ -11,7 +11,15 @@ import {
   RunId,
   ThreadId,
 } from "@t3tools/contracts";
+import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
+import {
+  SealedGenerationDiscarded,
+  type SealedGenerationFailure,
+  type SealedGenerationInput,
+  SealedGenerationRefused,
+  type SealedRefusalReason,
+} from "@t3tools/provider-core/server/sealedGeneration";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -21,6 +29,7 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
+import type * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import type * as SqlError from "effect/sql/SqlError";
 import * as Stream from "effect/Stream";
@@ -51,7 +60,7 @@ import * as BotProjectGuard from "./BotProjectGuard.ts";
 import * as BotDatabase from "./persistence/BotDatabase.ts";
 import * as BotMigrations from "./persistence/Migrations.ts";
 import * as BotMaintenance from "./BotMaintenance.ts";
-import type * as Evidence from "./BotMaintenanceEvidence.ts";
+import * as Evidence from "./BotMaintenanceEvidence.ts";
 import * as BotService from "./BotService.ts";
 import * as BotStore from "./BotStore.ts";
 import * as BotTaskService from "./BotTaskService.ts";
@@ -72,10 +81,49 @@ const inertLearning = Layer.mergeAll(
   Layer.mock(BotTaskService.BotTaskService)({}),
   Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({}),
 );
-const production = BotMaintenance.layer.pipe(
-  Layer.provide(Layer.mergeAll(EventStore.layer, ThreadCommandExecutor.layer, inertLearning)),
-  Layer.provideMerge(storeOnly),
-);
+
+type TestGenerator = (packet: Evidence.Packet) => Effect.Effect<unknown, SealedGenerationFailure>;
+
+/** A provider instance with a fake sealed generation that answers from `generate`. */
+const sealedInstance = (options: {
+  readonly availability?: Effect.Effect<SealedRefusalReason | null>;
+  readonly generate?: TestGenerator;
+  readonly calls?: Ref.Ref<ReadonlyArray<SealedGenerationInput<Schema.Top>>>;
+}) =>
+  ({
+    sealedGeneration: {
+      availability: () => options.availability ?? Effect.succeed(null),
+      generate: (input: SealedGenerationInput<Schema.Top>) =>
+        (options.calls === undefined
+          ? Effect.void
+          : Ref.update(options.calls, (all) => [...all, input])
+        ).pipe(
+          Effect.andThen(
+            options.generate?.(JSON.parse(input.packet)) ?? Effect.die("this test never generates"),
+          ),
+          Effect.map((value) => ({ value, model: input.selection.model })),
+        ),
+    },
+  }) as unknown as ProviderInstance;
+
+const registryOf = (instances: Readonly<Record<string, ProviderInstance>>) =>
+  Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+    getInstance: (instanceId) => Effect.succeed(instances[instanceId]),
+  });
+
+const productionWith = (instances: Readonly<Record<string, ProviderInstance>>) =>
+  BotMaintenance.layer.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        EventStore.layer,
+        ThreadCommandExecutor.layer,
+        inertLearning,
+        registryOf(instances),
+      ),
+    ),
+    Layer.provideMerge(storeOnly),
+  );
+const production = productionWith({ codex: sealedInstance({}) });
 const context = (detachedAt: string | null): BotStore.BotContextRow => ({
   home_thread_id: home,
   bot_id: "bot",
@@ -147,12 +195,10 @@ const withReadyGeneration = Effect.gen(function* () {
   const sequence = yield* Ref.make(0);
   const snapshots = yield* Ref.make<ReadonlyArray<boolean>>([]);
   const executor = yield* KeyedLock.make<ThreadId>();
-  const maintenance = yield* BotMaintenance.make({
-    unavailableReason: null,
-    generate: () => Effect.die("settings tests never generate"),
-  }).pipe(
+  const maintenance = yield* BotMaintenance.make.pipe(
     Effect.provide(
-      Layer.merge(
+      Layer.mergeAll(
+        registryOf({ codex: sealedInstance({}) }),
         Layer.mock(EventStore.EventStoreV2)({
           latestSequence: () =>
             executor.activeKeys.pipe(
@@ -170,30 +216,68 @@ const withReadyGeneration = Effect.gen(function* () {
   return { maintenance, sequence, snapshots };
 });
 
-it.effect("stays off by default and refuses enabling while no tool-free generator exists", () =>
+it.effect.each<{
+  readonly name: string;
+  readonly instances: Readonly<Record<string, ProviderInstance>>;
+  readonly reason: string;
+}>([
+  { name: "its instance is missing", instances: {}, reason: "instance_unavailable" },
+  {
+    name: "its instance cannot generate sealed",
+    instances: { codex: {} as ProviderInstance },
+    reason: "codex_required",
+  },
+  {
+    name: "its Codex account is signed out",
+    instances: {
+      codex: sealedInstance({ availability: Effect.succeed("provider_signed_out") }),
+    },
+    reason: "provider_signed_out",
+  },
+])(
+  "stays off by default and refuses enabling while the Bot's model cannot generate: $name",
+  ({ instances, reason }) =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* message("before", { id: "run-1", ordinal: 1, status: "completed" });
+      const maintenance = yield* BotMaintenance.BotMaintenance;
+      assert.deepEqual(yield* maintenance.get(scope), {
+        ...scope,
+        homeThreadId: home,
+        revision: 0,
+        enabled: false,
+        startedAt: null,
+        unavailableReason: reason,
+        writable: true,
+      });
+      const refused = yield* maintenance
+        .configure({ ...scope, baseRevision: 0, enabled: true })
+        .pipe(Effect.flip);
+      assert.include(refused.message, "not available");
+      const off = yield* maintenance.configure({ ...scope, baseRevision: 0, enabled: false });
+      assert.equal(off._tag, "saved");
+      const bots = yield* BotDatabase.BotDatabase;
+      assert.deepEqual(yield* bots`SELECT * FROM bot_maintenance`, []);
+      assert.deepEqual(yield* receipts, []);
+    }).pipe(Effect.provide(productionWith(instances))),
+);
+
+it.effect("asks the Bot's own selected model whether it can generate sealed", () =>
   Effect.gen(function* () {
     yield* seed;
-    yield* message("before", { id: "run-1", ordinal: 1, status: "completed" });
     const maintenance = yield* BotMaintenance.BotMaintenance;
-    assert.deepEqual(yield* maintenance.get(scope), {
-      ...scope,
-      homeThreadId: home,
-      revision: 0,
-      enabled: false,
-      startedAt: null,
-      unavailableReason: "no_tool_profile_unavailable",
-      writable: true,
+    assert.isNull((yield* maintenance.get(scope)).unavailableReason);
+    const store = yield* BotStore.BotStore;
+    const bot = yield* store.getBot(scope.botId);
+    if (bot === undefined) return assert.fail();
+    yield* store.updateBot({
+      ...bot,
+      model_selection_json: '{"instanceId":"claude","model":"claude-haiku-5-5"}',
     });
-    const refused = yield* maintenance
-      .configure({ ...scope, baseRevision: 0, enabled: true })
-      .pipe(Effect.flip);
-    assert.include(refused.message, "not available");
-    const off = yield* maintenance.configure({ ...scope, baseRevision: 0, enabled: false });
-    assert.equal(off._tag, "saved");
-    const bots = yield* BotDatabase.BotDatabase;
-    assert.deepEqual(yield* bots`SELECT * FROM bot_maintenance`, []);
-    assert.deepEqual(yield* receipts, []);
-  }).pipe(Effect.provide(production)),
+    assert.equal((yield* maintenance.get(scope)).unavailableReason, "codex_required");
+  }).pipe(
+    Effect.provide(productionWith({ codex: sealedInstance({}), claude: {} as ProviderInstance })),
+  ),
 );
 
 it.effect(
@@ -351,13 +435,13 @@ it.effect(
     }).pipe(Effect.provide(production)),
 );
 
-it.effect("refuses a pass while no tool-free generator exists", () =>
+it.effect("refuses a pass while the Bot's model cannot generate sealed", () =>
   Effect.gen(function* () {
     yield* seed;
     const maintenance = yield* BotMaintenance.BotMaintenance;
     const refused = yield* maintenance.runNow(scope).pipe(Effect.flip);
     assert.include(refused.message, "not available");
-  }).pipe(Effect.provide(production)),
+  }).pipe(Effect.provide(productionWith({}))),
 );
 
 const otherScope = { botId: scope.botId, projectId: ProjectId.make("other") };
@@ -464,26 +548,29 @@ const add = (source: string, quote: string, text: string, kind = "preference") =
 
 /** Records every packet it is shown and answers from `respond`. */
 const recordingGenerator = Effect.fn("fixture.recordingGenerator")(function* (
-  respond: (packet: Evidence.Packet) => Effect.Effect<unknown, never, never>,
+  respond: (packet: Evidence.Packet) => Effect.Effect<unknown, SealedGenerationFailure>,
 ) {
   const packets = yield* Ref.make<ReadonlyArray<Evidence.Packet>>([]);
-  const generate: BotMaintenance.Generator = (packet) =>
+  const generate: TestGenerator = (packet) =>
     Ref.update(packets, (all) => [...all, packet]).pipe(Effect.andThen(respond(packet)));
   return { packets, generate };
 });
 
 /**
- * Fresh services over the same database each call, as a server restart builds them. The Home's
- * event sequence and the provider runtime's background-work probe are synthetic.
+ * Fresh services over the same database each call, as a server restart builds them. The Bot's
+ * Codex instance, its sealed generation, the Home's event sequence and the provider runtime's
+ * background-work probe are synthetic.
  */
 const withEngine = <A, E, R>(
-  generate: BotMaintenance.Generator,
+  generate: TestGenerator,
   body: (services: {
     readonly maintenance: BotMaintenance.BotMaintenance["Service"];
     readonly turnContext: BotTurnContext.BotTurnContext["Service"];
     readonly bots: BotService.BotService["Service"];
     readonly homeSequence: Ref.Ref<number>;
     readonly runtimeBackgroundWork: Ref.Ref<boolean>;
+    readonly availability: Ref.Ref<SealedRefusalReason | null>;
+    readonly sealedCalls: Ref.Ref<ReadonlyArray<SealedGenerationInput<Schema.Top>>>;
   }) => Effect.Effect<A, E, R>,
   taskResults: Readonly<Record<string, string>> = {},
 ) =>
@@ -491,10 +578,19 @@ const withEngine = <A, E, R>(
     const executor = yield* KeyedLock.make<ThreadId>();
     const homeSequence = yield* Ref.make(0);
     const runtimeBackgroundWork = yield* Ref.make(false);
-    const maintenance = yield* BotMaintenance.make({ unavailableReason: null, generate }).pipe(
+    const availability = yield* Ref.make<SealedRefusalReason | null>(null);
+    const sealedCalls = yield* Ref.make<ReadonlyArray<SealedGenerationInput<Schema.Top>>>([]);
+    const maintenance = yield* BotMaintenance.make.pipe(
       Effect.provideService(ThreadCommandExecutor.ThreadCommandExecutor, executor),
       Effect.provide(
-        Layer.merge(
+        Layer.mergeAll(
+          registryOf({
+            codex: sealedInstance({
+              availability: Ref.get(availability),
+              generate,
+              calls: sealedCalls,
+            }),
+          }),
           Layer.mock(EventStore.EventStoreV2)({ latestSequence: () => Ref.get(homeSequence) }),
           Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
             get: () =>
@@ -511,6 +607,8 @@ const withEngine = <A, E, R>(
       bots: yield* BotService.BotService,
       homeSequence,
       runtimeBackgroundWork,
+      availability,
+      sealedCalls,
     });
   }).pipe(
     Effect.provide(
@@ -602,7 +700,7 @@ it.effect.each(["automatic", "after_adoption"] as const)(
       const { packets, generate } = yield* recordingGenerator(() =>
         Effect.succeed({ operations: [add("i1", "open every session recap", goldLesson)] }),
       );
-      yield* withEngine(generate, ({ maintenance, turnContext }) =>
+      yield* withEngine(generate, ({ maintenance, turnContext, sealedCalls }) =>
         Effect.gen(function* () {
           yield* enable(maintenance);
           yield* input("ask", gold);
@@ -612,6 +710,14 @@ it.effect.each(["automatic", "after_adoption"] as const)(
             (yield* Ref.get(packets)).map((packet) => packet.sources),
             [[{ key: "i1", kind: "home-input", text: gold }]],
           );
+          // One call on exactly the Bot's own selection, under the fixed policy and schema.
+          const [call] = yield* Ref.get(sealedCalls);
+          assert.deepEqual(call?.selection, {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-6-luna",
+          });
+          assert.equal(call?.instructions, Evidence.MAINTENANCE_POLICY);
+          assert.equal(call?.schema, Evidence.Proposal);
           const [lesson, ...others] = yield* learningRows;
           assert.deepEqual(others, []);
           assert.equal(lesson?.status, policy === "automatic" ? "active" : "pending");
@@ -971,6 +1077,71 @@ it.effect.each<{
               { status: "deferred", reason: "home_active", lessons: 0, receipts: "pending" },
             );
           }),
+      );
+    }).pipe(Effect.provide(storeOnly)),
+);
+
+it.effect.each([
+  { name: "refuses", failure: new SealedGenerationRefused({ reason: "provider_signed_out" }) },
+  {
+    name: "discards its output",
+    failure: new SealedGenerationDiscarded({ reason: "tool_attempt" }),
+  },
+])(
+  "consumes nothing when sealed generation $name, and learns on the next good call",
+  ({ failure }) =>
+    Effect.gen(function* () {
+      yield* seedBot("automatic");
+      const failed = yield* Ref.make(false);
+      const { packets, generate } = yield* recordingGenerator(() =>
+        Ref.getAndSet(failed, true).pipe(
+          Effect.flatMap((once) =>
+            once
+              ? Effect.succeed({ operations: [add("i1", "open every session recap", goldLesson)] })
+              : Effect.fail(failure),
+          ),
+        ),
+      );
+      yield* withEngine(generate, ({ maintenance }) =>
+        Effect.gen(function* () {
+          yield* enable(maintenance);
+          yield* input("ask", gold);
+          const pass = yield* maintenance.runNow(scope);
+          assert.deepEqual(pass.status === "failed" && pass.reason, "generation_failed");
+          assert.deepEqual(yield* learningRows, []);
+          assert.deepEqual(yield* sourceStates, { ask: "pending" });
+          assert.deepEqual(
+            (yield* runOutcomes).map((run) => run.outcome),
+            [{ reason: "generation_failed", detail: failure.reason }],
+          );
+
+          assert.equal((yield* maintenance.runNow(scope)).status, "applied");
+          assert.equal((yield* Ref.get(packets)).length, 2);
+          assert.deepEqual(yield* sourceStates, { ask: "applied" });
+        }),
+      );
+    }).pipe(Effect.provide(storeOnly)),
+);
+
+it.effect(
+  "refuses a pass without discovery or a model call once the Bot's provider stops being able to generate",
+  () =>
+    Effect.gen(function* () {
+      yield* seedBot("automatic");
+      const { packets, generate } = yield* recordingGenerator(() =>
+        Effect.succeed({ operations: [] }),
+      );
+      yield* withEngine(generate, ({ maintenance, availability }) =>
+        Effect.gen(function* () {
+          yield* enable(maintenance);
+          yield* input("ask", gold);
+          yield* Ref.set(availability, "provider_signed_out");
+          const refused = yield* maintenance.runNow(scope).pipe(Effect.flip);
+          assert.include(refused.message, "not available");
+          assert.equal((yield* maintenance.get(scope)).unavailableReason, "provider_signed_out");
+          assert.deepEqual(yield* sourceStates, {});
+          assert.deepEqual(yield* Ref.get(packets), []);
+        }),
       );
     }).pipe(Effect.provide(storeOnly)),
 );

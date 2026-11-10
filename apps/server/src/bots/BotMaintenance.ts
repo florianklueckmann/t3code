@@ -14,6 +14,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
+import type { SealedGenerationFailure } from "@t3tools/provider-core/server/sealedGeneration";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
@@ -26,6 +27,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as EventStore from "../orchestration-v2/EventStore.ts";
 import * as ProviderSessionManager from "../orchestration-v2/ProviderSessionManager.ts";
 import * as ThreadCommandExecutor from "../orchestration-v2/ThreadCommandExecutor.ts";
+import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as BotDatabase from "./persistence/BotDatabase.ts";
 import * as Evidence from "./BotMaintenanceEvidence.ts";
 import * as BotService from "./BotService.ts";
@@ -33,12 +35,7 @@ import * as BotStore from "./BotStore.ts";
 import * as BotTaskService from "./BotTaskService.ts";
 
 /** Turns one bounded packet into an unverified proposal. Never sees Home history or tools. */
-export type Generator = (packet: Evidence.Packet) => Effect.Effect<unknown, BotError>;
-
-/** Production stays unavailable until the sealed tool-free generator exists. */
-type Generation =
-  | { readonly unavailableReason: string }
-  | { readonly unavailableReason: null; readonly generate: Generator };
+type Generator = (packet: Evidence.Packet) => Effect.Effect<unknown, SealedGenerationFailure>;
 
 export interface Outcome {
   readonly sources: number;
@@ -119,7 +116,7 @@ const failure = (cause: unknown) =>
     : new BotError({ message: "Could not read or change Bot maintenance.", cause });
 const unavailable = () =>
   invalid(
-    "Bot maintenance is not available on this server yet. It needs a tool-free model profile, so it stays off.",
+    "Bot maintenance is not available for this Bot's model right now. It needs a supported, signed-in Codex model, so it stays off.",
   );
 const keyOf = (source: { readonly kind: string; readonly id: string }) =>
   `${source.kind}\u0000${source.id}`;
@@ -135,7 +132,7 @@ const provenance = (runId: string, evidence: ReadonlyArray<Evidence.VerifiedRef>
     )
     .join("; ")}`;
 
-export const make = Effect.fn("BotMaintenance.make")(function* (generation: Generation) {
+export const make = Effect.gen(function* () {
   const main = yield* SqlClient.SqlClient;
   const sql = yield* BotDatabase.BotDatabase;
   const store = yield* BotStore.BotStore;
@@ -145,7 +142,32 @@ export const make = Effect.fn("BotMaintenance.make")(function* (generation: Gene
   const tasks = yield* BotTaskService.BotTaskService;
   const random = yield* SecureRandom.SecureRandom;
   const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
+  const providers = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
   const passLocks = yield* KeyedLock.make<ThreadId>();
+
+  /**
+   * The Bot's own selected instance and model, never a fallback. Availability reads the
+   * instance snapshot only; nothing runs until a pass calls `generate`.
+   */
+  const generationOf = Effect.fn("BotMaintenance.generation")(function* (bot: BotStore.BotRow) {
+    const selection = yield* BotStore.decodeModelSelection(bot.model_selection_json);
+    const instance = yield* providers.getInstance(selection.instanceId);
+    if (instance === undefined) return { unavailableReason: "instance_unavailable" } as const;
+    const sealed = instance.sealedGeneration;
+    if (sealed === undefined) return { unavailableReason: "codex_required" } as const;
+    const reason = yield* sealed.availability(selection);
+    if (reason !== null) return { unavailableReason: reason } as const;
+    const generate: Generator = (packet) =>
+      sealed
+        .generate({
+          selection,
+          instructions: Evidence.MAINTENANCE_POLICY,
+          packet: encodeJson(packet),
+          schema: Evidence.Proposal,
+        })
+        .pipe(Effect.map((result) => result.value));
+    return { unavailableReason: null, generate } as const;
+  });
 
   /** What keeps the Home busy, or null when it is idle. Mirrors `isLiveSubagentShell` plus owned work. */
   const homeActivity = Effect.fn("BotMaintenance.homeActivity")(function* (home: ThreadId) {
@@ -212,6 +234,7 @@ export const make = Effect.fn("BotMaintenance.make")(function* (generation: Gene
     if (context === undefined || bot === undefined)
       return yield* invalid("This Bot project context does not exist.");
     return {
+      bot,
       home: ThreadId.make(context.home_thread_id),
       active: bot.archived_at === null && context.detached_at === null,
     };
@@ -223,7 +246,7 @@ export const make = Effect.fn("BotMaintenance.make")(function* (generation: Gene
 
   // Bot metadata only: an off or paused Bot never reads its Home transcript here.
   const get = Effect.fn("BotMaintenance.get")(function* (scope: BotContinuationScope) {
-    const { home, active } = yield* scopeOf(scope);
+    const { bot, home, active } = yield* scopeOf(scope);
     const row = yield* stateRow(home);
     return {
       botId: scope.botId,
@@ -232,7 +255,7 @@ export const make = Effect.fn("BotMaintenance.make")(function* (generation: Gene
       revision: row?.settings_revision ?? 0,
       enabled: row?.enabled === 1,
       startedAt: row?.started_at ?? null,
-      unavailableReason: generation.unavailableReason,
+      unavailableReason: (yield* generationOf(bot)).unavailableReason,
       writable: active,
     } satisfies BotMaintenanceView;
   }, Effect.mapError(failure));
@@ -241,8 +264,9 @@ export const make = Effect.fn("BotMaintenance.make")(function* (generation: Gene
     input: BotConfigureMaintenanceInput,
   ) {
     const scope = { botId: input.botId, projectId: input.projectId };
-    const { home, active } = yield* scopeOf(scope);
-    if (input.enabled && generation.unavailableReason !== null) return yield* unavailable();
+    const { bot, home, active } = yield* scopeOf(scope);
+    if (input.enabled && (yield* generationOf(bot)).unavailableReason !== null)
+      return yield* unavailable();
     const current = yield* stateRow(home);
     if ((current?.settings_revision ?? 0) !== input.baseRevision)
       return { _tag: "conflict", current: yield* get(scope) } as const;
@@ -539,7 +563,13 @@ export const make = Effect.fn("BotMaintenance.make")(function* (generation: Gene
     const output = yield* Effect.result(generate(batch.packet));
     const done = DateTime.formatIso(yield* DateTime.now);
     if (output._tag === "Failure") {
-      yield* finishRun(runId, "failed", { reason: "generation_failed" }, done);
+      // A refusal ran no model and a discard threw its output away; either way nothing is consumed.
+      yield* finishRun(
+        runId,
+        "failed",
+        { reason: "generation_failed", detail: output.failure.reason },
+        done,
+      );
       return { status: "failed", runId, reason: "generation_failed" } as const;
     }
     const verified = Evidence.verifyProposal(batch, output.success);
@@ -643,16 +673,13 @@ export const make = Effect.fn("BotMaintenance.make")(function* (generation: Gene
   });
 
   const runNow = Effect.fn("BotMaintenance.runNow")(function* (scope: BotContinuationScope) {
+    const { bot, home } = yield* scopeOf(scope);
+    const generation = yield* generationOf(bot);
     if (generation.unavailableReason !== null) return yield* unavailable();
-    const { home } = yield* scopeOf(scope);
     return yield* passLocks.withLock(home, pass(scope, home, generation.generate));
   }, Effect.mapError(failure));
 
   return BotMaintenance.of({ get, configure, runNow });
 });
 
-// Generation needs the sealed tool-free Codex operation, which is not wired yet, so enabling is refused.
-export const layer = Layer.effect(
-  BotMaintenance,
-  make({ unavailableReason: "no_tool_profile_unavailable" }),
-).pipe(Layer.provide(BotStore.layer));
+export const layer = Layer.effect(BotMaintenance, make).pipe(Layer.provide(BotStore.layer));
