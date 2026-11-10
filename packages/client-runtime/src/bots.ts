@@ -4,6 +4,7 @@ import {
   type BotContinuationNote,
   type BotContinuationRef,
   type BotContinuationRevision,
+  type BotMaintenanceView,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import * as Option from "effect/Option";
@@ -586,4 +587,23 @@ export function botTaskResultMatchesThread(
     task.workThreadId === thread.threadId &&
     task.projectId === thread.projectId
   );
+}
+
+export const BOT_MAINTENANCE_DESCRIPTION =
+  "Reviews this project's new messages and finished work to keep lessons and working notes current. It starts with new messages and newly completed work; earlier history is left as is.";
+const BOT_MAINTENANCE_UNAVAILABLE_LABELS: Readonly<Record<string, string>> = {
+  no_tool_profile_unavailable:
+    "Not available yet. It needs a tool-free model profile, which this server doesn't provide.",
+};
+/** Settings caption for a maintenance view; unknown reasons from newer servers stay readable. */
+export function botMaintenanceStatusLabel(view: BotMaintenanceView): string {
+  if (view.enabled) return view.writable ? "On" : "On · stopped while detached or archived";
+  const state =
+    view.startedAt === null ? "Off" : "Paused · turning it on continues where it stopped";
+  if (view.unavailableReason === null) return state;
+  return `${state} · ${BOT_MAINTENANCE_UNAVAILABLE_LABELS[view.unavailableReason] ?? "Not available on this server."}`;
+}
+/** Turning off is always allowed; turning on needs an active Bot and a server that can generate. */
+export function canToggleBotMaintenance(view: BotMaintenanceView): boolean {
+  return view.enabled || (view.writable && view.unavailableReason === null);
 }

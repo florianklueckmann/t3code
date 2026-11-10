@@ -92,6 +92,7 @@ import { Textarea } from "../ui/textarea";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { BotAppearancePicker } from "./BotAppearancePicker";
 import { BotContinuationNotes } from "./BotContinuationNotes";
+import { BotMaintenanceSetting } from "./BotMaintenanceSetting";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import {
   ScheduledRelativeLabel,
@@ -784,6 +785,7 @@ function BotProjectContexts({
   const routinesSupported =
     descriptor?.capabilities.botRoutines === true && bot.archivedAt === null;
   const notesSupported = descriptor?.capabilities.botContinuation === true;
+  const maintenanceSupported = descriptor?.capabilities.botMaintenance === true;
 
   const run = async (
     title: string,
@@ -832,6 +834,14 @@ function BotProjectContexts({
             ) : null
           }
         >
+          {maintenanceSupported ? (
+            <BotMaintenanceSetting
+              environmentId={environmentId}
+              botId={bot.id}
+              projectId={context.projectId}
+              disabled={disabled}
+            />
+          ) : null}
           {routinesSupported ? (
             <BotRoutines
               environmentId={environmentId}

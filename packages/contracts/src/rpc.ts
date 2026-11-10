@@ -7,6 +7,11 @@ import {
   BotSaveContinuationResult,
 } from "./botContinuation.ts";
 import {
+  BotConfigureMaintenanceInput,
+  BotConfigureMaintenanceResult,
+  BotMaintenanceView,
+} from "./botMaintenance.ts";
+import {
   OrchestrationV2SearchThreadError,
   OrchestrationV2SearchThreadInput,
   OrchestrationV2SearchThreadResult,
@@ -592,6 +597,8 @@ export const WS_METHODS = {
   botsGetContinuation: "bots.getContinuation",
   botsListContinuationRevisions: "bots.listContinuationRevisions",
   botsSaveContinuation: "bots.saveContinuation",
+  botsGetMaintenance: "bots.getMaintenance",
+  botsConfigureMaintenance: "bots.configureMaintenance",
   botsCreate: "bots.create",
   botsUpdate: "bots.update",
   botsSetArchived: "bots.setArchived",
@@ -2112,6 +2119,16 @@ const WsBotsSaveContinuationRpc = Rpc.make(WS_METHODS.botsSaveContinuation, {
   success: BotSaveContinuationResult,
   error: BotRpcError,
 });
+const WsBotsGetMaintenanceRpc = Rpc.make(WS_METHODS.botsGetMaintenance, {
+  payload: BotContinuationScope,
+  success: BotMaintenanceView,
+  error: BotRpcError,
+});
+const WsBotsConfigureMaintenanceRpc = Rpc.make(WS_METHODS.botsConfigureMaintenance, {
+  payload: BotConfigureMaintenanceInput,
+  success: BotConfigureMaintenanceResult,
+  error: BotRpcError,
+});
 
 const WsBotsCreateRpc = Rpc.make(WS_METHODS.botsCreate, {
   payload: BotCreateInput,
@@ -2290,6 +2307,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsBotsGetContinuationRpc,
   WsBotsListContinuationRevisionsRpc,
   WsBotsSaveContinuationRpc,
+  WsBotsGetMaintenanceRpc,
+  WsBotsConfigureMaintenanceRpc,
   WsBotsCreateRpc,
   WsBotsUpdateRpc,
   WsBotsSetArchivedRpc,

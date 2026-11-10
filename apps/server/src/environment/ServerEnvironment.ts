@@ -279,6 +279,7 @@ export const make = Effect.gen(function* () {
       scheduledTaskThreadModes: true,
       bots: true,
       botContinuation: true,
+      botMaintenance: true,
       botAppearance: true,
       botRoutines: true,
       botTaskResults: true,

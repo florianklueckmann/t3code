@@ -3,6 +3,7 @@ import {
   type BotContinuationReadInput,
   type BotContinuationView,
   type BotContinuationHistory,
+  type BotMaintenanceView,
   type EnvironmentId,
   type BotSummary,
   type BotTaskResult,
@@ -1303,6 +1304,28 @@ export function createServerEnvironmentAtoms<R, E>(
       (refresh) => refresh(query),
     );
   });
+  const botMaintenanceQuery = createEnvironmentRpcQueryAtomFamily(runtime, {
+    label: "environment-data:server:bots:botMaintenance",
+    tag: WS_METHODS.botsGetMaintenance,
+    staleTimeMs: 0,
+    idleTtlMs: 0,
+    refreshTrigger: (target) =>
+      botContinuationActiveFamily(JSON.stringify([target.environmentId, target.input])),
+  });
+  const botMaintenanceFamily = Atom.family((key: string) => {
+    const [environmentId, input] = JSON.parse(key) as [EnvironmentId, BotContinuationScope];
+    const query = botMaintenanceQuery({ environmentId, input });
+    return Atom.readable(
+      (get): AsyncResult.AsyncResult<BotMaintenanceView | null, unknown> => {
+        const config = get(configValueAtom(environmentId));
+        if (config === null) return AsyncResult.initial(true);
+        if (config.environment.capabilities.botMaintenance !== true)
+          return AsyncResult.success(null);
+        return get(query);
+      },
+      (refresh) => refresh(query),
+    );
+  });
   const workThreadBotFamily = Atom.family((key: string) => {
     const [environmentId, threadId] = JSON.parse(key) as [EnvironmentId, string];
     return Atom.make((get): BotSummary | null => {
@@ -1473,6 +1496,10 @@ export function createServerEnvironmentAtoms<R, E>(
       readonly environmentId: EnvironmentId;
       readonly input: BotContinuationScope;
     }) => botContinuationHistoryFamily(JSON.stringify([target.environmentId, target.input])),
+    botMaintenance: (target: {
+      readonly environmentId: EnvironmentId;
+      readonly input: BotContinuationScope;
+    }) => botMaintenanceFamily(JSON.stringify([target.environmentId, target.input])),
     botDetail: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:server:bots:detail",
       tag: WS_METHODS.botsGet,
@@ -1775,6 +1802,12 @@ export function createServerEnvironmentAtoms<R, E>(
     saveBotContinuation: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:bots:save-continuation",
       tag: WS_METHODS.botsSaveContinuation,
+      scheduler: configScheduler,
+      concurrency: configConcurrency,
+    }),
+    configureBotMaintenance: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bots:configure-maintenance",
+      tag: WS_METHODS.botsConfigureMaintenance,
       scheduler: configScheduler,
       concurrency: configConcurrency,
     }),

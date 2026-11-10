@@ -96,6 +96,7 @@ import * as RepositoryIdentityResolver from "./project/RepositoryIdentityResolve
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
 import * as ReviewService from "./review/ReviewService.ts";
 import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
+import * as BotMaintenance from "./bots/BotMaintenance.ts";
 import * as BotService from "./bots/BotService.ts";
 import * as BotTaskService from "./bots/BotTaskService.ts";
 import * as SecretRequests from "./secrets/SecretRequests.ts";
@@ -820,6 +821,7 @@ const layerUnusedConfigRpcServices = Layer.mergeAll(
   Layer.mock(ReviewService.ReviewService)({}),
   Layer.mock(ScheduledTasks.ScheduledTaskService)({}),
   Layer.mock(BotContinuation.BotContinuation)({}),
+  Layer.mock(BotMaintenance.BotMaintenance)({}),
   Layer.mock(BotService.BotService)({}),
   Layer.mock(BotTaskService.BotTaskService)({}),
   Layer.mock(SecretRequests.SecretRequests)({}),

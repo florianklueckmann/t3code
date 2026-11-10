@@ -28,6 +28,7 @@ import { reportBotFailure } from "../bots/reportBotFailure";
 import { useSelectWorkspaceDetail } from "../layout/workspace/useSelectWorkspaceDetail";
 import { useBotEditor, startBotEditor, startNewBotEditor } from "./bot-editor";
 import { BotContinuationSection } from "./BotContinuationSection";
+import { BotMaintenanceSection } from "./BotMaintenanceSection";
 import { BotLearningSection } from "./BotLearningSection";
 import { BotRoutinesSection } from "./BotRoutinesSection";
 import {
@@ -402,6 +403,7 @@ function BotForm({
   const config = useEnvironmentServerConfig(environmentId);
   const routinesSupported = config?.environment.capabilities.botRoutines === true;
   const notesSupported = config?.environment.capabilities.botContinuation === true;
+  const maintenanceSupported = config?.environment.capabilities.botMaintenance === true;
   const canOperate = useAtomValue(serverEnvironment.updateBot.permissionAtom(environmentId));
   const projects = useProjects().filter((project) => project.environmentId === environmentId);
   const projectTitle = (projectId: ProjectId) =>
@@ -611,6 +613,19 @@ function BotForm({
                 projectId={project.projectId}
                 title={`${projectTitle(project.projectId)} · Working notes`}
                 disabled={readOnly || !project.attached}
+              />
+            ) : null}
+            {maintenanceSupported &&
+            project.attached &&
+            baseline.projects.some(
+              (saved) => saved.projectId === project.projectId && saved.attached,
+            ) ? (
+              <BotMaintenanceSection
+                environmentId={environmentId}
+                botId={draft.botId}
+                projectId={project.projectId}
+                title={`${projectTitle(project.projectId)} · Maintenance`}
+                disabled={readOnly}
               />
             ) : null}
             {routinesSupported &&

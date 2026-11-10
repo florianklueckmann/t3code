@@ -127,6 +127,7 @@ import * as ThreadMessageIntake from "./orchestration-v2/ThreadMessageIntake.ts"
 import * as DocumentText from "./provider/DocumentText.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
+import * as BotMaintenance from "./bots/BotMaintenance.ts";
 import * as BotService from "./bots/BotService.ts";
 import * as BotTaskService from "./bots/BotTaskService.ts";
 import * as SecretRequests from "./secrets/SecretRequests.ts";
@@ -1452,6 +1453,7 @@ export const layerWsRpc = (
       const bots = yield* BotService.BotService;
       const botTasks = yield* BotTaskService.BotTaskService;
       const botContinuation = yield* BotContinuation.BotContinuation;
+      const botMaintenance = yield* BotMaintenance.BotMaintenance;
       const secretRequests = yield* SecretRequests.SecretRequests;
       const guestShares = yield* GuestShareService.GuestShareService;
       const pullRequests = yield* PullRequestService.PullRequestService;
@@ -2378,6 +2380,8 @@ export const layerWsRpc = (
         [WS_METHODS.botsGetContinuation]: (input) => botContinuation.get(input),
         [WS_METHODS.botsListContinuationRevisions]: (input) => botContinuation.history(input),
         [WS_METHODS.botsSaveContinuation]: (input) => botContinuation.save(input, { kind: "user" }),
+        [WS_METHODS.botsGetMaintenance]: (input) => botMaintenance.get(input),
+        [WS_METHODS.botsConfigureMaintenance]: (input) => botMaintenance.configure(input),
         [WS_METHODS.botsCreate]: (input) => bots.create(input),
         [WS_METHODS.botsUpdate]: (input) => bots.update(input),
         [WS_METHODS.botsSetArchived]: (input) => bots.setArchived(input),
