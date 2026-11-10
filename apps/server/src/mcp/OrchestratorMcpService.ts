@@ -56,6 +56,7 @@ import {
   type ProviderOptionSelection,
   ProviderRequestKind,
   type RuntimeMode,
+  type BotId,
   type ScheduledTask,
   type ScheduledTaskUpsertInput,
   scheduledTaskThreadMode,
@@ -192,6 +193,10 @@ export interface OrchestratorMcpServiceShape {
     scope: McpInvocationScope,
     input: OrchestratorMcpUpdateScheduledTaskInput,
   ) => Effect.Effect<OrchestratorMcpScheduleTaskResult, OrchestratorMcpFailure>;
+  /** The Bot whose routine a scheduled task is, or undefined for any other task. */
+  readonly scheduledTaskBot: (
+    scheduledTaskId: ScheduledTask["id"],
+  ) => Effect.Effect<BotId | undefined, OrchestratorMcpFailure>;
   readonly deleteScheduledTask: (
     scope: McpInvocationScope,
     input: OrchestratorMcpDeleteScheduledTaskInput,
@@ -2078,6 +2083,25 @@ const make = Effect.gen(function* () {
             (task) => summarizeScheduledTask(scope, { parent, limits }, task),
           ),
         };
+      },
+    ),
+    scheduledTaskBot: Effect.fn("OrchestratorMcpService.scheduledTaskBot")(
+      function* (scheduledTaskId) {
+        const { tasks } = yield* scheduledTasks
+          .list()
+          .pipe(
+            Effect.mapError((error) =>
+              failure("orchestration_error", `Could not load scheduled task: ${error.message}`),
+            ),
+          );
+        const task = tasks.find((candidate) => candidate.id === scheduledTaskId);
+        if (task === undefined) {
+          return yield* failure(
+            "task_not_found",
+            `Scheduled task ${scheduledTaskId} was not found.`,
+          );
+        }
+        return task.bot?.botId;
       },
     ),
     updateScheduledTask: Effect.fn("OrchestratorMcpService.updateScheduledTask")(

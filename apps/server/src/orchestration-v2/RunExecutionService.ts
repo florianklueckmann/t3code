@@ -39,6 +39,7 @@ import * as Schema from "effect/Schema";
 import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import * as McpAppModelContext from "../mcpApps/McpAppModelContext.ts";
 import * as BotTurnContext from "../bots/BotTurnContext.ts";
+import * as McpConnectionDelivery from "../mcpConnections/McpConnectionDelivery.ts";
 import * as PreviewAgentActivity from "../preview/PreviewAgentActivity.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as CheckpointService from "./CheckpointService.ts";
@@ -1700,15 +1701,34 @@ export const layer: Layer.Layer<
         // A Bot conversation never runs without its instructions: a failed
         // read, an inactive Bot or a provider that cannot carry them fails the turn.
         const botContext = yield* Effect.exit(botTurnContext.forThread(input.run.threadId));
-        const applicationInstructions =
+        // Forks and subagents of a Bot thread get the account names too, from the turn's own grants.
+        const grantedConnections =
+          input.runtimePolicy.mcpConnections === undefined
+            ? undefined
+            : McpConnectionDelivery.grantedConnectionsInstructions(
+                input.runtimePolicy.mcpConnections,
+                yield* serverSettings.getSettings.pipe(
+                  Effect.map((settings) => settings.mcpConnections),
+                  Effect.catch((cause) =>
+                    Effect.logWarning("Failed to read MCP connection labels.", { cause }).pipe(
+                      Effect.as({}),
+                    ),
+                  ),
+                ),
+              );
+        const botInstructions =
           Exit.isSuccess(botContext) && botContext.value._tag === "active"
             ? botContext.value.instructions
             : undefined;
+        const applicationInstructions =
+          botInstructions === undefined || grantedConnections === undefined
+            ? (botInstructions ?? grantedConnections)
+            : `${botInstructions}\n\n${grantedConnections}`;
         const botBlock = Exit.isFailure(botContext)
           ? "Failed to read this Bot conversation's instructions."
           : botContext.value._tag === "inactive"
             ? botContext.value.message
-            : applicationInstructions !== undefined && input.providerThread.driver !== "codex"
+            : botInstructions !== undefined && input.providerThread.driver !== "codex"
               ? "Bots currently support Codex providers only. Switch this conversation back to a Codex provider."
               : undefined;
         const turnInput = {

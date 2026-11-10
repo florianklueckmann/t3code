@@ -18,6 +18,37 @@ import * as Schema from "effect/Schema";
 import { requireSettingsSecret } from "../secrets/settingsSecretValue.ts";
 import * as Settings from "../serverSettings.ts";
 
+export const GRANTED_SERVER_PREFIX = "t3c-";
+
+/** A granted connection's server name, from its immutable id, never its label. */
+export const grantedServerName = (id: McpConnectionId) => `${GRANTED_SERVER_PREFIX}${id}`;
+
+/** The tool namespace Codex shows the model for a granted server (measured on 0.166, 0.167). */
+const grantedToolNamespace = (id: McpConnectionId) =>
+  `mcp__${grantedServerName(id).replaceAll("-", "_")}`;
+
+/**
+ * Tells the model which granted account each namespace is. Labels and ids only: two accounts of
+ * one service look alike otherwise. Disabled and removed connections are not loaded, so not listed.
+ */
+export const grantedConnectionsInstructions = (
+  ids: ReadonlyArray<McpConnectionId>,
+  catalog: Readonly<Record<string, { readonly label: string; readonly enabled: boolean }>>,
+): string | undefined => {
+  const lines = ids.flatMap((id) => {
+    const definition = catalog[id];
+    return definition?.enabled === true
+      ? [`- "${definition.label}": tools in the ${grantedToolNamespace(id)} namespace`]
+      : [];
+  });
+  return lines.length === 0
+    ? undefined
+    : [
+        "MCP connections granted to you, each a separate account. Use the one the request is about:",
+        ...lines,
+      ].join("\n");
+};
+
 export interface DeliveredMcpConnection {
   readonly id: McpConnectionId;
   readonly label: string;

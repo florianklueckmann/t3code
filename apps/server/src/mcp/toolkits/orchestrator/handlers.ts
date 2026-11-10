@@ -22,6 +22,8 @@ const handlers = {
   delegate_task: McpToolAccess.actsAsCaller((input) =>
     Effect.gen(function* () {
       const scope = yield* McpInvocationContext.McpInvocationContext;
+      if (PeerForwarding.remoteTarget(scope, input.target?.environmentId) !== undefined)
+        yield* McpToolAccess.refuseBotCaller("a task in another environment");
       const service = yield* OrchestratorMcpService.OrchestratorMcpService;
       return yield* service.delegateTask(scope, input);
     }),
@@ -93,6 +95,10 @@ const handlers = {
               message: "A new scheduled task needs `prompt` and `schedule`.",
             });
           }
+          yield* McpToolAccess.requireOwnBot(
+            Effect.succeed(input.botId),
+            "a scheduled task that is not your routine",
+          );
           const scope = yield* McpInvocationContext.McpInvocationContext;
           const service = yield* OrchestratorMcpService.OrchestratorMcpService;
           return yield* service.scheduleTask(scope, { ...input, prompt, schedule });
@@ -106,6 +112,10 @@ const handlers = {
           if (scheduledTaskId === undefined) return yield* Effect.die("unreachable");
           const scope = yield* McpInvocationContext.McpInvocationContext;
           const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+          yield* McpToolAccess.requireOwnBot(
+            service.scheduledTaskBot(scheduledTaskId),
+            "changing a scheduled task that is not your routine",
+          );
           return yield* service.updateScheduledTask(scope, {
             scheduledTaskId,
             prompt,
@@ -141,6 +151,7 @@ const handlers = {
   ),
   create_threads: McpToolAccess.actsAsCaller((input) =>
     Effect.gen(function* () {
+      yield* McpToolAccess.refuseBotCaller("new top-level threads");
       const scope = yield* McpInvocationContext.McpInvocationContext;
       const service = yield* OrchestratorMcpService.OrchestratorMcpService;
       return yield* service.createThreads(scope, input);

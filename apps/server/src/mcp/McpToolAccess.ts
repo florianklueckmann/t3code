@@ -1,4 +1,5 @@
 import {
+  type BotId,
   type EnvironmentId,
   type OrchestrationV2LinkOrigin,
   OrchestratorMcpEnvironmentTarget,
@@ -7,6 +8,7 @@ import {
   type RuntimeMode,
   type ThreadId,
 } from "@t3tools/contracts";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
@@ -14,7 +16,7 @@ import * as Ref from "effect/Ref";
 import * as Struct from "effect/Struct";
 import type * as Layer from "effect/Layer";
 import type * as Scope from "effect/Scope";
-import type { Tool, Toolkit } from "effect/ai";
+import { Tool, type Toolkit } from "effect/ai";
 
 import {
   DispatchModeLimit,
@@ -22,6 +24,7 @@ import {
 } from "../orchestration-v2/DispatchModeLimit.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import { assertNotLinked, assertSameLink, callerLinkOrigin } from "./linkOrigin.ts";
+import * as McpCallerBot from "./McpCallerBot.ts";
 import * as McpCallerChanges from "./McpCallerChanges.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import { resolveInteractionMode, resolveRuntimeMode } from "./delegatedTaskModes.ts";
@@ -159,6 +162,63 @@ const refuseRestrictedCaller = Effect.fn("McpToolAccess.refuseRestrictedCaller")
     shell = parent;
   }
 });
+
+/** The Bot whose access the calling thread runs under; undefined for any other caller. */
+const callerBot = Effect.gen(function* () {
+  const { caller } = yield* loadCaller();
+  if (caller === undefined) return undefined;
+  const access = yield* (yield* McpCallerBot.McpCallerBot).forThread(caller);
+  if (access._tag === "unknown") {
+    return yield* new OrchestratorMcpFailure({
+      code: "capability_denied",
+      message:
+        "This thread's Bot could not be determined, so it cannot start work. Start a new thread.",
+    });
+  }
+  return access._tag === "bot" ? access.botId : undefined;
+});
+
+const outsideBotRefusal = (work: string) =>
+  new OrchestratorMcpFailure({
+    code: "capability_denied",
+    message: `A Bot starts work only as its own tasks and routines, so ${work} would run outside the MCP connections granted to it. Use t3_bot start_task, or schedule_task with your botId.`,
+  });
+
+const otherBotRefusal = (bot: BotId, other: BotId) =>
+  new OrchestratorMcpFailure({
+    code: "capability_denied",
+    message: `This thread works for Bot "${bot}", so it can start and change tasks and routines only for that Bot, not for "${other}".`,
+  });
+
+/**
+ * A Bot's work loads only its granted MCP connections, which holds for its own tasks and
+ * routines. Other new work would run with the user's own servers, so a Bot's thread may not start it.
+ */
+export const refuseBotCaller = (work: string) =>
+  callerBot.pipe(
+    Effect.flatMap((bot) =>
+      bot === undefined ? Effect.void : Effect.fail(outsideBotRefusal(work)),
+    ),
+  );
+
+/**
+ * A Bot's thread starts or changes tasks and routines only for its own Bot, whose grants they
+ * load. `owner` is read only for a Bot's thread; undefined means the work is no Bot's.
+ */
+export const requireOwnBot = <E, R>(owner: Effect.Effect<BotId | undefined, E, R>, work: string) =>
+  callerBot.pipe(
+    Effect.flatMap((bot) =>
+      bot === undefined
+        ? Effect.void
+        : Effect.flatMap(owner, (other) =>
+            other === undefined
+              ? Effect.fail(outsideBotRefusal(work))
+              : other === bot
+                ? Effect.void
+                : Effect.fail(otherBotRefusal(bot, other)),
+          ),
+    ),
+  );
 
 const writingCaller = refuseReadOnlyClient.pipe(
   Effect.andThen(loadCaller()),
@@ -483,6 +543,9 @@ const routed = Effect.fn("McpToolAccess.routed")(function* <Tools extends Record
         const target = PeerForwarding.remoteTarget(scope, environmentId);
         if (target === undefined) return yield* here(params);
         if (scope.linkedEnvironments === false) return yield* PeerForwarding.linkedEnvironmentsOff;
+        // Connection ids are this environment's, so a Bot's grants cannot follow it there.
+        if (!Context.get(tool.annotations, Tool.Readonly))
+          yield* refuseBotCaller("work in another environment");
         yield* (remote as RemoteCheck<typeof params>)(params);
         if (Option.isNone(forwarding)) return yield* linksUnavailable;
         return yield* forwarding.value.call(scope, tool, target, { ...params, environmentId });

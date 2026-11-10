@@ -1492,8 +1492,7 @@ const CODEX_GRANT_ONLY_FEATURES = [
   "remote_plugin",
   "skill_mcp_dependency_install",
 ];
-/** Granted servers are named from the connection's immutable id, never its label. */
-const codexGrantedServerName = (id: string) => `t3c-${id}`;
+const codexGrantedServerName = McpConnectionDelivery.grantedServerName;
 
 const codexGrantedServers = (
   connections: ReadonlyArray<McpConnectionDelivery.DeliveredMcpConnection>,
@@ -5134,7 +5133,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             const nativeThreadId = payload.threadId;
             // A start's status can arrive before its thread id is known, so the name decides.
             if (payload.status !== "failed" || nativeThreadId == null) return;
-            if (!payload.name.startsWith(codexGrantedServerName(""))) return;
+            if (!payload.name.startsWith(McpConnectionDelivery.GRANTED_SERVER_PREFIX)) return;
             const context = yield* findActiveTurnByNativeThreadId(nativeThreadId);
             if (context !== undefined && context.subagent === null) {
               return yield* noticeGrantedServerFailure(context, payload.name);

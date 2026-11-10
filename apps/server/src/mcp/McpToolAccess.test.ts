@@ -1,5 +1,6 @@
 import { expect, it } from "@effect/vitest";
 import {
+  BotId,
   EnvironmentId,
   OrchestratorMcpEnvironmentTarget,
   OrchestratorMcpFailure,
@@ -18,6 +19,7 @@ import { McpSchema, McpServer, Tool, Toolkit } from "effect/ai";
 import { OrchestratorProjectionError } from "../orchestration-v2/Orchestrator.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
+import * as McpCallerBot from "./McpCallerBot.ts";
 import * as McpCallerChanges from "./McpCallerChanges.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
@@ -41,6 +43,8 @@ const missingNoChangesParentId = ThreadId.make("thread:missing-no-changes-parent
 const missingPlainParentId = ThreadId.make("thread:missing-plain-parent");
 const orphanedNoChangesSubagentThreadId = ThreadId.make("thread:orphaned-no-changes-subagent");
 const orphanedPlainSubagentThreadId = ThreadId.make("thread:orphaned-plain-subagent");
+const botHomeThreadId = ThreadId.make("bot-home:mail-bot:project");
+const botSubagentThreadId = ThreadId.make("thread:mail-bot-subagent");
 
 const subagentShell = (threadId: ThreadId, parentThreadId: ThreadId) => {
   const shell = liveThreadShell(threadId);
@@ -93,6 +97,8 @@ const shells = new Map([
     orphanedPlainSubagentThreadId,
     subagentShell(orphanedPlainSubagentThreadId, missingPlainParentId),
   ],
+  [botHomeThreadId, liveThreadShell(botHomeThreadId)],
+  [botSubagentThreadId, subagentShell(botSubagentThreadId, botHomeThreadId)],
 ]);
 
 /** Stands in for the Bot task lookup; an unreadable task answers "none", as the live port does. */
@@ -290,6 +296,8 @@ const noChanges = threadCaller(noChangesThreadId);
 const noChangesSubagent = threadCaller(noChangesSubagentThreadId);
 const unreadableTask = threadCaller(unreadableTaskThreadId);
 const plainSubagent = threadCaller(plainSubagentThreadId);
+const botHome = threadCaller(botHomeThreadId);
+const botSubagent = threadCaller(botSubagentThreadId);
 const orphanedNoChangesSubagent = threadCaller(orphanedNoChangesSubagentThreadId);
 const orphanedPlainSubagent = threadCaller(orphanedPlainSubagentThreadId);
 
@@ -446,7 +454,7 @@ const linkedProbe = {
   }),
 };
 const LinkedProbeToolkit = Toolkit.make(
-  Tool.make("reads", linkedProbe),
+  Tool.make("reads", linkedProbe).annotate(Tool.Readonly, true),
   Tool.make("writes", linkedProbe),
   Tool.make("writes_with_capability", linkedProbe),
   Tool.make("writes_threads", linkedProbe),
@@ -475,6 +483,17 @@ const linkedProbeServer = McpHttpServer.toolkitRegistration(
     }),
   ),
   Layer.provideMerge(layerCallerChanges),
+  // Lineage itself is followed by the Bot side; here each thread's answer stands for it.
+  Layer.provideMerge(
+    Layer.succeed(McpCallerBot.McpCallerBot, {
+      forThread: (thread) =>
+        Effect.succeed(
+          thread.id === botHomeThreadId || thread.id === botSubagentThreadId
+            ? { _tag: "bot", botId: BotId.make("mail-bot") }
+            : { _tag: "none" },
+        ),
+    }),
+  ),
   // Stands in for the linked environment, answering with where the call went.
   Layer.provide(
     Layer.mock(PeerForwarding.PeerForwarding)({
@@ -509,6 +528,12 @@ it.effect.each([
     "writes_environment in environment-box",
   ],
   ["writes_environment", fullAccess, { environmentId: here }, "here"],
+  // A Bot's grants are this environment's, so its line may read a linked one but not work there.
+  ["reads", botHome, { environmentId: box }, "reads in environment-box"],
+  ["writes", botHome, { environmentId: box }, "capability_denied"],
+  ["writes_environment", botHome, { environmentId: box }, "capability_denied"],
+  ["writes_environment", botHome, { environmentId: here }, "here"],
+  ["starts_threads", botSubagent, { environmentId: box }, "capability_denied"],
   // A No changes task cannot reach a linked environment's tools either.
   ["reads", noChanges, { environmentId: box }, "reads in environment-box"],
   ["writes", noChanges, { environmentId: box }, "capability_denied"],

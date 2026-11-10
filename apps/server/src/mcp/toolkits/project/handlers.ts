@@ -91,6 +91,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
     (input, { runtimeMode, interactionMode, linkOrigin }) =>
       Effect.gen(function* () {
         const scope = yield* McpInvocationContext.McpInvocationContext;
+        yield* McpToolAccess.refuseBotCaller("a new top-level thread");
         const context = yield* readCaller();
         const { caller } = context;
         // A retry with the same key replays the first launch: the ids derive

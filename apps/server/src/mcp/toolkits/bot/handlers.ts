@@ -183,6 +183,8 @@ const write = Effect.fn("mcp.bot.write")(function* (input: BotToolInput) {
   }
   const botId = yield* requireBotId(input);
   if (input.action === "start_task") {
+    // The task loads its Bot's grants, so a Bot's thread may start one only for itself.
+    yield* McpToolAccess.requireOwnBot(Effect.succeed(botId), "this task");
     if (input.task === undefined) {
       return yield* new OrchestratorMcpFailure({
         code: "invalid_request",

@@ -22,6 +22,8 @@ import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementSer
 import { advertisedJsonSchema } from "../../advertisedJsonSchema.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
+import * as McpCallerBot from "../../McpCallerBot.ts";
+import type { McpCallerBotValue } from "../../McpCallerBot.ts";
 import * as McpCallerChanges from "../../McpCallerChanges.ts";
 import type { McpCallerChangesValue } from "../../McpCallerChanges.ts";
 import { layerCallerChangesAllowed, liveThreadShell } from "../../McpToolAccess.testkit.ts";
@@ -76,6 +78,8 @@ const callTool = (
     readonly changes?: McpCallerChangesValue;
     readonly subagent?: boolean;
     readonly sealedLoad?: boolean;
+    /** The Bot whose access the caller's line runs under. */
+    readonly accessOf?: McpCallerBotValue;
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -124,6 +128,9 @@ const callTool = (
                 : Layer.succeed(McpCallerChanges.McpCallerChanges, {
                     forThread: () => Effect.succeed(caller.changes!),
                   }),
+              Layer.succeed(McpCallerBot.McpCallerBot, {
+                forThread: () => Effect.succeed(caller.accessOf ?? { _tag: "none" }),
+              }),
               Layer.mock(BotContinuation.BotContinuation)({
                 save: (input) =>
                   record("save_continuation").pipe(
@@ -327,6 +334,30 @@ it.effect("starts a task on its own model without updating the Bot", () =>
         },
       },
     });
+  }),
+);
+
+it.effect("starts tasks from a Bot's line only for that Bot, whose grants they load", () =>
+  Effect.gen(function* () {
+    const otherBot = BotId.make("work-companion");
+    const start = (accessOf: McpCallerBotValue, forBot = botId) =>
+      callTool(
+        { action: "start_task", botId: forBot, task: "Check mail." },
+        undefined,
+        undefined,
+        false,
+        {
+          accessOf,
+        },
+      );
+    // Its Home, a subagent or a fork of it: the same Bot, whichever thread the line reaches.
+    expect((yield* start({ _tag: "bot", botId })).calls).toEqual(["start:null"]);
+    expect((yield* start({ _tag: "none" }, otherBot)).calls).toEqual(["start:null"]);
+    for (const accessOf of [{ _tag: "bot", botId: otherBot }, { _tag: "unknown" }] as const) {
+      const refused = yield* start(accessOf);
+      expect(refused.calls).toEqual([]);
+      expect(refused.result).toMatchObject({ code: "capability_denied" });
+    }
   }),
 );
 
