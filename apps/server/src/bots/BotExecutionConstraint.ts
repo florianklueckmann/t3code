@@ -2,6 +2,7 @@ import type { ThreadId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as SqlClient from "effect/sql/SqlClient";
 
 import * as McpCallerChanges from "../mcp/McpCallerChanges.ts";
 import * as BotDatabase from "./persistence/BotDatabase.ts";
@@ -42,21 +43,42 @@ const make = Effect.gen(function* () {
 
 export const layer = Layer.effect(BotExecutionConstraint, make);
 
-/** T3 Code's tools refuse changes for a restricted thread, and for one whose task can't be read. */
+/**
+ * T3 Code's tools refuse changes for a No changes thread and for one whose task can't be read. A
+ * thread whose newest unfinished run is restricted answers with that run's restriction.
+ */
 export const layerMcpCallerChanges = Layer.effect(
   McpCallerChanges.McpCallerChanges,
   Effect.gen(function* () {
     const constraint = yield* BotExecutionConstraint;
+    const main = yield* SqlClient.SqlClient;
     return McpCallerChanges.McpCallerChanges.of({
       forThread: Effect.fn("BotExecutionConstraint.mcpCallerChanges")(
         function* (threadId: ThreadId) {
-          return (yield* constraint.forThread(threadId)) === "no-changes" ? "none" : "allowed";
+          if ((yield* constraint.forThread(threadId)) === "no-changes") return "none" as const;
+          const rows = yield* main<{ readonly restriction: unknown }>`
+            SELECT json_extract(payload_json, '$.restriction') AS restriction
+            FROM orchestration_v2_projection_runs
+            WHERE thread_id = ${threadId}
+              AND status IN ('preparing', 'starting', 'running', 'waiting')
+            ORDER BY ordinal DESC LIMIT 1
+          `;
+          const restriction = rows[0]?.restriction;
+          if (restriction === null || restriction === undefined) return "allowed" as const;
+          return restriction === "botNote" || restriction === "botWaiting"
+            ? restriction
+            : ("none" as const);
         },
         (effect, threadId) =>
           effect.pipe(
             Effect.catchTags({
               BotStoreError: (cause) =>
                 Effect.logWarning("Refusing T3 tool changes: the caller's task is unreadable.", {
+                  threadId,
+                  cause,
+                }).pipe(Effect.as("none" as const)),
+              SqlError: (cause) =>
+                Effect.logWarning("Refusing T3 tool changes: the caller's run is unreadable.", {
                   threadId,
                   cause,
                 }).pipe(Effect.as("none" as const)),

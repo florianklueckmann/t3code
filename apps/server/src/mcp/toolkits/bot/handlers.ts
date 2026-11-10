@@ -255,6 +255,10 @@ export const layer = McpToolAccess.toLayer(BotToolkit, {
       input.action === "list_tasks" ||
       input.action === "read_continuation",
     McpToolAccess.reads(read),
-    McpToolAccess.writesEnvironment((input) => write(input)),
+    McpToolAccess.either(
+      (input) => input.action === "save_continuation",
+      McpToolAccess.writesOwnHomeNote((input) => write(input)),
+      McpToolAccess.writesEnvironment((input) => write(input)),
+    ),
   ),
 });

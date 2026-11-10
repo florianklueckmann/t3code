@@ -176,7 +176,8 @@ const make = Effect.gen(function* () {
     return (yield* main<{
       readonly run_id: string;
       readonly ordinal: number;
-    }>`SELECT run_id, ordinal FROM orchestration_v2_projection_runs WHERE thread_id = ${home} AND status IN ('starting', 'running', 'waiting') ORDER BY ordinal DESC LIMIT 1`)[0];
+      readonly restriction: string | null;
+    }>`SELECT run_id, ordinal, json_extract(payload_json, '$.restriction') AS restriction FROM orchestration_v2_projection_runs WHERE thread_id = ${home} AND status IN ('starting', 'running', 'waiting') ORDER BY ordinal DESC LIMIT 1`)[0];
   });
   const directClause = main.literal(`m.role = 'user'
     AND json_extract(m.payload_json, '$.notification') IS NULL
@@ -402,6 +403,7 @@ const make = Effect.gen(function* () {
     let sourceIds = previous?.sourceIds ?? [];
     let writer: BotContinuationRevision["updatedBy"] = { kind: "user" };
     let basis: typeof BasisPayload.Type | null = null;
+    let runRestriction: string | null = null;
     let note = emptyNote();
     let scopedSources: readonly {
       readonly ordinal: number;
@@ -419,6 +421,7 @@ const make = Effect.gen(function* () {
         return yield* invalid(
           "The save basis belongs to another Home or run. Read the current working notes again.",
         );
+      runRestriction = run.restriction;
       scopedSources = yield* sourceWindow(
         home,
         basis.throughRunOrdinal ?? -1,
@@ -521,6 +524,19 @@ const make = Effect.gen(function* () {
       }
     }
     if (retry === undefined) note = yield* decodeNote(note);
+    // A Waiting-only run keeps every carried item exactly, refs included, and only appends Waiting.
+    if (retry === undefined && runRestriction === "botWaiting") {
+      const before = previous?.note ?? emptyNote();
+      const unchanged = BOT_CONTINUATION_SECTIONS.every((section) =>
+        section === "waiting"
+          ? encodeJson(note.waiting.slice(0, before.waiting.length)) === encodeJson(before.waiting)
+          : encodeJson(note[section]) === encodeJson(before[section]),
+      );
+      if (!unchanged)
+        return yield* invalid(
+          "This maintenance turn may only append Waiting items; every other item must stay exactly as it is.",
+        );
+    }
     const revision: typeof StoredRevision.Type = {
       revision: (previous?.revision ?? 0) + 1,
       note,
@@ -548,6 +564,14 @@ const make = Effect.gen(function* () {
           return yield* invalid(
             "This Bot is archived or detached; its working notes are read-only.",
           );
+        // The authority checked above belongs to one run; Stop or a newer run voids it.
+        if (basis !== null) {
+          const run = yield* activeRun(home);
+          if (run?.run_id !== basis.runId || run.restriction !== runRestriction)
+            return yield* invalid(
+              "The run that made this save is no longer the Home's current run. Nothing was saved.",
+            );
+        }
         const existing =
           (yield* sql<RevisionRow>`SELECT * FROM bot_continuation_revisions WHERE home_thread_id = ${home} AND update_id = ${input.updateId}`)[0];
         if (existing !== undefined)

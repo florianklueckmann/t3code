@@ -652,3 +652,57 @@ it.effect(
       }).pipe(Effect.provide(connection), Effect.scoped);
     }).pipe(Effect.provide(NodeServices.layer)),
 );
+
+it.effect("a Waiting-only run appends Waiting items and changes nothing else", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    yield* task(1, "running");
+    yield* input(1, "Draft Lantern after I provide its date.", { directUser: true });
+    const notes = yield* BotContinuation.BotContinuation;
+    const main = yield* SqlClient.SqlClient;
+    const bot = { kind: "bot", threadId: home } as const;
+    const base = {
+      ...empty(),
+      requests: [{ text: "Lantern draft" }],
+      waiting: [{ text: "Lantern date from the user" }],
+    };
+    const first = yield* notes.save(
+      { ...userSave("ordinary", null, base), basis: (yield* notes.get(scope)).basis! },
+      bot,
+    );
+    assert.equal(first._tag, "saved");
+    yield* main`UPDATE orchestration_v2_projection_runs SET payload_json = json_set(payload_json, '$.restriction', 'botWaiting') WHERE run_id = 'run-1'`;
+    const basis = (yield* notes.get(scope)).basis!;
+    const save = (updateId: string, note: BotContinuationNoteInput) =>
+      notes.save({ ...userSave(updateId, 1, note), basis }, bot);
+    const appended = { ...base, waiting: [...base.waiting, { text: "Harbor owner's reply" }] };
+    for (const [name, note] of [
+      ["edit", { ...base, waiting: [{ text: "Lantern date from the client" }] }],
+      ["removal", { ...base, waiting: [] }],
+      ["reorder", { ...appended, waiting: [...appended.waiting].reverse() }],
+      ["other section", { ...appended, requests: [...base.requests, { text: "Harbor list" }] }],
+      [
+        "carried reference",
+        {
+          ...base,
+          waiting: [{ text: "Lantern date from the user", taskIds: [BotTaskId.make("task-1")] }],
+        },
+      ],
+    ] as const) {
+      assert.isTrue(yield* save(name, note).pipe(Effect.isFailure), name);
+    }
+    const saved = yield* save("append", appended);
+    if (saved._tag !== "saved") return assert.fail();
+    assert.deepEqual(
+      saved.view.note.waiting.map((item) => item.text),
+      ["Lantern date from the user", "Harbor owner's reply"],
+    );
+    // Authority belongs to the run: once it ended, the same basis saves nothing.
+    yield* main`UPDATE orchestration_v2_projection_runs SET status = 'interrupted' WHERE run_id = 'run-1'`;
+    assert.isTrue(
+      yield* notes
+        .save({ ...userSave("after-stop", 2, appended), basis }, bot)
+        .pipe(Effect.isFailure),
+    );
+  }).pipe(Effect.provide(services.pipe(Layer.provideMerge(database)))),
+);

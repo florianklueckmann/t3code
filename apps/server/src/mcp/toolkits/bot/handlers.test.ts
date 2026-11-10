@@ -22,6 +22,8 @@ import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementSer
 import { advertisedJsonSchema } from "../../advertisedJsonSchema.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
+import * as McpCallerChanges from "../../McpCallerChanges.ts";
+import type { McpCallerChangesValue } from "../../McpCallerChanges.ts";
 import { layerCallerChangesAllowed, liveThreadShell } from "../../McpToolAccess.testkit.ts";
 import * as BotHandlers from "./handlers.ts";
 import { BotToolkit, type BotToolInput } from "./tools.ts";
@@ -46,12 +48,34 @@ const detail = {
   pendingLearning: 0,
 } satisfies BotDetail;
 
+const continuationView = (input: { readonly botId: BotId; readonly projectId: ProjectId }) => ({
+  ...input,
+  homeThreadId: threadId,
+  revision: null,
+  note: { requests: [], waiting: [], decided: [], context: [] },
+  updatedBy: null,
+  updatedAt: null,
+  restoredFrom: null,
+  coverage: null,
+  basis: null,
+  writable: true,
+  newerInputs: { count: 0, firstOrdinal: null, lastOrdinal: null },
+  sources: [],
+  moreSources: 0,
+  activeTasks: [],
+  moreActiveTasks: 0,
+});
+
 const callTool = (
   params: BotToolInput,
   access: "read-only" | undefined,
   /** The Bot conversation the calling thread is, if any. */
   callerBot?: { readonly botId: BotId; readonly projectId: ProjectId; readonly taskId?: BotTaskId },
   external = false,
+  caller: {
+    readonly changes?: McpCallerChangesValue;
+    readonly subagent?: boolean;
+  } = {},
 ) =>
   Effect.gen(function* () {
     const calls = yield* Ref.make<ReadonlyArray<string>>([]);
@@ -77,6 +101,7 @@ const callTool = (
                       threadId,
                       providerSessionId: "provider:bots",
                       providerInstanceId: ProviderInstanceId.make("codex"),
+                      ...(caller.subagent === true ? { subagent: true } : {}),
                     },
                 client:
                   access === undefined && !external
@@ -92,26 +117,21 @@ const callTool = (
               Layer.mock(ThreadManagement.ThreadManagementService)({
                 getThreadShell: () => Effect.succeed(liveThreadShell(threadId)),
               }),
-              layerCallerChangesAllowed,
-              Layer.mock(BotContinuation.BotContinuation)({
-                get: (input) =>
-                  Effect.succeed({
-                    ...input,
-                    homeThreadId: threadId,
-                    revision: null,
-                    note: { requests: [], waiting: [], decided: [], context: [] },
-                    updatedBy: null,
-                    updatedAt: null,
-                    restoredFrom: null,
-                    coverage: null,
-                    basis: null,
-                    writable: true,
-                    newerInputs: { count: 0, firstOrdinal: null, lastOrdinal: null },
-                    sources: [],
-                    moreSources: 0,
-                    activeTasks: [],
-                    moreActiveTasks: 0,
+              caller.changes === undefined
+                ? layerCallerChangesAllowed
+                : Layer.succeed(McpCallerChanges.McpCallerChanges, {
+                    forThread: () => Effect.succeed(caller.changes!),
                   }),
+              Layer.mock(BotContinuation.BotContinuation)({
+                save: (input) =>
+                  record("save_continuation").pipe(
+                    Effect.as({
+                      _tag: "conflict",
+                      reason: "revision",
+                      current: continuationView(input),
+                    } as const),
+                  ),
+                get: (input) => Effect.succeed(continuationView(input)),
               }),
               Layer.mock(BotService.BotService)({
                 list: Effect.succeed({ bots: [] }),
@@ -372,9 +392,57 @@ it.effect(
         undefined,
         true,
       );
-      expect(save.result).toMatchObject({
-        code: "invalid_request",
-        message: "Working-note writes require this project's active Home thread credential.",
-      });
+      expect(save.result).toMatchObject({ code: "thread_credential_required" });
+      expect(save.calls).toEqual([]);
     }),
+);
+
+const saveNote = {
+  action: "save_continuation",
+  botId,
+  projectId: campaignA,
+  continuation: {
+    baseRevision: null,
+    updateId: "maintenance",
+    note: { requests: [], waiting: [], decided: [], context: [] },
+  },
+} as const;
+
+it.effect.each(["botNote", "botWaiting"] as const)(
+  "a restricted Home run may save its own note and change nothing else: %s",
+  (changes) =>
+    Effect.gen(function* () {
+      const restricted = (params: BotToolInput, subagent = false) =>
+        callTool(params, undefined, { botId, projectId: campaignA }, false, {
+          changes,
+          subagent,
+        });
+      expect((yield* restricted(saveNote)).calls).toEqual(["save_continuation"]);
+      for (const params of [
+        { action: "start_task", botId, task: "Prepare.", returnToHome: true },
+        {
+          action: "learn",
+          botId,
+          projectId: campaignA,
+          learning: { origin: "correction", kind: "preference", text: "Always recap." },
+        },
+        { action: "update", botId, projectId: campaignA, guidance: "Changed." },
+        { action: "attach", botId, projectId: campaignA },
+      ] as const) {
+        const refused = yield* restricted(params as BotToolInput);
+        expect(refused.result, params.action).toMatchObject({ code: "capability_denied" });
+        expect(refused.calls).toEqual([]);
+      }
+      const fromSubagent = yield* restricted(saveNote, true);
+      expect(fromSubagent.result).toMatchObject({ code: "capability_denied" });
+      expect(fromSubagent.calls).toEqual([]);
+    }),
+);
+
+it.effect("a No changes routine task still cannot save a working note", () =>
+  Effect.gen(function* () {
+    const refused = yield* callTool(saveNote, undefined, undefined, false, { changes: "none" });
+    expect(refused.result).toMatchObject({ code: "capability_denied" });
+    expect(refused.calls).toEqual([]);
+  }),
 );
