@@ -706,3 +706,113 @@ it.effect("a Waiting-only run appends Waiting items and changes nothing else", (
     );
   }).pipe(Effect.provide(services.pipe(Layer.provideMerge(database)))),
 );
+
+const homeRun = Effect.fn("fixture.homeRun")(function* (id: string, ordinal: number) {
+  const main = yield* SqlClient.SqlClient;
+  yield* main`UPDATE orchestration_v2_projection_runs SET status = 'completed' WHERE thread_id = ${home}`;
+  yield* main`INSERT INTO orchestration_v2_projection_runs (run_id, thread_id, ordinal, provider, status, requested_at, payload_json) VALUES (${id}, ${home}, ${ordinal}, 'codex', 'running', ${now}, '{}')`;
+});
+
+/** A task result the server returned into the Home, which starts its own run. */
+const returnedResult = Effect.fn("fixture.returnedResult")(function* (
+  run: string,
+  ordinal: number,
+) {
+  const main = yield* SqlClient.SqlClient;
+  const messageId = `result-${ordinal}`;
+  const payload = JSON.stringify({
+    id: messageId,
+    threadId: home,
+    runId: run,
+    nodeId: null,
+    role: "user",
+    text: "Bot work run completed. The vendor needs a decision on the second quote.",
+    attachments: [],
+    streaming: false,
+    createdAt: now,
+    updatedAt: now,
+    createdBy: "agent",
+    creationSource: "server",
+    notification: { source: { kind: "system" }, outcome: "completed", summary: "Bot work result" },
+  });
+  yield* main`INSERT INTO orchestration_v2_projection_messages (message_id, thread_id, run_id, role, streaming, created_at, updated_at, payload_json) VALUES (${messageId}, ${home}, ${run}, 'user', 0, ${now}, ${now}, ${payload})`;
+  yield* main`INSERT INTO orchestration_v2_projection_turn_items (turn_item_id, thread_id, run_id, ordinal, type, status, updated_at, payload_json) VALUES (${`item-${ordinal}`}, ${home}, ${run}, ${ordinal}, 'user_message', 'completed', ${now}, ${JSON.stringify({ messageId })})`;
+});
+
+const coverageTag = (coverage: BotContinuation.NoteCoverage) =>
+  coverage._tag === "unprovable" ? `${coverage._tag}:${coverage.reason}` : coverage._tag;
+
+it.effect.each([
+  { inputs: 200, before: "behind", after: "current" },
+  { inputs: 201, before: "unprovable:input_overflow", after: "unprovable:source_gap" },
+])(
+  "proves coverage only for input a save's window held ($inputs direct inputs)",
+  ({ inputs, before, after }) =>
+    Effect.gen(function* () {
+      yield* seed;
+      for (let ordinal = 1; ordinal <= inputs; ordinal += 1)
+        yield* input(ordinal, `Request ${ordinal}`, { directUser: true });
+      const notes = yield* BotContinuation.BotContinuation;
+      const bot = { kind: "bot", threadId: home } as const;
+      assert.equal(coverageTag(yield* notes.coverage(scope)), before);
+      const saved = yield* notes.save(
+        {
+          ...userSave("refresh", null, { ...empty(), requests: [{ text: "Request 1" }] }),
+          basis: (yield* notes.get(scope)).basis!,
+        },
+        bot,
+      );
+      if (saved._tag !== "saved") return assert.fail();
+      // The saved boundary moved past every input either way; only the proof tells them apart.
+      assert.equal(saved.view.newerInputs.count, 0);
+      assert.equal(coverageTag(yield* notes.coverage(scope)), after);
+      // A later save cannot vouch for input an earlier one never showed.
+      yield* input(inputs + 1, "One more request", { directUser: true });
+      const later = yield* notes.save(
+        {
+          ...userSave("later", 1, { ...empty(), requests: [{ text: "Request 1" }] }),
+          basis: (yield* notes.get(scope)).basis!,
+        },
+        bot,
+      );
+      assert.equal(later._tag, "saved");
+      assert.equal(coverageTag(yield* notes.coverage(scope)), after);
+    }).pipe(Effect.provide(services.pipe(Layer.provideMerge(database)))),
+);
+
+it.effect("counts a returned task result until a save from a later Home run", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    yield* input(1, "Ask the vendor for two quotes.", { directUser: true });
+    const notes = yield* BotContinuation.BotContinuation;
+    const save = (updateId: string, baseRevision: number | null) =>
+      Effect.gen(function* () {
+        const view = yield* notes.get(scope);
+        return yield* notes.save(
+          {
+            ...userSave(updateId, baseRevision, { ...empty(), requests: [{ text: "Quotes" }] }),
+            basis: view.basis!,
+          },
+          { kind: "bot", threadId: home },
+        );
+      });
+    assert.equal((yield* save("first", null))._tag, "saved");
+    assert.deepEqual(yield* notes.coverage(scope), { _tag: "current" });
+
+    yield* homeRun("run-result", 2);
+    yield* returnedResult("run-result", 2);
+    assert.deepEqual(yield* notes.coverage(scope), { _tag: "behind", inputs: 0, results: 1 });
+    // A save in the result's own run may predate the result reaching the model.
+    assert.equal((yield* save("same-run", 1))._tag, "saved");
+    assert.deepEqual(yield* notes.coverage(scope), { _tag: "behind", inputs: 0, results: 1 });
+    // A user edit carries the proof but reads nothing itself.
+    assert.equal((yield* notes.save(userSave("user", 2), { kind: "user" }))._tag, "saved");
+    assert.deepEqual(yield* notes.coverage(scope), { _tag: "behind", inputs: 0, results: 1 });
+
+    yield* homeRun("run-refresh", 3);
+    assert.equal((yield* save("refresh", 3))._tag, "saved");
+    assert.deepEqual(yield* notes.coverage(scope), { _tag: "current" });
+    assert.equal((yield* notes.save(userSave("user-after", 4), { kind: "user" }))._tag, "saved");
+    assert.deepEqual(yield* notes.coverage(scope), { _tag: "current" });
+  }).pipe(Effect.provide(services.pipe(Layer.provideMerge(database)))),
+);

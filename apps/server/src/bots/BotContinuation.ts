@@ -33,6 +33,8 @@ import * as BotDatabase from "./persistence/BotDatabase.ts";
 import * as BotStore from "./BotStore.ts";
 import { isDirectHomeInput } from "./homeReturn.ts";
 
+/** The most recent direct inputs one save basis holds. */
+const SOURCE_WINDOW = 200;
 const BasisPayload = Schema.Struct({
   homeThreadId: ThreadId,
   runId: RunId,
@@ -48,8 +50,24 @@ const StoredRevision = Schema.Struct({
   sourcePosition: Schema.optional(
     Schema.NullOr(Schema.Struct({ runOrdinal: NonNegativeInt, ordinal: NonNegativeInt })),
   ),
-  sourceIds: Schema.optional(Schema.Array(Schema.String).check(Schema.isMaxLength(200))),
+  sourceIds: Schema.optional(Schema.Array(Schema.String).check(Schema.isMaxLength(SOURCE_WINDOW))),
+  // The Home run of the latest Bot save, and whether every direct input through sourcePosition
+  // sat inside some Bot save's window. Notes saved before this was recorded prove nothing.
+  inspected: Schema.optional(
+    Schema.Struct({ runOrdinal: NonNegativeInt, complete: Schema.Boolean }),
+  ),
 });
+
+/** Whether the note provably covers every direct Home input and every result returned to it. */
+export type NoteCoverage =
+  | { readonly _tag: "current" }
+  | { readonly _tag: "behind"; readonly inputs: number; readonly results: number }
+  | {
+      readonly _tag: "unprovable";
+      /** More new input than one basis holds, or an earlier save already skipped some. */
+      readonly reason: "input_overflow" | "source_gap";
+      readonly inputs: number;
+    };
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const encodeRevision = Schema.encodeEffect(Schema.fromJsonString(StoredRevision));
 const encodeBasis = Schema.encodeSync(Schema.fromJsonString(BasisPayload));
@@ -120,6 +138,7 @@ export class BotContinuation extends Context.Service<
       input: BotSaveContinuationInput,
       caller: Caller,
     ) => Effect.Effect<BotSaveContinuationResult, BotError>;
+    readonly coverage: (scope: BotContinuationScope) => Effect.Effect<NoteCoverage, BotError>;
   }
 >()("t3/bots/BotContinuation") {}
 
@@ -204,12 +223,40 @@ const make = Effect.gen(function* () {
         AND (${throughRun} IS NULL OR COALESCE(r.ordinal, 0) < ${throughRun}
           OR (COALESCE(r.ordinal, 0) = ${throughRun} AND i.ordinal <= ${throughInput}))
         AND (r.run_id IS NULL OR r.status NOT IN ('queued', 'preparing', 'rolled_back'))
-      ORDER BY COALESCE(r.ordinal, 0) DESC, i.ordinal DESC LIMIT 200`;
+      ORDER BY COALESCE(r.ordinal, 0) DESC, i.ordinal DESC LIMIT ${SOURCE_WINDOW}`;
     return yield* Effect.forEach(rows, (row) =>
       decodeMessage(row.payload_json).pipe(
         Effect.map((message) => ({ ordinal: row.ordinal, runOrdinal: row.run_ordinal, message })),
       ),
     );
+  });
+  /**
+   * Direct inputs after a revision's source boundary. With `before`, only the delivered ones
+   * older than that position, which a basis ending there never showed.
+   */
+  const inputsAfter = Effect.fn("BotContinuation.inputsAfter")(function* (
+    home: ThreadId,
+    revision: typeof StoredRevision.Type | null,
+    before?: { readonly runOrdinal: number; readonly ordinal: number },
+  ) {
+    return (yield* main<{
+      readonly count: number;
+      readonly firstOrdinal: number | null;
+      readonly lastOrdinal: number | null;
+    }>`SELECT COUNT(DISTINCT m.message_id) AS count, MIN(i.ordinal) AS firstOrdinal, MAX(i.ordinal) AS lastOrdinal
+      FROM orchestration_v2_projection_messages m
+      LEFT JOIN orchestration_v2_projection_turn_items i ON i.thread_id = m.thread_id AND i.type = 'user_message' AND json_extract(i.payload_json, '$.messageId') = m.message_id
+      LEFT JOIN orchestration_v2_projection_runs r ON r.run_id = COALESCE(i.run_id, m.run_id)
+      WHERE m.thread_id = ${home} AND ${directClause}
+        AND (r.status IN ('queued', 'preparing')
+          OR COALESCE(r.ordinal, 0) > ${revision?.sourcePosition?.runOrdinal ?? -1}
+          OR (COALESCE(r.ordinal, 0) = ${revision?.sourcePosition?.runOrdinal ?? -1}
+            AND (i.ordinal > ${revision?.sourcePosition?.ordinal ?? -1}
+              OR (json_extract(i.payload_json, '$.inputIntent') = 'promoted_queued_to_steer'
+                AND m.message_id NOT IN (SELECT value FROM json_each(${encodeJson(revision?.sourceIds ?? [])}))))))
+        AND (${before?.runOrdinal ?? null} IS NULL
+          OR (COALESCE(r.status, '') NOT IN ('queued', 'preparing')
+            AND (COALESCE(r.ordinal, 0), i.ordinal) < (${before?.runOrdinal ?? 0}, ${before?.ordinal ?? 0})))`)[0]!;
   });
   const resolveNote = Effect.fn("BotContinuation.resolveNote")(function* (
     home: ThreadId,
@@ -290,21 +337,7 @@ const make = Effect.gen(function* () {
             throughRunOrdinal: newest?.runOrdinal ?? null,
             throughInputOrdinal: newest?.ordinal ?? null,
           });
-    const gap = (yield* main<{
-      readonly count: number;
-      readonly firstOrdinal: number | null;
-      readonly lastOrdinal: number | null;
-    }>`SELECT COUNT(DISTINCT m.message_id) AS count, MIN(i.ordinal) AS firstOrdinal, MAX(i.ordinal) AS lastOrdinal
-      FROM orchestration_v2_projection_messages m
-      LEFT JOIN orchestration_v2_projection_turn_items i ON i.thread_id = m.thread_id AND i.type = 'user_message' AND json_extract(i.payload_json, '$.messageId') = m.message_id
-      LEFT JOIN orchestration_v2_projection_runs r ON r.run_id = COALESCE(i.run_id, m.run_id)
-      WHERE m.thread_id = ${home} AND ${directClause}
-        AND (r.status IN ('queued', 'preparing')
-          OR COALESCE(r.ordinal, 0) > ${revision?.sourcePosition?.runOrdinal ?? -1}
-          OR (COALESCE(r.ordinal, 0) = ${revision?.sourcePosition?.runOrdinal ?? -1}
-            AND (i.ordinal > ${revision?.sourcePosition?.ordinal ?? -1}
-              OR (json_extract(i.payload_json, '$.inputIntent') = 'promoted_queued_to_steer'
-                AND m.message_id NOT IN (SELECT value FROM json_each(${encodeJson(revision?.sourceIds ?? [])}))))))`)[0]!;
+    const gap = yield* inputsAfter(home, revision);
     const after =
       scope.afterTaskId === undefined
         ? undefined
@@ -363,7 +396,12 @@ const make = Effect.gen(function* () {
           Effect.flatMap((revision) =>
             resolveNote(home, revision.note).pipe(
               Effect.map((note) => {
-                const { sourcePosition: _position, sourceIds: _ids, ...publicRevision } = revision;
+                const {
+                  sourcePosition: _position,
+                  sourceIds: _ids,
+                  inspected: _inspected,
+                  ...publicRevision
+                } = revision;
                 return { ...publicRevision, note };
               }),
             ),
@@ -401,6 +439,7 @@ const make = Effect.gen(function* () {
     let coverage = previous?.coverage ?? null;
     let sourcePosition = previous?.sourcePosition ?? null;
     let sourceIds = previous?.sourceIds ?? [];
+    let inspected = previous?.inspected;
     let writer: BotContinuationRevision["updatedBy"] = { kind: "user" };
     let basis: typeof BasisPayload.Type | null = null;
     let runRestriction: string | null = null;
@@ -436,6 +475,17 @@ const make = Effect.gen(function* () {
           : { runOrdinal: basis.throughRunOrdinal, ordinal: basis.throughInputOrdinal };
       sourceIds = scopedSources.map((source) => source.message.id);
       writer = { kind: "bot", threadId: home, runId: basis.runId };
+      const oldest = scopedSources.at(-1);
+      const skipped =
+        scopedSources.length === SOURCE_WINDOW && oldest !== undefined
+          ? (yield* inputsAfter(home, previous, oldest)).count > 0
+          : false;
+      inspected = {
+        runOrdinal: run.ordinal,
+        complete:
+          !skipped &&
+          ((previous?.sourcePosition ?? null) === null || previous?.inspected?.complete === true),
+      };
     }
     if (retry === undefined && input.restoredFrom !== undefined) {
       const restored =
@@ -454,6 +504,7 @@ const make = Effect.gen(function* () {
       coverage = revision.coverage;
       sourcePosition = revision.sourcePosition ?? null;
       sourceIds = revision.sourceIds ?? [];
+      inspected = revision.inspected;
     } else if (retry === undefined) {
       for (const section of BOT_CONTINUATION_SECTIONS) {
         const items: BotContinuationNote[typeof section][number][] = [];
@@ -546,6 +597,7 @@ const make = Effect.gen(function* () {
       restoredFrom: input.restoredFrom ?? null,
       sourcePosition,
       sourceIds,
+      ...(inspected === undefined ? {} : { inspected }),
     };
     const encoded = yield* encodeRevision(revision);
     if (encoded.length > 64000)
@@ -589,7 +641,32 @@ const make = Effect.gen(function* () {
     const view = yield* get(input);
     return committed._tag === "conflict" ? { ...committed, current: view } : { ...committed, view };
   }, Effect.mapError(failure));
-  return BotContinuation.of({ get, history, save });
+  const coverage = Effect.fn("BotContinuation.coverage")(function* (scope: BotContinuationScope) {
+    const { home } = yield* scopeOf(scope);
+    const row = yield* currentRow(home);
+    const revision = row === undefined ? null : yield* decodeRevision(row.revision_json);
+    const { count: inputs } = yield* inputsAfter(home, revision);
+    if ((revision?.sourcePosition ?? null) !== null && revision?.inspected?.complete !== true)
+      return { _tag: "unprovable", reason: "source_gap", inputs } satisfies NoteCoverage;
+    if (inputs > SOURCE_WINDOW)
+      return { _tag: "unprovable", reason: "input_overflow", inputs } satisfies NoteCoverage;
+    // Task results and delegated returns can raise decisions. One counts as read only by a save
+    // from a later run, which had the result in its conversation before it started.
+    const { results } = (yield* main<{
+      readonly results: number;
+    }>`SELECT COUNT(*) AS results FROM orchestration_v2_projection_messages m
+      LEFT JOIN orchestration_v2_projection_turn_items i ON i.thread_id = m.thread_id AND i.type = 'user_message' AND json_extract(i.payload_json, '$.messageId') = m.message_id
+      LEFT JOIN orchestration_v2_projection_runs r ON r.run_id = COALESCE(i.run_id, m.run_id)
+      WHERE m.thread_id = ${home} AND m.role = 'user'
+        AND (json_extract(m.payload_json, '$.notification') IS NOT NULL
+          OR json_extract(m.payload_json, '$.delegatedCompletion') IS NOT NULL)
+        AND COALESCE(r.status, '') != 'rolled_back'
+        AND COALESCE(r.ordinal, 0) >= ${revision?.inspected?.runOrdinal ?? -1}`)[0]!;
+    return inputs === 0 && results === 0
+      ? ({ _tag: "current" } satisfies NoteCoverage)
+      : ({ _tag: "behind", inputs, results } satisfies NoteCoverage);
+  }, Effect.mapError(failure));
+  return BotContinuation.of({ get, history, save, coverage });
 });
 export const layer = Layer.effect(BotContinuation, make).pipe(Layer.provide(BotStore.layer));
 
