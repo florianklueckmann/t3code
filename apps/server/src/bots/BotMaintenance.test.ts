@@ -75,11 +75,12 @@ const database = Sqlite.layerMemory.pipe(
   Layer.provideMerge(NodeCrypto.layer),
 );
 const storeOnly = BotStore.layer.pipe(Layer.provideMerge(database));
-// Settings tests never learn, so the learning and task services are inert here.
+// Settings tests never learn or schedule, so these services are inert here.
 const inertLearning = Layer.mergeAll(
   Layer.mock(BotService.BotService)({}),
   Layer.mock(BotTaskService.BotTaskService)({}),
   Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({}),
+  Layer.mock(Scheduler.Scheduler)({ register: () => Effect.void }),
 );
 
 type TestGenerator = (packet: Evidence.Packet) => Effect.Effect<unknown, SealedGenerationFailure>;
@@ -209,6 +210,7 @@ const withReadyGeneration = Effect.gen(function* () {
             ),
         }),
         inertLearning,
+        DateTime.layerCurrentZoneOffset(0),
       ),
     ),
     Effect.provideService(ThreadCommandExecutor.ThreadCommandExecutor, executor),
@@ -414,9 +416,10 @@ it.effect(
         readonly migration_id: number;
         readonly name: string;
       }>`SELECT migration_id, name FROM effect_sql_migrations ORDER BY migration_id`;
-      assert.deepEqual(history.slice(-2), [
+      assert.deepEqual(history.slice(-3), [
         { migration_id: 11, name: "BotMaintenance" },
         { migration_id: 12, name: "BotMaintenanceReceipts" },
+        { migration_id: 13, name: "BotMaintenanceNightly" },
       ]);
       const maintenance = yield* BotMaintenance.BotMaintenance;
       const view = yield* maintenance.get(scope);
@@ -571,6 +574,8 @@ const withEngine = <A, E, R>(
     readonly runtimeBackgroundWork: Ref.Ref<boolean>;
     readonly availability: Ref.Ref<SealedRefusalReason | null>;
     readonly sealedCalls: Ref.Ref<ReadonlyArray<SealedGenerationInput<Schema.Top>>>;
+    /** The source maintenance registered with the Scheduler, run by hand in UTC. */
+    readonly runScheduled: Effect.Effect<void>;
   }) => Effect.Effect<A, E, R>,
   taskResults: Readonly<Record<string, string>> = {},
 ) =>
@@ -580,10 +585,23 @@ const withEngine = <A, E, R>(
     const runtimeBackgroundWork = yield* Ref.make(false);
     const availability = yield* Ref.make<SealedRefusalReason | null>(null);
     const sealedCalls = yield* Ref.make<ReadonlyArray<SealedGenerationInput<Schema.Top>>>([]);
+    const scheduled = yield* Ref.make<ReadonlyArray<readonly [string, Effect.Effect<void>]>>([]);
     const maintenance = yield* BotMaintenance.make.pipe(
       Effect.provideService(ThreadCommandExecutor.ThreadCommandExecutor, executor),
       Effect.provide(
         Layer.mergeAll(
+          Layer.mock(Scheduler.Scheduler)({
+            register: <E, R>(name: string, run: Effect.Effect<void, E, R>) =>
+              Effect.context<R>().pipe(
+                Effect.flatMap((context) =>
+                  Ref.update(scheduled, (all) => [
+                    ...all,
+                    [name, run.pipe(Effect.provideContext(context), Effect.orDie)] as const,
+                  ]),
+                ),
+              ),
+          }),
+          DateTime.layerCurrentZoneOffset(0),
           registryOf({
             codex: sealedInstance({
               availability: Ref.get(availability),
@@ -609,6 +627,14 @@ const withEngine = <A, E, R>(
       runtimeBackgroundWork,
       availability,
       sealedCalls,
+      runScheduled: Ref.get(scheduled).pipe(
+        Effect.flatMap((sources) => {
+          const [entry, ...others] = sources;
+          return entry?.[0] === "bot-maintenance" && others.length === 0
+            ? entry[1]
+            : Effect.die(`expected one bot-maintenance source, got ${sources.length}`);
+        }),
+      ),
     });
   }).pipe(
     Effect.provide(
@@ -637,7 +663,8 @@ const withEngine = <A, E, R>(
             Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({}),
             Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
             BotProjectGuard.layer,
-            Scheduler.layer,
+            // A real Scheduler would replay every 5-second tick when a test moves the clock days ahead.
+            Layer.mock(Scheduler.Scheduler)({ register: () => Effect.void }),
             ServerSettings.layerTest(),
           ),
         ),
@@ -1141,6 +1168,95 @@ it.effect(
           assert.equal((yield* maintenance.get(scope)).unavailableReason, "provider_signed_out");
           assert.deepEqual(yield* sourceStates, {});
           assert.deepEqual(yield* Ref.get(packets), []);
+        }),
+      );
+    }).pipe(Effect.provide(storeOnly)),
+);
+
+const at = (iso: string) => TestClock.setTime(DateTime.toEpochMillis(DateTime.makeUnsafe(iso)));
+const sourceTexts = (packets: Ref.Ref<ReadonlyArray<Evidence.Packet>>) =>
+  Ref.get(packets).pipe(
+    Effect.map((all) => all.map((packet) => packet.sources.map((source) => source.text))),
+  );
+
+it.effect(
+  "runs one nightly pass per enabled Bot project at 03:00 and coalesces missed nights",
+  () =>
+    Effect.gen(function* () {
+      yield* seedBot("automatic");
+      const { packets, generate } = yield* recordingGenerator(() =>
+        Effect.succeed({ operations: [] }),
+      );
+      yield* withEngine(generate, ({ maintenance, runScheduled }) =>
+        Effect.gen(function* () {
+          yield* at("2026-11-09T14:00:00.000Z");
+          yield* enable(maintenance);
+          yield* input("ask", gold);
+          yield* input("elsewhere", "Here we start in Waterdeep.", { thread: otherHome });
+          yield* runScheduled;
+          yield* at("2026-11-10T02:59:00.000Z");
+          yield* runScheduled;
+          assert.deepEqual(yield* Ref.get(packets), []);
+
+          yield* at("2026-11-10T03:00:00.000Z");
+          yield* runScheduled;
+          yield* runScheduled;
+          assert.deepEqual(yield* sourceTexts(packets), [[gold]]);
+
+          // Three nights pass while the server is down: one pass on return, not three.
+          yield* input("later", "Keep recaps under a page.", { at: later(5) });
+          yield* at("2026-11-13T09:00:00.000Z");
+          yield* runScheduled;
+          yield* runScheduled;
+          assert.deepEqual(yield* sourceTexts(packets), [[gold], ["Keep recaps under a page."]]);
+          assert.deepEqual(yield* runStatuses, ["noop", "noop"]);
+        }),
+      );
+    }).pipe(Effect.provide(storeOnly)),
+);
+
+it.effect(
+  "skips the night while the Bot is paused, its model cannot generate or its Home is busy",
+  () =>
+    Effect.gen(function* () {
+      yield* seedBot("automatic");
+      const { packets, generate } = yield* recordingGenerator(() =>
+        Effect.succeed({ operations: [] }),
+      );
+      yield* withEngine(generate, ({ maintenance, runScheduled, availability }) =>
+        Effect.gen(function* () {
+          const main = yield* SqlClient.SqlClient;
+          yield* at("2026-11-09T14:00:00.000Z");
+          yield* enable(maintenance);
+          yield* input("ask", gold);
+          yield* maintenance.configure({ ...scope, baseRevision: 1, enabled: false });
+          yield* at("2026-11-10T03:00:00.000Z");
+          yield* runScheduled;
+
+          // Resuming starts the schedule over, so the next pass waits for the next 03:00.
+          yield* at("2026-11-10T04:00:00.000Z");
+          yield* maintenance.configure({ ...scope, baseRevision: 2, enabled: true });
+          yield* runScheduled;
+
+          yield* Ref.set(availability, "provider_signed_out");
+          yield* at("2026-11-11T03:00:00.000Z");
+          yield* runScheduled;
+          yield* Ref.set(availability, null);
+          yield* at("2026-11-11T03:30:00.000Z");
+          yield* runScheduled;
+
+          yield* homeRun("busy", "running");
+          yield* at("2026-11-12T03:00:00.000Z");
+          yield* runScheduled;
+          yield* main`UPDATE orchestration_v2_projection_runs SET status = 'completed' WHERE run_id = 'busy'`;
+          yield* at("2026-11-12T08:00:00.000Z");
+          yield* runScheduled;
+          assert.deepEqual(yield* Ref.get(packets), []);
+          assert.deepEqual(yield* runStatuses, ["deferred"]);
+
+          yield* at("2026-11-13T03:00:00.000Z");
+          yield* runScheduled;
+          assert.deepEqual(yield* sourceTexts(packets), [[gold]]);
         }),
       );
     }).pipe(Effect.provide(storeOnly)),

@@ -192,6 +192,13 @@ codebase does not leak into another. You see it under each project in
   A proposal made against a version that has since changed is marked outdated
   instead of being applied. The same lesson is not recorded twice.
 
+**Maintenance**, under each project in **Settings → Bots**, reviews that
+project's new messages and newly finished tasks once a night at 03:00 server
+time and records lessons by the same **Learning** option. It needs the Bot on a
+signed-in Codex model, and starts with what comes after you turn it on. A night
+is skipped while the Bot's conversation or its tasks are still busy, while it
+is paused, or while its model can't run.
+
 The Bot gets its current learning at the start of each turn, not its whole
 history. Learning does not add preferred sources, settle project decisions or
 give the Bot more access. Research it did for one task stays in the

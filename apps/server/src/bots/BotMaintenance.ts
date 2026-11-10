@@ -4,13 +4,16 @@ import {
   type BotConfigureMaintenanceResult,
   type BotContinuationScope,
   BotError,
+  BotId,
   BotLearningEntryId,
   type BotMaintenanceView,
   BotTaskId,
   MessageId,
   OrchestrationV2ConversationMessageJson,
   OrchestrationV2ProviderThreadJson,
+  ProjectId,
   ProviderSessionId,
+  type ScheduledTaskSchedule,
   ThreadId,
 } from "@t3tools/contracts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -28,6 +31,8 @@ import * as EventStore from "../orchestration-v2/EventStore.ts";
 import * as ProviderSessionManager from "../orchestration-v2/ProviderSessionManager.ts";
 import * as ThreadCommandExecutor from "../orchestration-v2/ThreadCommandExecutor.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
+import { nextScheduledRunAt } from "../scheduledTasks/Schedule.ts";
+import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as BotDatabase from "./persistence/BotDatabase.ts";
 import * as Evidence from "./BotMaintenanceEvidence.ts";
 import * as BotService from "./BotService.ts";
@@ -106,6 +111,8 @@ const decodeProviderThread = Schema.decodeUnknownOption(
 );
 const terminalTaskStatuses = encodeJson([...BOT_TASK_TERMINAL_STATUSES]);
 const RETAINED_RUNS = 30;
+/** In the server's own time zone; an unattended pass runs while the person is likely away. */
+const NIGHTLY: ScheduledTaskSchedule = { type: "fixed_time", timeOfDay: "03:00" };
 const DISCOVERY_PAGE = 500;
 const PENDING_PAGE = 50;
 const invalid = (message: string) => new BotError({ message });
@@ -143,6 +150,8 @@ export const make = Effect.gen(function* () {
   const random = yield* SecureRandom.SecureRandom;
   const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
   const providers = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
+  const scheduler = yield* Scheduler.Scheduler;
+  const zone = yield* DateTime.CurrentTimeZone;
   const passLocks = yield* KeyedLock.make<ThreadId>();
 
   /**
@@ -287,11 +296,14 @@ export const make = Effect.gen(function* () {
           if ((latest?.settings_revision ?? 0) !== input.baseRevision) return false;
           if (baseline === null) {
             // Pause and resume keep the floors and receipts; nothing is reset or backfilled.
-            yield* sql`UPDATE bot_maintenance SET enabled = ${input.enabled ? 1 : 0}, settings_revision = settings_revision + 1, updated_at = ${now} WHERE home_thread_id = ${home}`;
+            // Resuming restarts the nightly schedule, so it never runs at once to catch up.
+            yield* sql`UPDATE bot_maintenance SET enabled = ${input.enabled ? 1 : 0}, settings_revision = settings_revision + 1,
+                nightly_at = CASE WHEN ${input.enabled ? 1 : 0} = 1 THEN ${now} ELSE nightly_at END, updated_at = ${now}
+              WHERE home_thread_id = ${home}`;
             return true;
           }
-          yield* sql`INSERT INTO bot_maintenance (home_thread_id, settings_revision, enabled, started_at, scan_through_sequence, processed_through_sequence, updated_at)
-              VALUES (${home}, 1, 1, ${now}, ${baseline.sequence}, ${baseline.sequence}, ${now})`;
+          yield* sql`INSERT INTO bot_maintenance (home_thread_id, settings_revision, enabled, started_at, scan_through_sequence, processed_through_sequence, nightly_at, updated_at)
+              VALUES (${home}, 1, 1, ${now}, ${baseline.sequence}, ${baseline.sequence}, ${now}, ${now})`;
           yield* sql`INSERT INTO bot_maintenance_sources (home_thread_id, kind, source_id, state, recorded_at)
               SELECT ${home}, 'home-input', value, 'baseline', ${now} FROM json_each(${encodeJson(baseline.messageIds)})`;
           yield* sql`INSERT INTO bot_maintenance_sources (home_thread_id, kind, source_id, state, recorded_at)
@@ -679,7 +691,39 @@ export const make = Effect.gen(function* () {
     return yield* passLocks.withLock(home, pass(scope, home, generation.generate));
   }, Effect.mapError(failure));
 
+  /**
+   * One attempt a night per enabled Home, after missed nights too. The night is claimed before
+   * the pass, so a paused, unavailable or busy Bot skips it and a crash never repeats it.
+   * Polled every few seconds, so only a due pass is traced, through `runNow`.
+   */
+  const runNightly = Effect.gen(function* () {
+    const now = DateTime.setZone(yield* DateTime.now, zone);
+    const homes = yield* sql<{
+      readonly home_thread_id: string;
+      readonly bot_id: string;
+      readonly project_id: string;
+      readonly nightly_at: string;
+    }>`SELECT m.home_thread_id, c.bot_id, c.project_id, COALESCE(m.nightly_at, m.updated_at) AS nightly_at
+      FROM bot_maintenance m JOIN bot_project_contexts c ON c.home_thread_id = m.home_thread_id
+      WHERE m.enabled = 1`;
+    for (const row of homes) {
+      const due = nextScheduledRunAt(
+        NIGHTLY,
+        DateTime.setZone(DateTime.makeUnsafe(row.nightly_at), zone),
+      );
+      if (due === null || DateTime.isGreaterThan(due, now)) continue;
+      yield* sql`UPDATE bot_maintenance SET nightly_at = ${DateTime.formatIso(now)} WHERE home_thread_id = ${row.home_thread_id}`;
+      yield* runNow({
+        botId: BotId.make(row.bot_id),
+        projectId: ProjectId.make(row.project_id),
+      }).pipe(Effect.ignore({ log: true }));
+    }
+  });
+  yield* scheduler.register("bot-maintenance", runNightly);
+
   return BotMaintenance.of({ get, configure, runNow });
 });
 
-export const layer = Layer.effect(BotMaintenance, make).pipe(Layer.provide(BotStore.layer));
+export const layer = Layer.effect(BotMaintenance, make).pipe(
+  Layer.provide(Layer.merge(BotStore.layer, DateTime.layerCurrentZoneLocal)),
+);

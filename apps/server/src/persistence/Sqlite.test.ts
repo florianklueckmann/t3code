@@ -201,6 +201,7 @@ it.effect.each([0, 78, 79, 80])(
             [10, "BotTaskModelSelection"],
             [11, "BotMaintenance"],
             [12, "BotMaintenanceReceipts"],
+            [13, "BotMaintenanceNightly"],
           ],
         );
         return { ...current, botHistory };
