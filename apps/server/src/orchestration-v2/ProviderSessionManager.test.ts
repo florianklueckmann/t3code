@@ -544,7 +544,20 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
             Ref.update(state, (current) => ({
               ...current,
               resumeCount: current.resumeCount + 1,
-            })).pipe(Effect.as(threadInput.providerThread)),
+            })).pipe(
+              Effect.andThen(
+                // Like a Codex Home seal, this load releases the thread and then fails.
+                threadInput.runtimePolicy?.nativeTools === "t3BotOnly"
+                  ? Effect.fail(
+                      new ProviderAdapter.ProviderAdapterResumeThreadError({
+                        driver: CODEX_DRIVER,
+                        providerSessionId: input.providerSessionId,
+                        providerThreadId: threadInput.providerThread.id,
+                      }),
+                    )
+                  : Effect.succeed(threadInput.providerThread),
+              ),
+            ),
           startTurn: () => options.startTurn ?? Effect.void,
           steerTurn: () => Effect.void,
           interruptTurn: () =>
@@ -3800,10 +3813,21 @@ it.effect(
         assert.equal((yield* Ref.get(state)).resumeCount, 2);
         yield* resumeSecondThread;
         assert.equal((yield* Ref.get(state)).resumeCount, 3);
+        // A failed load may have released the thread, so the earlier load no longer counts.
+        yield* secondRuntime
+          .resumeThread({
+            providerThread: secondProviderThread,
+            threadId: secondThreadId,
+            modelSelection,
+            runtimePolicy: { ...runtimePolicy, nativeTools: "t3BotOnly" },
+          })
+          .pipe(Effect.flip);
+        yield* resumeSecondThread;
+        assert.equal((yield* Ref.get(state)).resumeCount, 5);
         // regression: #26722 a Linked environments change reloads only the idle thread's tools.
         yield* settings.updateSettings({ linkedEnvironmentsEnabled: true });
         yield* resumeSecondThread;
-        assert.equal((yield* Ref.get(state)).resumeCount, 4);
+        assert.equal((yield* Ref.get(state)).resumeCount, 6);
         assert.deepEqual((yield* Ref.get(state)).unloadedNativeThreadIds, ["native-thread"]);
         const subscribe = firstRuntime.subscribeEvents;
         assert.isDefined(subscribe);
@@ -3836,7 +3860,7 @@ it.effect(
           runtimePolicy,
         });
         yield* resumeSecondThread;
-        assert.equal((yield* Ref.get(state)).resumeCount, 5);
+        assert.equal((yield* Ref.get(state)).resumeCount, 7);
 
         assert.deepEqual((yield* Ref.get(state)).unloadedNativeThreadIds, ["native-thread"]);
 

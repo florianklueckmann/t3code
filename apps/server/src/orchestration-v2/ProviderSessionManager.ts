@@ -1394,6 +1394,21 @@ export const layerWithOptions = (
           return updated;
         });
 
+      const forgetProviderThreadLoaded = (input: {
+        readonly providerSessionId: ProviderSessionId;
+        readonly threadId: ThreadId;
+      }) =>
+        Ref.update(sessions, (current) => {
+          const key = sessionKey(input.providerSessionId);
+          const entry = current.get(key);
+          if (entry === undefined || !entry.loadedProviderThreadKeyByThread.has(input.threadId)) {
+            return current;
+          }
+          const loadedProviderThreadKeyByThread = new Map(entry.loadedProviderThreadKeyByThread);
+          loadedProviderThreadKeyByThread.delete(input.threadId);
+          return new Map(current).set(key, { ...entry, loadedProviderThreadKeyByThread });
+        });
+
       const loadNatively = <A, E>(load: Effect.Effect<A, E>) =>
         readLinkedEnvironments.pipe(
           Effect.flatMap((linkedEnvironments) =>
@@ -2007,7 +2022,12 @@ export const layerWithOptions = (
                       loaded: input.providerThread,
                       linkedEnvironments: undefined,
                     })
-                  : loadNatively(runtime.resumeThread(input)),
+                  : loadNatively(runtime.resumeThread(input)).pipe(
+                      // A failed load may have released the thread first, as a Codex seal change does.
+                      Effect.onError(() =>
+                        forgetProviderThreadLoaded({ providerSessionId, threadId }),
+                      ),
+                    ),
               ),
               Effect.tap(({ loaded: providerThread, linkedEnvironments }) =>
                 markProviderThreadLoaded({
