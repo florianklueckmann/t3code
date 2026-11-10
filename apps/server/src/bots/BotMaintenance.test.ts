@@ -24,6 +24,7 @@ import {
   type SealedRefusalReason,
 } from "@t3tools/provider-core/server/sealedGeneration";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
+import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -590,6 +591,8 @@ const withEngine = <A, E, R>(
     readonly beforeRecord: Ref.Ref<Effect.Effect<void>>;
     /** The provider runtime's start gate, which a background start takes around its roster change. */
     readonly runtimeStarts: Semaphore.Semaphore;
+    /** Runtimes for particular provider sessions; every other session gets the shared one above. */
+    readonly sessionRuntimes: Ref.Ref<ReadonlyMap<string, object>>;
     readonly executor: KeyedLock.KeyedLock<ThreadId>;
     /** The source maintenance registered with the Scheduler, run by hand in UTC. */
     readonly runScheduled: Effect.Effect<void>;
@@ -606,6 +609,7 @@ const withEngine = <A, E, R>(
     const beforeApply = yield* Ref.make<Effect.Effect<void>>(Effect.void);
     const beforeRecord = yield* Ref.make<Effect.Effect<void>>(Effect.void);
     const runtimeStarts = yield* Semaphore.make(1);
+    const sessionRuntimes = yield* Ref.make<ReadonlyMap<string, object>>(new Map());
     const scheduled = yield* Ref.make<ReadonlyArray<readonly [string, Effect.Effect<void>]>>([]);
     const bots = yield* BotService.BotService;
     const maintenance = yield* BotMaintenance.make.pipe(
@@ -655,12 +659,18 @@ const withEngine = <A, E, R>(
           }),
           Layer.mock(EventStore.EventStoreV2)({ latestSequence: () => Ref.get(homeSequence) }),
           Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
-            get: () =>
-              Effect.succeedSome({
-                hasPendingBackgroundWorkForThread: () => Ref.get(runtimeBackgroundWork),
-                holdBackgroundStarts: <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-                  runtimeStarts.withPermit(effect),
-              } as never),
+            get: (id) =>
+              Ref.get(sessionRuntimes).pipe(
+                Effect.map((runtimes) =>
+                  Option.some(
+                    (runtimes.get(id) ?? {
+                      hasPendingBackgroundWorkForThread: () => Ref.get(runtimeBackgroundWork),
+                      holdBackgroundStarts: <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+                        runtimeStarts.withPermit(effect),
+                    }) as never,
+                  ),
+                ),
+              ),
           }),
         ),
       ),
@@ -677,6 +687,7 @@ const withEngine = <A, E, R>(
       beforeApply,
       beforeRecord,
       runtimeStarts,
+      sessionRuntimes,
       executor,
       runScheduled: Ref.get(scheduled).pipe(
         Effect.flatMap((sources) => {
@@ -1452,6 +1463,139 @@ it.effect.each([true, false])(
           }),
       );
     }).pipe(Effect.provide(storeOnly)),
+);
+
+/** The Home whose pass asks a runtime for its start gate. */
+class GateCaller extends Context.Service<GateCaller, ThreadId>()(
+  "t3/bots/BotMaintenance.test/GateCaller",
+) {}
+
+it.effect("two Homes on the same provider sessions take their start gates in one order", () =>
+  Effect.gen(function* () {
+    yield* seedBot("automatic");
+    const { generate } = yield* recordingGenerator(() =>
+      Effect.succeed({ operations: [add("i1", "open every session recap", goldLesson)] }),
+    );
+    yield* withEngine(generate, ({ maintenance, sessionRuntimes }) =>
+      Effect.gen(function* () {
+        yield* enable(maintenance);
+        yield* enable(maintenance, otherScope);
+        yield* input("ask-one", gold);
+        yield* input("ask-two", gold, { thread: otherHome });
+        const main = yield* SqlClient.SqlClient;
+        // The Homes met the two sessions in opposite orders.
+        for (const [owner, session] of [
+          [home, "A"],
+          [home, "B"],
+          [otherHome, "B"],
+          [otherHome, "A"],
+        ] as const) {
+          const id = `${owner}:${session}`;
+          const payload = {
+            id,
+            driver: "codex",
+            providerInstanceId: session,
+            providerSessionId: session,
+            appThreadId: owner,
+            ownerNodeId: null,
+            nativeThreadRef: null,
+            nativeConversationHeadRef: null,
+            status: "idle",
+            firstRunOrdinal: null,
+            lastRunOrdinal: null,
+            handoffIds: [],
+            forkedFrom: null,
+            createdAt: now,
+            updatedAt: now,
+          };
+          yield* main`INSERT INTO orchestration_v2_projection_provider_threads (provider_thread_id, thread_id, provider, provider_session_id, status, updated_at, payload_json)
+            VALUES (${id}, ${owner}, 'codex', ${session}, 'idle', ${now}, ${JSON.stringify(payload)})`;
+        }
+        const requests = yield* Ref.make<ReadonlyMap<ThreadId, ReadonlyArray<string>>>(new Map());
+        const holders = yield* Ref.make<ReadonlyMap<string, ThreadId>>(new Map());
+        const tried = yield* Ref.make<ReadonlySet<ThreadId>>(new Set());
+        const bothTried = yield* Deferred.make<void>();
+        const cycle = yield* Deferred.make<void>();
+        const markTried = (owner: ThreadId) =>
+          Ref.updateAndGet(tried, (all) => new Set(all).add(owner)).pipe(
+            Effect.flatMap((all) =>
+              all.size === 2 ? Deferred.succeed(bothTried, undefined) : Effect.void,
+            ),
+          );
+        // Each pass holds its first gate until both passes have tried theirs.
+        const runtime = (session: string) =>
+          Semaphore.make(1).pipe(
+            Effect.map((permit) => ({
+              hasPendingBackgroundWorkForThread: () => Effect.succeed(false),
+              holdBackgroundStarts: <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+                Effect.gen(function* () {
+                  const owner = yield* GateCaller;
+                  const asked = yield* Ref.updateAndGet(requests, (all) =>
+                    new Map(all).set(owner, [...(all.get(owner) ?? []), session]),
+                  );
+                  const held = yield* Ref.get(holders);
+                  const waitsOnTheOther = (pass: ThreadId) => {
+                    const [first, second] = asked.get(pass) ?? [];
+                    return (
+                      second !== undefined &&
+                      held.get(first ?? "") === pass &&
+                      held.get(second) !== pass
+                    );
+                  };
+                  if (waitsOnTheOther(home) && waitsOnTheOther(otherHome))
+                    yield* Deferred.succeed(cycle, undefined);
+                  const first = asked.get(owner)?.length === 1;
+                  const holding = Ref.update(holders, (all) =>
+                    new Map(all).set(session, owner),
+                  ).pipe(
+                    Effect.andThen(
+                      first
+                        ? markTried(owner).pipe(Effect.andThen(Deferred.await(bothTried)))
+                        : Effect.void,
+                    ),
+                    Effect.andThen(effect),
+                    Effect.ensuring(
+                      Ref.update(holders, (all) => {
+                        const next = new Map(all);
+                        next.delete(session);
+                        return next;
+                      }),
+                    ),
+                  );
+                  if (first) {
+                    const landed = yield* permit.withPermitsIfAvailable(1)(holding);
+                    if (Option.isSome(landed)) return landed.value;
+                    yield* markTried(owner);
+                  }
+                  return yield* permit.withPermit(holding);
+                }),
+            })),
+          );
+        yield* Ref.set(
+          sessionRuntimes,
+          new Map([
+            ["A", yield* runtime("A")],
+            ["B", yield* runtime("B")],
+          ]),
+        );
+        const passOf = (target: typeof scope, owner: ThreadId) =>
+          maintenance
+            .runNow(target)
+            .pipe(Effect.provideService(GateCaller, owner), Effect.forkChild);
+        const one = yield* passOf(scope, home);
+        const two = yield* passOf(otherScope, otherHome);
+        const outcome = yield* Effect.raceFirst(
+          Deferred.await(cycle).pipe(Effect.as("deadlocked" as const)),
+          Effect.all([Fiber.join(one), Fiber.join(two)]).pipe(
+            Effect.map((passes) => passes.map((pass) => pass.status)),
+          ),
+        );
+        yield* Fiber.interrupt(one);
+        yield* Fiber.interrupt(two);
+        assert.deepEqual(outcome, ["applied", "applied"]);
+      }),
+    );
+  }).pipe(Effect.provide(storeOnly)),
 );
 
 it.effect("a queued pass generates with the model the Bot has when the pass starts", () =>

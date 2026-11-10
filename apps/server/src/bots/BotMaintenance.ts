@@ -247,13 +247,17 @@ export const make = Effect.gen(function* () {
     } as const;
   });
 
-  /** The live provider runtime behind each of the Home's provider threads. */
+  /**
+   * The live provider runtime behind each of the Home's provider threads, in session order.
+   * Each live session has its own start gate, and Homes share sessions, so every pass takes the
+   * gates in this one order or two passes can each hold one and wait for the other's.
+   */
   const homeRuntimes = Effect.fn("BotMaintenance.homeRuntimes")(function* (home: ThreadId) {
     const rows = yield* main<{
       readonly provider_session_id: string;
       readonly payload_json: string;
     }>`SELECT provider_session_id, payload_json FROM orchestration_v2_projection_provider_threads
-      WHERE thread_id = ${home} AND provider_session_id IS NOT NULL`;
+      WHERE thread_id = ${home} AND provider_session_id IS NOT NULL ORDER BY provider_session_id`;
     const found = yield* Effect.forEach(rows, (row) =>
       providerSessions.get(ProviderSessionId.make(row.provider_session_id)).pipe(
         Effect.orElseSucceed(() => Option.none<ProviderAdapter.ProviderAdapterV2SessionRuntime>()),
