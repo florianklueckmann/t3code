@@ -397,6 +397,7 @@ it("shows a persisted enabled maintenance setting as stopped when the server can
     ["selected_model_unavailable", "model isn't available on its Codex account"],
     ["option_unsupported", "model options isn't supported"],
     ["reason_from_a_newer_server", "Not available on this server."],
+    ["constructor", "Not available on this server."],
   ] as const) {
     const unavailable = { ...view, unavailableReason };
     expect(botMaintenanceStatusLabel(unavailable)).toMatch(/^On · stopped · /);

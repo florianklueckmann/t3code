@@ -591,20 +591,25 @@ export function botTaskResultMatchesThread(
 
 export const BOT_MAINTENANCE_DESCRIPTION =
   "Reviews this project's new messages and finished work to keep lessons and working notes current. It starts with new messages and newly completed work; earlier history is left as is.";
-const BOT_MAINTENANCE_UNAVAILABLE_LABELS: Readonly<Record<string, string>> = {
-  no_tool_profile_unavailable:
+const BOT_MAINTENANCE_UNAVAILABLE_LABELS: ReadonlyMap<string, string> = new Map([
+  [
+    "no_tool_profile_unavailable",
     "Not available yet. It needs a tool-free model profile, which this server doesn't provide.",
-  codex_required: "Needs a Codex model. Pick a Codex model for this Bot to turn maintenance on.",
-  instance_unavailable: "This Bot's Codex provider is off or missing.",
-  provider_signed_out: "Sign in to Codex to run maintenance.",
-  codex_version_unsupported: "Update Codex to run maintenance.",
-  selected_model_unavailable: "This Bot's model isn't available on its Codex account.",
-  option_unsupported: "One of this Bot's model options isn't supported for maintenance.",
-};
+  ],
+  [
+    "codex_required",
+    "Needs a Codex model. Pick a Codex model for this Bot to turn maintenance on.",
+  ],
+  ["instance_unavailable", "This Bot's Codex provider is off or missing."],
+  ["provider_signed_out", "Sign in to Codex to run maintenance."],
+  ["codex_version_unsupported", "Update Codex to run maintenance."],
+  ["selected_model_unavailable", "This Bot's model isn't available on its Codex account."],
+  ["option_unsupported", "One of this Bot's model options isn't supported for maintenance."],
+]);
 /** Settings caption for a maintenance view; unknown reasons from newer servers stay readable. */
 export function botMaintenanceStatusLabel(view: BotMaintenanceView): string {
   if (view.unavailableReason === null) return botMaintenanceState(view, false);
-  return `${botMaintenanceState(view, true)} · ${BOT_MAINTENANCE_UNAVAILABLE_LABELS[view.unavailableReason] ?? "Not available on this server."}`;
+  return `${botMaintenanceState(view, true)} · ${BOT_MAINTENANCE_UNAVAILABLE_LABELS.get(view.unavailableReason) ?? "Not available on this server."}`;
 }
 function botMaintenanceState(view: BotMaintenanceView, unavailable: boolean): string {
   if (!view.enabled)
