@@ -5,10 +5,12 @@ import {
   BotId,
   type BotLearningPolicy,
   type BotTaskResult,
+  MessageId,
   ProjectId,
   RunId,
   ThreadId,
 } from "@t3tools/contracts";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -366,7 +368,10 @@ const seedBot = Effect.fn("fixture.seedBot")(function* (policy: BotLearningPolic
   });
 });
 
-/** A Home message as the projection stores it; delivered unless a turn item is withheld. */
+/**
+ * A Home message with the turn item admission writes for it. Delivered input also has the
+ * provider turn that accepted it; a steer is delivered once its steer effect succeeded.
+ */
 const input = Effect.fn("fixture.input")(function* (
   id: string,
   text: string,
@@ -375,6 +380,7 @@ const input = Effect.fn("fixture.input")(function* (
     readonly thread?: ThreadId;
     readonly runStatus?: string;
     readonly delivered?: boolean;
+    readonly steer?: "succeeded" | "failed";
     readonly createdBy?: "user" | "agent";
     readonly creationSource?: string;
   } = {},
@@ -401,9 +407,21 @@ const input = Effect.fn("fixture.input")(function* (
   };
   yield* main`INSERT INTO orchestration_v2_projection_messages (message_id, thread_id, run_id, role, streaming, created_at, updated_at, payload_json)
     VALUES (${id}, ${thread}, ${run}, 'user', 0, ${at}, ${at}, ${JSON.stringify(payload)})`;
-  if (options.delivered ?? true)
-    yield* main`INSERT INTO orchestration_v2_projection_turn_items (turn_item_id, thread_id, run_id, ordinal, type, status, updated_at, payload_json)
-      VALUES (${`item-${id}`}, ${thread}, ${run}, (SELECT COALESCE(MAX(ordinal), 0) + 1 FROM orchestration_v2_projection_turn_items WHERE thread_id = ${thread}), 'user_message', 'completed', ${at}, ${JSON.stringify({ messageId: id })})`;
+  const node = `node-${id}`;
+  const turn = options.steer === undefined ? null : `turn-${id}`;
+  yield* main`INSERT INTO orchestration_v2_projection_turn_items (turn_item_id, thread_id, run_id, node_id, provider_turn_id, ordinal, type, status, updated_at, payload_json)
+    VALUES (${IdAllocator.derive.userTurnItem({ messageId: MessageId.make(id) })}, ${thread}, ${run}, ${node}, ${turn}, (SELECT COALESCE(MAX(ordinal), 0) + 1 FROM orchestration_v2_projection_turn_items WHERE thread_id = ${thread}), 'user_message', 'completed', ${at}, ${JSON.stringify({ messageId: id, inputIntent: turn === null ? "turn_start" : "steer" })})`;
+  if (options.delivered ?? true) yield* deliver(id, thread);
+  if (options.steer !== undefined)
+    yield* main`INSERT INTO orchestration_v2_effect_outbox (effect_id, command_id, thread_id, effect_type, payload_json, status, available_at, created_at, updated_at)
+      VALUES (${`effect-${id}`}, ${`command-${id}`}, ${thread}, 'provider-turn.steer', ${JSON.stringify({ type: "provider-turn.steer", providerSessionId: "session", providerThreadId: "provider-thread", providerTurnId: turn, messageId: id })}, ${options.steer}, ${at}, ${at}, ${at})`;
+});
+
+/** The provider turn that accepted this input on its run's root node. */
+const deliver = Effect.fn("fixture.deliver")(function* (id: string, thread = home) {
+  const main = yield* SqlClient.SqlClient;
+  yield* main`INSERT INTO orchestration_v2_projection_provider_turns (provider_turn_id, thread_id, provider_thread_id, node_id, ordinal, status, payload_json)
+    VALUES (${`turn-${id}`}, ${thread}, ${`provider-thread-${id}`}, ${`node-${id}`}, 1, 'completed', '{}')`;
 });
 
 const finishedTask = Effect.fn("fixture.finishedTask")(function* (id: string, status: string) {
@@ -605,6 +623,20 @@ it.effect(
               delivered: false,
             });
             yield* input("rolled-back", "Undo this.", { at: later(5), runStatus: "rolled_back" });
+            yield* input("failed-after-delivery", "Name the files after the session date.", {
+              at: later(6),
+              runStatus: "failed",
+            });
+            yield* input("failed-before-delivery", "Setup broke before the model saw this.", {
+              at: later(7),
+              runStatus: "failed",
+              delivered: false,
+            });
+            yield* input("steered", "Also list the loot.", { at: later(8), steer: "succeeded" });
+            yield* input("steer-failed", "The model never saw this steer.", {
+              at: later(9),
+              steer: "failed",
+            });
             yield* input("still-running", "Also track loot.", {
               at: later(40),
               runStatus: "running",
@@ -625,6 +657,8 @@ it.effect(
               [
                 [
                   ["i1", "Keep the vault index in Index.md."],
+                  ["i2", "Name the files after the session date."],
+                  ["i3", "Also list the loot."],
                   ["t1", "Moved the notes. The index lives in Index.md."],
                 ],
               ],
@@ -632,8 +666,12 @@ it.effect(
             assert.deepEqual(yield* sourceStates, {
               asked: "applied",
               "cancelled-queued": "cancelled_before_delivery",
+              "failed-after-delivery": "applied",
+              "failed-before-delivery": "pending",
               mcp: "not_user_input",
               "rolled-back": "rolled_back",
+              "steer-failed": "pending",
+              steered: "applied",
               "still-running": "pending",
               "task-return": "not_user_input",
               "task-cancelled": "task_cancelled",
@@ -652,6 +690,8 @@ it.effect(
               [
                 [
                   "Keep the vault index in Index.md.",
+                  "Name the files after the session date.",
+                  "Also list the loot.",
                   "Moved the notes. The index lives in Index.md.",
                 ],
                 ["Also track loot."],
@@ -779,6 +819,15 @@ it.effect("keeps changed, rejected and oversized input eligible instead of consu
               source: { kind: "user" },
             })
             .pipe(Effect.orDie, Effect.as(valid)),
+          // The user tightens the Bot's instructions, then the project's guidance.
+          bots`UPDATE bots SET instructions = 'Never include finances in recaps.' WHERE bot_id = 'bot'`.pipe(
+            Effect.orDie,
+            Effect.as(valid),
+          ),
+          bots`UPDATE bot_project_contexts SET guidance = 'Recaps stay spoiler-free.' WHERE home_thread_id = ${home}`.pipe(
+            Effect.orDie,
+            Effect.as(valid),
+          ),
           // The user pauses maintenance while the model is working.
           bots`UPDATE bot_maintenance SET enabled = 0, settings_revision = settings_revision + 1`.pipe(
             Effect.orDie,
@@ -792,8 +841,13 @@ it.effect("keeps changed, rejected and oversized input eligible instead of consu
         assert.deepEqual(changed.status === "deferred" && changed.reason, "source_changed");
         const rejected = yield* maintenance.runNow(scope);
         assert.deepEqual(rejected.status === "failed" && rejected.reason, "quote_not_in_source");
-        const relearned = yield* maintenance.runNow(scope);
-        assert.deepEqual(relearned.status === "deferred" && relearned.reason, "learning_changed");
+        for (const _change of ["learning", "instructions", "guidance"]) {
+          const changedBasis = yield* maintenance.runNow(scope);
+          assert.deepEqual(
+            changedBasis.status === "deferred" && changedBasis.reason,
+            "basis_changed",
+          );
+        }
         const paused = yield* maintenance.runNow(scope);
         assert.deepEqual(paused.status === "deferred" && paused.reason, "settings_changed");
         assert.deepEqual(
@@ -813,13 +867,20 @@ it.effect("keeps changed, rejected and oversized input eligible instead of consu
           "failed",
           "deferred",
           "deferred",
+          "deferred",
+          "deferred",
           "applied",
         ]);
+        const applied = (yield* Ref.get(packets)).at(-1);
+        assert.deepEqual(
+          [applied?.instructions, applied?.guidance],
+          ["Never include finances in recaps.", "Recaps stay spoiler-free."],
+        );
 
         yield* input("huge", "x".repeat(48_001), { at: later(5) });
         const oversized = yield* maintenance.runNow(scope);
         assert.deepEqual(oversized.status === "deferred" && oversized.reason, "oversized_evidence");
-        assert.equal((yield* Ref.get(packets)).length, 5);
+        assert.equal((yield* Ref.get(packets)).length, 7);
         assert.equal((yield* sourceStates).huge, "pending");
       }),
     );
@@ -877,6 +938,74 @@ it.effect("never lets an inferred lesson override or sidestep a standing instruc
         assert.include(instructions, rule);
         assert.include(instructions, "The party tracks a gold total.");
         assert.notInclude(instructions, goldLesson);
+      }),
+    );
+  }).pipe(Effect.provide(storeOnly)),
+);
+
+it.effect(
+  "keeps input that failed before delivery pending without holding back later input, and learns it once a retry delivers it",
+  () =>
+    Effect.gen(function* () {
+      yield* seedBot("automatic");
+      const { packets, generate } = yield* recordingGenerator(() =>
+        Effect.succeed({ operations: [] }),
+      );
+      yield* withEngine(generate, ({ maintenance }) =>
+        Effect.gen(function* () {
+          const main = yield* SqlClient.SqlClient;
+          yield* enable(maintenance);
+          yield* input("retried", gold, { at: later(1), runStatus: "failed", delivered: false });
+          yield* input("after", "Keep recaps under a page.", { at: later(2) });
+          assert.equal((yield* maintenance.runNow(scope)).status, "noop");
+
+          // A retry in progress holds back what was admitted after it, like any settling input.
+          yield* main`UPDATE orchestration_v2_projection_runs SET status = 'preparing' WHERE run_id = 'run-retried'`;
+          yield* input("during", "Use the party's names.", { at: later(3) });
+          assert.deepEqual(yield* maintenance.runNow(scope), { status: "idle" });
+
+          yield* main`UPDATE orchestration_v2_projection_runs SET status = 'completed' WHERE run_id = 'run-retried'`;
+          yield* deliver("retried");
+          assert.equal((yield* maintenance.runNow(scope)).status, "noop");
+          assert.deepEqual(
+            (yield* Ref.get(packets)).map((packet) => packet.sources.map((source) => source.text)),
+            [["Keep recaps under a page."], [gold, "Use the party's names."]],
+          );
+          assert.deepEqual(yield* sourceStates, {
+            after: "applied",
+            during: "applied",
+            retried: "applied",
+          });
+        }),
+      );
+    }).pipe(Effect.provide(storeOnly)),
+);
+
+it.effect("orders input admitted at the same instant by the Home's own turn order", () =>
+  Effect.gen(function* () {
+    yield* seedBot("automatic");
+    const { packets, generate } = yield* recordingGenerator(() =>
+      Effect.succeed({ operations: [] }),
+    );
+    yield* withEngine(generate, ({ maintenance }) =>
+      Effect.gen(function* () {
+        const main = yield* SqlClient.SqlClient;
+        yield* enable(maintenance);
+        yield* input("z-earlier", "Use detailed recaps.", {
+          runStatus: "queued",
+          delivered: false,
+        });
+        yield* input("a-later", "Actually use short recaps.");
+        assert.deepEqual(yield* maintenance.runNow(scope), { status: "idle" });
+        assert.deepEqual(yield* Ref.get(packets), []);
+
+        yield* main`UPDATE orchestration_v2_projection_runs SET status = 'completed' WHERE run_id = 'run-z-earlier'`;
+        yield* deliver("z-earlier");
+        assert.equal((yield* maintenance.runNow(scope)).status, "noop");
+        assert.deepEqual(
+          (yield* Ref.get(packets)).map((packet) => packet.sources.map((source) => source.text)),
+          [["Use detailed recaps.", "Actually use short recaps."]],
+        );
       }),
     );
   }).pipe(Effect.provide(storeOnly)),

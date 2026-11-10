@@ -7,9 +7,11 @@ import {
   BotLearningEntryId,
   type BotMaintenanceView,
   BotTaskId,
+  MessageId,
   OrchestrationV2ConversationMessageJson,
   ThreadId,
 } from "@t3tools/contracts";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
@@ -47,7 +49,8 @@ export type DeferReason =
   | "oversized_evidence"
   | "instructions_exceed_packet"
   | "source_changed"
-  | "learning_changed"
+  /** Learning, policy, Bot instructions or model, or project guidance or sources changed. */
+  | "basis_changed"
   | "settings_changed";
 
 export type BotMaintenancePass =
@@ -71,9 +74,13 @@ interface StateRow {
   readonly started_at: string | null;
 }
 
-interface PendingRow {
+interface SourceRef {
   readonly kind: Evidence.SourceKind;
   readonly source_id: string;
+}
+
+interface PendingRow extends SourceRef {
+  readonly admission: number;
 }
 
 export class BotMaintenance extends Context.Service<
@@ -94,6 +101,8 @@ const decodeMessage = Schema.decodeUnknownOption(
 );
 const terminalTaskStatuses = encodeJson([...BOT_TASK_TERMINAL_STATUSES]);
 const RETAINED_RUNS = 30;
+const DISCOVERY_PAGE = 500;
+const PENDING_PAGE = 50;
 const invalid = (message: string) => new BotError({ message });
 const isBotError = Schema.is(BotError);
 const failure = (cause: unknown) =>
@@ -106,6 +115,8 @@ const unavailable = () =>
   );
 const keyOf = (source: { readonly kind: string; readonly id: string }) =>
   `${source.kind}\u0000${source.id}`;
+const turnItemOf = (messageId: string) =>
+  IdAllocator.derive.userTurnItem({ messageId: MessageId.make(messageId) });
 
 /** Provenance kept on the learning revision itself, independent of run retention. */
 const provenance = (runId: string, evidence: ReadonlyArray<Evidence.VerifiedRef>) =>
@@ -222,64 +233,127 @@ export const make = Effect.fn("BotMaintenance.make")(function* (generation: Gene
   }, Effect.mapError(failure));
 
   /**
-   * Discovery records every new source identity as pending. An edited, promoted or retried
-   * source keeps its receipt, so it never reads as new; nothing here consumes evidence.
+   * Discovery records every new source identity as pending, in admission order. An edited,
+   * promoted or retried source keeps its receipt and its place, so it never reads as new.
    */
   const discover = Effect.fn("BotMaintenance.discover")(function* (home: ThreadId, now: string) {
-    const messages = yield* main<{
-      readonly message_id: string;
-    }>`SELECT message_id FROM orchestration_v2_projection_messages WHERE thread_id = ${home} AND role = 'user'`;
+    const fresh: Array<{
+      readonly kind: Evidence.SourceKind;
+      readonly id: string;
+      readonly at: string;
+      readonly ordinal: number;
+    }> = [];
+    let after = { at: "", id: "" };
+    while (true) {
+      const page = yield* main<{
+        readonly message_id: string;
+        readonly created_at: string;
+      }>`SELECT message_id, created_at FROM orchestration_v2_projection_messages
+        WHERE thread_id = ${home} AND role = 'user' AND (created_at, message_id) > (${after.at}, ${after.id})
+        ORDER BY created_at, message_id LIMIT ${DISCOVERY_PAGE}`;
+      const known = new Set(
+        (yield* sql<{
+          readonly source_id: string;
+        }>`SELECT source_id FROM bot_maintenance_sources WHERE home_thread_id = ${home} AND kind = 'home-input'
+          AND source_id IN (SELECT value FROM json_each(${encodeJson(page.map((row) => row.message_id))}))`).map(
+          (row) => row.source_id,
+        ),
+      );
+      const unseen = page.filter((row) => !known.has(row.message_id));
+      // Equal timestamps fall back to the Home's own turn order, which admission assigns.
+      const ordinals = new Map(
+        (yield* main<{
+          readonly turn_item_id: string;
+          readonly ordinal: number;
+        }>`SELECT turn_item_id, ordinal FROM orchestration_v2_projection_turn_items
+          WHERE turn_item_id IN (SELECT value FROM json_each(${encodeJson(unseen.map((row) => turnItemOf(row.message_id)))}))`).map(
+          (row) => [row.turn_item_id, row.ordinal],
+        ),
+      );
+      for (const row of unseen)
+        fresh.push({
+          kind: "home-input",
+          id: row.message_id,
+          at: row.created_at,
+          ordinal: ordinals.get(turnItemOf(row.message_id)) ?? Number.MAX_SAFE_INTEGER,
+        });
+      const last = page.at(-1);
+      if (last === undefined || page.length < DISCOVERY_PAGE) break;
+      after = { at: last.created_at, id: last.message_id };
+    }
+    const tasks = yield* sql<{
+      readonly task_id: string;
+      readonly at: string;
+    }>`SELECT task_id, COALESCE(completed_at, updated_at) AS at FROM bot_tasks
+      WHERE home_thread_id = ${home} AND status IN (SELECT value FROM json_each(${terminalTaskStatuses}))
+        AND task_id NOT IN (SELECT source_id FROM bot_maintenance_sources WHERE home_thread_id = ${home} AND kind = 'task-result')`;
+    for (const task of tasks)
+      fresh.push({ kind: "task-result", id: task.task_id, at: task.at, ordinal: 0 });
+    if (fresh.length === 0) return;
+    const ordered = fresh
+      .toSorted(
+        (a, b) =>
+          a.at.localeCompare(b.at) ||
+          a.ordinal - b.ordinal ||
+          a.kind.localeCompare(b.kind) ||
+          a.id.localeCompare(b.id),
+      )
+      .map((source) => ({ kind: source.kind, id: source.id }));
     yield* sql.withTransaction(
       Effect.gen(function* () {
-        yield* sql`INSERT OR IGNORE INTO bot_maintenance_sources (home_thread_id, kind, source_id, state, recorded_at)
-          SELECT ${home}, 'home-input', value, 'pending', ${now} FROM json_each(${encodeJson(messages.map((row) => row.message_id))})`;
-        yield* sql`INSERT OR IGNORE INTO bot_maintenance_sources (home_thread_id, kind, source_id, state, recorded_at)
-          SELECT home_thread_id, 'task-result', task_id, 'pending', ${now} FROM bot_tasks
-          WHERE home_thread_id = ${home} AND status IN (SELECT value FROM json_each(${terminalTaskStatuses}))`;
+        const [top] = yield* sql<{
+          readonly admission: number;
+        }>`SELECT COALESCE(MAX(admission), 0) AS admission FROM bot_maintenance_sources WHERE home_thread_id = ${home}`;
+        yield* sql`INSERT OR IGNORE INTO bot_maintenance_sources (home_thread_id, kind, source_id, state, recorded_at, admission)
+          SELECT ${home}, json_extract(value, '$.kind'), json_extract(value, '$.id'), 'pending', ${now}, ${top?.admission ?? 0} + key + 1
+          FROM json_each(${encodeJson(ordered)})`;
       }),
     );
   });
 
   const classify = Effect.fn("BotMaintenance.classify")(function* (
     home: ThreadId,
-    pending: ReadonlyArray<PendingRow>,
+    refs: ReadonlyArray<SourceRef>,
   ) {
     const classified = new Map<string, Evidence.Classified>();
-    const messageIds = pending
-      .filter((row) => row.kind === "home-input")
-      .map((row) => row.source_id);
+    const messageIds = refs.filter((row) => row.kind === "home-input").map((row) => row.source_id);
+    // Delivery is native acceptance: a provider turn on the input's root node, or for input
+    // steered into a running turn, a steer effect that did not fail or get cancelled.
     const inputs = yield* main<{
       readonly message_id: string;
       readonly payload_json: string;
       readonly run_status: string | null;
-      readonly turn_item_id: string | null;
-      readonly input_intent: string | null;
-    }>`SELECT m.message_id, m.payload_json, r.status AS run_status, i.turn_item_id, json_extract(i.payload_json, '$.inputIntent') AS input_intent
-      FROM orchestration_v2_projection_messages m
-      LEFT JOIN orchestration_v2_projection_turn_items i ON i.thread_id = m.thread_id AND i.type = 'user_message' AND json_extract(i.payload_json, '$.messageId') = m.message_id
-      LEFT JOIN orchestration_v2_projection_runs r ON r.run_id = COALESCE(i.run_id, m.run_id)
-      WHERE m.thread_id = ${home} AND m.message_id IN (SELECT value FROM json_each(${encodeJson(messageIds)}))
-      ORDER BY i.ordinal`;
+      readonly delivered: number;
+    }>`SELECT m.message_id, m.payload_json, r.status AS run_status,
+        CASE WHEN i.provider_turn_id IS NOT NULL
+          THEN NOT EXISTS (SELECT 1 FROM orchestration_v2_effect_outbox o
+            WHERE o.thread_id = m.thread_id AND o.status IN ('pending', 'running', 'failed', 'cancelled')
+              AND o.effect_type = 'provider-turn.steer' AND json_extract(o.payload_json, '$.messageId') = m.message_id)
+          ELSE EXISTS (SELECT 1 FROM orchestration_v2_projection_provider_turns t
+            WHERE t.thread_id = m.thread_id AND t.node_id = i.node_id)
+        END AS delivered
+      FROM json_each(${encodeJson(messageIds.map((id) => ({ message: id, item: turnItemOf(id) })))}) p
+      JOIN orchestration_v2_projection_messages m ON m.message_id = json_extract(p.value, '$.message') AND m.thread_id = ${home}
+      LEFT JOIN orchestration_v2_projection_turn_items i ON i.turn_item_id = json_extract(p.value, '$.item')
+      LEFT JOIN orchestration_v2_projection_runs r ON r.run_id = COALESCE(i.run_id, m.run_id)`;
+    const byId = new Map(inputs.map((row) => [row.message_id, row]));
     for (const id of messageIds) {
-      const row = inputs.find((input) => input.message_id === id);
+      const row = byId.get(id);
       classified.set(
         keyOf({ kind: "home-input", id }),
         Evidence.classifyHomeInput({
           message:
             row === undefined ? undefined : Option.getOrUndefined(decodeMessage(row.payload_json)),
-          delivered: row?.turn_item_id != null,
+          delivered: row?.delivered === 1,
           runStatus: row?.run_status ?? null,
-          inputIntent: row?.input_intent ?? null,
         }),
       );
     }
-    for (const row of pending) {
+    for (const row of refs) {
       if (row.kind !== "task-result") continue;
       const task = (yield* sql<{
         readonly status: string;
-        readonly completed_at: string | null;
-        readonly updated_at: string;
-      }>`SELECT status, completed_at, updated_at FROM bot_tasks WHERE home_thread_id = ${home} AND task_id = ${row.source_id}`)[0];
+      }>`SELECT status FROM bot_tasks WHERE home_thread_id = ${home} AND task_id = ${row.source_id}`)[0];
       const key = keyOf({ kind: "task-result", id: row.source_id });
       // Only a completed run's saved answer is evidence; any other ending proves nothing.
       if (task?.status !== "completed") {
@@ -292,17 +366,41 @@ export const make = Effect.fn("BotMaintenance.make")(function* (generation: Gene
         result.state === "available"
           ? {
               _tag: "eligible",
-              source: {
-                kind: "task-result",
-                id: row.source_id,
-                at: task.completed_at ?? task.updated_at,
-                text: result.text,
-              },
+              source: { kind: "task-result", id: row.source_id, text: result.text },
             }
           : { _tag: "excluded", reason: `result_${result.state}` },
       );
     }
     return classified;
+  });
+
+  /**
+   * Walks pending receipts in admission order and returns the eligible prefix: it ends at the
+   * first source still settling, so a later correction is never applied before the input it
+   * corrects, and once enough is read to fill a batch and know whether more waits.
+   */
+  const frontier = Effect.fn("BotMaintenance.frontier")(function* (home: ThreadId) {
+    const eligible: Array<Evidence.Source> = [];
+    const excluded: Array<SourceRef & { readonly reason: string }> = [];
+    let after = 0;
+    while (true) {
+      const page =
+        yield* sql<PendingRow>`SELECT kind, source_id, admission FROM bot_maintenance_sources
+        WHERE home_thread_id = ${home} AND state = 'pending' AND admission > ${after}
+        ORDER BY admission LIMIT ${PENDING_PAGE}`;
+      const classified = yield* classify(home, page);
+      for (const row of page) {
+        const result = classified.get(keyOf({ kind: row.kind, id: row.source_id }));
+        if (result === undefined || result._tag === "settling") return { eligible, excluded };
+        if (result._tag === "excluded") excluded.push({ ...row, reason: result.reason });
+        if (result._tag !== "eligible") continue;
+        eligible.push(result.source);
+        if (eligible.length > Evidence.MAX_BATCH_SOURCES) return { eligible, excluded };
+      }
+      const last = page.at(-1);
+      if (last === undefined || page.length < PENDING_PAGE) return { eligible, excluded };
+      after = last.admission;
+    }
   });
 
   const finishRun = (runId: string, status: string, outcome: unknown, now: string) =>
@@ -323,40 +421,19 @@ export const make = Effect.fn("BotMaintenance.make")(function* (generation: Gene
       return yield* invalid("This Bot is archived or detached, so maintenance does not run.");
 
     yield* discover(home, now);
-    const pending =
-      yield* sql<PendingRow>`SELECT kind, source_id FROM bot_maintenance_sources WHERE home_thread_id = ${home} AND state = 'pending'`;
-    const classified = yield* classify(home, pending);
-    const excluded = pending.flatMap((row) => {
-      const result = classified.get(keyOf({ kind: row.kind, id: row.source_id }));
-      return result?._tag === "excluded" ? [{ ...row, reason: result.reason }] : [];
-    });
+    const { eligible, excluded } = yield* frontier(home);
     if (excluded.length > 0)
       yield* sql`UPDATE bot_maintenance_sources SET state = 'excluded', exclusion_reason = (SELECT json_extract(value, '$.reason') FROM json_each(${encodeJson(excluded)}) WHERE json_extract(value, '$.kind') = kind AND json_extract(value, '$.source_id') = source_id)
         WHERE home_thread_id = ${home} AND state = 'pending' AND EXISTS (SELECT 1 FROM json_each(${encodeJson(excluded)}) WHERE json_extract(value, '$.kind') = kind AND json_extract(value, '$.source_id') = source_id)`;
-
-    // Learn from the oldest contiguous run of settled sources, so a later correction is never
-    // applied before the input it corrects.
-    const ordered = [...classified.values()]
-      .flatMap((result): Array<{ readonly at: string; readonly source: Evidence.Source | null }> =>
-        result._tag === "eligible"
-          ? [{ at: result.source.at, source: result.source }]
-          : result._tag === "settling"
-            ? [{ at: result.at, source: null }]
-            : [],
-      )
-      .toSorted((a, b) => a.at.localeCompare(b.at));
-    const settling = ordered.findIndex((entry) => entry.source === null);
-    const eligible = ordered
-      .slice(0, settling === -1 ? ordered.length : settling)
-      .flatMap((entry) => (entry.source === null ? [] : [entry.source]));
     if (eligible.length === 0) return { status: "idle" } as const;
 
     const bot = yield* store.getBot(scope.botId);
+    const context = yield* store.getContext(scope.botId, scope.projectId);
     if (bot?.learning_policy !== "automatic" && bot?.learning_policy !== "after_adoption")
       return yield* invalid("The Bot's learning policy is unreadable.");
+    if (context === undefined) return yield* invalid("This Bot project context does not exist.");
     const built = Evidence.buildBatch({
-      projectId: scope.projectId,
-      policy: bot.learning_policy,
+      authority: { policy: bot.learning_policy, bot, context },
       sources: eligible,
       learning: yield* store.listLearning(scope.botId),
     });
@@ -413,11 +490,8 @@ export const make = Effect.fn("BotMaintenance.make")(function* (generation: Gene
             const latest = yield* stateRow(home);
             if (latest?.enabled !== 1 || latest.settings_revision !== state.settings_revision)
               return yield* deferred("settings_changed");
-            if (
-              Evidence.learningBasis(learning.policy, learning.rows, scope.projectId) !==
-              batch.basis
-            )
-              return yield* deferred("learning_changed");
+            if (Evidence.basis(learning, learning.rows) !== batch.basis)
+              return yield* deferred("basis_changed");
             const outcome = {
               sources: selected.length,
               active: 0,

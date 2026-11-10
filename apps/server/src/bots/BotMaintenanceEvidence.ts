@@ -8,7 +8,6 @@ import {
   TrimmedNonEmptyString,
   TrimmedString,
 } from "@t3tools/contracts";
-import * as DateTime from "effect/DateTime";
 import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
 import type * as BotStore from "./BotStore.ts";
@@ -23,14 +22,23 @@ const LIMITS = {
   learningUnits: 16_000,
 } as const;
 
+/** The most sources one batch can hold. */
+export const MAX_BATCH_SOURCES = LIMITS.homeInputs + LIMITS.taskResults;
+
 export type SourceKind = "home-input" | "task-result";
 
 /** One whole piece of evidence, keyed like its `bot_maintenance_sources` receipt. */
 export interface Source {
   readonly kind: SourceKind;
   readonly id: string;
-  readonly at: string;
   readonly text: string;
+}
+
+/** What a proposal is generated under; a change to any of it discards the proposal. */
+export interface Authority {
+  readonly policy: BotLearningPolicy;
+  readonly bot: BotStore.BotRow;
+  readonly context: BotStore.BotContextRow;
 }
 
 interface Target {
@@ -47,6 +55,9 @@ interface Target {
 export interface Packet {
   readonly projectId: string;
   readonly learningPolicy: BotLearningPolicy;
+  /** The user's standing Bot instructions and project guidance: constraints, not evidence. */
+  readonly instructions: string;
+  readonly guidance: string;
   readonly sources: ReadonlyArray<{
     readonly key: string;
     readonly kind: SourceKind;
@@ -84,8 +95,13 @@ export const digest = (text: string) => NodeCrypto.createHash("sha256").update(t
 
 export type Classified =
   | { readonly _tag: "eligible"; readonly source: Source }
-  /** Not settled yet; it and everything after it wait for a later pass. */
-  | { readonly _tag: "settling"; readonly at: string }
+  /** Not settled yet; it and everything admitted after it wait for a later pass. */
+  | { readonly _tag: "settling" }
+  /**
+   * Its run ended before the model received it, so it is not part of what the model saw.
+   * It stays pending without holding back later input, and joins once a retry delivers it.
+   */
+  | { readonly _tag: "undelivered" }
   | { readonly _tag: "excluded"; readonly reason: string };
 
 const settlingRuns = new Set(["queued", "preparing", "starting", "running", "waiting"]);
@@ -96,9 +112,9 @@ const settlingRuns = new Set(["queued", "preparing", "starting", "running", "wai
  */
 export const classifyHomeInput = (input: {
   readonly message: OrchestrationV2ConversationMessage | undefined;
+  /** The provider accepted it natively; an admission turn item alone is not delivery. */
   readonly delivered: boolean;
   readonly runStatus: string | null;
-  readonly inputIntent: string | null;
 }): Classified => {
   const { message } = input;
   if (message === undefined) return { _tag: "excluded", reason: "missing" };
@@ -110,16 +126,13 @@ export const classifyHomeInput = (input: {
   )
     return { _tag: "excluded", reason: "not_user_input" };
   if (input.runStatus === "rolled_back") return { _tag: "excluded", reason: "rolled_back" };
-  if (input.runStatus === "cancelled" && (!input.delivered || input.inputIntent === "queued_turn"))
+  if (input.runStatus !== null && settlingRuns.has(input.runStatus)) return { _tag: "settling" };
+  if (input.delivered)
+    return { _tag: "eligible", source: { kind: "home-input", id: message.id, text: message.text } };
+  // A cancelled run is never retried; a failed one can be.
+  if (input.runStatus === "cancelled")
     return { _tag: "excluded", reason: "cancelled_before_delivery" };
-  const at = DateTime.formatIso(message.createdAt);
-  if (input.runStatus !== null && settlingRuns.has(input.runStatus))
-    return { _tag: "settling", at };
-  if (!input.delivered) return { _tag: "excluded", reason: "not_delivered" };
-  return {
-    _tag: "eligible",
-    source: { kind: "home-input", id: message.id, at, text: message.text },
-  };
+  return { _tag: "undelivered" };
 };
 
 const units = (text: string) => JSON.stringify(text).length;
@@ -139,26 +152,32 @@ const applicable = (rows: ReadonlyArray<BotStore.BotLearningRow>, projectId: str
       isKind(row.kind),
   );
 
-/** Changes whenever the policy or any learning this project sees changes. */
-export const learningBasis = (
-  policy: BotLearningPolicy,
-  rows: ReadonlyArray<BotStore.BotLearningRow>,
-  projectId: string,
-) =>
+/**
+ * Changes whenever the policy, the Bot's instructions or model, the project's guidance or
+ * sources, or any learning this project sees changes. Content, not revisions, so an edit
+ * that skips a revision bump still counts.
+ */
+export const basis = (authority: Authority, rows: ReadonlyArray<BotStore.BotLearningRow>) =>
   JSON.stringify([
-    policy,
-    applicable(rows, projectId)
+    authority.policy,
+    authority.bot.instructions,
+    authority.bot.model_selection_json,
+    authority.context.revision,
+    authority.context.guidance,
+    authority.context.sources_json,
+    applicable(rows, authority.context.project_id)
       .map((row) => `${row.entry_id}:${row.revision}:${row.status}`)
       .toSorted(),
   ]);
 
 export const buildBatch = (input: {
-  readonly projectId: string;
-  readonly policy: BotLearningPolicy;
-  /** Eligible sources, oldest first, ending before the first one still settling. */
+  readonly authority: Authority;
+  /** Eligible sources in admission order, ending before the first one still settling. */
   readonly sources: ReadonlyArray<Source>;
   readonly learning: ReadonlyArray<BotStore.BotLearningRow>;
 }): BuildResult => {
+  const { authority } = input;
+  const projectId = authority.context.project_id;
   const selected: Array<Source> = [];
   const counts = { "home-input": 0, "task-result": 0 };
   const caps = { "home-input": LIMITS.homeInputs, "task-result": LIMITS.taskResults };
@@ -174,7 +193,7 @@ export const buildBatch = (input: {
   if (selected.length === 0 && input.sources.length > 0)
     return { _tag: "blocked", reason: "oversized_evidence" };
 
-  const rows = applicable(input.learning, input.projectId).toSorted(
+  const rows = applicable(input.learning, projectId).toSorted(
     (a, b) =>
       Number(b.origin === "instruction" && b.status === "active") -
         Number(a.origin === "instruction" && a.status === "active") ||
@@ -219,8 +238,10 @@ export const buildBatch = (input: {
     _tag: "ready",
     batch: {
       packet: {
-        projectId: input.projectId,
-        learningPolicy: input.policy,
+        projectId,
+        learningPolicy: authority.policy,
+        instructions: authority.bot.instructions,
+        guidance: authority.context.guidance,
         sources: [...sources].map(([key, source]) => ({
           key,
           kind: source.kind,
@@ -238,7 +259,7 @@ export const buildBatch = (input: {
       },
       sources,
       targets,
-      basis: learningBasis(input.policy, input.learning, input.projectId),
+      basis: basis(authority, input.learning),
       more: selected.length < input.sources.length,
     },
   };

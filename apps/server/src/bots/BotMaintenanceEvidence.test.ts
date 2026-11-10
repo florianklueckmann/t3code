@@ -3,17 +3,45 @@ import type { BotLearningStatus } from "@t3tools/contracts";
 import type * as BotStore from "./BotStore.ts";
 import * as Evidence from "./BotMaintenanceEvidence.ts";
 
-const home = (id: string, text: string, at = "2026-11-09T10:00:00.000Z"): Evidence.Source => ({
-  kind: "home-input",
-  id,
-  at,
-  text,
-});
+const home = (id: string, text: string): Evidence.Source => ({ kind: "home-input", id, text });
 const taskResult = (id: string, text: string): Evidence.Source => ({
   kind: "task-result",
   id,
-  at: "2026-11-09T11:00:00.000Z",
   text,
+});
+const authority = (
+  changes: {
+    readonly policy?: "automatic" | "after_adoption";
+    readonly bot?: Partial<BotStore.BotRow>;
+    readonly context?: Partial<BotStore.BotContextRow>;
+  } = {},
+): Evidence.Authority => ({
+  policy: changes.policy ?? "automatic",
+  bot: {
+    bot_id: "bot",
+    name: "Companion",
+    instructions: "Keep recaps short.",
+    model_selection_json: '{"instanceId":"codex","model":"gpt-6-luna"}',
+    learning_policy: changes.policy ?? "automatic",
+    appearance_json: null,
+    created_at: "2026-11-01T00:00:00.000Z",
+    updated_at: "2026-11-01T00:00:00.000Z",
+    archived_at: null,
+    ...changes.bot,
+  },
+  context: {
+    home_thread_id: "bot-home:bot:project",
+    bot_id: "bot",
+    project_id: "project",
+    guidance: "Use the campaign wiki.",
+    sources_json: "[]",
+    revision: 1,
+    thread_sync: null,
+    attached_at: "2026-11-01T00:00:00.000Z",
+    detached_at: null,
+    updated_at: "2026-11-01T00:00:00.000Z",
+    ...changes.context,
+  },
 });
 const learning = (
   entry: string,
@@ -47,7 +75,7 @@ const learning = (
 const build = (
   sources: ReadonlyArray<Evidence.Source>,
   rows: ReadonlyArray<BotStore.BotLearningRow> = [],
-) => Evidence.buildBatch({ projectId: "project", policy: "automatic", sources, learning: rows });
+) => Evidence.buildBatch({ authority: authority(), sources, learning: rows });
 const ready = (result: Evidence.BuildResult) =>
   result._tag === "ready" ? result.batch : assert.fail(`blocked: ${result.reason}`);
 
@@ -128,25 +156,29 @@ it("puts every applicable standing instruction first, leaves other projects out,
   });
 });
 
-it("changes the learning basis when policy or applicable learning changes, not for other projects", () => {
+it("changes the basis when policy, configuration or applicable learning changes, not for other projects", () => {
   const rows = [learning("own"), learning("other", { project: "elsewhere" })];
-  const basis = Evidence.learningBasis("automatic", rows, "project");
+  const basis = Evidence.basis(authority(), rows);
   assert.equal(
-    Evidence.learningBasis("automatic", [learning("own")], "project"),
+    Evidence.basis(authority(), [learning("own")]),
     basis,
     "another project's learning is not part of this basis",
   );
-  assert.notEqual(Evidence.learningBasis("after_adoption", rows, "project"), basis);
-  assert.notEqual(
-    Evidence.learningBasis("automatic", [...rows, learning("own", { revision: 2 })], "project"),
+  assert.equal(
+    Evidence.basis(authority({ bot: { name: "Renamed", updated_at: "2026-11-02" } }), rows),
     basis,
+    "a rename does not constrain learning",
   );
+  for (const changed of [
+    authority({ policy: "after_adoption" }),
+    authority({ bot: { model_selection_json: '{"instanceId":"claude","model":"opus"}' } }),
+    authority({ context: { sources_json: '[{"label":"Wiki","location":"wiki/"}]' } }),
+    authority({ context: { revision: 2 } }),
+  ])
+    assert.notEqual(Evidence.basis(changed, rows), basis);
+  assert.notEqual(Evidence.basis(authority(), [...rows, learning("own", { revision: 2 })]), basis);
   assert.notEqual(
-    Evidence.learningBasis(
-      "automatic",
-      [...rows, learning("new", { status: "pending" })],
-      "project",
-    ),
+    Evidence.basis(authority(), [...rows, learning("new", { status: "pending" })]),
     basis,
   );
 });

@@ -98,6 +98,8 @@ export class BotService extends Context.Service<
       scope: BotContinuationScope,
       change: (current: {
         readonly policy: BotLearningPolicy;
+        readonly bot: BotStore.BotRow;
+        readonly context: BotStore.BotContextRow;
         readonly rows: ReadonlyArray<BotStore.BotLearningRow>;
         readonly record: (
           policy: BotLearningPolicy,
@@ -697,7 +699,13 @@ const make = Effect.gen(function* () {
           return yield* botError("The Bot's learning policy is unreadable.", scope.botId)();
         }
         const rows = yield* store.listLearning(scope.botId);
-        return yield* change({ policy: bot.learning_policy, rows, record: learning.record });
+        return yield* change({
+          policy: bot.learning_policy,
+          bot,
+          context,
+          rows,
+          record: learning.record,
+        });
       }),
     ).pipe(Effect.withSpan("BotService.maintainLearning"));
 
