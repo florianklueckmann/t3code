@@ -88,6 +88,7 @@ export const RuntimePolicyV2Override = Schema.Struct({
   approvalPolicy: Schema.optional(Schema.Unknown),
   sandboxPolicy: Schema.optional(Schema.Unknown),
   reasoningEffort: Schema.optional(Schema.String),
+  changes: Schema.optional(Schema.Literal("none")),
 });
 export type RuntimePolicyV2Override = typeof RuntimePolicyV2Override.Type;
 
@@ -242,6 +243,7 @@ export function layerWithOverride(
                 ...(override.reasoningEffort === undefined
                   ? {}
                   : { reasoningEffort: override.reasoningEffort }),
+                ...(override.changes === undefined ? {} : { changes: override.changes }),
               }),
             ),
           ),
