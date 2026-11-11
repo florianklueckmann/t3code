@@ -9,6 +9,9 @@ import {
 } from "./bots.ts";
 import {
   BotId,
+  type BotLearningEntry,
+  BotLearningEntryId,
+  type BotLearningRevision,
   type BotSummary,
   BotTaskId,
   type BotTaskStatus,
@@ -20,6 +23,9 @@ import {
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  botLearningLeftOut,
+  botLearningRevisionInput,
+  botLearningScopeChange,
   botOfHomeThread,
   botProjectContextChanges,
   botProjectContextDraft,
@@ -422,6 +428,170 @@ it("keeps pausing maintenance reachable while the Bot form is locked", () => {
   expect(canToggleBotMaintenance(paused, false)).toBe(true);
   expect(canToggleBotMaintenance(paused, true)).toBe(false);
   expect(canToggleBotMaintenance({ ...paused, writable: false }, false)).toBe(false);
+});
+
+describe("bot learning", () => {
+  const projectA = ProjectId.make("project-a");
+  const projectB = ProjectId.make("project-b");
+  const lesson = (
+    id: string,
+    minute: number,
+    options: {
+      readonly projectId?: ProjectId | null;
+      readonly origin?: BotLearningRevision["origin"];
+      readonly status?: BotLearningRevision["status"];
+      readonly text?: string;
+      readonly learnedInProjectId?: ProjectId;
+    } = {},
+  ): BotLearningEntry => {
+    const projectId = options.projectId === undefined ? projectA : options.projectId;
+    return {
+      id: BotLearningEntryId.make(id),
+      projectId,
+      kind: "preference",
+      revisions: [
+        {
+          revision: 1,
+          projectId,
+          text: options.text ?? `Lesson ${id}.`,
+          rationale: `Why ${id}.`,
+          evidence: `Quote ${id}.`,
+          origin: options.origin ?? "correction",
+          source: { kind: "user" },
+          learnedInProjectId: options.learnedInProjectId ?? projectA,
+          status: options.status ?? "active",
+          baseRevision: null,
+          conflictsWithInstruction: false,
+          createdAt: `2026-01-01T00:${String(minute).padStart(2, "0")}:00.000Z`,
+          decidedAt: null,
+        },
+      ],
+    };
+  };
+  const many = (count: number, options: Parameters<typeof lesson>[2] = {}) =>
+    Array.from({ length: count }, (_, index) =>
+      lesson(`e${String(index + 1).padStart(2, "0")}`, index + 1, options),
+    );
+
+  it.each([
+    { name: "leaves nothing out within the limits", entries: many(3), leftOut: [] },
+    {
+      name: "leaves out the oldest lessons past 40, never a standing instruction",
+      entries: [lesson("instruction", 0, { origin: "instruction" }), ...many(41)],
+      leftOut: ["e02", "e01"],
+    },
+    {
+      name: "counts shared lessons but not other projects' lessons",
+      entries: [
+        lesson("shared", 0, { projectId: null }),
+        ...many(40),
+        lesson("other", 0, { projectId: projectB }),
+      ],
+      leftOut: ["shared"],
+    },
+    {
+      name: "leaves out lessons past 8,000 characters",
+      entries: many(9, { text: "x".repeat(1_000) }),
+      leftOut: ["e02", "e01"],
+    },
+    {
+      name: "never lists lessons that are not in use",
+      entries: [
+        ...many(40),
+        lesson("retired", 0, { status: "retired" }),
+        lesson("pending", 0, { status: "pending" }),
+      ],
+      leftOut: [],
+    },
+  ])("$name", ({ entries, leftOut }) => {
+    expect(botLearningLeftOut(entries, projectA).map(({ entry }) => entry.id)).toEqual(leftOut);
+  });
+
+  const bot = {
+    id: BotId.make("bot"),
+    projects: [
+      { projectId: projectB, detachedAt: null },
+      { projectId: ProjectId.make("project-c"), detachedAt: "2026-11-01T00:00:00.000Z" },
+    ],
+  };
+  it.each([
+    {
+      name: "rewords a project lesson in its project",
+      entry: lesson("local", 0, { projectId: projectB }),
+      change: { text: "  New wording.  " },
+      expected: { projectId: projectB, text: "New wording." },
+    },
+    {
+      name: "moves a project lesson to all projects with its rationale and evidence",
+      entry: lesson("local", 0, { projectId: projectB }),
+      change: { scope: "bot" as const },
+      expected: {
+        projectId: projectB,
+        text: "Lesson local.",
+        rationale: "Why local.",
+        evidence: "Quote local.",
+        scope: "bot",
+      },
+    },
+    {
+      name: "rewords a shared lesson from an attached project once its own was detached",
+      entry: lesson("shared", 0, {
+        projectId: null,
+        learnedInProjectId: ProjectId.make("project-c"),
+      }),
+      change: { text: "Shared wording." },
+      expected: { projectId: projectB, text: "Shared wording." },
+    },
+  ])("$name", ({ entry, change, expected }) => {
+    expect(botLearningRevisionInput(bot, entry, change)).toEqual({
+      botId: bot.id,
+      kind: "preference",
+      replaces: { entryId: entry.id, revision: 1 },
+      ...expected,
+    });
+  });
+
+  it("cannot revise a lesson without an attached project to record it from", () => {
+    const detached = { ...bot, projects: bot.projects.slice(1) };
+    expect(
+      botLearningRevisionInput(detached, lesson("shared", 0, { projectId: null }), { text: "x" }),
+    ).toBeNull();
+  });
+
+  it("labels the revisions that change which projects a lesson applies to", () => {
+    const [first] = lesson("moving", 0).revisions;
+    const revision = (
+      number: number,
+      projectId: ProjectId | null,
+      baseRevision: number | null,
+      status: BotLearningRevision["status"],
+    ): BotLearningRevision => ({
+      ...(first ?? expect.unreachable()),
+      revision: number,
+      projectId,
+      baseRevision,
+      status,
+    });
+    const entry: BotLearningEntry = {
+      ...lesson("moving", 0),
+      revisions: [
+        revision(1, projectA, null, "superseded"),
+        revision(2, null, 1, "superseded"),
+        revision(3, null, 2, "superseded"),
+        revision(4, projectA, 3, "active"),
+        revision(5, projectA, 4, "pending"),
+        revision(6, null, 4, "pending"),
+      ],
+    };
+    expect(entry.revisions.map((each) => botLearningScopeChange(entry, each))).toEqual([
+      null,
+      "moves to all projects",
+      null,
+      "moves to one project",
+      null,
+      "moves to all projects",
+    ]);
+  });
 });
 
 it("keeps notification results scoped to their task, project and work thread", () => {

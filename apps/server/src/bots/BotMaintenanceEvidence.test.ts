@@ -127,6 +127,11 @@ it("puts every applicable standing instruction first, leaves other projects out,
         learning("rejected", { status: "rejected" }),
         learning("waiting", { status: "pending" }),
         learning("rule", { origin: "instruction", kind: "preference" }),
+        // Another project's lesson reaches this one only once its move is adopted.
+        learning("moving", { project: "elsewhere" }),
+        learning("moving", { project: null, status: "pending", revision: 2 }),
+        learning("moved", { project: "elsewhere", status: "superseded" }),
+        learning("moved", { project: null, revision: 2 }),
       ],
     ),
   );
@@ -137,8 +142,10 @@ it("puts every applicable standing instruction first, leaves other projects out,
       ["e2", "project", "correction", "active"],
       ["e3", "bot", "correction", "active"],
       ["e4", "project", "correction", "pending"],
+      ["e5", "bot", "correction", "active"],
     ],
   );
+  assert.equal(batch.targets.get("e5")?.entryId, "moved");
   assert.equal(batch.targets.get("e1")?.entryId, "rule");
   assert.isTrue(batch.packet.learningComplete);
 
