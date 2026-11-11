@@ -1,3 +1,4 @@
+import { isBotMaintenanceCompaction } from "../bots/homeReturn.ts";
 import type { ProjectThreadAwarenessV2Input } from "@t3tools/shared/agentAwareness";
 import { pendingGuestMessageCount } from "@t3tools/contracts";
 import { applyThreadPullRequestLinkUpdate } from "../sourceControl/threadPullRequests.ts";
@@ -1584,6 +1585,7 @@ export function threadShellFromProjection(
       (message) =>
         message.role === "user" &&
         idleCompactionOf(message) === undefined &&
+        !isBotMaintenanceCompaction(message) &&
         !silentPromptIds.has(message.id),
     )
     .toSorted(
@@ -1752,7 +1754,9 @@ function isSilentRunForShell(
   return (
     run.status !== "failed" &&
     projection.messages.some(
-      (message) => message.id === run.userMessageId && idleCompactionOf(message) !== undefined,
+      (message) =>
+        message.id === run.userMessageId &&
+        (idleCompactionOf(message) !== undefined || isBotMaintenanceCompaction(message)),
     ) &&
     !projection.turnItems.some(
       (item) => item.runId === run.id && item.type === "compaction" && item.status === "failed",
@@ -6169,8 +6173,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           ),
         );
 
-    // Mirror idleCompactionOf, including JavaScript trim whitespace.
-    const isIdleCompactionMessage = (alias: string) => {
+    // Mirror idleCompactionOf and isBotMaintenanceCompaction, including JavaScript trim whitespace.
+    const isSilentCompactionMessage = (alias: string) => {
       const payload = sql.literal(`${alias}.payload_json`);
       return sql`(
         ${sql.literal(`${alias}.role`)} = 'user'
@@ -6185,6 +6189,11 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             json_extract(${payload}, '$.createdBy') = 'agent'
             AND json_extract(${payload}, '$.creationSource') = 'server'
           )
+          OR (
+            json_extract(${payload}, '$.createdBy') = 'system'
+            AND substr(${sql.literal(`${alias}.message_id`)}, 1, length('bot-maintenance:compact:'))
+              = 'bot-maintenance:compact:'
+          )
         )
       )`;
     };
@@ -6196,7 +6205,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         AND EXISTS (
           SELECT 1 FROM orchestration_v2_projection_messages prompt
           WHERE prompt.message_id = json_extract(${run}.payload_json, '$.userMessageId')
-            AND ${isIdleCompactionMessage("prompt")}
+            AND ${isSilentCompactionMessage("prompt")}
         ) AND NOT EXISTS (
           SELECT 1 FROM orchestration_v2_projection_turn_items compaction
           WHERE compaction.thread_id = ${run}.thread_id AND compaction.run_id = ${run}.run_id
@@ -6359,7 +6368,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 FROM orchestration_v2_projection_messages message
                 WHERE message.thread_id = t.thread_id
                   AND message.role = 'user'
-                  AND NOT ${isIdleCompactionMessage("message")}
+                  AND NOT ${isSilentCompactionMessage("message")}
                   AND NOT ${isSilentRestrictedPrompt("message")}
                 ORDER BY message.updated_at DESC, message.message_id DESC
                 LIMIT 1
@@ -6370,7 +6379,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 WHERE message.thread_id = t.thread_id
                   AND message.role = 'user'
                   AND json_extract(message.payload_json, '$.createdBy') = 'user'
-                  AND NOT ${isIdleCompactionMessage("message")}
+                  AND NOT ${isSilentCompactionMessage("message")}
                 ORDER BY message.updated_at DESC, message.message_id DESC
                 LIMIT 1
               ) AS latest_user_authored_message_at,
@@ -6622,7 +6631,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 SELECT message.updated_at
                 FROM orchestration_v2_projection_messages message
                 WHERE message.thread_id = t.thread_id AND message.role = 'user'
-                  AND NOT ${isIdleCompactionMessage("message")}
+                  AND NOT ${isSilentCompactionMessage("message")}
                   AND NOT ${isSilentRestrictedPrompt("message")}
                 ORDER BY message.updated_at DESC, message.message_id DESC
                 LIMIT 1
@@ -6632,7 +6641,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 FROM orchestration_v2_projection_messages message
                 WHERE message.thread_id = t.thread_id AND message.role = 'user'
                   AND json_extract(message.payload_json, '$.createdBy') = 'user'
-                  AND NOT ${isIdleCompactionMessage("message")}
+                  AND NOT ${isSilentCompactionMessage("message")}
                 ORDER BY message.updated_at DESC, message.message_id DESC
                 LIMIT 1
               ) AS latest_user_authored_message_at
@@ -6669,7 +6678,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                     SELECT 1 FROM orchestration_v2_projection_messages message
                     WHERE message.thread_id = t.thread_id AND message.role = 'user'
                       AND json_extract(message.payload_json, '$.createdBy') = 'user'
-                      AND NOT ${isIdleCompactionMessage("message")}
+                      AND NOT ${isSilentCompactionMessage("message")}
                       AND message.updated_at > COALESCE(
                         json_extract(link.payload_json, '$.startedAt'), link.updated_at
                       )

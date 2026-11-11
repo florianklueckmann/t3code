@@ -1869,7 +1869,13 @@ effectIt.effect.each([
           {
             type: "error",
             title: "Provider turn failed to start",
-            failure: { class: "provider_error", message: failure.message },
+            failure: {
+              class: "provider_error",
+              message:
+                name === "another client holds the thread"
+                  ? failure.message
+                  : "temporary app-server resume failure",
+            },
           },
         ]);
       }
