@@ -82,9 +82,9 @@ export const CASES: readonly HomeCheckCase[] = [
   {
     id: "removed-not-repeated",
     source: "Control: the user removed what an earlier check proposed",
-    // The first check must propose the item for this control to grade anything.
+    // The first check must propose the item, so nothing here may bind a later turn's notes.
     seed: [
-      `Heads-up: tomorrow at 10:00 I have ${appointment}. Remind me to bring both before then. ${acknowledge}`,
+      `Heads-up: tomorrow at 10:00 I have ${appointment}. Reply only "Noted." to this message and do nothing else in this turn.`,
     ],
     task: null,
     between:
