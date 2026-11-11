@@ -687,11 +687,13 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   layerProviderInstallationRefresh,
   ProviderInstallation.layer,
   ReplayMarkers.layer,
-  // One OAuth instance: its per-connection lock orders refreshes, sign-ins and disconnects.
-  McpConnections.layer.pipe(Layer.provideMerge(McpConnectionOAuth.layer)),
+  McpConnections.layer,
   Layer.effectDiscard(ProjectSettingsOverrideSweep.sweep),
 ).pipe(
   Layer.provideMerge(layerOrchestrationApplication),
+  // Below orchestration, which names only signed-in accounts to the model. One instance: its
+  // per-connection lock orders refreshes, sign-ins and disconnects.
+  Layer.provideMerge(McpConnectionOAuth.layer),
   Layer.provideMerge(RuntimeLayer.layerEventInfrastructure),
   Layer.provideMerge(Layer.merge(ProjectStore.layer, ThreadSearch.layer)),
   Layer.provideMerge(SecretResolver.layer),

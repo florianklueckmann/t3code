@@ -627,6 +627,7 @@ export const layer: Layer.Layer<
     const turnItemPositions = yield* TurnItemPositionStore.TurnItemPositionStoreV2;
     const finalizationObserver = yield* RunFinalizationService.RunFinalizationObserver;
     const turnAnalytics = yield* ProviderUsageAnalytics.ProviderTurnAnalytics;
+    // Absent where only orchestration runs (tests): OAuth connections then count as signed out.
     const mcpConnectionOAuth = Option.getOrUndefined(
       yield* Effect.serviceOption(McpConnectionOAuth.McpConnectionOAuth),
     );
