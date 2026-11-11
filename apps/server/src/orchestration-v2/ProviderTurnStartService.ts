@@ -17,6 +17,7 @@ import {
   RunId,
   RunAttemptId,
   NodeId,
+  TextGenerationError,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -45,15 +46,25 @@ import * as EventSink from "./EventSink.ts";
 import * as ProviderUsageAnalytics from "../telemetry/ProviderUsageAnalytics.ts";
 import * as ContextHandoffService from "./ContextHandoffService.ts";
 import { isActiveRun } from "./CommandPolicy.ts";
-import { conversationRecoveryHandoffItems } from "./ConversationRecovery.ts";
+import {
+  conversationRecoveryHandoffItems,
+  freshConversationPlan,
+  previousConversationSummary,
+} from "./ConversationRecovery.ts";
+import * as TextGeneration from "../textGeneration/TextGeneration.ts";
+import { conversationSummaryChunks } from "@t3tools/provider-core/server/textGenerationPrompts";
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
   DEFAULT_HANDOFF_TOKEN_CAP,
+  freshConversationTokenCap,
+  handoffCoverage,
   handoffTokenCapConfig,
   handoffBudget,
   attachmentTokenAllowance,
   estimateTextTokens,
   contextUsageForHandoff,
   historicalMessage,
+  type HandoffConversationSummary,
   latestNativeContextUsage,
 } from "@t3tools/provider-core/server/handoffBudget";
 import { deliverContextHandoffs, withInlineContext } from "./ContextHandoffDelivery.ts";
@@ -97,6 +108,8 @@ const NON_COMPLETING_TERMINAL_RUN_STATUSES: ReadonlySet<OrchestrationV2Run["stat
 
 export const isProviderTurnStartError = Schema.is(ProviderTurnStartError);
 const isProviderAdapterProtocolError = Schema.is(ProviderAdapter.ProviderAdapterProtocolError);
+// The user waits on this before the turn starts; the CLI's own limit is longer.
+const FRESH_CONVERSATION_SUMMARY_TIMEOUT = "2 minutes";
 const isProviderAdapterOpenSessionError = Schema.is(
   ProviderAdapter.ProviderAdapterOpenSessionError,
 );
@@ -186,6 +199,7 @@ export const layer: Layer.Layer<
   | RunExecutionService.RunExecutionServiceV2
   | RuntimePolicy.RuntimePolicyV2
   | TurnItemPositionStore.TurnItemPositionStoreV2
+  | TextGeneration.TextGeneration
 > = Layer.effect(
   ProviderTurnStartServiceV2,
   Effect.gen(function* () {
@@ -203,6 +217,7 @@ export const layer: Layer.Layer<
     const runtimePolicy = yield* RuntimePolicy.RuntimePolicyV2;
     const restoreMissingWorktree = yield* makeRestoreMissingWorktree;
     const turnItemPositions = yield* TurnItemPositionStore.TurnItemPositionStoreV2;
+    const textGeneration = yield* TextGeneration.TextGeneration;
 
     // Build draining callbacks outside startup scope so they cannot retain full thread history.
     const makeRunControls = (input: {
@@ -940,7 +955,10 @@ export const layer: Layer.Layer<
       const tokenCap = yield* handoffTokenCapConfig.pipe(
         Effect.orElseSucceed(() => DEFAULT_HANDOFF_TOKEN_CAP),
       );
-      const handoffContextForThread = (loadedProviderThread: OrchestrationV2ProviderThread) => {
+      const handoffContextForThread = (
+        loadedProviderThread: OrchestrationV2ProviderThread,
+        cap = tokenCap,
+      ) => {
         const measuredContext = latestNativeContextUsage(projection, providerThread);
         const previousSelection =
           measuredContext?.modelSelection ??
@@ -1081,7 +1099,7 @@ export const layer: Layer.Layer<
           missedRunIds,
           budget: Effect.gen(function* () {
             return handoffBudget({
-              tokenCap,
+              tokenCap: cap,
               modelContextWindow,
               userText: restartNote === "" ? userText : `${restartNote}\n\n${userText}`,
               attachments: providerMessage.attachments,
@@ -1134,6 +1152,68 @@ export const layer: Layer.Layer<
           return retryHandoff;
         },
       );
+      const summarizeForFreshConversation = Effect.fn(
+        "ProviderTurnStartService.summarizeForFreshConversation",
+      )(function* (
+        items: ReadonlyArray<OrchestrationV2TurnItem>,
+        coveredRunOrdinals: OrchestrationV2ContextHandoff["coveredRunOrdinals"],
+      ) {
+        const plan = freshConversationPlan({
+          messages: ContextHandoffService.providerHandoffMessages(items, projection.runs),
+          coverage: handoffCoverage({ threadId: projection.thread.id, coveredRunOrdinals }),
+          tokenCap,
+          previousSummary: previousConversationSummary(projection.contextHandoffs, projection.runs),
+        });
+        if (plan.type === "verbatim") return plan;
+        if (plan.type === "reuse") return { type: "summary", summary: plan.summary } as const;
+        const generated = yield* Effect.result(
+          Effect.gen(function* () {
+            const { settings } = resolveProjectSettings(
+              yield* serverSettings.getSettings,
+              projection.thread.projectId,
+            );
+            let summary = plan.previousSummary;
+            for (const chunk of conversationSummaryChunks(plan.messages)) {
+              const generated = yield* textGeneration
+                .generateConversationSummary({
+                  cwd: resolvedRuntimePolicy.cwd ?? serverConfig.stateDir,
+                  modelSelection: settings.textGenerationModelSelection,
+                  previousSummary: summary,
+                  messages: chunk.map(({ role, runOrdinal, text }) => ({ role, runOrdinal, text })),
+                })
+                .pipe(Effect.timeout(FRESH_CONVERSATION_SUMMARY_TIMEOUT));
+              // An empty update would drop what the earlier calls summarized.
+              if (generated.summary.trim() === "") {
+                return yield* new TextGenerationError({
+                  operation: "generateConversationSummary",
+                  detail: "the model returned an empty summary",
+                });
+              }
+              summary = generated.summary;
+            }
+            return summary ?? "";
+          }),
+        );
+        if (generated._tag === "Success") {
+          const summary: HandoffConversationSummary = {
+            text: generated.success,
+            throughRunOrdinal: plan.throughRunOrdinal,
+          };
+          return { type: "summary", summary } as const;
+        }
+        const reason =
+          generated.failure._tag === "TimeoutError"
+            ? "it took longer than two minutes"
+            : generated.failure._tag === "TextGenerationError"
+              ? generated.failure.detail
+              : generated.failure.message;
+        yield* Effect.logWarning("Fresh conversation summary failed", {
+          threadId: projection.thread.id,
+          runId,
+          reason,
+        });
+        return { type: "failed", reason } as const;
+      });
       const prepareRecoveryHandoff = Effect.fn("ProviderTurnStartService.prepareRecoveryHandoff")(
         function* () {
           const transferId = yield* idAllocator.allocate.contextTransfer({
@@ -1149,6 +1229,23 @@ export const layer: Layer.Layer<
                 (source) => source.id === item.runId && source.ordinal < run.ordinal,
               ),
           );
+          const coveredRunOrdinals = { from: 1, to: Math.max(1, run.ordinal - 1) };
+          // Only a recovery the user asked for summarizes; automatic recovery keeps today's selection.
+          const recoveryItems =
+            providerThread.conversationRecovery === undefined
+              ? items
+              : conversationRecoveryHandoffItems(items);
+          const summary =
+            providerThread.conversationRecovery === undefined
+              ? undefined
+              : yield* summarizeForFreshConversation(recoveryItems, coveredRunOrdinals);
+          const recoveryTokenCap =
+            summary === undefined || summary.type === "failed"
+              ? tokenCap
+              : freshConversationTokenCap(
+                  tokenCap,
+                  summary.type === "summary" ? summary.summary : undefined,
+                );
           const handoff = yield* contextHandoffService.prepareProviderHandoff({
             threadId: projection.thread.id,
             targetRunId: run.id,
@@ -1157,16 +1254,15 @@ export const layer: Layer.Layer<
             toProviderThreadId: providerThread.id,
             fromProviderInstanceId: providerThread.providerInstanceId,
             toProviderInstanceId: run.providerInstanceId,
-            coveredRunOrdinals: { from: 1, to: Math.max(1, run.ordinal - 1) },
+            coveredRunOrdinals,
             strategy: "full_thread_summary",
             runs: projection.runs,
-            items:
-              providerThread.conversationRecovery === undefined
-                ? items
-                : conversationRecoveryHandoffItems(items),
+            items: recoveryItems,
+            tokenCap: recoveryTokenCap,
+            ...(summary?.type === "summary" ? { summary: summary.summary } : {}),
             createdAt,
           });
-          return { handoff, transferId, createdAt };
+          return { handoff, transferId, createdAt, tokenCap: recoveryTokenCap, summary };
         },
       );
       const recoveryHandoff = yield* Effect.cached(prepareRecoveryHandoff());
@@ -1184,6 +1280,7 @@ export const layer: Layer.Layer<
       let resumedHandoffContext: ReturnType<typeof handoffContextForThread> | undefined;
       let portableForkFallback: OrchestrationV2ContextHandoff | undefined;
       let recoveryTurnItem: OrchestrationV2TurnItem | undefined;
+      let handoffTokenCap = tokenCap;
       const loadedProviderThread = yield* Effect.gen(function* () {
         if (nativeForkTransfer !== undefined) {
           const sourceProjection = yield* projectionStore.getThreadRecords(
@@ -1474,8 +1571,8 @@ export const layer: Layer.Layer<
           );
           if (fits) return resumed.success;
           const freshThread = { ...resumed.success, nativeThreadRef: null };
-          const freshContext = handoffContextForThread(freshThread);
-          const { handoff } = yield* recoveryHandoff;
+          const { handoff, tokenCap: recoveryTokenCap } = yield* recoveryHandoff;
+          const freshContext = handoffContextForThread(freshThread, recoveryTokenCap);
           const fitsFresh = yield* deliverContextHandoffs({
             handoffs: withRecoveryHandoff(handoff),
             providerThread: freshThread,
@@ -1568,8 +1665,15 @@ export const layer: Layer.Layer<
           }),
         );
         if (replacement === undefined) return undefined;
-        const { handoff, transferId, createdAt } = yield* recoveryHandoff;
+        const {
+          handoff,
+          transferId,
+          createdAt,
+          tokenCap: recoveryTokenCap,
+          summary,
+        } = yield* recoveryHandoff;
         effectiveHandoffs = withRecoveryHandoff(handoff);
+        handoffTokenCap = recoveryTokenCap;
         resumeFellBack = true;
         const previousRun = projection.runs.findLast(
           (candidate) =>
@@ -1615,6 +1719,44 @@ export const layer: Layer.Layer<
           strategy: handoff.strategy,
           summary: handoff.summaryText,
         };
+        const verbatimCount = handoff.history?.messages.length ?? 0;
+        const verbatim =
+          verbatimCount === 1 ? "newest message" : `${verbatimCount} newest messages`;
+        const notices = [
+          ...(recovery?.type === "rewind"
+            ? [
+                {
+                  signal: "conversation-recovery:rewind-fallback",
+                  title: "Fresh conversation",
+                  message:
+                    "The rewound conversation could not continue, so this turn starts a fresh conversation with a summary of this thread.",
+                  conversationRecovery: "fresh" as const,
+                },
+              ]
+            : []),
+          ...(summary?.type === "summary"
+            ? [
+                {
+                  signal: "conversation-recovery:summary",
+                  title: "Conversation summary",
+                  message: `This fresh conversation starts from a summary of the conversation through run ${summary.summary.throughRunOrdinal} and the ${verbatim}.`,
+                  detail: summary.summary.text,
+                },
+              ]
+            : summary?.type === "failed"
+              ? [
+                  {
+                    signal: "conversation-recovery:summary",
+                    title: "Conversation summary failed",
+                    message: `Could not summarize the earlier conversation (${summary.reason}), so this fresh conversation starts from only the ${verbatim}.`,
+                  },
+                ]
+              : []),
+        ];
+        const firstNoticeOrdinal =
+          notices.length === 0
+            ? 0
+            : yield* projectionStore.getNextTurnItemOrdinal(projection.thread.id);
         yield* eventSink.write({
           events: [
             {
@@ -1652,42 +1794,34 @@ export const layer: Layer.Layer<
                 consumedAt: null,
               },
             },
-            ...(recovery?.type === "rewind"
-              ? [
-                  {
-                    id: yield* idAllocator.allocate.event({ threadId: projection.thread.id }),
-                    type: "turn-item.updated" as const,
-                    threadId: projection.thread.id,
-                    runId: run.id,
-                    nodeId: rootNode.id,
-                    providerInstanceId: run.providerInstanceId,
-                    occurredAt: createdAt,
-                    payload: {
-                      id: idAllocator.derive.runSignalTurnItem({
-                        runId: run.id,
-                        signal: "conversation-recovery:rewind-fallback",
-                      }),
-                      threadId: projection.thread.id,
-                      runId: run.id,
-                      nodeId: rootNode.id,
-                      providerThreadId: providerThread.id,
-                      providerTurnId: null,
-                      nativeItemRef: null,
-                      parentItemId: null,
-                      ordinal: yield* projectionStore.getNextTurnItemOrdinal(projection.thread.id),
-                      status: "completed" as const,
-                      title: "Fresh conversation",
-                      startedAt: createdAt,
-                      completedAt: createdAt,
-                      updatedAt: createdAt,
-                      type: "system_notice" as const,
-                      message:
-                        "The rewound conversation could not continue, so this turn starts a fresh conversation with a summary of this thread.",
-                      conversationRecovery: "fresh" as const,
-                    },
-                  },
-                ]
-              : []),
+            ...(yield* Effect.forEach(notices, ({ signal, ...notice }, index) =>
+              Effect.map(idAllocator.allocate.event({ threadId: projection.thread.id }), (id) => ({
+                id,
+                type: "turn-item.updated" as const,
+                threadId: projection.thread.id,
+                runId: run.id,
+                nodeId: rootNode.id,
+                providerInstanceId: run.providerInstanceId,
+                occurredAt: createdAt,
+                payload: {
+                  ...notice,
+                  id: idAllocator.derive.runSignalTurnItem({ runId: run.id, signal }),
+                  threadId: projection.thread.id,
+                  runId: run.id,
+                  nodeId: rootNode.id,
+                  providerThreadId: providerThread.id,
+                  providerTurnId: null,
+                  nativeItemRef: null,
+                  parentItemId: null,
+                  ordinal: firstNoticeOrdinal + index,
+                  status: "completed" as const,
+                  startedAt: createdAt,
+                  completedAt: createdAt,
+                  updatedAt: createdAt,
+                  type: "system_notice" as const,
+                },
+              })),
+            )),
           ],
         });
         recoveryTurnItem = handoffTurnItem;
@@ -1698,7 +1832,8 @@ export const layer: Layer.Layer<
         return;
       }
       const now = yield* DateTime.now;
-      const handoffContext = resumedHandoffContext ?? handoffContextForThread(loadedProviderThread);
+      const handoffContext =
+        resumedHandoffContext ?? handoffContextForThread(loadedProviderThread, handoffTokenCap);
       const {
         sameNativeThread,
         handoffUsage,

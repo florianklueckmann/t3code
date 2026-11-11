@@ -196,6 +196,7 @@ const layerProviderTurnStartServiceProvided = ProviderTurnStartService.layer.pip
       layerRunExecutionServiceProvided,
       layerRuntimePolicyProvided,
       TurnItemPositionStore.layer,
+      TextGeneration.layer,
     ),
   ),
 );

@@ -1190,6 +1190,7 @@ export const OrchestrationV2HistoricalMessage = Schema.Struct({
   role: Schema.Literals(["user", "assistant"]),
   text: Schema.String,
   runStatus: Schema.optional(Schema.String),
+  runOrdinal: Schema.optional(PositiveInt),
   threadId: ThreadId,
   runId: Schema.NullOr(RunId),
   itemId: TurnItemId,
@@ -1226,6 +1227,10 @@ export const OrchestrationV2ContextHandoff = Schema.Struct({
       coverage: Schema.String,
       omittedItems: NonNegativeInt,
       omittedItemIds: Schema.optional(Schema.Array(TurnItemId)),
+      /** A generated summary of the omitted messages through this run; a later summary extends it. */
+      summary: Schema.optional(
+        Schema.Struct({ text: Schema.String, throughRunOrdinal: PositiveInt }),
+      ),
     }),
   ),
   delivery: Schema.optional(
@@ -1868,6 +1873,8 @@ export const OrchestrationV2TurnItem = Schema.Union([
     type: Schema.Literal("system_notice"),
     message: Schema.String,
     level: Schema.optional(OrchestrationV2SystemNoticeLevel),
+    /** Shown when the notice is expanded, such as a fresh conversation's summary. */
+    detail: Schema.optional(Schema.String),
     /** Marks the notice a conversation recovery wrote, so clients can offer the next step. */
     conversationRecovery: Schema.optional(OrchestrationV2ConversationRecoveryMode),
   }),
@@ -2753,6 +2760,7 @@ export const OrchestrationV2TurnItemJson = Schema.Union([
     type: Schema.Literal("system_notice"),
     message: Schema.String,
     level: Schema.optional(OrchestrationV2SystemNoticeLevel),
+    detail: Schema.optional(Schema.String),
     /** Marks the notice a conversation recovery wrote, so clients can offer the next step. */
     conversationRecovery: Schema.optional(OrchestrationV2ConversationRecoveryMode),
   }),

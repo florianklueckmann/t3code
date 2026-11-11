@@ -25,6 +25,8 @@ Write or run an eval when a change affects what a model sees or does: agent inst
 
 | [bot-note-refresh](bot-note-refresh/) | Whether the nightly note refresh records unrecorded Home input, keeps the note, and acknowledges only what it saw. |
 
+| [conversation-summary](conversation-summary/) | Whether a fresh conversation's summary keeps decisions and open items from older messages, without command output. |
+
 ## Run an eval
 
 1. Run `vp i` at the repo root.

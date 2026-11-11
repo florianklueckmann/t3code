@@ -7,6 +7,7 @@ import { ContextHandoffBudgetError } from "@t3tools/provider-core/server/failure
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import {
+  conversationSummaryContext,
   historyCost,
   renderHistory,
   selectHistory,
@@ -64,10 +65,19 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
       .filter((handoff) => handoff.history === undefined)
       .map((handoff) => handoff.summaryText)
       .join("\n\n");
+    const withSummaries = [
+      coverage,
+      ...pending.flatMap((handoff) =>
+        handoff.history?.summary === undefined
+          ? []
+          : [conversationSummaryContext(handoff.history.summary)],
+      ),
+    ].join("\n");
+    const summarized = historyCost([], withSummaries) + 512 <= budget ? withSummaries : coverage;
     const fullCoverage =
-      oldContext && historyCost([], `${coverage}\n${oldContext}`) + 512 <= budget
-        ? `${coverage}\n${oldContext}`
-        : coverage;
+      oldContext && historyCost([], `${summarized}\n${oldContext}`) + 512 <= budget
+        ? `${summarized}\n${oldContext}`
+        : summarized;
     const selected = selectHistory({
       messages,
       coverage: fullCoverage,

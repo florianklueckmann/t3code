@@ -325,6 +325,8 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
         "generateTranscriptionPostProcessing",
         nativeGeneration.generateTranscriptionPostProcessing(value),
       ),
+    generateConversationSummary: (value) =>
+      protect("generateConversationSummary", nativeGeneration.generateConversationSummary(value)),
   };
   return {
     instanceId,
