@@ -224,6 +224,10 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
       failureItem.failure.code === ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE
         ? failureItem.runId
         : null;
+    const recovery =
+      failureItem.failure.safetyBlock && ctx.conversationRecovery?.runId === failureItem.runId
+        ? ctx.conversationRecovery
+        : null;
     return (
       <WorkLogRow
         data-v2-item-type="error"
@@ -264,6 +268,20 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
             >
               <RotateCcwIcon aria-hidden />
               Retry
+            </Button>
+          </div>
+        ) : null}
+        {recovery !== null ? (
+          <div className="ms-7 pb-1">
+            <Button
+              type="button"
+              size="xs"
+              variant="outline"
+              disabled={recovery.pending}
+              onClick={recovery.recover}
+            >
+              <RotateCcwIcon aria-hidden />
+              {recovery.mode === "rewind" ? "Rewind conversation" : "Start fresh conversation"}
             </Button>
           </div>
         ) : null}

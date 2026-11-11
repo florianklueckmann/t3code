@@ -38,6 +38,7 @@ import {
   respondToThreadApproval,
   respondToThreadUserInput,
   dismissThreadUserInput,
+  recoverThreadConversation,
   revertThreadCheckpoint,
   setThreadInteractionMode,
   setThreadRuntimeMode,
@@ -290,6 +291,12 @@ export function createThreadEnvironmentAtoms<R, E>(
     revertCheckpoint: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:revert-checkpoint",
       execute: revertThreadCheckpoint,
+      scheduler,
+      concurrency,
+    }),
+    recoverConversation: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:thread:recover-conversation",
+      execute: recoverThreadConversation,
       scheduler,
       concurrency,
     }),

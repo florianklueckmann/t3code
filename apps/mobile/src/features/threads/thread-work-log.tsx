@@ -51,6 +51,8 @@ import {
 import { useAtomValue } from "@effect/atom-react";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { environmentThreadDetails, threadEnvironment } from "../../state/threads";
+import { serverEnvironment } from "../../state/server";
+import { conversationRecoveryOffer } from "@t3tools/shared/conversationRecovery";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { toolActivityFaviconUrl } from "@t3tools/shared/favicon";
 import { isJavaScriptReplTool } from "@t3tools/shared/toolActivity";
@@ -862,6 +864,49 @@ function WorkspacePreparationRetryButton(props: {
   );
 }
 
+/** Rewind or Start fresh on a run the provider's safety systems refused. */
+function ConversationRecoveryButton(props: {
+  readonly environmentId: EnvironmentId;
+  readonly threadId: ThreadId;
+  readonly runId: RunId;
+}) {
+  const supported = useAtomValue(
+    serverEnvironment.configValueAtom(props.environmentId),
+    (config) => config?.environment.capabilities.threadConversationRecovery === true,
+  );
+  const mode = useAtomValue(
+    environmentThreadDetails.threadAtom(scopeThreadRef(props.environmentId, props.threadId)),
+    (thread) => {
+      if (thread == null) return null;
+      const offer = conversationRecoveryOffer(thread.projection.runs, thread.projection.turnItems);
+      return offer?.refusedRun.id === props.runId ? offer.mode : null;
+    },
+  );
+  const recover = useAtomCommand(threadEnvironment.recoverConversation, "recover the conversation");
+  const [busy, setBusy] = useState(false);
+  if (!supported || mode === null) return null;
+  const label = mode === "rewind" ? "Rewind conversation" : "Start fresh conversation";
+  return (
+    <View className="ml-7 mt-2">
+      <Button
+        label={label}
+        tone="secondary"
+        accessibilityLabel={label}
+        disabled={busy}
+        onPress={() => {
+          setBusy(true);
+          void Haptics.selectionAsync();
+          void recover({
+            environmentId: props.environmentId,
+            input: { threadId: props.threadId, mode },
+          }).finally(() => setBusy(false));
+        }}
+        icon="arrow.uturn.backward"
+      />
+    </View>
+  );
+}
+
 function ToolCodeText({
   code,
   language,
@@ -988,6 +1033,13 @@ const ThreadWorkLogRow = function ThreadWorkLogRow(
           {failureItem.failure.code === ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE &&
           failureItem.runId !== null ? (
             <WorkspacePreparationRetryButton
+              environmentId={props.environmentId}
+              threadId={failureItem.threadId}
+              runId={failureItem.runId}
+            />
+          ) : null}
+          {failureItem.failure.safetyBlock && failureItem.runId !== null ? (
+            <ConversationRecoveryButton
               environmentId={props.environmentId}
               threadId={failureItem.threadId}
               runId={failureItem.runId}
