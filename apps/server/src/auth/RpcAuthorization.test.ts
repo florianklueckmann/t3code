@@ -14,6 +14,7 @@ import {
   AuthSourceControlWriteScope,
   AuthTerminalReadScope,
   AuthTerminalOperateScope,
+  ORCHESTRATION_V2_WS_METHODS,
   WS_METHODS,
   WsRpcGroup,
 } from "@t3tools/contracts";
@@ -88,6 +89,12 @@ describe("RPC authorization scopes", () => {
 
   it("keeps triage, which seeds an agent that reads logs and the database, behind operate scope", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.serverPrepareTriage)).toBe(
+      AuthOrchestrationOperateScope,
+    );
+  });
+
+  it("keeps thread commands, such as rewinding or restarting a conversation, behind operate scope", () => {
+    expect(requiredScopeForRpcMethod(ORCHESTRATION_V2_WS_METHODS.dispatchCommand)).toBe(
       AuthOrchestrationOperateScope,
     );
   });

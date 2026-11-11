@@ -281,6 +281,8 @@ function makeLocalCommandHarness(input: {
   readonly ensureThreadFailure?: unknown;
   readonly historyReadFailureAfterFallback?: unknown;
   readonly resumeFailure?: ProviderAdapter.ProviderAdapterV2Error;
+  /** A recovery the provider thread requested; its native conversation resumes otherwise. */
+  readonly recovery?: "fresh" | "rewind" | "failing rewind";
   readonly interruptOpen?: boolean;
   readonly interruptRunBeforeOpenFailure?: boolean;
   readonly writeFailure?: unknown;
@@ -651,7 +653,62 @@ function makeLocalCommandHarness(input: {
       ],
     };
   }
-  if ("historyReadFailureAfterFallback" in input || "resumeFailure" in input) {
+  const keptTurnId = ProviderTurnId.make("kept-provider-turn");
+  if (input.recovery !== undefined) {
+    const keptRunId = RunId.make("kept-run");
+    const keptAttemptId = RunAttemptId.make("kept-attempt");
+    projection = {
+      ...projection,
+      runs: [
+        {
+          ...run,
+          id: keptRunId,
+          ordinal: 1,
+          status: "completed",
+          activeAttemptId: keptAttemptId,
+          completedAt: now,
+        },
+        run,
+      ],
+      attempts: [
+        { ...projection.attempts[0]!, id: keptAttemptId, runId: keptRunId, status: "completed" },
+        ...projection.attempts,
+      ],
+      providerTurns: [
+        {
+          id: keptTurnId,
+          providerThreadId,
+          nodeId: rootNodeId,
+          runAttemptId: keptAttemptId,
+          ordinal: 1,
+          nativeTurnRef: {
+            driver: providerThread.driver,
+            nativeId: "kept-native-turn",
+            strength: "strong",
+          },
+          status: "completed",
+          startedAt: now,
+          completedAt: now,
+        },
+      ],
+      providerThreads: projection.providerThreads.map((candidate) =>
+        candidate.id === providerThreadId
+          ? {
+              ...candidate,
+              conversationRecovery:
+                input.recovery === "fresh"
+                  ? { type: "fresh" }
+                  : { type: "rewind", keepProviderTurnId: keptTurnId },
+            }
+          : candidate,
+      ),
+    };
+  }
+  if (
+    "historyReadFailureAfterFallback" in input ||
+    "resumeFailure" in input ||
+    input.recovery !== undefined
+  ) {
     const nativeThreadRef = {
       driver: providerThread.driver,
       nativeId: "native-resume-thread",
@@ -772,7 +829,7 @@ function makeLocalCommandHarness(input: {
   };
   const fallbackEnsureThread = vi.fn(() =>
     Effect.succeed(
-      input.resumeFailure === undefined
+      input.resumeFailure === undefined && input.recovery === undefined
         ? providerThread
         : {
             ...providerThread,
@@ -801,6 +858,35 @@ function makeLocalCommandHarness(input: {
     ensureThread: fallbackEnsureThread,
   };
   const startTurn = vi.fn((_turn: ProviderAdapter.ProviderAdapterV2TurnInput) => Effect.void);
+  const resumeThread = vi.fn(() =>
+    Effect.succeed(
+      projection.providerThreads.find((candidate) => candidate.id === providerThreadId)!,
+    ),
+  );
+  const rollbackThread = vi.fn((rollback: ProviderAdapter.ProviderAdapterV2RollbackThreadInput) =>
+    input.recovery === "failing rewind"
+      ? Effect.fail(
+          new ProviderAdapter.ProviderAdapterRollbackThreadError({
+            driver: providerThread.driver,
+            providerThreadId,
+            cause: "Turn kept-native-turn is not in Codex thread native-resume-thread.",
+          }),
+        )
+      : Effect.succeed({
+          providerThread: rollback.providerThread,
+          providerTurns: [],
+          messages: [],
+          runtimeRequests: [],
+        }),
+  );
+  const recoverySession = {
+    providerSession,
+    driver: providerThread.driver,
+    resumeThread,
+    rollbackThread,
+    ensureThread: fallbackEnsureThread,
+    startTurn,
+  };
   const sideChatThread = {
     ...providerThread,
     nativeThreadRef: {
@@ -821,43 +907,45 @@ function makeLocalCommandHarness(input: {
     startTurn,
   };
   const open = vi.fn(() =>
-    input.sideChat !== undefined
-      ? Effect.succeed(sideChatSession as never)
-      : input.interruptOpen === true
-        ? Effect.interrupt
-        : "historyReadFailureAfterFallback" in input || "resumeFailure" in input
-          ? Effect.succeed(resumeFallbackSession as never)
-          : "ensureThreadFailure" in input
-            ? Effect.succeed({ driver: providerThread.driver, ensureThread } as never)
-            : "openFailure" in input
-              ? Effect.sync(() => {
-                  if (input.interruptRunBeforeOpenFailure === true) interruptRun();
-                }).pipe(
-                  Effect.andThen(
-                    Effect.fail(
-                      new ProviderSessionManager.ProviderSessionOpenError({
-                        instanceId: newInstanceId,
-                        providerSessionId,
-                        cause: input.openFailure,
-                      }),
+    input.recovery !== undefined
+      ? Effect.succeed(recoverySession as never)
+      : input.sideChat !== undefined
+        ? Effect.succeed(sideChatSession as never)
+        : input.interruptOpen === true
+          ? Effect.interrupt
+          : "historyReadFailureAfterFallback" in input || "resumeFailure" in input
+            ? Effect.succeed(resumeFallbackSession as never)
+            : "ensureThreadFailure" in input
+              ? Effect.succeed({ driver: providerThread.driver, ensureThread } as never)
+              : "openFailure" in input
+                ? Effect.sync(() => {
+                    if (input.interruptRunBeforeOpenFailure === true) interruptRun();
+                  }).pipe(
+                    Effect.andThen(
+                      Effect.fail(
+                        new ProviderSessionManager.ProviderSessionOpenError({
+                          instanceId: newInstanceId,
+                          providerSessionId,
+                          cause: input.openFailure,
+                        }),
+                      ),
                     ),
-                  ),
-                )
-              : input.failReadsAfterRunning === true ||
-                  input.failInterruptReadsAfterRunning === true ||
-                  input.previousTurn !== undefined
-                ? Effect.succeed({
-                    driver: providerThread.driver,
-                    providerSession,
-                    ensureThread: () => Effect.succeed(providerThread),
-                    resumeThread: () => Effect.succeed(projection.providerThreads[0]),
-                  } as never)
-                : Effect.die("A local command must not open a native session."),
+                  )
+                : input.failReadsAfterRunning === true ||
+                    input.failInterruptReadsAfterRunning === true ||
+                    input.previousTurn !== undefined
+                  ? Effect.succeed({
+                      driver: providerThread.driver,
+                      providerSession,
+                      ensureThread: () => Effect.succeed(providerThread),
+                      resumeThread: () => Effect.succeed(projection.providerThreads[0]),
+                    } as never)
+                  : Effect.die("A local command must not open a native session."),
   );
   const startRootRun = vi.fn<
     (input: RunExecutionService.RunExecutionServiceV2StartRootRunInput) => Effect.Effect<void>
   >((runInput) =>
-    input.resumeFailure !== undefined
+    input.resumeFailure !== undefined || input.recovery !== undefined
       ? input.text === "/compact"
         ? compactThread()
         : startTurn(runInput as never)
@@ -943,7 +1031,9 @@ function makeLocalCommandHarness(input: {
       Layer.mergeAll(
         Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({
           prepareProviderHandoff: (handoff) =>
-            input.sideChat?.nativeForkFrom === undefined && input.resumeFailure === undefined
+            input.sideChat?.nativeForkFrom === undefined &&
+            input.resumeFailure === undefined &&
+            input.recovery === undefined
               ? Effect.die("history read must fail first")
               : Effect.succeed({
                   ...handoff,
@@ -1009,8 +1099,11 @@ function makeLocalCommandHarness(input: {
                   (m.text.trim().toLowerCase() !== "/compact" || m.attachments.length > 0),
               ),
             }),
+          getNextTurnItemOrdinal: () => Effect.succeed(100),
           getTurnStartHistory: () =>
-            input.sideChat !== undefined || input.resumeFailure !== undefined
+            input.sideChat !== undefined ||
+            input.resumeFailure !== undefined ||
+            input.recovery !== undefined
               ? Effect.succeed([])
               : Effect.fail(
                   new ProjectionStore.ProjectionStoreReadError({
@@ -1056,6 +1149,8 @@ function makeLocalCommandHarness(input: {
     createWorktree,
     open,
     fallbackEnsureThread,
+    resumeThread,
+    rollbackThread,
     compactThread,
     writeIfRunCurrent,
     startRootRun,
@@ -1879,6 +1974,45 @@ effectIt.effect.each([
           },
         ]);
       }
+    }),
+);
+
+effectIt.effect.each([
+  ["fresh", false, false, "replacement-native"],
+  ["rewind", true, false, "native-resume-thread"],
+  ["failing rewind", true, true, "replacement-native"],
+] as const)(
+  "applies a requested %s conversation recovery once, before the turn prompts",
+  ([recovery, resumes, freshFallback, nativeId]) =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({ text: "Reply with OK.", recovery });
+
+      yield* harness.start;
+
+      expect(harness.resumeThread).toHaveBeenCalledTimes(resumes ? 1 : 0);
+      expect(harness.rollbackThread).toHaveBeenCalledTimes(resumes ? 1 : 0);
+      if (resumes) {
+        expect(harness.rollbackThread.mock.calls[0]?.[0].target).toMatchObject({
+          type: "provider_turn",
+          appRunOrdinal: 1,
+          providerTurn: { id: "kept-provider-turn" },
+        });
+      }
+      expect(harness.fallbackEnsureThread).toHaveBeenCalledTimes(
+        recovery === "fresh" || freshFallback ? 1 : 0,
+      );
+      expect(harness.startTurn).toHaveBeenCalledOnce();
+      const projection = harness.projection();
+      const providerThread = projection.providerThreads.at(-1);
+      expect(providerThread?.nativeThreadRef?.nativeId).toBe(nativeId);
+      expect(providerThread?.conversationRecovery).toBeUndefined();
+      expect(projection.runs.at(-1)?.status).toBe("running");
+      expect(projection.contextHandoffs.map((handoff) => handoff.strategy)).toEqual(
+        nativeId === "replacement-native" ? ["full_thread_summary"] : [],
+      );
+      expect(projection.turnItems.filter((item) => item.type === "system_notice")).toMatchObject(
+        freshFallback ? [{ conversationRecovery: "fresh" }] : [],
+      );
     }),
 );
 

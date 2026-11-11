@@ -1,6 +1,6 @@
 import { redactCodexProtocolValue } from "./codexProtocolRedaction.ts";
 import * as DocumentText from "../../provider/DocumentText.ts";
-import { revertCodexThread } from "../../provider/CodexThreadRevert.ts";
+import { revertCodexThread, revertCodexThreadAfter } from "../../provider/CodexThreadRevert.ts";
 import { historyResponseItems } from "@t3tools/provider-core/server/handoffBudget";
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
 import {
@@ -1222,6 +1222,17 @@ function withCodexManagedFailure(
         code: managed.code,
         ...(managed.usageLimit ? { class: "usage_limit" } : {}),
       };
+}
+
+/** Codex's names for a refusal by OpenAI's safety systems; resuming the same conversation repeats it. */
+const CODEX_SAFETY_BLOCK_CODES = new Set(["misalignmentPolicyViolation", "cyberPolicy"]);
+
+function withCodexSafetyBlock(
+  failure: OrchestrationV2ProviderFailure,
+): OrchestrationV2ProviderFailure {
+  return failure.code !== null && CODEX_SAFETY_BLOCK_CODES.has(failure.code)
+    ? { ...failure, safetyBlock: true }
+    : failure;
 }
 
 function failureResetAt(
@@ -6528,7 +6539,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                         ...failure,
                         resetAt: failureResetAt(failure, yield* Ref.get(rateLimitSnapshot)),
                       }
-                    : failure,
+                    : withCodexSafetyBlock(failure),
                 ...(input.providerRetry === undefined
                   ? {}
                   : {
@@ -8792,7 +8803,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 });
               }
               const response = yield* ensureInitialized.pipe(
-                Effect.andThen(revertCodexThread(client, threadId, numTurns)),
+                Effect.andThen(
+                  nativeConversationHeadRef?.nativeId == null
+                    ? revertCodexThread(client, threadId, numTurns)
+                    : revertCodexThreadAfter(client, threadId, nativeConversationHeadRef.nativeId),
+                ),
               );
               turnTokenUsageByThread.delete(threadId);
               return {

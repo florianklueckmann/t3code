@@ -13,6 +13,7 @@ import {
   type OrchestrationV2TurnItem,
   isCompactionCommandMessage,
   parseGoalCommand,
+  type ProviderTurnId,
   RunId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -953,6 +954,7 @@ export const layer: Layer.Layer<
         });
         const settledHandoffs = projection.contextHandoffs.filter(
           (handoff) =>
+            handoff.status !== "superseded" &&
             handoff.toProviderThreadId === providerThread.id &&
             handoff.delivery?.nativeThreadId === loadedProviderThread.nativeThreadRef?.nativeId &&
             handoff.delivery?.status !== "pending",
@@ -1299,23 +1301,71 @@ export const layer: Layer.Layer<
             handoff.delivery?.nativeThreadId === providerThread.nativeThreadRef?.nativeId &&
             handoff.delivery?.status === "pending",
         );
+        const recovery = providerThread.conversationRecovery;
+        const refuseResume = (cause: string) =>
+          Effect.fail(
+            new ProviderAdapter.ProviderAdapterTurnStartError({
+              driver: session.driver,
+              threadId: projection.thread.id,
+              providerThreadId: providerThread.id,
+              runId,
+              cause,
+            }),
+          );
+        // Reverting after a kept native turn is idempotent, so a turn that fails after this
+        // still finds the same conversation when the next turn applies the recovery again.
+        const rewindNativeConversation = (
+          resumedThread: OrchestrationV2ProviderThread,
+          keepProviderTurnId: ProviderTurnId | null,
+        ) => {
+          const providerThreadTurns = projection.providerTurns.filter(
+            (turn) => turn.providerThreadId === providerThread.id,
+          );
+          const kept = providerThreadTurns.find((turn) => turn.id === keepProviderTurnId);
+          if (keepProviderTurnId !== null && kept === undefined) {
+            return refuseResume(`Rewind target ${keepProviderTurnId} is no longer recorded.`);
+          }
+          const keptRunId = projection.attempts.find(
+            (candidate) => candidate.id === kept?.runAttemptId,
+          )?.runId;
+          return session
+            .rollbackThread({
+              providerThread: { ...resumedThread, id: providerThread.id },
+              target:
+                kept === undefined
+                  ? { type: "thread_start", appRunOrdinal: 0 }
+                  : {
+                      type: "provider_turn",
+                      appRunOrdinal:
+                        projection.runs.find((candidate) => candidate.id === keptRunId)?.ordinal ??
+                        0,
+                      providerTurn: kept,
+                    },
+              providerThreadTurns,
+              runtimePolicy: resolvedRuntimePolicy,
+            })
+            .pipe(Effect.map((snapshot) => snapshot.providerThread));
+        };
+        const resume = Effect.suspend(() =>
+          session.resumeThread({
+            providerThread,
+            threadId: projection.thread.id,
+            modelSelection: run.modelSelection,
+            runtimePolicy: resolvedRuntimePolicy,
+          }),
+        );
         const resumed = yield* Effect.result(
           uncertainDelivery
-            ? Effect.fail(
-                new ProviderAdapter.ProviderAdapterTurnStartError({
-                  driver: session.driver,
-                  threadId: projection.thread.id,
-                  providerThreadId: providerThread.id,
-                  runId,
-                  cause: "Uncertain native history injection",
-                }),
-              )
-            : session.resumeThread({
-                providerThread,
-                threadId: projection.thread.id,
-                modelSelection: run.modelSelection,
-                runtimePolicy: resolvedRuntimePolicy,
-              }),
+            ? refuseResume("Uncertain native history injection")
+            : recovery?.type === "fresh"
+              ? refuseResume("A fresh conversation was requested")
+              : recovery?.type === "rewind"
+                ? resume.pipe(
+                    Effect.flatMap((resumedThread) =>
+                      rewindNativeConversation(resumedThread, recovery.keepProviderTurnId),
+                    ),
+                  )
+                : resume,
         );
         if (resumed._tag === "Success") {
           const context = handoffContextForThread(resumed.success);
@@ -1407,9 +1457,13 @@ export const layer: Layer.Layer<
           runId,
           reason: uncertainDelivery
             ? "uncertain_history_delivery"
-            : resumed._tag === "Success"
-              ? "handoff_budget_exhausted"
-              : "resume_failed",
+            : recovery?.type === "fresh"
+              ? "fresh_conversation_requested"
+              : resumed._tag === "Success"
+                ? "handoff_budget_exhausted"
+                : recovery?.type === "rewind"
+                  ? "rewind_failed"
+                  : "resume_failed",
           errorTag: resumed._tag === "Failure" ? resumed.failure._tag : "ContextHandoffBudgetError",
         });
         const replacement = yield* loadFromProvider(
@@ -1465,6 +1519,42 @@ export const layer: Layer.Layer<
                 consumedAt: null,
               },
             },
+            ...(recovery?.type === "rewind"
+              ? [
+                  {
+                    id: yield* idAllocator.allocate.event({ threadId: projection.thread.id }),
+                    type: "turn-item.updated" as const,
+                    threadId: projection.thread.id,
+                    runId: run.id,
+                    nodeId: rootNode.id,
+                    providerInstanceId: run.providerInstanceId,
+                    occurredAt: createdAt,
+                    payload: {
+                      id: idAllocator.derive.runSignalTurnItem({
+                        runId: run.id,
+                        signal: "conversation-recovery:rewind-fallback",
+                      }),
+                      threadId: projection.thread.id,
+                      runId: run.id,
+                      nodeId: rootNode.id,
+                      providerThreadId: providerThread.id,
+                      providerTurnId: null,
+                      nativeItemRef: null,
+                      parentItemId: null,
+                      ordinal: yield* projectionStore.getNextTurnItemOrdinal(projection.thread.id),
+                      status: "completed" as const,
+                      title: "Fresh conversation",
+                      startedAt: createdAt,
+                      completedAt: createdAt,
+                      updatedAt: createdAt,
+                      type: "system_notice" as const,
+                      message:
+                        "The rewound conversation could not continue, so this turn starts a fresh conversation with a summary of this thread.",
+                      conversationRecovery: "fresh" as const,
+                    },
+                  },
+                ]
+              : []),
           ],
         });
         return replacement;
@@ -1485,8 +1575,11 @@ export const layer: Layer.Layer<
         budget,
       } = handoffContext;
       const retryHandoff = resumedRetryHandoff ?? (yield* prepareRetryHandoff(handoffContext));
+      // This turn applied any requested recovery while loading the thread.
+      const { conversationRecovery: _appliedRecovery, ...loadedWithoutRecovery } =
+        loadedProviderThread;
       const runningProviderThread: OrchestrationV2ProviderThread = {
-        ...loadedProviderThread,
+        ...loadedWithoutRecovery,
         contextUsage: handoffUsage,
         id: providerThread.id,
         driver: session.driver,

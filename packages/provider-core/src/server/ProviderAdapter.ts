@@ -636,15 +636,16 @@ export interface ProviderAdapterV2ReadThreadSnapshotInput {
   readonly providerThread: OrchestrationV2ProviderThread;
 }
 
+/** A conversation rewind has no checkpoint; checkpoint reverts name theirs. */
 export type ProviderAdapterV2RollbackTarget =
   | {
       readonly type: "thread_start";
-      readonly checkpointId: CheckpointId;
+      readonly checkpointId?: CheckpointId;
       readonly appRunOrdinal: 0;
     }
   | {
       readonly type: "provider_turn";
-      readonly checkpointId: CheckpointId;
+      readonly checkpointId?: CheckpointId;
       readonly appRunOrdinal: number;
       readonly providerTurn: OrchestrationV2ProviderTurn;
       readonly message?: Pick<OrchestrationV2ConversationMessage, "role" | "text" | "attachments">;

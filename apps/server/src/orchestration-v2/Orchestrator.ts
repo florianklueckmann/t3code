@@ -44,6 +44,7 @@ import {
   type OrchestrationV2ConversationMessage,
   type OrchestrationV2DelegatedCompletionCohort,
   type OrchestrationV2DelegatedCompletionDelivery,
+  type OrchestrationV2ConversationRecovery,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ExecutionNode,
   type OrchestrationV2ProviderSession,
@@ -114,6 +115,8 @@ import {
   resolveMessageDispatchIntent,
 } from "./CommandPolicy.ts";
 import { CommandReceiptStoreV2, type CommandReceiptV2 } from "./CommandReceiptStore.ts";
+import { rewindHandoffItems, rewindKeptProviderTurn } from "./ConversationRecovery.ts";
+import { conversationRecoveryOffer } from "@t3tools/shared/conversationRecovery";
 import {
   ContextHandoffServiceV2,
   readForkHistoryItems,
@@ -627,6 +630,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "thread.user-input.dismiss":
     case "checkpoint.rollback":
     case "checkpoint.rollback.fail":
+    case "thread.conversation.recover":
     case "thread.background-work.settle":
     case "thread.interrupt.unresponsive":
     case "message.steer.accept":
@@ -12775,6 +12779,203 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   );
 
   /**
+   * Records a recovery the next turn applies on the provider thread, so the native work happens
+   * where the session is already loaded. A rewind hands the dropped runs' messages over now.
+   */
+  const dispatchConversationRecover = Effect.fn("Orchestrator.dispatchConversationRecover")(
+    function* (
+      command: Extract<OrchestrationV2Command, { readonly type: "thread.conversation.recover" }>,
+      events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    ) {
+      const reject = (cause: string) =>
+        new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause,
+        });
+      const projection = yield* loadProjectionForCommand(
+        command,
+        ["runs", "attempts", "providerThreads", "providerTurns", "contextHandoffs", "turnItems"],
+        { turnItemTypes: ["error", "system_notice"] },
+      );
+      if (projection.thread.archivedAt !== null || projection.thread.deletedAt !== null) {
+        return yield* reject(`Thread ${command.threadId} is not active.`);
+      }
+      if (projection.runs.some(isActiveRun)) {
+        return yield* reject("Stop the running turn before recovering the conversation.");
+      }
+      const offer = conversationRecoveryOffer(projection.runs, projection.turnItems);
+      const providerThreadId =
+        command.mode === "rewind"
+          ? offer?.refusedRun.providerThreadId
+          : projection.thread.activeProviderThreadId;
+      const providerThread = projection.providerThreads.find(
+        (candidate) => candidate.id === providerThreadId,
+      );
+      if (command.mode === "rewind" && offer?.mode !== "rewind") {
+        return yield* reject(
+          "Only a conversation the provider just refused can be rewound, once per refusal. Start a fresh conversation instead.",
+        );
+      }
+      if (providerThread?.nativeThreadRef == null) {
+        return yield* reject("This thread has no provider conversation to recover yet.");
+      }
+      const latestRun = projection.runs.reduce<OrchestrationV2Run | undefined>(
+        (latest, run) =>
+          run.status !== "queued" && (latest === undefined || run.ordinal > latest.ordinal)
+            ? run
+            : latest,
+        undefined,
+      );
+      if (latestRun === undefined) {
+        return yield* reject("This thread has no provider conversation to recover yet.");
+      }
+      const now = yield* DateTime.now;
+      let recovery: OrchestrationV2ConversationRecovery = { type: "fresh" };
+      let message = "Your next message starts a fresh conversation with a summary of this thread.";
+      if (command.mode === "rewind" && offer !== null) {
+        const capabilities = yield* providerAdapters.get(providerThread.providerInstanceId).pipe(
+          Effect.flatMap((adapter) => adapter.getCapabilities()),
+          Effect.mapError(
+            (cause) =>
+              new OrchestratorProviderAdapterError({
+                commandId: command.commandId,
+                providerInstanceId: providerThread.providerInstanceId,
+                cause,
+              }),
+          ),
+        );
+        yield* mapDispatchError(command)(
+          commandPolicy.ensureRollback({
+            commandId: command.commandId,
+            threadId: command.threadId,
+            providerInstanceId: providerThread.providerInstanceId,
+            capabilities,
+          }),
+        );
+        const keptTurn = rewindKeptProviderTurn(
+          projection,
+          providerThread.id,
+          offer.lastAcceptedRun,
+        );
+        const firstDroppedOrdinal = offer.lastAcceptedRun?.ordinal ?? 1;
+        const droppedRuns = projection.runs.filter(
+          (run) =>
+            run.ordinal >= firstDroppedOrdinal &&
+            run.status !== "queued" &&
+            run.status !== "rolled_back",
+        );
+        const items = rewindHandoffItems(
+          yield* readHandoffItems(
+            command.threadId,
+            droppedRuns.map((run) => run.id),
+          ),
+        );
+        // Their history went with the dropped turns: neither deliver nor count it as delivered.
+        const droppedRunIds = new Set(droppedRuns.map((run) => run.id));
+        for (const stale of projection.contextHandoffs) {
+          if (
+            stale.toProviderThreadId !== providerThread.id ||
+            stale.status === "superseded" ||
+            !droppedRunIds.has(stale.targetRunId)
+          )
+            continue;
+          yield* emit(
+            events,
+            command,
+          )({
+            type: "context-handoff.updated",
+            threadId: command.threadId,
+            runId: stale.targetRunId,
+            providerInstanceId: providerThread.providerInstanceId,
+            occurredAt: now,
+            payload: { ...stale, status: "superseded", updatedAt: now },
+          });
+        }
+        if (items.length > 0) {
+          const handoff = yield* contextHandoffService
+            .prepareProviderHandoff({
+              threadId: command.threadId,
+              targetRunId: offer.refusedRun.id,
+              transferId: null,
+              fromProviderThreadIds: [
+                ...new Set(droppedRuns.flatMap((run) => run.providerThreadId ?? [])),
+              ],
+              toProviderThreadId: providerThread.id,
+              fromProviderInstanceId: providerThread.providerInstanceId,
+              toProviderInstanceId: providerThread.providerInstanceId,
+              coveredRunOrdinals: { from: firstDroppedOrdinal, to: offer.refusedRun.ordinal },
+              strategy: "delta_since_target_last_seen",
+              items,
+              runs: projection.runs,
+              createdAt: now,
+            })
+            .pipe(mapDispatchError(command));
+          yield* emit(
+            events,
+            command,
+          )({
+            type: "context-handoff.updated",
+            threadId: command.threadId,
+            runId: offer.refusedRun.id,
+            providerInstanceId: providerThread.providerInstanceId,
+            occurredAt: now,
+            payload: handoff,
+          });
+        }
+        recovery = { type: "rewind", keepProviderTurnId: keptTurn?.id ?? null };
+        const turns = droppedRuns.length === 1 ? "turn" : "turns";
+        const messages = items.length === 1 ? "message" : "messages";
+        message = `Rewound the conversation to before the last turn the provider accepted. Your next message continues from there with ${items.length} ${messages} from the ${droppedRuns.length} dropped ${turns} as context, without tool calls or their output.`;
+      }
+      yield* emit(
+        events,
+        command,
+      )({
+        type: "provider-thread.updated",
+        threadId: command.threadId,
+        driver: providerThread.driver,
+        providerInstanceId: providerThread.providerInstanceId,
+        occurredAt: now,
+        payload: { ...providerThread, conversationRecovery: recovery, updatedAt: now },
+      });
+      yield* emit(
+        events,
+        command,
+      )({
+        type: "turn-item.updated",
+        threadId: command.threadId,
+        runId: latestRun.id,
+        ...(latestRun.rootNodeId === null ? {} : { nodeId: latestRun.rootNodeId }),
+        providerInstanceId: providerThread.providerInstanceId,
+        occurredAt: now,
+        payload: {
+          id: idAllocator.derive.runSignalTurnItem({
+            runId: latestRun.id,
+            signal: `conversation-recovery:${command.commandId}`,
+          }),
+          threadId: command.threadId,
+          runId: latestRun.id,
+          nodeId: latestRun.rootNodeId,
+          providerThreadId: providerThread.id,
+          providerTurnId: null,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal: yield* nextTurnItemOrdinal(projection),
+          status: "completed",
+          title: recovery.type === "rewind" ? "Conversation rewound" : "Fresh conversation",
+          startedAt: now,
+          completedAt: now,
+          updatedAt: now,
+          type: "system_notice",
+          message,
+          conversationRecovery: recovery.type,
+        },
+      });
+    },
+  );
+
+  /**
    * Thread lineage and fork origin are immutable, so this
    * is safe to read without holding either thread's dispatch lock.
    */
@@ -14014,6 +14215,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         break;
       case "checkpoint.rollback.fail":
         yield* dispatchCheckpointRollbackFail(command, events);
+        break;
+      case "thread.conversation.recover":
+        yield* dispatchConversationRecover(command, events);
         break;
       case "runtime-request.delivery.fail":
         yield* dispatchRuntimeRequestDeliveryFail(command, events);

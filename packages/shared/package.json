@@ -423,6 +423,10 @@
       "types": "./src/Array.ts",
       "import": "./src/Array.ts"
     },
+    "./conversationRecovery": {
+      "types": "./src/conversationRecovery.ts",
+      "import": "./src/conversationRecovery.ts"
+    },
     "./orchestrationV2PendingBackgroundWork": {
       "types": "./src/orchestrationV2PendingBackgroundWork.ts",
       "import": "./src/orchestrationV2PendingBackgroundWork.ts"
