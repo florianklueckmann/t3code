@@ -1,10 +1,14 @@
 import { useAtomValue } from "@effect/atom-react";
-import { botMcpGrantsChange, botMcpGrantsSection } from "@t3tools/client-runtime/mcp-connections";
+import {
+  botMcpGrantsChange,
+  botMcpGrantsSection,
+  latestBotMcpGrants,
+} from "@t3tools/client-runtime/mcp-connections";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import type { BotId, McpConnectionId } from "@t3tools/contracts";
+import type { BotId, BotMcpGrants, McpConnectionId } from "@t3tools/contracts";
 import { useState } from "react";
 
 import type { EnvironmentPresentation } from "../../state/environments";
@@ -49,9 +53,10 @@ export function BotMcpGrantsSetting({
     label: "bot set mcp grants",
   });
   const [busy, setBusy] = useState(false);
+  const [acknowledged, setAcknowledged] = useState<BotMcpGrants | null>(null);
   const bot = bots.data?.bots.find((entry) => entry.id === botId);
-  const grants = bot?.mcpGrants;
-  if (bot === undefined || grants === undefined || descriptor === undefined) return null;
+  if (bot?.mcpGrants === undefined || descriptor === undefined) return null;
+  const grants = latestBotMcpGrants(bot.mcpGrants, acknowledged);
   if (catalog.data === null) {
     return catalog.error === null ? null : (
       <p className="text-xs text-destructive">{catalog.error}</p>
@@ -79,8 +84,9 @@ export function BotMcpGrantsSetting({
       input: botMcpGrantsChange(botId, grants, connections, { connectionId, granted }),
     });
     setBusy(false);
+    if (result._tag === "Success") setAcknowledged(result.value.mcpGrants ?? null);
     if (result._tag !== "Failure" || isAtomCommandInterrupted(result)) return;
-    // A stale revision is refused; the live Bot list already shows the newer set.
+    // Another client's change is refused; the live Bot list then shows the newer set.
     const error = squashAtomCommandFailure(result);
     toastManager.add(
       stackedThreadToast({

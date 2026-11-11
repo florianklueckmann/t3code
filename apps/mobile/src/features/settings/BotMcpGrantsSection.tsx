@@ -2,9 +2,10 @@ import { useAtomValue } from "@effect/atom-react";
 import {
   botMcpGrantsChange,
   botMcpGrantsSection,
+  latestBotMcpGrants,
   type McpConnectionStatusText,
 } from "@t3tools/client-runtime/mcp-connections";
-import type { BotId, EnvironmentId, McpConnectionId } from "@t3tools/contracts";
+import type { BotId, BotMcpGrants, EnvironmentId, McpConnectionId } from "@t3tools/contracts";
 import { useState } from "react";
 import { View } from "react-native";
 
@@ -44,9 +45,10 @@ export function BotMcpGrantsSection(props: {
   // Failures surface in this section's own alert.
   const setGrants = useAtomCommand(serverEnvironment.setBotMcpGrants, { reportFailure: false });
   const [busy, setBusy] = useState(false);
+  const [acknowledged, setAcknowledged] = useState<BotMcpGrants | null>(null);
   const bot = bots.data?.bots.find((entry) => entry.id === botId);
-  const grants = bot?.mcpGrants;
-  if (bot === undefined || grants === undefined || config === null) return null;
+  if (bot?.mcpGrants === undefined || config === null) return null;
+  const grants = latestBotMcpGrants(bot.mcpGrants, acknowledged);
   if (catalog.data === null) {
     return catalog.error === null ? null : (
       <SettingsSection title="MCP connections">
@@ -76,7 +78,8 @@ export function BotMcpGrantsSection(props: {
       input: botMcpGrantsChange(botId, grants, connections, { connectionId, granted }),
     });
     setBusy(false);
-    // A stale revision is refused; the live Bot list already shows the newer set.
+    if (result._tag === "Success") setAcknowledged(result.value.mcpGrants ?? null);
+    // Another client's change is refused; the live Bot list then shows the newer set.
     reportBotFailure("Could not change MCP connections", result);
   };
 

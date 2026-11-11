@@ -7,8 +7,8 @@ import {
   mcpConnectionDraft,
   mcpConnectionRemovalMessage,
   mcpConnectionStatusText,
+  mcpConnectionUsage,
   mcpConnectionUsedByText,
-  mcpConnectionUsers,
   planMcpConnectionSave,
   type McpConnectionDraft,
 } from "@t3tools/client-runtime/mcp-connections";
@@ -121,7 +121,7 @@ function EnvironmentMcpConnections({ environment }: { readonly environment: Sett
   const refresh = useAtomCommand(serverEnvironment.refreshMcpConnections, {
     label: "mcp connections refresh",
   });
-  const users = useMcpConnectionUsers(environmentId);
+  const { usage } = useMcpConnectionUsage(environmentId);
   const [refreshing, setRefreshing] = useState(false);
   const entries = Object.entries(definitions) as Array<[McpConnectionId, McpConnectionDefinition]>;
   const summaries = new Map(statuses.data?.connections.map((summary) => [summary.id, summary]));
@@ -145,7 +145,7 @@ function EnvironmentMcpConnections({ environment }: { readonly environment: Sett
                 definition.transport.type === "http" ? "HTTP" : "stdio",
                 definition.enabled ? null : "Disabled",
                 statuses.error ?? status.text,
-                mcpConnectionUsedByText(users.get(id)),
+                mcpConnectionUsedByText(usage, id),
               ]
                 .filter((part) => part !== null)
                 .join(" · ")}
@@ -184,14 +184,16 @@ function EnvironmentMcpConnections({ environment }: { readonly environment: Sett
   );
 }
 
-function useMcpConnectionUsers(environmentId: EnvironmentId) {
+function useMcpConnectionUsage(environmentId: EnvironmentId) {
   const config = useEnvironmentServerConfig(environmentId);
+  const botsSupported = config?.environment.capabilities.bots === true;
   const bots = useEnvironmentQuery(
-    config?.environment.capabilities.bots === true
-      ? serverEnvironment.botsLive({ environmentId, input: {} })
-      : null,
+    botsSupported ? serverEnvironment.botsLive({ environmentId, input: {} }) : null,
   );
-  return mcpConnectionUsers(bots.data?.bots ?? []);
+  return {
+    usage: mcpConnectionUsage({ botsSupported, bots: bots.data?.bots ?? null, error: bots.error }),
+    retry: bots.refresh,
+  };
 }
 
 interface BindingRow {
@@ -257,7 +259,8 @@ function McpConnectionEditor({
     Constants.expoConfig?.extra?.secretsFeatureEnabled === true && config?.secretReferences
       ? configuredSecretSources(config.settings.secretProviders)
       : [];
-  const users = useMcpConnectionUsers(environmentId);
+  const { usage, retry: retryUsage } = useMcpConnectionUsage(environmentId);
+  const removalMessage = mcpConnectionRemovalMessage(usage, target.connectionId);
   const canEdit = useAtomValue(serverEnvironment.createMcpConnection.permissionAtom(environmentId));
   const canRefresh = useAtomValue(
     serverEnvironment.refreshMcpConnections.permissionAtom(environmentId),
@@ -555,14 +558,23 @@ function McpConnectionEditor({
                 if (result._tag !== "Failure") navigation.goBack();
               }}
             />
+            {usage.state === "failed" ? (
+              <ListActionRow
+                label="Retry loading Bots"
+                description={`Removal names the Bots that lose this connection. ${usage.error}`}
+                onPress={retryUsage}
+              />
+            ) : null}
             <ListActionRow
               label="Remove connection"
               tone="danger"
-              disabled={!canEdit || busy}
-              onPress={() =>
+              loading={usage.state === "loading"}
+              disabled={!canEdit || busy || removalMessage === null}
+              onPress={() => {
+                if (removalMessage === null) return;
                 Dialog.confirm({
                   title: `Remove ${current.label}?`,
-                  message: mcpConnectionRemovalMessage(users.get(target.connectionId)),
+                  message: removalMessage,
                   confirmText: "Remove",
                   destructive: true,
                   onConfirm: () =>
@@ -576,8 +588,8 @@ function McpConnectionEditor({
                       reportFailure("Could not remove connection", result);
                       if (result._tag !== "Failure") navigation.goBack();
                     }),
-                })
-              }
+                });
+              }}
             />
           </SettingsSection>
         ) : null}

@@ -281,17 +281,43 @@ export function botMcpGrantsChange(
   };
 }
 
-/** The Bots granted each connection, by name. Empty when the server reports no grants. */
-export function mcpConnectionUsers(
-  bots: ReadonlyArray<BotSummary>,
-): ReadonlyMap<McpConnectionId, ReadonlyArray<string>> {
+/**
+ * The grant set to show and save on: the live one, or the set the last save returned while the
+ * live list has not caught up to it yet.
+ */
+export function latestBotMcpGrants(
+  live: BotMcpGrants,
+  acknowledged: BotMcpGrants | null,
+): BotMcpGrants {
+  return acknowledged !== null && acknowledged.revision > live.revision ? acknowledged : live;
+}
+
+/** Which Bots each connection is granted to, as far as this client knows. */
+export type McpConnectionUsage =
+  | { readonly state: "loading" }
+  | { readonly state: "failed"; readonly error: string }
+  | {
+      readonly state: "known";
+      readonly users: ReadonlyMap<McpConnectionId, ReadonlyArray<string>>;
+    };
+
+/** Without Bots no connection has users; a server without grants reports none. */
+export function mcpConnectionUsage(input: {
+  readonly botsSupported: boolean;
+  readonly bots: ReadonlyArray<BotSummary> | null;
+  readonly error: string | null;
+}): McpConnectionUsage {
   const users = new Map<McpConnectionId, Array<string>>();
-  for (const bot of [...bots].sort((left, right) => left.name.localeCompare(right.name))) {
+  if (!input.botsSupported) return { state: "known", users };
+  if (input.bots === null) {
+    return input.error === null ? { state: "loading" } : { state: "failed", error: input.error };
+  }
+  for (const bot of [...input.bots].sort((left, right) => left.name.localeCompare(right.name))) {
     for (const id of bot.mcpGrants?.connectionIds ?? []) {
       users.set(id, [...(users.get(id) ?? []), bot.name]);
     }
   }
-  return users;
+  return { state: "known", users };
 }
 
 function listNames(names: ReadonlyArray<string>): string {
@@ -300,13 +326,23 @@ function listNames(names: ReadonlyArray<string>): string {
     : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
 }
 
-export function mcpConnectionUsedByText(names: ReadonlyArray<string> | undefined): string | null {
-  return names === undefined || names.length === 0 ? null : `Used by ${listNames(names)}`;
+export function mcpConnectionUsedByText(
+  usage: McpConnectionUsage,
+  connectionId: McpConnectionId,
+): string | null {
+  const names = usage.state === "known" ? usage.users.get(connectionId) : undefined;
+  return names === undefined ? null : `Used by ${listNames(names)}`;
 }
 
-export function mcpConnectionRemovalMessage(names: ReadonlyArray<string> | undefined): string {
+/** Null until the client knows which Bots lose the connection, so removal cannot be confirmed. */
+export function mcpConnectionRemovalMessage(
+  usage: McpConnectionUsage,
+  connectionId: McpConnectionId,
+): string | null {
+  if (usage.state !== "known") return null;
   const base =
     "Its saved credentials are deleted from this environment. Secrets read from a secret provider stay there. To use this account again, add a new connection.";
-  if (names === undefined || names.length === 0) return base;
+  const names = usage.users.get(connectionId);
+  if (names === undefined) return base;
   return `${listNames(names)} ${names.length === 1 ? "loses" : "lose"} this connection. ${base}`;
 }

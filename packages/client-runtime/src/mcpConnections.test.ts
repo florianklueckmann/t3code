@@ -3,6 +3,7 @@ import {
   McpConnectionId,
   ProviderDriverKind,
   type BotMcpGrants,
+  type BotSetMcpGrantsInput,
   type BotSummary,
   type McpConnectionSummary,
   type ScheduledTask,
@@ -12,9 +13,10 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   botMcpGrantsChange,
   botMcpGrantsSection,
+  latestBotMcpGrants,
   mcpConnectionRemovalMessage,
+  mcpConnectionUsage,
   mcpConnectionUsedByText,
-  mcpConnectionUsers,
 } from "./mcpConnections.ts";
 
 const MAIL = McpConnectionId.make("00000000-0000-4000-8000-000000000001");
@@ -191,33 +193,98 @@ describe("botMcpGrantsChange", () => {
   );
 });
 
-describe("mcpConnectionUsers", () => {
-  const bot = (name: string, mcpGrants?: BotMcpGrants) =>
-    ({ name, ...(mcpGrants === undefined ? {} : { mcpGrants }) }) as BotSummary;
+describe("latestBotMcpGrants", () => {
+  // The server's compare-and-set: a save on any other revision than the saved one is refused.
+  const serverGrants = (initial: BotMcpGrants) => {
+    let saved = initial;
+    return {
+      saved: () => saved,
+      save: (input: BotSetMcpGrantsInput): BotMcpGrants | null => {
+        if (input.expectedRevision !== saved.revision) return null;
+        saved = { revision: saved.revision + 1, connectionIds: input.connectionIds };
+        return saved;
+      },
+    };
+  };
+  const toggle = (
+    live: BotMcpGrants,
+    acknowledged: BotMcpGrants | null,
+    connectionId: McpConnectionId,
+  ) =>
+    botMcpGrantsChange(BOT, latestBotMcpGrants(live, acknowledged), CATALOG, {
+      connectionId,
+      granted: true,
+    });
 
-  it("names the Bots granted each connection and says who loses it on removal", () => {
-    const users = mcpConnectionUsers([
-      bot("Work Bot", { revision: 1, connectionIds: [MAIL, WORK] }),
-      bot("Mail Bot", { revision: 2, connectionIds: [MAIL] }),
-      bot("Archive Bot", { revision: 1, connectionIds: [MAIL] }),
-      bot("Plain Bot", { revision: 0, connectionIds: [] }),
-    ]);
-    expect(mcpConnectionUsedByText(users.get(MAIL))).toBe(
-      "Used by Archive Bot, Mail Bot and Work Bot",
-    );
-    expect(mcpConnectionUsedByText(users.get(DOCS))).toBeNull();
-    expect(mcpConnectionRemovalMessage(users.get(WORK))).toMatch(
-      /^Work Bot loses this connection\. /,
-    );
-    expect(mcpConnectionRemovalMessage(users.get(MAIL))).toMatch(
-      /^Archive Bot, Mail Bot and Work Bot lose this connection\. /,
-    );
+  it("saves consecutive toggles before the live Bot list delivers the first save", () => {
+    const live: BotMcpGrants = { revision: 0, connectionIds: [] };
+    const server = serverGrants(live);
+    let acknowledged: BotMcpGrants | null = null;
+    for (const connectionId of [MAIL, DOCS]) {
+      acknowledged = server.save(toggle(live, acknowledged, connectionId));
+      expect(acknowledged).not.toBeNull();
+    }
+    expect(server.saved()).toEqual({ revision: 2, connectionIds: [MAIL, DOCS] });
+    expect(latestBotMcpGrants(live, acknowledged)).toEqual(server.saved());
+    const caughtUp = { revision: 2, connectionIds: [MAIL, DOCS] };
+    expect(latestBotMcpGrants(caughtUp, acknowledged)).toBe(caughtUp);
   });
 
-  it("shows nothing new for a server without grants", () => {
-    const users = mcpConnectionUsers([bot("Mail Bot")]);
-    expect(users.size).toBe(0);
-    expect(mcpConnectionUsedByText(users.get(MAIL))).toBeNull();
-    expect(mcpConnectionRemovalMessage(users.get(MAIL))).toMatch(/^Its saved credentials/);
+  it("refuses a toggle over another client's change, then shows and saves on the live set", () => {
+    const server = serverGrants({ revision: 0, connectionIds: [] });
+    const acknowledged = server.save(toggle({ revision: 0, connectionIds: [] }, null, MAIL));
+    const otherClient = server.save({ botId: BOT, expectedRevision: 1, connectionIds: [WORK] });
+    expect(otherClient).toEqual({ revision: 2, connectionIds: [WORK] });
+
+    const stale = { revision: 0, connectionIds: [] };
+    expect(server.save(toggle(stale, acknowledged, DOCS))).toBeNull();
+
+    const live = { revision: 2, connectionIds: [WORK] };
+    expect(latestBotMcpGrants(live, acknowledged)).toBe(live);
+    expect(server.save(toggle(live, acknowledged, DOCS))).toEqual({
+      revision: 3,
+      connectionIds: [WORK, DOCS],
+    });
+  });
+});
+
+describe("mcpConnectionUsage", () => {
+  const bot = (name: string, mcpGrants?: BotMcpGrants) =>
+    ({ name, ...(mcpGrants === undefined ? {} : { mcpGrants }) }) as BotSummary;
+  const BOTS = [
+    bot("Work Bot", { revision: 1, connectionIds: [MAIL, WORK] }),
+    bot("Mail Bot", { revision: 2, connectionIds: [MAIL] }),
+    bot("Archive Bot", { revision: 1, connectionIds: [MAIL] }),
+    bot("Plain Bot", { revision: 0, connectionIds: [] }),
+  ];
+
+  it("names the Bots granted each connection and says who loses it on removal", () => {
+    const usage = mcpConnectionUsage({ botsSupported: true, bots: BOTS, error: null });
+    expect(mcpConnectionUsedByText(usage, MAIL)).toBe("Used by Archive Bot, Mail Bot and Work Bot");
+    expect(mcpConnectionUsedByText(usage, DOCS)).toBeNull();
+    expect(mcpConnectionRemovalMessage(usage, WORK)).toMatch(/^Work Bot loses this connection\. /);
+    expect(mcpConnectionRemovalMessage(usage, MAIL)).toMatch(
+      /^Archive Bot, Mail Bot and Work Bot lose this connection\. /,
+    );
+    expect(mcpConnectionRemovalMessage(usage, DOCS)).toMatch(/^Its saved credentials/);
+  });
+
+  it.each([
+    ["while the Bot list loads", null, { state: "loading" }],
+    ["when the Bot list failed", "Connection lost", { state: "failed", error: "Connection lost" }],
+  ] as const)("cannot confirm a removal %s", (_, error, state) => {
+    const usage = mcpConnectionUsage({ botsSupported: true, bots: null, error });
+    expect(usage).toEqual(state);
+    expect(mcpConnectionUsedByText(usage, MAIL)).toBeNull();
+    expect(mcpConnectionRemovalMessage(usage, MAIL)).toBeNull();
+  });
+
+  it.each([
+    ["a server without grants", { botsSupported: true, bots: [bot("Mail Bot")], error: null }],
+    ["a server without Bots", { botsSupported: false, bots: null, error: null }],
+  ])("confirms a removal without names on %s", (_, input) => {
+    const usage = mcpConnectionUsage(input);
+    expect(mcpConnectionUsedByText(usage, MAIL)).toBeNull();
+    expect(mcpConnectionRemovalMessage(usage, MAIL)).toMatch(/^Its saved credentials/);
   });
 });
