@@ -292,6 +292,35 @@ const startRestricted = (
     });
   });
 
+/** The `/compact` nightly Bot maintenance sends, only while the Home is idle at `sequence`. */
+const startMaintenanceCompaction = (threadId: ThreadId, sequence?: number) =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const sink = yield* EventSink.EventSinkV2;
+    const at = sequence ?? (yield* sink.latestSequence({ threadId }));
+    const id = `bot-maintenance:compact:${threadId}:${at}`;
+    return yield* orchestrator.dispatch({
+      type: "message.dispatch",
+      commandId: CommandId.make(id),
+      threadId,
+      messageId: MessageId.make(id),
+      text: "/compact",
+      attachments: [],
+      createdBy: "system",
+      creationSource: "server",
+      dispatchMode: { type: "start_immediately" },
+      ifIdleAtSequence: at,
+    });
+  });
+
+const compactionRunOf = (threadId: ThreadId) =>
+  Orchestrator.OrchestratorV2.pipe(
+    Effect.flatMap((orchestrator) => orchestrator.getThreadProjection(threadId)),
+    Effect.map((projection) =>
+      projection.runs.find((run) => run.userMessageId.startsWith("bot-maintenance:compact:")),
+    ),
+  );
+
 const restrictedRunOf = (threadId: ThreadId) =>
   Orchestrator.OrchestratorV2.pipe(
     Effect.flatMap((orchestrator) => orchestrator.getThreadProjection(threadId)),
@@ -413,40 +442,149 @@ it.layer(layerTest)("restricted Bot Home runs", (it) => {
     }),
   );
 
-  it.effect.each(["sequence-moved", "running", "queued", "not-a-home"] as const)(
-    "defers a restricted start without a receipt: %s",
-    (state) =>
+  it.effect.each(
+    (["sequence-moved", "running", "queued", "not-a-home"] as const).flatMap((state) =>
+      (["restricted", "compaction"] as const).map((kind) => ({ state, kind })),
+    ),
+  )("defers a $kind start without a receipt: $state", ({ state, kind }) =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const sink = yield* EventSink.EventSinkV2;
+      const name = `defer-${kind}-${state}`;
+      const home = yield* seedIdleHome(
+        name,
+        state === "not-a-home" ? { threadId: ThreadId.make(`thread:${name}`) } : {},
+      );
+      const sequence = yield* sink.latestSequence({ threadId: home.threadId });
+      const first = (yield* orchestrator.getThreadProjection(home.threadId)).runs[0]!;
+      if (state === "sequence-moved" || state === "running" || state === "queued")
+        yield* setRunStatus(
+          name,
+          first,
+          state === "sequence-moved" ? "completed" : state === "running" ? "running" : "queued",
+        );
+      const at =
+        state === "sequence-moved"
+          ? sequence
+          : yield* sink.latestSequence({ threadId: home.threadId });
+      const start =
+        kind === "restricted"
+          ? startRestricted(name, home.threadId, { sequence: at })
+          : startMaintenanceCompaction(home.threadId, at);
+      const started = kind === "restricted" ? restrictedRunOf : compactionRunOf;
+      const result = yield* start;
+      assert.isTrue(result.deferred);
+      assert.isUndefined(yield* started(home.threadId));
+      // No receipt was consumed: the same command id is admitted once the Home is idle again.
+      yield* setRunStatus(`${name}-after`, first, "completed");
+      if (state === "not-a-home") return;
+      const retried =
+        kind === "restricted"
+          ? yield* startRestricted(name, home.threadId)
+          : yield* orchestrator.dispatch({
+              type: "message.dispatch",
+              commandId: CommandId.make(`bot-maintenance:compact:${home.threadId}:${at}`),
+              threadId: home.threadId,
+              messageId: MessageId.make(`bot-maintenance:compact:${home.threadId}:${at}`),
+              text: "/compact",
+              attachments: [],
+              createdBy: "system",
+              creationSource: "server",
+              dispatchMode: { type: "start_immediately" },
+              ifIdleAtSequence: yield* sink.latestSequence({ threadId: home.threadId }),
+            });
+      assert.isUndefined(retried.deferred);
+      assert.isDefined(yield* started(home.threadId));
+    }),
+  );
+
+  it.effect("starts a maintenance compaction on a settled Home without unsettling it", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const home = yield* seedIdleHome("compact-settled");
+      yield* orchestrator.dispatch({
+        type: "thread.settle",
+        commandId: CommandId.make("settle:compact-settled"),
+        threadId: home.threadId,
+      });
+      const result = yield* startMaintenanceCompaction(home.threadId);
+      assert.isUndefined(result.deferred);
+      const projection = yield* orchestrator.getThreadProjection(home.threadId);
+      assert.strictEqual(projection.thread.settledOverride, "settled");
+      const run = (yield* compactionRunOf(home.threadId))!;
+      const prompt = projection.messages.find((message) => message.id === run.userMessageId)!;
+      assert.strictEqual(prompt.createdBy, "system");
+      assert.isUndefined(prompt.idleCompaction);
+    }),
+  );
+
+  it.effect.each([
+    { name: "start", deliveryIntent: undefined },
+    { name: "steer", deliveryIntent: "steer" as const },
+  ])(
+    "a message sent before a maintenance compaction reaches its provider skips it: $name",
+    ({ name, deliveryIntent }) =>
       Effect.gen(function* () {
         const orchestrator = yield* Orchestrator.OrchestratorV2;
-        const sink = yield* EventSink.EventSinkV2;
-        const name = `defer-${state}`;
-        const home = yield* seedIdleHome(
-          name,
-          state === "not-a-home" ? { threadId: ThreadId.make(`thread:${name}`) } : {},
-        );
-        const sequence = yield* sink.latestSequence({ threadId: home.threadId });
-        const first = (yield* orchestrator.getThreadProjection(home.threadId)).runs[0]!;
-        if (state === "sequence-moved" || state === "running" || state === "queued")
-          yield* setRunStatus(
-            name,
-            first,
-            state === "sequence-moved" ? "completed" : state === "running" ? "running" : "queued",
-          );
-        const result = yield* startRestricted(name, home.threadId, {
-          sequence:
-            state === "sequence-moved"
-              ? sequence
-              : yield* sink.latestSequence({ threadId: home.threadId }),
+        const home = yield* seedIdleHome(`compact-skip-${name}`);
+        yield* startMaintenanceCompaction(home.threadId);
+        const compaction = (yield* compactionRunOf(home.threadId))!;
+        assert.include(["preparing", "starting"], compaction.status);
+        const messageId = MessageId.make(`user-before-compact:${name}`);
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make(`user-before-compact:${name}`),
+          threadId: home.threadId,
+          messageId,
+          text: "Plan tomorrow.",
+          attachments: [],
+          createdBy: "user",
+          creationSource: "web",
+          ...(deliveryIntent === undefined ? {} : { deliveryIntent }),
+          dispatchMode:
+            deliveryIntent === undefined
+              ? { type: "start_immediately" }
+              : { type: "steer_active", targetRunId: compaction.id },
         });
-        assert.isTrue(result.deferred);
-        assert.isUndefined(yield* restrictedRunOf(home.threadId));
-        // No receipt was consumed: the same command id is admitted once the Home is idle again.
-        yield* setRunStatus(`${name}-after`, first, "completed");
-        if (state === "not-a-home") return;
-        const retried = yield* startRestricted(name, home.threadId);
-        assert.isUndefined(retried.deferred);
-        assert.strictEqual((yield* restrictedRunOf(home.threadId))?.restriction, "botNote");
+        const projection = yield* orchestrator.getThreadProjection(home.threadId);
+        const skipped = projection.runs.find((run) => run.id === compaction.id)!;
+        assert.notInclude(["preparing", "starting", "running"], skipped.status);
+        const userRun = projection.runs.find((run) => run.userMessageId === messageId)!;
+        assert.strictEqual(userRun.status, "queued");
+        assert.strictEqual(userRun.queuePosition, 1);
+        assert.isTrue(projection.messages.some((message) => message.id === messageId));
       }),
+  );
+
+  it.effect("a message sent after a maintenance compaction reached its provider waits for it", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const home = yield* seedIdleHome("compact-wait");
+      yield* startMaintenanceCompaction(home.threadId);
+      yield* setRunStatus("compact-wait", (yield* compactionRunOf(home.threadId))!, "running");
+      const compaction = (yield* compactionRunOf(home.threadId))!;
+      const messageId = MessageId.make("user-after-compact");
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("user-after-compact"),
+        threadId: home.threadId,
+        messageId,
+        text: "Plan tomorrow.",
+        attachments: [],
+        createdBy: "user",
+        creationSource: "web",
+        dispatchMode: { type: "start_immediately" },
+      });
+      const projection = yield* orchestrator.getThreadProjection(home.threadId);
+      assert.strictEqual(
+        projection.runs.find((run) => run.id === compaction.id)?.status,
+        "running",
+      );
+      assert.strictEqual(
+        projection.runs.find((run) => run.userMessageId === messageId)?.status,
+        "queued",
+      );
+    }),
   );
 
   it.effect.each([

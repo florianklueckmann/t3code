@@ -1830,6 +1830,70 @@ it.effect("stops a turn that is still starting when a goal is sent into it", () 
   ),
 );
 
+it.effect("a Bot maintenance compaction still starting gives way to a message, which runs", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { cwd, layer, send, started } = yield* goalHarness("compact-during-start");
+      yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        const threadId = ThreadId.make("thread:compact-during-start");
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("create"),
+          threadId,
+          projectId: ProjectId.make("project:compact-during-start"),
+          title: "Compaction during start",
+          modelSelection: runSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: cwd,
+          createdBy: "user",
+          creationSource: "web",
+        });
+        const messageStarting = yield* orchestrator.streamDomainEvents.pipe(
+          Stream.filter(
+            (event) =>
+              event.type === "run.updated" &&
+              event.payload.status === "starting" &&
+              event.payload.userMessageId === "message:after",
+          ),
+          Stream.take(1),
+          Stream.runDrain,
+          Effect.forkScoped({ startImmediately: true }),
+        );
+        const compactionId = `bot-maintenance:compact:${threadId}:1`;
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make(compactionId),
+          threadId,
+          messageId: MessageId.make(compactionId),
+          text: "/compact",
+          attachments: [],
+          modelSelection: runSelection,
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "system",
+          creationSource: "server",
+        });
+        yield* send("after", "Plan tomorrow.", "auto");
+        yield* worker.drain();
+        yield* Fiber.join(messageStarting);
+        yield* worker.drain();
+
+        const projection = yield* orchestrator.getThreadProjection(threadId);
+        assert.equal(
+          projection.runs.find((run) => run.userMessageId === compactionId)?.status,
+          "interrupted",
+        );
+        // The provider never compacted; its one turn is the message, after the usual history.
+        assert.lengthOf(started, 1);
+        assert.isTrue(started[0]!.message.text.endsWith("User message:\nPlan tomorrow."));
+      }).pipe(Effect.provide(layer));
+    }),
+  ),
+);
+
 it.effect("stops the running turn when a goal clear ends the goal driving it", () =>
   Effect.scoped(
     Effect.gen(function* () {

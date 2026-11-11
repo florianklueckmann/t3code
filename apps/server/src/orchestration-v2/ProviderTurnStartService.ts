@@ -1,3 +1,4 @@
+import { isBotMaintenanceCompaction } from "../bots/homeReturn.ts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import {
@@ -52,6 +53,7 @@ import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import {
   ContextHandoffBackgroundWorkError,
+  ContextHandoffBudgetError,
   knownProviderFailureMessage,
   makeProviderFailure,
 } from "@t3tools/provider-core/server/failure";
@@ -1372,6 +1374,23 @@ export const layer: Layer.Layer<
             resumed.failure._tag === "ProviderAdapterSealRefusedError")
         ) {
           return yield* loadFromProvider(Effect.fail(resumed.failure));
+        }
+
+        // Unattended maintenance must preserve the Home's native conversation.
+        if (isBotMaintenanceCompaction(message)) {
+          return yield* loadFromProvider(
+            Effect.fail(
+              resumed._tag === "Failure"
+                ? resumed.failure
+                : new ProviderAdapter.ProviderAdapterTurnStartError({
+                    driver: session.driver,
+                    threadId: projection.thread.id,
+                    providerThreadId: providerThread.id,
+                    runId,
+                    cause: new ContextHandoffBudgetError(),
+                  }),
+            ),
+          );
         }
 
         yield* Effect.logWarning("Recovering provider context in a fresh native session", {
