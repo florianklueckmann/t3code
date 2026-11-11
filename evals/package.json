@@ -16,7 +16,8 @@
     "test": "vp test run --config ../vite.config.ts --dir .",
     "bot-continuation": "node bot-continuation/run.ts",
     "bot-maintenance": "node bot-maintenance/run.ts",
-    "bot-home-check": "node bot-home-check/run.ts"
+    "bot-home-check": "node bot-home-check/run.ts",
+    "bot-note-refresh": "node bot-note-refresh/run.ts"
   },
   "dependencies": {
     "@effect/platform-node": "catalog:",
