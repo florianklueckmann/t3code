@@ -67,6 +67,8 @@ export interface ContextHandoffServiceV2Shape {
     readonly toProviderInstanceId: ProviderInstanceId;
     readonly coveredRunOrdinals: OrchestrationV2ContextHandoff["coveredRunOrdinals"];
     readonly deltaItems: ReadonlyArray<OrchestrationV2TurnItem>;
+    /** The source thread's runs, which label each message. */
+    readonly runs: ReadonlyArray<OrchestrationV2Run>;
     readonly createdAt: DateTime.Utc;
   }) => Effect.Effect<OrchestrationV2ContextHandoff, ContextHandoffServiceV2Error>;
   readonly prepareProviderHandoff: (input: {
@@ -439,19 +441,7 @@ const makeContextHandoffService = Effect.fn("orchestrationV2.ContextHandoffServi
     );
 
     const prepareForkDelta = Effect.fn("orchestrationV2.contextHandoff.prepareForkDelta")(
-      function* (input: {
-        readonly sourceThreadId: ThreadId;
-        readonly targetThreadId: ThreadId;
-        readonly targetRunId: RunId;
-        readonly transferId: OrchestrationV2ContextHandoff["transferId"];
-        readonly fromProviderThreadIds: ReadonlyArray<ProviderThreadId>;
-        readonly toProviderThreadId: ProviderThreadId;
-        readonly fromProviderInstanceId: ProviderInstanceId;
-        readonly toProviderInstanceId: ProviderInstanceId;
-        readonly coveredRunOrdinals: OrchestrationV2ContextHandoff["coveredRunOrdinals"];
-        readonly deltaItems: ReadonlyArray<OrchestrationV2TurnItem>;
-        readonly createdAt: DateTime.Utc;
-      }) {
+      function* (input: Parameters<ContextHandoffServiceV2Shape["prepareForkDelta"]>[0]) {
         const handoffId = yield* idAllocator.allocate
           .contextHandoff({
             threadId: input.targetThreadId,
@@ -475,10 +465,7 @@ const makeContextHandoffService = Effect.fn("orchestrationV2.ContextHandoffServi
           coveredRunOrdinals: input.coveredRunOrdinals,
         });
         const selected = selectHistory({
-          messages: input.deltaItems.flatMap((item) => {
-            const message = historicalMessage(item);
-            return message === null ? [] : [message];
-          }),
+          messages: providerHandoffMessages(input.deltaItems, input.runs),
           coverage,
           budget: tokenCap,
         });

@@ -123,9 +123,16 @@ export function freshConversationPlan(input: {
   const older = input.messages.filter((message) => omitted.has(message.itemId));
   if (older.length === 0) return { type: "verbatim" };
   const previous = input.previousSummary;
-  const unsummarized = older.filter(
-    (message) => previous === undefined || (message.runOrdinal ?? 0) > previous.throughRunOrdinal,
+  const throughRunOrdinal = Math.max(
+    1,
+    previous?.throughRunOrdinal ?? 0,
+    ...older.map((message) => message.runOrdinal ?? 0),
   );
+  // Whole runs, even what the tail also keeps: a later summary skips every run up to this one.
+  const unsummarized = input.messages.filter((message) => {
+    const run = message.runOrdinal ?? 0;
+    return run <= throughRunOrdinal && (previous === undefined || run > previous.throughRunOrdinal);
+  });
   if (previous !== undefined && unsummarized.length === 0) {
     return { type: "reuse", summary: previous };
   }
@@ -133,10 +140,6 @@ export function freshConversationPlan(input: {
     type: "summarize",
     previousSummary: previous?.text,
     messages: unsummarized,
-    throughRunOrdinal: Math.max(
-      1,
-      previous?.throughRunOrdinal ?? 0,
-      ...older.map((message) => message.runOrdinal ?? 0),
-    ),
+    throughRunOrdinal,
   };
 }

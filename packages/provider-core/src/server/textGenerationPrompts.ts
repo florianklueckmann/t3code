@@ -528,24 +528,30 @@ const CONVERSATION_SUMMARY_SECTIONS: ReadonlyArray<
 ];
 
 const CONVERSATION_SUMMARY_SOURCE_CHARS = 160_000;
-const CONVERSATION_SUMMARY_MESSAGE_CHARS = 8_000;
+
+const renderSummaryMessage = (message: ConversationSummaryMessage) =>
+  `[${message.runOrdinal === undefined ? "" : `run ${message.runOrdinal}, `}${message.role}]\n${limitSection(message.text, CONVERSATION_SUMMARY_SOURCE_CHARS)}`;
+
+/** Oldest first, each small enough for one call; each call updates the summary of the ones before. */
+export function conversationSummaryChunks<Message extends ConversationSummaryMessage>(
+  messages: ReadonlyArray<Message>,
+): ReadonlyArray<ReadonlyArray<Message>> {
+  const chunks: Array<Array<Message>> = [];
+  let length = Infinity;
+  for (const message of messages) {
+    const size = renderSummaryMessage(message).length + 2;
+    if (length + size > CONVERSATION_SUMMARY_SOURCE_CHARS) {
+      chunks.push([]);
+      length = 0;
+    }
+    chunks.at(-1)!.push(message);
+    length += size;
+  }
+  return chunks;
+}
 
 export function buildConversationSummaryPrompt(input: ConversationSummaryPromptInput) {
-  const rendered = input.messages.map(
-    (message) =>
-      `[${message.runOrdinal === undefined ? "" : `run ${message.runOrdinal}, `}${message.role}]\n${limitSection(message.text, CONVERSATION_SUMMARY_MESSAGE_CHARS)}`,
-  );
-  // Keep the newest messages when the source is too long; the previous summary holds older ones.
-  let kept = rendered.length;
-  let length = 0;
-  while (kept > 0 && length + rendered[kept - 1]!.length + 2 <= CONVERSATION_SUMMARY_SOURCE_CHARS) {
-    kept -= 1;
-    length += rendered[kept]!.length + 2;
-  }
-  const transcript = [
-    ...(kept > 0 ? [`[${kept} older messages omitted]`] : []),
-    ...rendered.slice(kept),
-  ].join("\n\n");
+  const transcript = input.messages.map(renderSummaryMessage).join("\n\n");
   const previous = input.previousSummary?.trim();
   const prompt = [
     "You keep the running summary of a long conversation between a user and a coding agent. A fresh agent conversation starts from your summary plus the newest messages verbatim, so record what the agent needs to continue the work.",

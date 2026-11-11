@@ -44,6 +44,7 @@ import {
   previousConversationSummary,
 } from "./ConversationRecovery.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
+import { conversationSummaryChunks } from "@t3tools/provider-core/server/textGenerationPrompts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
   DEFAULT_HANDOFF_TOKEN_CAP,
@@ -1150,23 +1151,24 @@ export const layer: Layer.Layer<
               yield* serverSettings.getSettings,
               projection.thread.projectId,
             );
-            return yield* textGeneration
-              .generateConversationSummary({
-                cwd: resolvedRuntimePolicy.cwd ?? serverConfig.stateDir,
-                modelSelection: settings.textGenerationModelSelection,
-                previousSummary: plan.previousSummary,
-                messages: plan.messages.map(({ role, runOrdinal, text }) => ({
-                  role,
-                  runOrdinal,
-                  text,
-                })),
-              })
-              .pipe(Effect.timeout(FRESH_CONVERSATION_SUMMARY_TIMEOUT));
+            let summary = plan.previousSummary;
+            for (const chunk of conversationSummaryChunks(plan.messages)) {
+              const generated = yield* textGeneration
+                .generateConversationSummary({
+                  cwd: resolvedRuntimePolicy.cwd ?? serverConfig.stateDir,
+                  modelSelection: settings.textGenerationModelSelection,
+                  previousSummary: summary,
+                  messages: chunk.map(({ role, runOrdinal, text }) => ({ role, runOrdinal, text })),
+                })
+                .pipe(Effect.timeout(FRESH_CONVERSATION_SUMMARY_TIMEOUT));
+              summary = generated.summary;
+            }
+            return summary ?? "";
           }),
         );
-        if (generated._tag === "Success" && generated.success.summary.trim() !== "") {
+        if (generated._tag === "Success" && generated.success.trim() !== "") {
           const summary: HandoffConversationSummary = {
-            text: generated.success.summary,
+            text: generated.success,
             throughRunOrdinal: plan.throughRunOrdinal,
           };
           return { type: "summary", summary } as const;

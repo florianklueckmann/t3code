@@ -2143,9 +2143,16 @@ effectIt.effect.each([
         expect(notices.at(-1)?.detail).toBe("PREVIOUS");
         return;
       }
-      // Only the request is older than the verbatim tail; the command and its output never go.
+      // The request falls out of the verbatim tail, so its whole run is summarized; the command
+      // and its output never go.
       expect(summaryRequests).toMatchObject([
-        { previousSummary: undefined, messages: [{ role: "user", runOrdinal: 1 }] },
+        {
+          previousSummary: undefined,
+          messages: [
+            { role: "user", runOrdinal: 1 },
+            { role: "assistant", runOrdinal: 1, text: "The controller stopped." },
+          ],
+        },
       ]);
       expect(JSON.stringify(summaryRequests)).not.toContain("REFUSED_OUTPUT");
       if ("summaryFailure" in options) {

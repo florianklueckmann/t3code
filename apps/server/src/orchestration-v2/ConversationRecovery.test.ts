@@ -147,18 +147,21 @@ describe("conversationRecoveryHandoffItems", () => {
 });
 
 describe("freshConversationPlan", () => {
-  // Ten runs of 3 KB each; the 20k verbatim tail keeps the first request and the newest five.
-  const messages = Array.from({ length: 10 }, (_, index) => ({
-    role: "user" as const,
-    text: `Request ${index + 1}: ${"x".repeat(3_000)}`,
-    runOrdinal: index + 1,
-    threadId: ThreadId.make("thread"),
-    runId: RunId.make(`run-${index + 1}`),
-    itemId: TurnItemId.make(`item-${index + 1}`),
-    providerThreadId: codex,
-    status: "completed",
-    kind: "user_message",
-  }));
+  // Ten runs of a 3 KB request and a short reply. The 20k verbatim tail keeps every reply, the
+  // first request and the newest five, so runs 2-5 are split across the cut.
+  const messages = Array.from({ length: 10 }, (_, index) =>
+    (["user", "assistant"] as const).map((role) => ({
+      role,
+      text: role === "user" ? `Request ${index + 1}: ${"x".repeat(3_000)}` : `Done ${index + 1}.`,
+      runOrdinal: index + 1,
+      threadId: ThreadId.make("thread"),
+      runId: RunId.make(`run-${index + 1}`),
+      itemId: TurnItemId.make(`item-${index + 1}-${role}`),
+      providerThreadId: codex,
+      status: "completed",
+      kind: `${role}_message`,
+    })),
+  ).flat();
   const plan = (previousSummary?: { text: string; throughRunOrdinal: number }) =>
     freshConversationPlan({
       messages,
@@ -166,13 +169,18 @@ describe("freshConversationPlan", () => {
       tokenCap: 16_000,
       previousSummary,
     });
-  const runsOf = (result: ReturnType<typeof plan>) =>
-    result.type === "summarize" ? result.messages.map((message) => message.runOrdinal) : [];
+  const runsOf = (result: ReturnType<typeof plan>) => [
+    ...new Set(
+      result.type === "summarize" ? result.messages.map((message) => message.runOrdinal) : [],
+    ),
+  ];
 
-  it("summarizes only what the verbatim tail leaves out", () => {
+  it("summarizes whole runs through the last one the verbatim tail leaves out", () => {
     const fresh = plan();
     expect(fresh).toMatchObject({ type: "summarize", previousSummary: undefined });
-    expect(runsOf(fresh)).toEqual([2, 3, 4, 5]);
+    // A reply the tail keeps is summarized with its request, so a later update never skips it.
+    expect(fresh.type === "summarize" && fresh.messages).toHaveLength(10);
+    expect(runsOf(fresh)).toEqual([1, 2, 3, 4, 5]);
     expect(fresh.type === "summarize" && fresh.throughRunOrdinal).toBe(5);
     expect(
       freshConversationPlan({
