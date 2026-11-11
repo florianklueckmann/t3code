@@ -821,7 +821,9 @@ const shownText = (source: PageSource | undefined) =>
   source?.parts.map((part) => part.text).join("");
 /** The acknowledgements of a page read whole. */
 const acksOf = (read: BotContinuationView) =>
-  read.uncovered?.sources.flatMap((source) => source.parts.map((part) => part.ack)) ?? [];
+  read.uncovered?.sources.flatMap((source) =>
+    source.parts.flatMap((part) => ("ack" in part ? [part.ack] : [])),
+  ) ?? [];
 /** Saves the current note with the basis of the refresh read that showed the unsaved page. */
 const saveShown = Effect.fn("fixture.saveShown")(function* (updateId: string) {
   const notes = yield* BotContinuation.BotContinuation;
@@ -1035,7 +1037,10 @@ it.effect("sources a note item in a returned result shown on the page, never a d
       )
       .pipe(Effect.flip);
     assert.include(approval.message, "a proposal is not approval");
-    const waiting = { ...empty(), waiting: [{ text: "Decide on the vendor's second quote" }] };
+    const waiting = {
+      ...empty(),
+      waiting: [{ text: "Decide on the vendor's second quote", quote }],
+    };
     const saved = yield* notes.save(
       { ...userSave("result-only-note", null, waiting), basis: read.basis!, acks: acksOf(read) },
       bot,
@@ -1046,6 +1051,53 @@ it.effect("sources a note item in a returned result shown on the page, never a d
       availability: "available",
     });
     assert.deepEqual(yield* notes.coverage(scope), { _tag: "current" });
+  }).pipe(Effect.provide(services.pipe(Layer.provideMerge(database)))),
+);
+
+it.effect("a note refresh sources a new or reworded item only in the input it quotes", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const plan = "Plan the offsite for about 40 people.";
+    yield* input(1, plan, { directUser: true });
+    const notes = yield* BotContinuation.BotContinuation;
+    const kept = { ...empty(), requests: [{ text: "Plan the offsite" }] };
+    const ordinary = yield* notes.save(
+      {
+        ...userSave("ordinary", null, {
+          ...empty(),
+          requests: [{ text: "Plan the offsite", quote: plan }],
+        }),
+        basis: (yield* notes.get(scope)).basis!,
+      },
+      bot,
+    );
+    assert.equal(ordinary._tag, "saved");
+    yield* homeRun("night", 2);
+    yield* input(2, "I will send the final headcount by Thursday.", {
+      run: "night",
+      directUser: true,
+    });
+    yield* input(3, "Should we pay the deposit now?", { run: "night", directUser: true });
+    const read = yield* refreshRead();
+    const save = (updateId: string, note: BotContinuationNoteInput) =>
+      notes.save({ ...userSave(updateId, 1, note), basis: read.basis!, acks: acksOf(read) }, bot);
+    const headcount = { text: "Send the final headcount by Thursday" };
+    for (const [name, note] of [
+      ["unquoted new item", { ...kept, waiting: [headcount] }],
+      ["reworded existing item", { ...empty(), requests: [{ text: "Plan the offsite for 40" }] }],
+    ] as const)
+      assert.include((yield* save(name, note).pipe(Effect.flip)).message, "quote", name);
+    const saved = yield* save("sourced", {
+      ...kept,
+      waiting: [{ ...headcount, quote: "final headcount by Thursday" }],
+    });
+    if (saved._tag !== "saved") return assert.fail();
+    assert.deepEqual(
+      [...saved.view.note.requests, ...saved.view.note.waiting].map((item) =>
+        item.refs.map((ref) => (ref.kind === "message" ? ref.messageId : ref.kind)),
+      ),
+      [["message-1"], ["message-2"]],
+    );
   }).pipe(Effect.provide(services.pipe(Layer.provideMerge(database)))),
 );
 
@@ -1066,12 +1118,16 @@ it.effect(
       assert.isTrue(large.startsWith(preview) && preview.endsWith("\n"));
       assert.isAtMost(utf8Bytes(preview), 2_000);
       assert.equal(shownText(next), "Keep the Harbor date open.");
+      // The model leaves out the ack of the part where the server cut the preview.
+      const cutPart = reference!.parts.at(-1)!;
+      const seen = acksOf(read).filter((ack) => !("ack" in cutPart) || ack !== cutPart.ack);
+      assert.isTrue(reference!.parts.slice(0, -1).every((part) => "ack" in part));
+      assert.include(cutPart, {
+        cut: "The preview stops here. The full text stays in T3 history.",
+      });
 
       const unlisted = yield* notes
-        .save(
-          { ...userSave("unlisted", null, empty()), basis: read.basis!, acks: acksOf(read) },
-          bot,
-        )
+        .save({ ...userSave("unlisted", null, empty()), basis: read.basis!, acks: seen }, bot)
         .pipe(Effect.flip);
       assert.include(unlisted.message, "message-1");
       const kept = {
@@ -1079,7 +1135,7 @@ it.effect(
         waiting: [{ text: "Unreviewed large input message-1: a pasted Harbor patch" }],
       };
       const saved = yield* notes.save(
-        { ...userSave("listed", null, kept), basis: read.basis!, acks: acksOf(read) },
+        { ...userSave("listed", null, kept), basis: read.basis!, acks: seen },
         bot,
       );
       assert.equal(saved._tag, "saved");

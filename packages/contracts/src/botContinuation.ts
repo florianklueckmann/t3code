@@ -173,9 +173,15 @@ export const BotContinuationView = Schema.Struct({
           ),
           /**
            * The text in order. Each part ends with its acknowledgement, so a part cut from what
-           * the model saw loses its ack and a save cannot certify the item.
+           * the model saw loses its ack and a save cannot certify the item. The last part of a
+           * `tooLarge` preview is where the server cut it: it says so and has no ack.
            */
-          parts: Schema.Array(Schema.Struct({ text: Schema.String, ack: Schema.String })),
+          parts: Schema.Array(
+            Schema.Union([
+              Schema.Struct({ text: Schema.String, ack: Schema.String }),
+              Schema.Struct({ text: Schema.String, cut: Schema.String }),
+            ]),
+          ),
         }),
       ),
       remaining: NonNegativeInt,
