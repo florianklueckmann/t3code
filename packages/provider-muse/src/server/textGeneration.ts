@@ -26,11 +26,14 @@ import {
   investigationUnsupported,
   TranscriptionPostProcessingOutput,
 } from "@t3tools/provider-core/server/textGenerationOperations";
+import { CONVERSATION_SUMMARY_MAX_CHARS } from "@t3tools/provider-core/server/handoffBudget";
 import {
   buildBranchNamePrompt,
   buildCommitMessagePrompt,
+  buildConversationSummaryPrompt,
   buildPrContentPrompt,
   buildThreadTitlePrompt,
+  renderConversationSummary,
 } from "@t3tools/provider-core/server/textGenerationPrompts";
 import {
   sanitizeCommitSubject,
@@ -361,6 +364,15 @@ export const makeMuseTextGeneration = Effect.fn("makeMuseTextGeneration")(functi
     });
   const generateReviewGuide: ProviderTextGeneration["generateReviewGuide"] = () =>
     Effect.fail(investigationUnsupported("generateReviewGuide", "Muse Code"));
+  const generateConversationSummary: ProviderTextGeneration["generateConversationSummary"] =
+    Effect.fn("MuseTextGeneration.generateConversationSummary")(function* (input) {
+      const generated = yield* runMuseJson({
+        operation: "generateConversationSummary",
+        ...buildConversationSummaryPrompt(input),
+        modelSelection: input.modelSelection,
+      });
+      return { summary: renderConversationSummary(generated, CONVERSATION_SUMMARY_MAX_CHARS) };
+    });
   return {
     generateCommitMessage,
     generatePrContent,
@@ -368,5 +380,6 @@ export const makeMuseTextGeneration = Effect.fn("makeMuseTextGeneration")(functi
     generateThreadTitle,
     generateReviewGuide,
     generateTranscriptionPostProcessing,
+    generateConversationSummary,
   } satisfies ProviderTextGeneration;
 });

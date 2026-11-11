@@ -1,11 +1,18 @@
 import {
   isCompactionCommandMessage,
+  type OrchestrationV2ContextHandoff,
+  type OrchestrationV2HistoricalMessage,
   type OrchestrationV2ProviderTurn,
   type OrchestrationV2Run,
   type OrchestrationV2RunAttempt,
   type OrchestrationV2TurnItem,
   type ProviderThreadId,
 } from "@t3tools/contracts";
+import {
+  FRESH_CONVERSATION_TAIL_TOKENS,
+  type HandoffConversationSummary,
+  selectHistory,
+} from "@t3tools/provider-core/server/handoffBudget";
 
 /**
  * The native turn a rewind keeps: the provider thread's newest turn from a run before the last
@@ -68,4 +75,71 @@ export function conversationRecoveryHandoffItems(
           attachments: item.attachments,
         })),
   );
+}
+
+/** The newest summary a fresh conversation wrote, unless a checkpoint restore undid its last run. */
+export function previousConversationSummary(
+  handoffs: ReadonlyArray<OrchestrationV2ContextHandoff>,
+  runs: ReadonlyArray<Pick<OrchestrationV2Run, "ordinal" | "status">>,
+): HandoffConversationSummary | undefined {
+  let latest: HandoffConversationSummary | undefined;
+  for (const handoff of handoffs) {
+    const summary = handoff.history?.summary;
+    if (
+      summary === undefined ||
+      runs.some((run) => run.ordinal === summary.throughRunOrdinal && run.status === "rolled_back")
+    )
+      continue;
+    if (latest === undefined || summary.throughRunOrdinal >= latest.throughRunOrdinal)
+      latest = summary;
+  }
+  return latest;
+}
+
+/**
+ * A fresh conversation hands over its newest messages verbatim and summarizes the older ones.
+ * A previous summary is updated with only the messages after it, never written again from scratch.
+ */
+export function freshConversationPlan(input: {
+  readonly messages: ReadonlyArray<OrchestrationV2HistoricalMessage>;
+  readonly coverage: string;
+  readonly tokenCap: number;
+  readonly previousSummary: HandoffConversationSummary | undefined;
+}):
+  | { readonly type: "verbatim" }
+  | { readonly type: "reuse"; readonly summary: HandoffConversationSummary }
+  | {
+      readonly type: "summarize";
+      readonly previousSummary: string | undefined;
+      readonly messages: ReadonlyArray<OrchestrationV2HistoricalMessage>;
+      readonly throughRunOrdinal: number;
+    } {
+  const tail = selectHistory({
+    messages: input.messages,
+    coverage: input.coverage,
+    budget: Math.max(input.tokenCap, FRESH_CONVERSATION_TAIL_TOKENS),
+  });
+  const omitted = new Set(tail.omittedItemIds);
+  const older = input.messages.filter((message) => omitted.has(message.itemId));
+  if (older.length === 0) return { type: "verbatim" };
+  const previous = input.previousSummary;
+  const throughRunOrdinal = Math.max(
+    1,
+    previous?.throughRunOrdinal ?? 0,
+    ...older.map((message) => message.runOrdinal ?? 0),
+  );
+  // Whole runs, even what the tail also keeps: a later summary skips every run up to this one.
+  const unsummarized = input.messages.filter((message) => {
+    const run = message.runOrdinal ?? 0;
+    return run <= throughRunOrdinal && (previous === undefined || run > previous.throughRunOrdinal);
+  });
+  if (previous !== undefined && unsummarized.length === 0) {
+    return { type: "reuse", summary: previous };
+  }
+  return {
+    type: "summarize",
+    previousSummary: previous?.text,
+    messages: unsummarized,
+    throughRunOrdinal,
+  };
 }

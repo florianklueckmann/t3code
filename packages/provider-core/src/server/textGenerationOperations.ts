@@ -6,12 +6,15 @@ import { formatGeneratedBranchName, sanitizeFeatureBranchName } from "@t3tools/s
 import { extractJsonObject } from "@t3tools/shared/schemaJson";
 
 import type { ProviderTextGeneration } from "./textGeneration.ts";
+import { CONVERSATION_SUMMARY_MAX_CHARS } from "./handoffBudget.ts";
 import {
   buildBranchNamePrompt,
   buildCommitMessagePrompt,
+  buildConversationSummaryPrompt,
   buildPrContentPrompt,
   buildReviewGuidePrompt,
   buildThreadTitlePrompt,
+  renderConversationSummary,
 } from "./textGenerationPrompts.ts";
 import {
   sanitizeCommitSubject,
@@ -180,6 +183,17 @@ export function fromRunner(name: string, run: Runner): ProviderTextGeneration {
     });
   });
 
+  const generateConversationSummary: ProviderTextGeneration["generateConversationSummary"] =
+    Effect.fn(`${name}.generateConversationSummary`)(function* (input) {
+      const generated = yield* run({
+        operation: "generateConversationSummary",
+        cwd: input.cwd,
+        modelSelection: input.modelSelection,
+        ...buildConversationSummaryPrompt(input),
+      });
+      return { summary: renderConversationSummary(generated, CONVERSATION_SUMMARY_MAX_CHARS) };
+    });
+
   return {
     generateCommitMessage,
     generatePrContent,
@@ -187,5 +201,6 @@ export function fromRunner(name: string, run: Runner): ProviderTextGeneration {
     generateThreadTitle,
     generateReviewGuide,
     generateTranscriptionPostProcessing,
+    generateConversationSummary,
   } satisfies ProviderTextGeneration;
 }

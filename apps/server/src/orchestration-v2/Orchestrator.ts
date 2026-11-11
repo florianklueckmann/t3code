@@ -7615,6 +7615,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 mergeBackDeltaItems,
               ),
               deltaItems: mergeBackDeltaItems,
+              runs: mergeBackSourceProjection.runs,
               createdAt: now,
             })
             .pipe(

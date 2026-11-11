@@ -811,7 +811,9 @@ function toFeedActivity(
         ? readPaths.join("\n") || null
         : item.type === "notification"
           ? item.detail?.trim() || null
-          : formatItemFullDetail(row, item),
+          : item.type === "system_notice" && item.detail
+            ? `${item.message}\n\n${item.detail}`
+            : formatItemFullDetail(row, item),
   );
   const getCopyText = memoizeValue(() =>
     item.type === "proposed_plan"

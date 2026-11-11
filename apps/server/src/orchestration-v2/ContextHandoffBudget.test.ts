@@ -21,6 +21,7 @@ import {
   handoffBudget,
   historyCost,
   historyResponseItems,
+  renderHistory,
   selectHistory,
   historicalMessage,
 } from "@t3tools/provider-core/server/handoffBudget";
@@ -159,6 +160,26 @@ describe("handoff budget", () => {
       }),
     );
     assert.equal(historyResponseItems([command!], "Activity")[1]?.type, "message");
+  });
+
+  it("labels each message with its run and role, not its IDs", () => {
+    const labeled = { ...messages[0]!, runOrdinal: 148, runStatus: "completed" };
+    const rendered = renderHistory(
+      [
+        labeled,
+        { ...messages[1]!, runOrdinal: 149, runStatus: "interrupted" },
+        { ...messages[1]!, kind: "command_execution" },
+      ],
+      "Context",
+    );
+    assert.include(rendered, `[run 148, user]\n${labeled.text}`);
+    assert.include(rendered, "[run 149, assistant, interrupted]\n");
+    assert.include(rendered, "[assistant, command_execution]\n");
+    for (const id of [threadId, labeled.runId!, labeled.itemId, labeled.providerThreadId!]) {
+      assert.notInclude(rendered, id);
+    }
+    // The response item envelope and JSON escaping take most of this; the IDs took 200 more.
+    assert.isAtMost(historyCost([labeled], "") - historyCost([], "") - labeled.text.length, 100);
   });
 
   it("omits oversized multilingual items whole, preserves original constraints and recent work", () => {
@@ -573,6 +594,28 @@ describe("handoff delivery", () => {
       assert.include(captured.context, threadId);
       assert.isAtMost(historyCost(captured.messages, captured.context), 2_500);
       assert.isAbove(captured.messages.length, 0);
+    }),
+  );
+
+  it.effect("puts a fresh conversation's summary ahead of its verbatim messages when it fits", () =>
+    Effect.gen(function* () {
+      const summary = {
+        text: `## Decisions\n- ${"Keep the logs. ".repeat(100)}`,
+        throughRunOrdinal: 1,
+      };
+      const summarized = { ...handoff, history: { ...handoff.history!, summary } };
+      const deliver = (budget: number) =>
+        deliverContextHandoffs({
+          handoffs: [summarized],
+          providerThread,
+          budget,
+          alreadyDeliveredItemIds: new Set(),
+          persist: () => Effect.void,
+        }).pipe(Effect.map((result) => result.context));
+      const context = yield* deliver(16_000);
+      assert.include(context, `through run 1, written for this fresh conversation`);
+      assert.isBelow(context.indexOf(summary.text), context.indexOf(messages[0]!.text));
+      assert.notInclude(yield* deliver(2_500), summary.text);
     }),
   );
 
