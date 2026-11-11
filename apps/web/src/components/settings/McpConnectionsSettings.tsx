@@ -1,9 +1,12 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
   EMPTY_MCP_CONNECTION_DRAFT,
-  MCP_CONNECTIONS_FOUNDATION_NOTICE,
+  MCP_CONNECTIONS_NOTICE,
   mcpConnectionDraft,
+  mcpConnectionRemovalMessage,
   mcpConnectionStatusText,
+  mcpConnectionUsedByText,
+  mcpConnectionUsers,
   planMcpConnectionSave,
   type McpConnectionDraft,
 } from "@t3tools/client-runtime/mcp-connections";
@@ -120,10 +123,16 @@ function EnvironmentMcpConnections({
   const refresh = useAtomCommand(serverEnvironment.refreshMcpConnections, {
     label: "mcp connections refresh",
   });
+  const bots = useEnvironmentQuery(
+    environment.serverConfig?.environment.capabilities.bots === true
+      ? serverEnvironment.botsLive({ environmentId, input: {} })
+      : null,
+  );
   const [refreshing, setRefreshing] = useState(false);
   const [editor, setEditor] = useState<Editor | null>(null);
   const entries = Object.entries(definitions) as Array<[McpConnectionId, McpConnectionDefinition]>;
   const summaries = new Map(statuses.data?.connections.map((summary) => [summary.id, summary]));
+  const users = mcpConnectionUsers(bots.data?.bots ?? []);
   const refreshAll = async (connectionIds: ReadonlyArray<McpConnectionId>) => {
     setRefreshing(true);
     const result = await refresh({ environmentId, input: { connectionIds } });
@@ -162,9 +171,7 @@ function EnvironmentMcpConnections({
           </div>
         }
       >
-        <p className="px-4 pt-3 text-xs text-muted-foreground">
-          {MCP_CONNECTIONS_FOUNDATION_NOTICE}
-        </p>
+        <p className="px-4 pt-3 text-xs text-muted-foreground">{MCP_CONNECTIONS_NOTICE}</p>
         {entries.length === 0 ? (
           <SettingsRow
             title="No MCP connections"
@@ -178,6 +185,7 @@ function EnvironmentMcpConnections({
               id={id}
               definition={definition}
               summary={summaries.get(id)}
+              users={users.get(id)}
               statusError={statuses.error}
               canEdit={canEdit}
               canRefresh={canRefresh && !refreshing}
@@ -209,6 +217,7 @@ function McpConnectionRow({
   id,
   definition,
   summary,
+  users,
   statusError,
   canEdit,
   canRefresh,
@@ -219,6 +228,8 @@ function McpConnectionRow({
   readonly id: McpConnectionId;
   readonly definition: McpConnectionDefinition;
   readonly summary: McpConnectionSummary | undefined;
+  /** Names of the Bots granted this connection. */
+  readonly users: ReadonlyArray<string> | undefined;
   readonly statusError: string | null;
   readonly canEdit: boolean;
   readonly canRefresh: boolean;
@@ -234,6 +245,7 @@ function McpConnectionRow({
     summary?.revision === definition.revision ? summary.status : undefined,
   );
   const transport = definition.transport;
+  const usedBy = mcpConnectionUsedByText(users);
   const toggleEnabled = async () => {
     setBusy(true);
     const result = await update({
@@ -260,11 +272,14 @@ function McpConnectionRow({
         </span>
       }
       description={
-        <span className="wrap-anywhere">
-          {transport.type === "http"
-            ? transport.url
-            : [transport.command, ...transport.args].join(" ")}
-        </span>
+        <>
+          <span className="block wrap-anywhere">
+            {transport.type === "http"
+              ? transport.url
+              : [transport.command, ...transport.args].join(" ")}
+          </span>
+          {usedBy === null ? null : <span className="block">{usedBy}</span>}
+        </>
       }
       status={
         statusError !== null ? (
@@ -288,6 +303,7 @@ function McpConnectionRow({
             environmentId={environmentId}
             id={id}
             definition={definition}
+            users={users}
             disabled={!canEdit}
           />
         </div>
@@ -300,11 +316,13 @@ function RemoveMcpConnectionButton({
   environmentId,
   id,
   definition,
+  users,
   disabled,
 }: {
   readonly environmentId: EnvironmentId;
   readonly id: McpConnectionId;
   readonly definition: McpConnectionDefinition;
+  readonly users: ReadonlyArray<string> | undefined;
   readonly disabled: boolean;
 }) {
   const remove = useAtomCommand(serverEnvironment.removeMcpConnection, {
@@ -320,10 +338,7 @@ function RemoveMcpConnectionButton({
         <AlertDialogPopup>
           <AlertDialogHeader>
             <AlertDialogTitle>Remove {definition.label}?</AlertDialogTitle>
-            <AlertDialogDescription>
-              Its saved credentials are deleted from this environment. Secrets read from a secret
-              provider stay there. To use this account again, add a new connection.
-            </AlertDialogDescription>
+            <AlertDialogDescription>{mcpConnectionRemovalMessage(users)}</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogClose render={<Button variant="outline" />}>Cancel</AlertDialogClose>
@@ -437,7 +452,7 @@ function McpConnectionDialog({
             {editing ? `Edit ${target.saved.label}` : "Add an MCP connection"}
           </DialogTitle>
           <DialogDescription>
-            Saved on {environmentLabel}. {MCP_CONNECTIONS_FOUNDATION_NOTICE}
+            Saved on {environmentLabel}. {MCP_CONNECTIONS_NOTICE}
           </DialogDescription>
         </DialogHeader>
         <DialogPanel>

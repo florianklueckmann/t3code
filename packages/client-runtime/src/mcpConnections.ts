@@ -1,12 +1,20 @@
 import {
   mcpConnectionDefinitionProblem,
   mcpConnectionProblemMessage,
+  type BotId,
+  type BotMcpGrants,
+  type BotSetMcpGrantsInput,
+  type BotSummary,
+  type ExecutionEnvironmentPlatformOs,
   type McpConnectionCreateInput,
   type McpConnectionDefinition,
   type McpConnectionId,
   type McpConnectionStatus,
+  type McpConnectionSummary,
   type McpConnectionTransport,
   type McpConnectionUpdateInput,
+  type ProviderDriverKind,
+  type ScheduledTask,
   type SettingsSecretValue,
 } from "@t3tools/contracts";
 
@@ -121,11 +129,15 @@ export function planMcpConnectionSave(
   };
 }
 
-/** How a status reads in Settings. It never claims the server is reachable or in use. */
-export function mcpConnectionStatusText(status: McpConnectionStatus | undefined): {
+export interface McpConnectionStatusText {
   readonly tone: "ok" | "warning" | "error" | "muted";
   readonly text: string;
-} {
+}
+
+/** How a status reads in Settings. It never claims the server is reachable or in use. */
+export function mcpConnectionStatusText(
+  status: McpConnectionStatus | undefined,
+): McpConnectionStatusText {
   if (status === undefined) return { tone: "muted", text: "Checking…" };
   switch (status.state) {
     case "ready":
@@ -137,5 +149,164 @@ export function mcpConnectionStatusText(status: McpConnectionStatus | undefined)
   }
 }
 
-export const MCP_CONNECTIONS_FOUNDATION_NOTICE =
-  "Bots and agents cannot use these connections yet. This page stores definitions and checks that their credentials resolve; it does not start or contact the servers.";
+export const MCP_CONNECTIONS_NOTICE =
+  "A Bot uses only the connections you grant it in its settings. Your own threads use none of them. This page checks that credentials resolve; it does not start or contact the servers.";
+
+/** A catalog connection, or a granted one the catalog no longer has, as a Bot's settings list it. */
+export interface BotMcpGrantRow {
+  readonly id: McpConnectionId;
+  readonly label: string;
+  /** Null when the connection was removed. */
+  readonly transport: McpConnectionSummary["transport"] | null;
+  readonly granted: boolean;
+  readonly status: McpConnectionStatusText;
+}
+
+export interface BotMcpGrantsNote {
+  readonly tone: "warning" | "muted";
+  readonly text: string;
+}
+
+export interface BotMcpGrantsSection {
+  readonly rows: ReadonlyArray<BotMcpGrantRow>;
+  readonly notes: ReadonlyArray<BotMcpGrantsNote>;
+  readonly editable: boolean;
+}
+
+/**
+ * The "MCP connections" section of a Bot's settings. `providerDriver` is the driver of the Bot's
+ * saved model instance, undefined when that instance is gone. Where grants cannot be enforced, a
+ * Bot without grants keeps the provider's own MCP setup and a Bot with grants is refused.
+ */
+export function botMcpGrantsSection(input: {
+  readonly botId: BotId;
+  readonly grants: BotMcpGrants;
+  readonly catalog: ReadonlyArray<McpConnectionSummary>;
+  readonly providerDriver: ProviderDriverKind | undefined;
+  readonly platformOs: ExecutionEnvironmentPlatformOs;
+  readonly environmentLabel: string;
+  /** Null when the environment has no routines. */
+  readonly routines: ReadonlyArray<ScheduledTask> | null;
+  readonly canChange: boolean;
+  readonly archived: boolean;
+}): BotMcpGrantsSection {
+  const granted = new Set(input.grants.connectionIds);
+  const listed = new Set(input.catalog.map((connection) => connection.id));
+  const rows: ReadonlyArray<BotMcpGrantRow> = [
+    ...input.catalog.map((connection) => ({
+      id: connection.id,
+      label: connection.label,
+      transport: connection.transport,
+      granted: granted.has(connection.id),
+      status: connection.enabled
+        ? mcpConnectionStatusText(connection.status)
+        : {
+            tone: "muted" as const,
+            text: "Disabled. The Bot doesn't load it until you enable it.",
+          },
+    })),
+    ...input.grants.connectionIds
+      .filter((id) => !listed.has(id))
+      .map((id) => ({
+        id,
+        label: "Removed connection",
+        transport: null,
+        granted: true,
+        status: { tone: "muted" as const, text: "Removed. The Bot no longer loads it." },
+      })),
+  ];
+  const usable = rows.some((row) => row.granted && row.transport !== null);
+  const unenforceable =
+    input.providerDriver !== "codex"
+      ? "This Bot's model is not on a Codex provider, so without connections it uses that provider's own MCP setup."
+      : input.platformOs !== "darwin"
+        ? `On ${input.environmentLabel}, this Bot without connections uses Codex's own MCP setup.`
+        : null;
+  const notes: Array<BotMcpGrantsNote> = [];
+  if (unenforceable !== null) {
+    notes.push({
+      tone: "warning",
+      text: `MCP connections apply only to Codex on macOS. ${unenforceable} A Bot with connections does not run there.`,
+    });
+  }
+  if (input.catalog.length === 0) {
+    notes.push({ tone: "muted", text: "Add connections in Settings → MCP connections." });
+  }
+  if (!usable) {
+    if (unenforceable === null) {
+      notes.push({
+        tone: "muted",
+        text: "This Bot has no MCP connections. Your Codex MCP servers are not available to Bots.",
+      });
+    }
+  } else if (
+    input.routines?.some(
+      (task) => task.bot?.botId === input.botId && task.bot.allowChanges !== true,
+    )
+  ) {
+    notes.push({
+      tone: "muted",
+      text: "No changes routines use only the tools a connection marks as read-only. The connection's server sets that mark, so a tool marked read-only can still change things.",
+    });
+  }
+  if (!input.canChange) {
+    notes.push({
+      tone: "muted",
+      text: "Changing a Bot's MCP connections needs permission to change settings on this environment.",
+    });
+  }
+  notes.push({ tone: "muted", text: "Changes apply from the Bot's next turn." });
+  return { rows, notes, editable: input.canChange && !input.archived };
+}
+
+/**
+ * The whole set to save after granting or ungranting one connection, guarded by the revision the
+ * change was made on. Granted ids the catalog no longer has drop out, since the server refuses them.
+ */
+export function botMcpGrantsChange(
+  botId: BotId,
+  grants: BotMcpGrants,
+  catalog: ReadonlyArray<McpConnectionSummary>,
+  change: { readonly connectionId: McpConnectionId; readonly granted: boolean },
+): BotSetMcpGrantsInput {
+  const next = new Set(grants.connectionIds);
+  if (change.granted) next.add(change.connectionId);
+  else next.delete(change.connectionId);
+  return {
+    botId,
+    expectedRevision: grants.revision,
+    connectionIds: catalog.flatMap((connection) =>
+      next.has(connection.id) ? [connection.id] : [],
+    ),
+  };
+}
+
+/** The Bots granted each connection, by name. Empty when the server reports no grants. */
+export function mcpConnectionUsers(
+  bots: ReadonlyArray<BotSummary>,
+): ReadonlyMap<McpConnectionId, ReadonlyArray<string>> {
+  const users = new Map<McpConnectionId, Array<string>>();
+  for (const bot of [...bots].sort((left, right) => left.name.localeCompare(right.name))) {
+    for (const id of bot.mcpGrants?.connectionIds ?? []) {
+      users.set(id, [...(users.get(id) ?? []), bot.name]);
+    }
+  }
+  return users;
+}
+
+function listNames(names: ReadonlyArray<string>): string {
+  return names.length < 2
+    ? names.join("")
+    : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
+export function mcpConnectionUsedByText(names: ReadonlyArray<string> | undefined): string | null {
+  return names === undefined || names.length === 0 ? null : `Used by ${listNames(names)}`;
+}
+
+export function mcpConnectionRemovalMessage(names: ReadonlyArray<string> | undefined): string {
+  const base =
+    "Its saved credentials are deleted from this environment. Secrets read from a secret provider stay there. To use this account again, add a new connection.";
+  if (names === undefined || names.length === 0) return base;
+  return `${listNames(names)} ${names.length === 1 ? "loses" : "lose"} this connection. ${base}`;
+}

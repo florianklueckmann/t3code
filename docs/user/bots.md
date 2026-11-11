@@ -222,16 +222,33 @@ Bot conversations do not use Codex's own memories: nothing from them is added
 to a Bot's turns, and Bot conversations are not used to build them. Your other
 Codex threads keep your Codex memory settings.
 
+## MCP connections
+
+**Settings → MCP connections** stores an environment's MCP servers: one
+connection per account, with its credentials as header or environment variable
+values or secret-provider references. **Refresh** checks that those credentials
+can be read; it does not start or contact the server. To change a connection's
+URL or command, add a new connection.
+
+In a Bot's settings, **MCP connections** lists them, and you choose which ones
+this Bot may use. Its conversations, tasks, routines and the work they start
+load exactly those connections and none of your own Codex MCP servers. A
+change applies from the Bot's next turn. A disabled connection stays granted
+but does not load until you enable it again. Removing a connection takes it
+away from every Bot that uses it; the catalog shows which Bots those are and
+asks first.
+
+A No changes routine uses only the tools a connection's server marks as
+read-only. T3 Code cannot check that mark.
+
 ## Current limits
 
 - Bots run on Codex models only. If you switch a Bot conversation to another
   provider, its turns fail until you switch back.
+- MCP connections apply only to Codex on a Mac server. Elsewhere, a Bot without
+  connections uses the provider's own MCP setup, and a Bot with connections does
+  not run.
 - Built-in email and calendar connections are not available.
-- Bots cannot use MCP connections yet. **Settings → MCP connections** stores them
-  for an environment: one connection per account, with its credentials as header
-  or environment variable values or secret-provider references. **Refresh**
-  checks that those credentials can be read; it does not start or contact the
-  server. To change a connection's URL or command, add a new connection.
 
 ## Detach and archive
 

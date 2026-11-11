@@ -93,6 +93,7 @@ import { stackedThreadToast, toastManager } from "../ui/toast";
 import { BotAppearancePicker } from "./BotAppearancePicker";
 import { BotContinuationNotes } from "./BotContinuationNotes";
 import { BotHomeCheckSetting } from "./BotHomeCheckSetting";
+import { BotMcpGrantsSetting } from "./BotMcpGrantsSetting";
 import { BotMaintenanceSetting } from "./BotMaintenanceSetting";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import {
@@ -722,6 +723,13 @@ function BotEditorForm({
               ))}
             </RadioGroup>
           </div>
+          {current !== null ? (
+            <BotMcpGrantsSetting
+              environment={environment}
+              botId={current.id}
+              formLocked={saving || archived}
+            />
+          ) : null}
           {current !== null ? (
             <BotProjectContexts
               environmentId={environmentId}
