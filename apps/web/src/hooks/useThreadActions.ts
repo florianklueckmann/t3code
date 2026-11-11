@@ -317,6 +317,9 @@ export function useThreadActions() {
     reportFailure: false,
   });
   const stopThreadSession = useOrchestrationCommand(threadEnvironment.stopSession);
+  const recoverConversation = useOrchestrationCommand(threadEnvironment.recoverConversation, {
+    reportFailure: false,
+  });
   const removeWorktree = useAtomCommand(vcsEnvironment.removeWorktree, {
     reportFailure: false,
   });
@@ -1033,6 +1036,11 @@ export function useThreadActions() {
       createProjectFromThread({
         environmentId: target.environmentId,
         input: { threadId: target.threadId },
+      }),
+    startFreshConversation: (target: ScopedThreadRef) =>
+      recoverConversation({
+        environmentId: target.environmentId,
+        input: { threadId: target.threadId, mode: "fresh" },
       }),
   };
 }

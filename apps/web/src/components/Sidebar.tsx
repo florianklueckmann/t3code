@@ -936,6 +936,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     markThreadUnread,
     archiveThread,
     deleteThread,
+    startFreshConversation,
   } = useThreadActions();
   const updateThreadMetadata = useOrchestrationCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
@@ -2651,6 +2652,9 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                 snooze: configLoaded,
                 pinning: configLoaded,
                 titleRegeneration: configLoaded,
+                conversationRecovery:
+                  serverConfigs.get(thread.environmentId)?.environment.capabilities
+                    .threadConversationRecovery === true,
               },
               snoozePresets,
             }),
@@ -2778,6 +2782,20 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
               }),
             ]);
             if (toast) toastManager.add(toast);
+            return;
+          }
+          case "fresh-conversation": {
+            const result = await startFreshConversation(threadRef);
+            if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+              const error = squashAtomCommandFailure(result);
+              toastManager.add(
+                stackedThreadToast({
+                  type: "error",
+                  title: "Failed to start a fresh conversation",
+                  description: error instanceof Error ? error.message : "An error occurred.",
+                }),
+              );
+            }
             return;
           }
           case "mark-unread":

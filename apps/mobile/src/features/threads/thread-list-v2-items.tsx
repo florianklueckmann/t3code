@@ -77,6 +77,7 @@ import { useSwipeRowDormant } from "../home/swipe-row-activation";
 import { ThreadSwipeable } from "../home/thread-swipe-actions";
 import { buildThreadTitleRegenerationMenuItems } from "./thread-title-regeneration-menu";
 import { canTurnThreadIntoProject, turnThreadIntoProject } from "./turnThreadIntoProject";
+import { canStartFreshConversation, startFreshConversation } from "./startFreshConversation";
 import { threadCanArchive } from "../home/threadArchive";
 import {
   THREAD_LIST_V2_SETTLED_PAGE_COUNT,
@@ -960,6 +961,7 @@ function ThreadListV2RowContent(props: ThreadListV2RowProps & { readonly bot: Bo
     [props.autoSettleOptOutSupported, thread.autoSettleDisabledAt],
   );
   const canTurnIntoProject = canTurnThreadIntoProject(thread);
+  const canStartFresh = canStartFreshConversation(thread);
   const titleMenuItems = useMemo<MenuAction[]>(
     () => [
       { id: "rename", title: "Rename", image: "square.and.pencil" },
@@ -968,6 +970,16 @@ function ThreadListV2RowContent(props: ThreadListV2RowProps & { readonly bot: Bo
         isRegenerating: isRegeneratingTitle,
       }),
       { id: "mark-unread", title: "Mark unread", image: "envelope.badge" },
+      ...(canStartFresh
+        ? [
+            {
+              id: "fresh-conversation",
+              title: "Start fresh conversation",
+              image: "arrow.uturn.backward",
+              attributes: { disabled: !threadCanArchive(thread.runtime) },
+            } satisfies MenuAction,
+          ]
+        : []),
       ...(canTurnIntoProject
         ? [
             {
@@ -979,7 +991,13 @@ function ThreadListV2RowContent(props: ThreadListV2RowProps & { readonly bot: Bo
           ]
         : []),
     ],
-    [canTurnIntoProject, props.titleRegenerationSupported, thread.runtime, isRegeneratingTitle],
+    [
+      canTurnIntoProject,
+      canStartFresh,
+      props.titleRegenerationSupported,
+      thread.runtime,
+      isRegeneratingTitle,
+    ],
   );
   const menuActions = useMemo<MenuAction[]>(() => {
     const nested = Platform.OS === "ios";
@@ -1088,6 +1106,7 @@ function ThreadListV2RowContent(props: ThreadListV2RowProps & { readonly bot: Bo
           input: { threadId: thread.id },
         });
       }
+      if (nativeEvent.event === "fresh-conversation") void startFreshConversation(thread);
       if (nativeEvent.event === "copy-thread") {
         const target = threadChipCopyTarget(
           { environmentId: thread.environmentId, threadId: thread.id },

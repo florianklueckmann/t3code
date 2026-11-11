@@ -31,6 +31,7 @@ import { readEnvironmentScope } from "../state/session";
 import {
   readEnvironmentServerConfigLoaded,
   readEnvironmentSupportsAutoSettleOptOut,
+  readEnvironmentSupportsConversationRecovery,
   readThreadShell,
   useProjects,
 } from "../state/entities";
@@ -88,6 +89,7 @@ export function useThreadActionMenu(input: {
     deleteThread,
     markThreadUnread,
     turnThreadIntoProject,
+    startFreshConversation,
   } = useThreadActions();
   const regenerateThreadTitle = useOrchestrationCommand(threadEnvironment.regenerateTitle, {
     reportFailure: false,
@@ -125,6 +127,7 @@ export function useThreadActionMenu(input: {
         snooze: configLoaded,
         pinning: configLoaded,
         titleRegeneration: configLoaded,
+        conversationRecovery: readEnvironmentSupportsConversationRecovery(threadRef.environmentId),
       };
       const isRegeneratingTitle = thread.titleRegeneration != null;
       const snoozePresets = resolveSnoozePresets(now, timestampFormat, threadRef.environmentId);
@@ -253,6 +256,11 @@ export function useThreadActionMenu(input: {
           if (toast) toastManager.add(toast);
           return;
         }
+        case "fresh-conversation":
+          await reportFailure("Failed to start a fresh conversation", () =>
+            startFreshConversation(threadRef),
+          );
+          return;
         case "mark-unread":
           markThreadUnread(threadRef);
           return;

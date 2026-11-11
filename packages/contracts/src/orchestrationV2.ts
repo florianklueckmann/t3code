@@ -1133,6 +1133,21 @@ export const OrchestrationV2ProviderGoal = Schema.Struct({
 });
 export type OrchestrationV2ProviderGoal = typeof OrchestrationV2ProviderGoal.Type;
 
+export const OrchestrationV2ConversationRecoveryMode = Schema.Literals(["rewind", "fresh"]);
+export type OrchestrationV2ConversationRecoveryMode =
+  typeof OrchestrationV2ConversationRecoveryMode.Type;
+
+/** Applied by the next turn on this provider thread before it prompts. */
+export const OrchestrationV2ConversationRecovery = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("rewind"),
+    /** Native turns after this one are dropped; null drops them all. */
+    keepProviderTurnId: Schema.NullOr(ProviderTurnId),
+  }),
+  Schema.Struct({ type: Schema.Literal("fresh") }),
+]);
+export type OrchestrationV2ConversationRecovery = typeof OrchestrationV2ConversationRecovery.Type;
+
 export const OrchestrationV2ProviderThread = Schema.Struct({
   id: ProviderThreadId,
   driver: ProviderDriverKind,
@@ -1165,6 +1180,7 @@ export const OrchestrationV2ProviderThread = Schema.Struct({
   goal: Schema.optional(Schema.NullOr(OrchestrationV2ProviderGoal)).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
+  conversationRecovery: Schema.optional(OrchestrationV2ConversationRecovery),
   createdAt: Schema.DateTimeUtc,
   updatedAt: Schema.DateTimeUtc,
 });
@@ -1576,6 +1592,8 @@ export const OrchestrationV2ProviderFailure = Schema.Struct({
   code: Schema.NullOr(OrchestrationV2ProviderFailureCode),
   retryable: Schema.NullOr(Schema.Boolean),
   resetAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+  /** The provider's safety systems refused the conversation; a field so older clients still decode it. */
+  safetyBlock: Schema.optional(Schema.Literal(true)),
 });
 export type OrchestrationV2ProviderFailure = typeof OrchestrationV2ProviderFailure.Type;
 
@@ -1850,6 +1868,8 @@ export const OrchestrationV2TurnItem = Schema.Union([
     type: Schema.Literal("system_notice"),
     message: Schema.String,
     level: Schema.optional(OrchestrationV2SystemNoticeLevel),
+    /** Marks the notice a conversation recovery wrote, so clients can offer the next step. */
+    conversationRecovery: Schema.optional(OrchestrationV2ConversationRecoveryMode),
   }),
   Schema.Struct({
     ...OrchestrationV2TurnItemBaseFields,
@@ -2733,6 +2753,8 @@ export const OrchestrationV2TurnItemJson = Schema.Union([
     type: Schema.Literal("system_notice"),
     message: Schema.String,
     level: Schema.optional(OrchestrationV2SystemNoticeLevel),
+    /** Marks the notice a conversation recovery wrote, so clients can offer the next step. */
+    conversationRecovery: Schema.optional(OrchestrationV2ConversationRecoveryMode),
   }),
   Schema.Struct({
     ...OrchestrationV2TurnItemJsonBaseFields,
@@ -3519,6 +3541,12 @@ export const OrchestrationV2Command = Schema.Union([
     threadId: ThreadId,
     scopeId: CheckpointScopeId,
     checkpointId: CheckpointId,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("thread.conversation.recover"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    mode: OrchestrationV2ConversationRecoveryMode,
   }),
   Schema.Struct({
     type: Schema.Literal("thread.fork"),

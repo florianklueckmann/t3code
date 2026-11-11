@@ -12,6 +12,7 @@ import {
   type ModelSelection,
   type NodeId,
   type OrchestrationV2Command,
+  type OrchestrationV2ConversationRecoveryMode,
   type OrchestrationV2CreationSource,
   type PlanId,
   type ProjectId,
@@ -228,6 +229,10 @@ export interface RevertThreadCheckpointInput extends ThreadCommandInput {
   readonly checkpointId?: string;
   readonly scopeId?: string;
   readonly turnCount?: number;
+}
+
+export interface RecoverThreadConversationInput extends ThreadCommandInput {
+  readonly mode: OrchestrationV2ConversationRecoveryMode;
 }
 
 export type StopThreadSessionInput = ThreadCommandInput;
@@ -1045,6 +1050,17 @@ export const revertThreadCheckpoint = Effect.fn("EnvironmentCommands.revertThrea
       threadId: input.threadId,
       scopeId: checkpoint.scopeId,
       checkpointId: checkpoint.id,
+    });
+  },
+);
+
+export const recoverThreadConversation = Effect.fn("EnvironmentCommands.recoverThreadConversation")(
+  function* (input: RecoverThreadConversationInput) {
+    return yield* dispatch({
+      type: "thread.conversation.recover",
+      commandId: yield* allocateCommandId(input),
+      threadId: input.threadId,
+      mode: input.mode,
     });
   },
 );

@@ -5647,12 +5647,15 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                 {
                   threadId: workNativeThreadId,
                   cursor: null,
-                  limit: 1,
+                  limit: 100,
                   sortDirection: "desc",
                   itemsView: "summary",
                 },
                 {
-                  data: [{ id: "native-turn-second", items: [], status: "completed", error: null }],
+                  data: [
+                    { id: "native-turn-second", items: [], status: "completed", error: null },
+                    { id: "native-turn-first", items: [], status: "completed", error: null },
+                  ],
                   nextCursor: null,
                 },
               ),
@@ -9791,6 +9794,22 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       notification: true,
       details: "details" in scenario ? scenario.details : "Connection lost.",
     })),
+    {
+      name: "misalignment-refusal",
+      code: "misalignmentPolicyViolation",
+      message:
+        "This request was blocked by our safety systems. Reason: Potentially unintended activity.",
+      notification: true,
+      expectedClass: "provider_error",
+      expectedSafetyBlock: true,
+    },
+    {
+      name: "cyber-refusal",
+      code: "cyberPolicy",
+      notification: false,
+      expectedClass: "provider_error",
+      expectedSafetyBlock: true,
+    },
   ] as const)("classifies Codex terminal failures from $name evidence", (scenario) =>
     Effect.gen(function* () {
       const nativeThreadId = `native-limit-${scenario.name}`;
@@ -10089,6 +10108,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       assert.equal(terminal?.status, "failed");
       if (terminal?.status !== "failed") return;
       assert.equal(terminal.failure.class, scenario.expectedClass);
+        assert.equal(terminal.failure.safetyBlock, "expectedSafetyBlock" in scenario || undefined);
       assert.equal(terminal.threadDisposition, "reusable");
       if (scenario.name === "message-reset")
         assert.equal(
@@ -12827,13 +12847,16 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             {
               threadId: nativeThreadId,
               cursor: null,
-              limit: 1,
+              limit: 100,
               sortDirection: "desc",
               itemsView: "summary",
             },
             {
               result: {
-                data: [{ id: "native-turn-second", items: [], status: "completed", error: null }],
+                data: [
+                  { id: "native-turn-second", items: [], status: "completed", error: null },
+                  { id: "native-turn-first", items: [], status: "completed", error: null },
+                ],
                 nextCursor: null,
               },
             },
