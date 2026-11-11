@@ -32,6 +32,7 @@ import {
 import Constants from "expo-constants";
 import { useState } from "react";
 import { Platform, View } from "react-native";
+import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { EnvironmentMachineSymbol } from "../../components/EnvironmentMachineSymbol";
@@ -359,272 +360,287 @@ function McpConnectionEditor({
 
   return (
     <SettingsScreen title={editing ? target.saved.label : "New MCP connection"}>
-      <ScrollView
-        keyboardShouldPersistTaps="handled"
-        contentInsetAdjustmentBehavior="automatic"
+      {/* The edge-to-edge Android window does not resize for the keyboard; iOS insets the scroll view instead. */}
+      <KeyboardAvoidingView
+        automaticOffset
+        behavior="padding"
+        enabled={Platform.OS === "android"}
         className="flex-1"
-        contentContainerClassName="gap-5 px-5 pt-4"
-        contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 18) + 18 }}
       >
-        <Text className="px-2 text-sm text-foreground-muted">
-          {grantBot === undefined
-            ? MCP_CONNECTIONS_NOTICE
-            : `${grantBot.name} can use it as soon as you add it.`}
-        </Text>
-        {editing ? (
+        <ScrollView
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode={Platform.OS === "android" ? "none" : "on-drag"}
+          contentInsetAdjustmentBehavior="automatic"
+          automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
+          className="flex-1"
+          contentContainerClassName="gap-5 px-5 pt-4"
+          contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 18) + 18 }}
+        >
           <Text className="px-2 text-sm text-foreground-muted">
-            {mcpConnectionStatusText(status).text}
+            {grantBot === undefined
+              ? MCP_CONNECTIONS_NOTICE
+              : `${grantBot.name} can use it as soon as you add it.`}
           </Text>
-        ) : null}
-        <SettingsSection title="Connection">
-          <FormField
-            label="Name"
-            value={draft.label}
-            maxLength={MCP_CONNECTION_LABEL_MAX_LENGTH}
-            placeholder="Docs (work account)"
-            onChange={(label) => setDraft({ ...draft, label })}
-          />
           {editing ? (
+            <Text className="px-2 text-sm text-foreground-muted">
+              {mcpConnectionStatusText(status).text}
+            </Text>
+          ) : null}
+          <SettingsSection title="Connection">
             <FormField
-              label="Transport"
-              value={isHttp ? "HTTP" : "Local command (stdio)"}
-              disabled
-              borderTop
-              onChange={() => undefined}
+              label="Name"
+              value={draft.label}
+              maxLength={MCP_CONNECTION_LABEL_MAX_LENGTH}
+              placeholder="Docs (work account)"
+              onChange={(label) => setDraft({ ...draft, label })}
             />
-          ) : (
-            <SelectRow
-              label="Transport"
-              value={isHttp ? "HTTP" : "Local command (stdio)"}
-              borderTop
-              actions={[
-                { id: "http", title: "HTTP" },
-                { id: "stdio", title: "Local command (stdio)" },
-              ]}
-              onSelect={(next) => {
-                if (next !== "http" && next !== "stdio") return;
-                setDraft({ ...draft, transport: next });
-                setBindings([]);
-              }}
-            />
-          )}
-          {isHttp ? (
-            <FormField
-              label="URL"
-              value={draft.url}
-              disabled={editing}
-              borderTop
-              placeholder="https://mcp.example.com/mcp"
-              onChange={(url) => setDraft({ ...draft, url })}
-            />
-          ) : (
-            <>
+            {editing ? (
               <FormField
-                label="Command"
-                value={draft.command}
+                label="Transport"
+                value={isHttp ? "HTTP" : "Local command (stdio)"}
+                disabled
+                borderTop
+                onChange={() => undefined}
+              />
+            ) : (
+              <SelectRow
+                label="Transport"
+                value={isHttp ? "HTTP" : "Local command (stdio)"}
+                borderTop
+                actions={[
+                  { id: "http", title: "HTTP" },
+                  { id: "stdio", title: "Local command (stdio)" },
+                ]}
+                onSelect={(next) => {
+                  if (next !== "http" && next !== "stdio") return;
+                  setDraft({ ...draft, transport: next });
+                  setBindings([]);
+                }}
+              />
+            )}
+            {isHttp ? (
+              <FormField
+                label="URL"
+                value={draft.url}
                 disabled={editing}
                 borderTop
-                placeholder="npx"
-                onChange={(command) => setDraft({ ...draft, command })}
+                placeholder="https://mcp.example.com/mcp"
+                onChange={(url) => setDraft({ ...draft, url })}
               />
-              <FormField
-                label="Arguments, one per line"
-                value={draft.args}
-                disabled={editing}
-                borderTop
-                multiline
-                onChange={(args) => setDraft({ ...draft, args })}
-              />
-            </>
-          )}
-        </SettingsSection>
-        {editing ? (
-          <Text className="px-2 text-sm text-foreground-muted">
-            The endpoint is part of the connection's identity. To change it, add a new connection.
-          </Text>
-        ) : null}
-        <SettingsSection title={isHttp ? "Headers" : "Environment variables"}>
-          {bindings.map((row, index) => (
-            <View key={row.key} className={index > 0 ? "border-t border-border-subtle" : ""}>
-              <FormField
-                label="Name"
-                value={row.name}
-                placeholder={isHttp ? "Authorization" : "API_TOKEN"}
-                onChange={(name) =>
-                  // A saved value belongs to its name; a renamed binding needs a new one.
-                  setBinding(
-                    row.key,
-                    row.saved !== undefined && row.value === row.saved
-                      ? { name, value: "", saved: undefined }
-                      : { name },
-                  )
-                }
-              />
-              {sources.length > 0 || row.source !== null ? (
-                <SelectRow
-                  label="Source"
-                  value={
-                    row.source === null
-                      ? "Value"
-                      : (sources.find((source) => source.id === row.source)?.label ?? row.source)
-                  }
-                  borderTop
-                  actions={[
-                    { id: "", title: "Value" },
-                    ...sources.map((source) => ({ id: source.id, title: source.label })),
-                  ]}
-                  onSelect={(id) => {
-                    const source = id === "" ? null : (id as SecretProviderId);
-                    setBinding(row.key, {
-                      source,
-                      referenceText: "",
-                      value: source === null ? (row.saved ?? "") : "",
-                    });
-                  }}
-                />
-              ) : null}
-              {row.source === null ? (
-                <View className="gap-2 border-t border-border-subtle px-4 py-3">
-                  <SecretTextInput
-                    accessibilityLabel={row.name === "" ? `${bindingNoun} value` : row.name}
-                    placeholder={
-                      row.saved !== undefined && row.value === row.saved
-                        ? "Stored secret, enter a new value to replace"
-                        : "Value"
-                    }
-                    value={
-                      typeof row.value === "string" && row.value !== row.saved ? row.value : ""
-                    }
-                    editable
-                    onChangeText={(text) =>
-                      setBinding(row.key, {
-                        value: text === "" && row.saved !== undefined ? row.saved : text,
-                      })
-                    }
-                    onSubmitEditing={() => undefined}
-                  />
-                </View>
-              ) : (
+            ) : (
+              <>
                 <FormField
-                  label="Reference"
-                  value={row.referenceText}
+                  label="Command"
+                  value={draft.command}
+                  disabled={editing}
                   borderTop
-                  onChange={(referenceText) => {
-                    const source = sources.find((candidate) => candidate.id === row.source);
-                    setBinding(row.key, {
-                      referenceText,
-                      value:
-                        (source && secretRequestReference(source, referenceText)) ?? referenceText,
-                    });
-                  }}
+                  placeholder="npx"
+                  onChange={(command) => setDraft({ ...draft, command })}
                 />
-              )}
-              <ListActionRow
-                label={`Remove ${row.name === "" ? bindingNoun.toLowerCase() : row.name}`}
-                tone="danger"
-                onPress={() => setBindings((rows) => rows.filter((other) => other.key !== row.key))}
-              />
-            </View>
-          ))}
-          <ListActionRow
-            label={`Add ${bindingNoun.toLowerCase()}`}
-            onPress={() =>
-              setBindings((rows) => [
-                ...rows,
-                {
-                  key: uuidv4(),
-                  name: "",
-                  value: "",
-                  saved: undefined,
-                  referenceText: "",
-                  source: null,
-                },
-              ])
-            }
-          />
-        </SettingsSection>
-        {error !== null ? (
-          <Text className="px-2 text-sm text-danger-foreground">{error}</Text>
-        ) : null}
-        <Button
-          label={editing ? "Save changes" : "Add connection"}
-          // A connection added for a Bot waits for that Bot's grants, so it can be granted.
-          disabled={!canEdit || (grantToBotId !== undefined && grantBot?.mcpGrants === undefined)}
-          loading={busy}
-          onPress={() => void save()}
-        />
-        {editing && current !== undefined ? (
-          <SettingsSection title="Actions">
+                <FormField
+                  label="Arguments, one per line"
+                  value={draft.args}
+                  disabled={editing}
+                  borderTop
+                  multiline
+                  onChange={(args) => setDraft({ ...draft, args })}
+                />
+              </>
+            )}
+          </SettingsSection>
+          {editing ? (
+            <Text className="px-2 text-sm text-foreground-muted">
+              The endpoint is part of the connection's identity. To change it, add a new connection.
+            </Text>
+          ) : null}
+          <SettingsSection title={isHttp ? "Headers" : "Environment variables"}>
+            {bindings.map((row, index) => (
+              <View key={row.key} className={index > 0 ? "border-t border-border-subtle" : ""}>
+                <FormField
+                  label="Name"
+                  value={row.name}
+                  placeholder={isHttp ? "Authorization" : "API_TOKEN"}
+                  onChange={(name) =>
+                    // A saved value belongs to its name; a renamed binding needs a new one.
+                    setBinding(
+                      row.key,
+                      row.saved !== undefined && row.value === row.saved
+                        ? { name, value: "", saved: undefined }
+                        : { name },
+                    )
+                  }
+                />
+                {sources.length > 0 || row.source !== null ? (
+                  <SelectRow
+                    label="Source"
+                    value={
+                      row.source === null
+                        ? "Value"
+                        : (sources.find((source) => source.id === row.source)?.label ?? row.source)
+                    }
+                    borderTop
+                    actions={[
+                      { id: "", title: "Value" },
+                      ...sources.map((source) => ({ id: source.id, title: source.label })),
+                    ]}
+                    onSelect={(id) => {
+                      const source = id === "" ? null : (id as SecretProviderId);
+                      setBinding(row.key, {
+                        source,
+                        referenceText: "",
+                        value: source === null ? (row.saved ?? "") : "",
+                      });
+                    }}
+                  />
+                ) : null}
+                {row.source === null ? (
+                  <View className="gap-2 border-t border-border-subtle px-4 py-3">
+                    <SecretTextInput
+                      accessibilityLabel={row.name === "" ? `${bindingNoun} value` : row.name}
+                      placeholder={
+                        row.saved !== undefined && row.value === row.saved
+                          ? "Stored secret, enter a new value to replace"
+                          : "Value"
+                      }
+                      value={
+                        typeof row.value === "string" && row.value !== row.saved ? row.value : ""
+                      }
+                      editable
+                      onChangeText={(text) =>
+                        setBinding(row.key, {
+                          value: text === "" && row.saved !== undefined ? row.saved : text,
+                        })
+                      }
+                      onSubmitEditing={() => undefined}
+                    />
+                  </View>
+                ) : (
+                  <FormField
+                    label="Reference"
+                    value={row.referenceText}
+                    borderTop
+                    onChange={(referenceText) => {
+                      const source = sources.find((candidate) => candidate.id === row.source);
+                      setBinding(row.key, {
+                        referenceText,
+                        value:
+                          (source && secretRequestReference(source, referenceText)) ??
+                          referenceText,
+                      });
+                    }}
+                  />
+                )}
+                <ListActionRow
+                  label={`Remove ${row.name === "" ? bindingNoun.toLowerCase() : row.name}`}
+                  tone="danger"
+                  onPress={() =>
+                    setBindings((rows) => rows.filter((other) => other.key !== row.key))
+                  }
+                />
+              </View>
+            ))}
             <ListActionRow
-              label="Refresh credentials"
-              disabled={!canRefresh || busy}
-              onPress={async () => {
-                setBusy(true);
-                const result = await refresh({
-                  environmentId,
-                  input: { connectionIds: [target.connectionId] },
-                });
-                setBusy(false);
-                reportFailure("Could not refresh connection", result);
-              }}
-            />
-            <ListActionRow
-              label={current.enabled ? "Disable" : "Enable"}
-              disabled={!canEdit || busy}
-              onPress={async () => {
-                setBusy(true);
-                const result = await update({
-                  environmentId,
-                  input: {
-                    connectionId: target.connectionId,
-                    expectedRevision: current.revision,
-                    enabled: !current.enabled,
+              label={`Add ${bindingNoun.toLowerCase()}`}
+              onPress={() =>
+                setBindings((rows) => [
+                  ...rows,
+                  {
+                    key: uuidv4(),
+                    name: "",
+                    value: "",
+                    saved: undefined,
+                    referenceText: "",
+                    source: null,
                   },
-                });
-                setBusy(false);
-                reportFailure(
-                  current.enabled ? "Could not disable connection" : "Could not enable connection",
-                  result,
-                );
-                if (result._tag !== "Failure") navigation.goBack();
-              }}
-            />
-            {usage.state === "failed" ? (
-              <ListActionRow
-                label="Retry loading Bots"
-                description={`Removal names the Bots that lose this connection. ${usage.error}`}
-                onPress={retryUsage}
-              />
-            ) : null}
-            <ListActionRow
-              label="Remove connection"
-              tone="danger"
-              loading={usage.state === "loading"}
-              disabled={!canEdit || busy || removalMessage === null}
-              onPress={() => {
-                if (removalMessage === null) return;
-                Dialog.confirm({
-                  title: `Remove ${current.label}?`,
-                  message: removalMessage,
-                  confirmText: "Remove",
-                  destructive: true,
-                  onConfirm: () =>
-                    void remove({
-                      environmentId,
-                      input: {
-                        connectionId: target.connectionId,
-                        expectedRevision: current.revision,
-                      },
-                    }).then((result) => {
-                      reportFailure("Could not remove connection", result);
-                      if (result._tag !== "Failure") navigation.goBack();
-                    }),
-                });
-              }}
+                ])
+              }
             />
           </SettingsSection>
-        ) : null}
-      </ScrollView>
+          {error !== null ? (
+            <Text className="px-2 text-sm text-danger-foreground">{error}</Text>
+          ) : null}
+          <Button
+            label={editing ? "Save changes" : "Add connection"}
+            // A connection added for a Bot waits for that Bot's grants, so it can be granted.
+            disabled={!canEdit || (grantToBotId !== undefined && grantBot?.mcpGrants === undefined)}
+            loading={busy}
+            onPress={() => void save()}
+          />
+          {editing && current !== undefined ? (
+            <SettingsSection title="Actions">
+              <ListActionRow
+                label="Refresh credentials"
+                disabled={!canRefresh || busy}
+                onPress={async () => {
+                  setBusy(true);
+                  const result = await refresh({
+                    environmentId,
+                    input: { connectionIds: [target.connectionId] },
+                  });
+                  setBusy(false);
+                  reportFailure("Could not refresh connection", result);
+                }}
+              />
+              <ListActionRow
+                label={current.enabled ? "Disable" : "Enable"}
+                disabled={!canEdit || busy}
+                onPress={async () => {
+                  setBusy(true);
+                  const result = await update({
+                    environmentId,
+                    input: {
+                      connectionId: target.connectionId,
+                      expectedRevision: current.revision,
+                      enabled: !current.enabled,
+                    },
+                  });
+                  setBusy(false);
+                  reportFailure(
+                    current.enabled
+                      ? "Could not disable connection"
+                      : "Could not enable connection",
+                    result,
+                  );
+                  if (result._tag !== "Failure") navigation.goBack();
+                }}
+              />
+              {usage.state === "failed" ? (
+                <ListActionRow
+                  label="Retry loading Bots"
+                  description={`Removal names the Bots that lose this connection. ${usage.error}`}
+                  onPress={retryUsage}
+                />
+              ) : null}
+              <ListActionRow
+                label="Remove connection"
+                tone="danger"
+                loading={usage.state === "loading"}
+                disabled={!canEdit || busy || removalMessage === null}
+                onPress={() => {
+                  if (removalMessage === null) return;
+                  Dialog.confirm({
+                    title: `Remove ${current.label}?`,
+                    message: removalMessage,
+                    confirmText: "Remove",
+                    destructive: true,
+                    onConfirm: () =>
+                      void remove({
+                        environmentId,
+                        input: {
+                          connectionId: target.connectionId,
+                          expectedRevision: current.revision,
+                        },
+                      }).then((result) => {
+                        reportFailure("Could not remove connection", result);
+                        if (result._tag !== "Failure") navigation.goBack();
+                      }),
+                  });
+                }}
+              />
+            </SettingsSection>
+          ) : null}
+        </ScrollView>
+      </KeyboardAvoidingView>
     </SettingsScreen>
   );
 }
