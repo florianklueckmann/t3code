@@ -1601,9 +1601,19 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
               retiredMcpConnectionIds: current.retiredMcpConnectionIds,
             }),
           );
+        const oauthApp = McpConnectionId.make("0f0f0f0f-0000-4000-8000-00000000000f");
         const withConnections = yield* catalog({
           [accountA]: sameUrl("Work", "Bearer account-a-secret"),
           [accountB]: sameUrl("Personal", "Bearer account-b-secret"),
+          [oauthApp]: {
+            ...sameUrl("Mail", ""),
+            transport: {
+              type: "http",
+              url: "https://mcp.example.test/mcp",
+              httpHeaders: {},
+              oauth: { scopes: [], client: { id: "app-id", secret: "oauth-client-secret" } },
+            },
+          },
           [local]: {
             ...sameUrl("Local", ""),
             transport: {
@@ -1619,6 +1629,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
           "Bearer account-b-secret",
           "upper-env-secret",
           "lower-env-secret",
+          "oauth-client-secret",
         ];
         const mcpClient = ServerSettingsModule.redactServerSettingsForClient(withConnections, {
           secretReferences: true,
@@ -1649,6 +1660,10 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
           yield* storedText(mcpConnectionSecretName(local, "env", "api_key")),
           Option.some("lower-env-secret"),
         );
+        assert.deepEqual(
+          yield* storedText(mcpConnectionSecretName(oauthApp, "oauth", "client-secret")),
+          Option.some("oauth-client-secret"),
+        );
         assert.isTrue(
           Option.isNone(yield* store.get(mcpConnectionSecretName(local, "env", "TOKEN"))),
         );
@@ -1675,6 +1690,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
         for (const name of [
           mcpConnectionSecretName(accountA, "header", "Authorization"),
           mcpConnectionSecretName(local, "env", "API_KEY"),
+          mcpConnectionSecretName(oauthApp, "oauth", "client-secret"),
         ]) {
           assert.isTrue(Option.isNone(yield* store.get(name)));
         }
@@ -2063,6 +2079,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
         // No shipped client decodes this; clients that do also read references. The walk visits
         // the bindings schema once, though `httpHeaders` shares it.
         "mcpConnections.*.transport.env.*",
+        "mcpConnections.*.transport.oauth.client.secret",
       ]);
     }),
   );

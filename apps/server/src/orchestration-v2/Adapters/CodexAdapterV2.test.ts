@@ -1046,6 +1046,7 @@ function codexReplayPreamble(input: {
   readonly prompt: string;
   readonly sentPrompt?: string;
   readonly effort?: string;
+  readonly additionalContext?: Readonly<Record<string, { readonly kind: string; value: string }>>;
 }): Array<CodexReplay.CodexAppServerReplayEntry> {
   return [
     {
@@ -1145,6 +1146,9 @@ function codexReplayPreamble(input: {
           sandboxPolicy: { type: "dangerFullAccess" },
           summary: "detailed",
           ...(input.effort === undefined ? {} : { effort: input.effort }),
+          ...(input.additionalContext === undefined
+            ? {}
+            : { additionalContext: input.additionalContext }),
           collaborationMode: {
             mode: "default",
             settings: {
@@ -3972,6 +3976,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       set: (next: DeliveryResult) => Ref.set(current, next),
       layer: Layer.succeed(McpConnectionDelivery.McpConnectionDelivery, {
         resolve: () => Effect.flatten(Ref.get(current)),
+        markRefused: () => Effect.void,
       }),
     };
   });
@@ -4210,16 +4215,35 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       }),
   );
 
-  it.effect("names a granted connection that failed to start, never Codex's error text", () =>
-    Effect.scoped(
+  it.effect("names the accounts a turn loaded, and a failed one without its error", () => {
+    const refused: Array<readonly [McpConnectionId, "startup" | "call"]> = [];
+    return Effect.scoped(
       Effect.gen(function* () {
         const scenario = "codex-grant-startup-failed";
         const nativeThreadId = `native-${scenario}-thread`;
         const nativeTurnId = `native-${scenario}-turn`;
         const seal = codexHomeSealReplay(scenario, nativeThreadId);
         const { step, resumed, configRead } = seal;
+        // Granted but not delivered, as a signed-out OAuth account is: the model is not told of it.
+        const lapsedMail = McpConnectionId.make("2e2e2e2e-0000-4000-8000-00000000002e");
         const preamble = seal.onMeasuredVersion(
-          codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt: "check my mail" }),
+          codexReplayPreamble({
+            nativeThreadId,
+            nativeTurnId,
+            prompt: "check my mail",
+            additionalContext: {
+              t3_bot_01: {
+                kind: "application",
+                value: [
+                  "Mail Bot canon.",
+                  "",
+                  "MCP connections granted to you, each a separate account. Use the one the request is about:",
+                  '- "Private mail": tools in the mcp__t3c_2a2a2a2a_0000_4000_8000_00000000002a namespace',
+                  '- "Work mail": tools in the mcp__t3c_2b2b2b2b_0000_4000_8000_00000000002b namespace',
+                ].join("\n"),
+              },
+            },
+          }),
         );
         const secret = "MAIL_TOKEN=sk-live-51NativeLeak rejected by mail.example.test";
         const failed = (connection: McpConnectionId) =>
@@ -4233,6 +4257,46 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                 name: `t3c-${connection}`,
                 status: "failed",
                 error: `${secret} (${connection})`,
+              },
+            },
+          }) as const;
+        // A call's result as Codex 0.167 reports a server's 401 (measured, T3B-15 evidence 3b).
+        const call = (
+          id: string,
+          server: string,
+          status: "completed" | "failed",
+          result: { readonly text: string; readonly challenged: boolean },
+        ) =>
+          ({
+            type: "emit_inbound",
+            label: `call ${id}`,
+            frame: {
+              method: "item/completed",
+              params: {
+                threadId: nativeThreadId,
+                turnId: nativeTurnId,
+                completedAtMs: 1,
+                item: {
+                  type: "mcpToolCall",
+                  id,
+                  server,
+                  tool: "whoami",
+                  status,
+                  arguments: {},
+                  appContext: null,
+                  mcpAppUi: null,
+                  pluginId: null,
+                  readOnlyHint: true,
+                  result: {
+                    content: [{ type: "text", text: result.text }],
+                    structuredContent: null,
+                    ...(result.challenged
+                      ? { _meta: { "mcp/www_authenticate": ["[REDACTED]"] } }
+                      : {}),
+                  },
+                  error: null,
+                  durationMs: 1,
+                },
               },
             },
           }) as const;
@@ -4274,6 +4338,24 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             withReplayRequestId(preamble[6]!, 8),
             preamble[7]!,
             failed(workMail),
+            // Only a granted server's refused token counts: not other failures, not a user server.
+            call("auth-text", `t3c-${privateMail}`, "failed", {
+              text: "Authentication required",
+              challenged: false,
+            }),
+            call("auth-meta", `t3c-${workMail}`, "failed", { text: "401", challenged: true }),
+            call("crashed", `t3c-${privateMail}`, "failed", {
+              text: "mailbox locked",
+              challenged: false,
+            }),
+            call("user-server", "my-mail", "failed", {
+              text: "Authentication required",
+              challenged: true,
+            }),
+            call("worked", `t3c-${privateMail}`, "completed", {
+              text: "Authentication required",
+              challenged: false,
+            }),
             {
               type: "emit_inbound",
               label: "turn/completed",
@@ -4291,7 +4373,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         const grantPolicy = {
           ...CODEX_TEST_RUNTIME_POLICY,
           nativeMemory: "disabled",
-          mcpConnections: [privateMail, workMail],
+          mcpConnections: [privateMail, workMail, lapsedMail],
         } as const;
         yield* harness.runtime.resumeThread({
           providerThread: harness.providerThread,
@@ -4305,7 +4387,11 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           attemptId: RunAttemptId.make("grant-startup-failed"),
           text: "check my mail",
         });
-        yield* harness.runtime.startTurn({ ...turn, runtimePolicy: grantPolicy });
+        yield* harness.runtime.startTurn({
+          ...turn,
+          runtimePolicy: grantPolicy,
+          applicationInstructions: "Mail Bot canon.",
+        });
         yield* harness.awaitTerminal(1);
 
         const notices = harness.events.flatMap((event) =>
@@ -4318,6 +4404,13 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           '"Work mail" could not start, so its tools are unavailable in this conversation. Check it in Settings → MCP connections.',
         ]);
         assert.notInclude(JSON.stringify(harness.events), "sk-live-51NativeLeak");
+        // Each refusal reaches the catalog, so an OAuth account refreshes before its next load.
+        assert.deepEqual(refused, [
+          [privateMail, "startup"],
+          [workMail, "startup"],
+          [privateMail, "call"],
+          [workMail, "call"],
+        ]);
       }).pipe(
         Effect.provideService(HostProcess.Platform, "darwin"),
         Effect.provide(
@@ -4328,12 +4421,13 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             NodeCrypto.layer,
             Layer.succeed(McpConnectionDelivery.McpConnectionDelivery, {
               resolve: () => Effect.succeed(grantedLoad("token-1")),
+              markRefused: (id, source) => Effect.sync(() => void refused.push([id, source])),
             }),
           ),
         ),
       ),
-    ),
-  );
+    );
+  });
 
   it.effect(
     "starts and forks Bot threads with only their grants, and refuses what it can't confirm",
@@ -9604,6 +9698,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                     ...grantedLoad("token-1"),
                     connections: grantedLoad("token-1").connections.slice(0, 1),
                   }),
+                markRefused: () => Effect.void,
               }),
             ),
           ),

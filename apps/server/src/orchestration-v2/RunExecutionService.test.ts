@@ -5,11 +5,9 @@ import {
   ChatAttachmentId,
   ChatFileAttachment,
   CommandId,
-  McpConnectionId,
   MessageId,
   NodeId,
   type OrchestrationV2AppThread,
-  type ServerSettings as ServerSettingsContract,
   type OrchestrationV2CheckpointScope,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ExecutionNode,
@@ -3199,77 +3197,6 @@ it.effect("delivers the current Bot instructions with the provider turn", () =>
   }),
 );
 
-it.effect("names each granted account's tool namespace in every Bot-derived turn", () =>
-  Effect.gen(function* () {
-    const privateMail = McpConnectionId.make("2a2a2a2a-0000-4000-8000-00000000002a");
-    const workMail = McpConnectionId.make("2b2b2b2b-0000-4000-8000-00000000002b");
-    const offMail = McpConnectionId.make("2c2c2c2c-0000-4000-8000-00000000002c");
-    const mail = (label: string, enabled = true) => ({
-      label,
-      enabled,
-      revision: 1,
-      transport: { type: "stdio" as const, command: "mail-mcp", args: [], env: {} },
-      authentication: { type: "bindings" as const },
-    });
-    const deliveredFor = (
-      key: string,
-      botContext: ReturnType<BotTurnContext.BotTurnContext["Service"]["forThread"]>,
-      mcpConnections: ReadonlyArray<McpConnectionId>,
-    ) =>
-      Effect.gen(function* () {
-        const delivered = yield* Ref.make<ReadonlyArray<string | undefined>>([]);
-        yield* captureRootRunTermination({
-          key,
-          shouldFinalizeRun: () => Effect.succeed(true),
-          events: (ids) => Stream.make(rootTerminalEvent(ids, "completed")),
-          botContext,
-          mcpConnections,
-          catalog: {
-            [privateMail]: mail("Private mail"),
-            [workMail]: mail("Work mail"),
-            [offMail]: mail("Old mail", false),
-          },
-          startTurn: (turnInput) =>
-            Ref.update(delivered, (current) => [...current, turnInput.applicationInstructions]),
-        });
-        return (yield* Ref.get(delivered))[0];
-      });
-    const mapping = [
-      "MCP connections granted to you, each a separate account. Use the one the request is about:",
-      '- "Private mail": tools in the mcp__t3c_2a2a2a2a_0000_4000_8000_00000000002a namespace',
-      '- "Work mail": tools in the mcp__t3c_2b2b2b2b_0000_4000_8000_00000000002b namespace',
-    ].join("\n");
-    // A subagent or fork has no Bot instructions of its own, but its policy carries the grants.
-    assert.equal(
-      yield* deliveredFor("grants:derived", Effect.succeed({ _tag: "none" }), [
-        privateMail,
-        workMail,
-        offMail,
-      ]),
-      mapping,
-    );
-    assert.equal(
-      yield* deliveredFor(
-        "grants:home",
-        Effect.succeed({
-          _tag: "active",
-          instructions: "Mail Bot canon.",
-          scope: {
-            botId: BotId.make("mail-bot"),
-            projectId: ProjectId.make("mail"),
-            homeThreadId: ThreadId.make("bot-home:mail-bot:mail"),
-            taskId: null,
-          },
-        }),
-        [privateMail, workMail],
-      ),
-      `Mail Bot canon.\n\n${mapping}`,
-    );
-    // No granted, enabled connection: nothing to name, as in a scoped Home turn.
-    assert.isUndefined(yield* deliveredFor("grants:none", Effect.succeed({ _tag: "none" }), []));
-  }),
-);
-
 const startBlockedBotRun = Effect.fn("RunExecutionServiceTest.startBlockedBotRun")(function* (
   key: string,
   botContext: ReturnType<BotTurnContext.BotTurnContext["Service"]["forThread"]>,
@@ -3413,9 +3340,6 @@ function captureRootRunTermination(input: {
   readonly shouldStartProviderTurn?: RunExecutionService.RunExecutionServiceV2StartRootRunInput["shouldStartProviderTurn"];
   readonly appContext?: ReturnType<McpAppModelContext.McpAppModelContext["Service"]["forThread"]>;
   readonly botContext?: ReturnType<BotTurnContext.BotTurnContext["Service"]["forThread"]>;
-  /** The turn's granted connections, as its resolved policy carries them. */
-  readonly mcpConnections?: ReadonlyArray<McpConnectionId>;
-  readonly catalog?: ServerSettingsContract["mcpConnections"];
   readonly ingestNormalized?: ProviderEventIngestor.ProviderEventIngestorV2["Service"]["ingestNormalized"];
   readonly beforeTerminalWrite?: (
     request: Parameters<EventSink.EventSinkV2["Service"]["writeIfRunCurrent"]>[0],
@@ -3502,9 +3426,7 @@ function captureRootRunTermination(input: {
           Layer.mock(ProviderEventIngestor.ProviderEventIngestorV2)({
             ingestNormalized: input.ingestNormalized ?? (() => Effect.succeed([])),
           }),
-          ServerSettings.layerTest(
-            input.catalog === undefined ? {} : { mcpConnections: input.catalog },
-          ),
+          ServerSettings.layerTest(),
           Layer.succeed(RunFinalizationService.RunFinalizationObserver, {
             refresh: () => Effect.void,
             refreshAfterTurn: () =>
@@ -3616,7 +3538,6 @@ function captureRootRunTermination(input: {
             access: { type: "fullAccess" },
             networkAccess: false,
           },
-          ...(input.mcpConnections === undefined ? {} : { mcpConnections: input.mcpConnections }),
         },
       });
       yield* start.pipe(

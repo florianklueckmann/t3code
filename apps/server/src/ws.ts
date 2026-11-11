@@ -191,6 +191,7 @@ import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
 import * as ServerRuntimeStartup from "./serverRuntimeStartup.ts";
 import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
 import * as ServerSettings from "./serverSettings.ts";
+import * as McpConnectionOAuth from "./mcpConnections/McpConnectionOAuth.ts";
 import * as McpConnections from "./mcpConnections/McpConnections.ts";
 import { invalidateSettingsSecrets } from "./sourceControl/sourceControlHostSecrets.ts";
 import * as DatabaseStorage from "./persistence/DatabaseStorage.ts";
@@ -1456,6 +1457,7 @@ export const layerWsRpc = (
       const botTasks = yield* BotTaskService.BotTaskService;
       const botContinuation = yield* BotContinuation.BotContinuation;
       const mcpConnections = yield* McpConnections.McpConnections;
+      const mcpConnectionOAuth = yield* McpConnectionOAuth.McpConnectionOAuth;
       const botMaintenance = yield* BotMaintenance.BotMaintenance;
       const botHomeCheck = yield* BotHomeCheck.BotHomeCheck;
       const secretRequests = yield* SecretRequests.SecretRequests;
@@ -2413,6 +2415,13 @@ export const layerWsRpc = (
         [WS_METHODS.mcpConnectionsUpdate]: (input) => mcpConnections.update(input),
         [WS_METHODS.mcpConnectionsRemove]: (input) => mcpConnections.remove(input),
         [WS_METHODS.mcpConnectionsRefresh]: (input) => mcpConnections.refresh(input),
+        [WS_METHODS.mcpConnectionsOAuthStart]: (input) => mcpConnectionOAuth.start(input),
+        [WS_METHODS.mcpConnectionsOAuthComplete]: (input) => mcpConnectionOAuth.complete(input),
+        [WS_METHODS.mcpConnectionsOAuthCancel]: (input) => mcpConnectionOAuth.cancel(input),
+        [WS_METHODS.mcpConnectionsOAuthDisconnect]: (input) =>
+          mcpConnectionOAuth.disconnect(input.connectionId),
+        [WS_METHODS.mcpConnectionsOAuthSubscribe]: (input) =>
+          mcpConnectionOAuth.subscribe(input.connectionId),
         [WS_METHODS.guestShareCreate]: (input) =>
           Effect.annotateCurrentSpan({ "orchestration_v2.thread_id": input.threadId }).pipe(
             Effect.andThen(guestShares.create(input)),

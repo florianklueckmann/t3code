@@ -1,6 +1,12 @@
 import * as Schema from "effect/Schema";
 
-import { NonNegativeInt, TrimmedNonEmptyString, TrimmedString } from "./baseSchemas.ts";
+import {
+  ForwardCompatibleOptional,
+  IsoDateTime,
+  NonNegativeInt,
+  TrimmedNonEmptyString,
+  TrimmedString,
+} from "./baseSchemas.ts";
 import { isSecretReference, SettingsSecretValue } from "./settingsSecretValue.ts";
 
 /**
@@ -19,6 +25,7 @@ const MAX_BINDING_NAME_LENGTH = 128;
 const MAX_ARGUMENTS = 64;
 const MAX_TEXT_LENGTH = 4096;
 const MAX_URL_LENGTH = 2048;
+const MAX_OAUTH_SCOPES = 32;
 
 export const McpConnectionLabel = TrimmedNonEmptyString.check(
   Schema.isMaxLength(MCP_CONNECTION_LABEL_MAX_LENGTH),
@@ -36,10 +43,31 @@ export const McpConnectionStdioTransport = Schema.Struct({
   args: Schema.Array(Schema.String),
   env: McpConnectionBindings,
 });
+/** An OAuth app the user registered with the service, for services without automatic registration. */
+export const McpConnectionOAuthClient = Schema.Struct({
+  id: TrimmedString,
+  /** Absent for a public client. */
+  secret: Schema.optionalKey(SettingsSecretValue),
+});
+export type McpConnectionOAuthClient = typeof McpConnectionOAuthClient.Type;
+
+export const McpConnectionOAuth = Schema.Struct({
+  /** Asked for at sign-in. Empty asks for what the service advertises. */
+  scopes: Schema.Array(Schema.String),
+  /** Absent: T3 Code registers itself with the service at each sign-in. */
+  client: Schema.optionalKey(McpConnectionOAuthClient),
+});
+export type McpConnectionOAuth = typeof McpConnectionOAuth.Type;
+
 export const McpConnectionHttpTransport = Schema.Struct({
   type: Schema.Literal("http"),
   url: TrimmedString,
   httpHeaders: McpConnectionBindings,
+  /**
+   * Present: T3 Code signs in with OAuth and sends the access token. Fixed at create, so another
+   * account is another connection. Older servers ignore the key.
+   */
+  oauth: Schema.optionalKey(McpConnectionOAuth),
 });
 export const McpConnectionTransport = Schema.Union([
   McpConnectionStdioTransport,
@@ -71,6 +99,9 @@ export const McpConnectionProblemReason = Schema.Literals([
   "binding-value-empty",
   "binding-value-invalid",
   "binding-unresolved",
+  "oauth-authorization-binding",
+  "oauth-scope-invalid",
+  "oauth-client-invalid",
 ]);
 export type McpConnectionProblemReason = typeof McpConnectionProblemReason.Type;
 
@@ -113,6 +144,12 @@ export function mcpConnectionProblemMessage(problem: McpConnectionProblem): stri
       return `${binding} contains characters it cannot send, such as a line break.`;
     case "binding-unresolved":
       return `${binding} could not be read from its secret provider.`;
+    case "oauth-authorization-binding":
+      return "Remove the Authorization header. OAuth sign-in sends it.";
+    case "oauth-scope-invalid":
+      return `Enter at most ${MAX_OAUTH_SCOPES} scopes, each a single word.`;
+    case "oauth-client-invalid":
+      return "Enter the client ID and client secret as single lines.";
   }
 }
 
@@ -194,6 +231,32 @@ function hasCredentialQuery(raw: string): boolean {
   return [...url.searchParams.keys()].some((name) => SECRET_QUERY.test(name));
 }
 
+const SCOPE = /^[\x21\x23-\x5b\x5d-\x7e]+$/;
+
+function oauthProblem(
+  headers: McpConnectionBindings,
+  { scopes, client }: McpConnectionOAuth,
+): McpConnectionProblem | undefined {
+  const authorization = Object.keys(headers).find((name) => name.toLowerCase() === "authorization");
+  if (authorization !== undefined) {
+    return { reason: "oauth-authorization-binding", binding: authorization };
+  }
+  if (scopes.length > MAX_OAUTH_SCOPES || !scopes.every((scope) => SCOPE.test(scope))) {
+    return { reason: "oauth-scope-invalid" };
+  }
+  if (client === undefined) return undefined;
+  const secret = client.secret;
+  if (
+    client.id.length === 0 ||
+    client.id.length > MAX_TEXT_LENGTH ||
+    LINE_BREAK.test(client.id) ||
+    (typeof secret === "string" && (secret.length === 0 || LINE_BREAK.test(secret)))
+  ) {
+    return { reason: "oauth-client-invalid" };
+  }
+  return undefined;
+}
+
 function looksLikeCredential(text: string): boolean {
   return (
     SECRET_FLAG.test(text) ||
@@ -235,7 +298,13 @@ export function mcpConnectionDefinitionProblem(definition: {
       return bindingsProblem("env", transport.env);
     }
     case "http":
-      return urlProblem(transport.url) ?? bindingsProblem("header", transport.httpHeaders);
+      return (
+        urlProblem(transport.url) ??
+        bindingsProblem("header", transport.httpHeaders) ??
+        (transport.oauth === undefined
+          ? undefined
+          : oauthProblem(transport.httpHeaders, transport.oauth))
+      );
   }
 }
 
@@ -261,13 +330,105 @@ export const McpConnectionStatus = Schema.Union([
 ]);
 export type McpConnectionStatus = typeof McpConnectionStatus.Type;
 
+/** The browser path of an OAuth sign-in's redirect URI, on whichever origin the client uses. */
+export const MCP_CONNECTION_OAUTH_CALLBACK_PATH = "/oauth/mcp-connections/callback";
+
+export const McpConnectionOAuthFailure = Schema.Literals([
+  "not-found",
+  "not-oauth",
+  "redirect-invalid",
+  "insecure",
+  "discovery",
+  "resource-mismatch",
+  "registration-unsupported",
+  "registration-failed",
+  "sign-in-ended",
+  "callback-invalid",
+  "declined",
+  "exchange-failed",
+  "unavailable",
+]);
+export type McpConnectionOAuthFailure = typeof McpConnectionOAuthFailure.Type;
+
+export function mcpConnectionOAuthFailureMessage(reason: McpConnectionOAuthFailure): string {
+  switch (reason) {
+    case "not-found":
+      return "This MCP connection no longer exists.";
+    case "not-oauth":
+      return "This MCP connection does not sign in with OAuth.";
+    case "redirect-invalid":
+      return "Sign-in needs an https address for this environment, or this computer's own.";
+    case "insecure":
+      return "This service or its sign-in uses plain http. OAuth needs https.";
+    case "discovery":
+      return "This service did not describe how to sign in.";
+    case "resource-mismatch":
+      return "This service sent its sign-in to another address. T3 Code will not send that account's access here.";
+    case "registration-unsupported":
+      return "This service needs its own OAuth app. Create the connection again with the client ID from the service's developer settings.";
+    case "registration-failed":
+      return "This service refused to register T3 Code for sign-in.";
+    case "sign-in-ended":
+      return "This sign-in was cancelled, expired or already used. Start it again.";
+    case "callback-invalid":
+      return "This sign-in response does not belong to this sign-in. Start it again.";
+    case "declined":
+      return "The service did not grant access.";
+    case "exchange-failed":
+      return "The service refused to finish sign-in. Start it again.";
+    case "unavailable":
+      return "Could not reach the service or save the sign-in. Try again.";
+  }
+}
+
+export const McpConnectionOAuthSignedOutReason = Schema.Literals([
+  "never",
+  "disconnected",
+  "expired",
+  "revoked",
+]);
+export type McpConnectionOAuthSignedOutReason = typeof McpConnectionOAuthSignedOutReason.Type;
+
+const McpConnectionOAuthFlowId = TrimmedNonEmptyString.check(Schema.isMaxLength(128));
+
+/**
+ * `credential` is what a Bot's load gets: a connected account, or nothing, in which case the Bot's
+ * work runs without the connection. `signIn` is the latest sign-in while it runs or after it failed.
+ */
+export const McpConnectionOAuthState = Schema.Struct({
+  credential: Schema.Union([
+    Schema.Struct({ state: Schema.Literal("connected"), connectedAt: IsoDateTime }),
+    Schema.Struct({
+      state: Schema.Literal("signed-out"),
+      reason: McpConnectionOAuthSignedOutReason,
+    }),
+  ]),
+  signIn: Schema.optionalKey(
+    Schema.Union([
+      Schema.Struct({
+        state: Schema.Literal("pending"),
+        flowId: McpConnectionOAuthFlowId,
+        expiresAt: IsoDateTime,
+      }),
+      Schema.Struct({
+        state: Schema.Literal("failed"),
+        flowId: McpConnectionOAuthFlowId,
+        reason: McpConnectionOAuthFailure,
+      }),
+    ]),
+  ),
+});
+export type McpConnectionOAuthState = typeof McpConnectionOAuthState.Type;
+
 export const McpConnectionSummary = Schema.Struct({
   id: McpConnectionId,
   label: Schema.String,
   enabled: Schema.Boolean,
   revision: NonNegativeInt,
   transport: Schema.Literals(["stdio", "http"]),
+  /** A signed-out OAuth connection also reads `blocked` here, for clients that predate `oauth`. */
   status: McpConnectionStatus,
+  oauth: ForwardCompatibleOptional(McpConnectionOAuthState),
 });
 export type McpConnectionSummary = typeof McpConnectionSummary.Type;
 
@@ -319,6 +480,54 @@ export const McpConnectionErrorReason = Schema.Literals([
   "invalid-definition",
   "settings-unavailable",
 ]);
+
+/**
+ * `redirectOrigin` is the origin the user's browser reaches this environment on, or a loopback
+ * origin the client listens on itself. It must be https, or http on a loopback host.
+ */
+export const McpConnectionOAuthStartInput = Schema.Struct({
+  connectionId: McpConnectionId,
+  redirectOrigin: TrimmedNonEmptyString.check(Schema.isMaxLength(MAX_URL_LENGTH)),
+});
+export type McpConnectionOAuthStartInput = typeof McpConnectionOAuthStartInput.Type;
+export const McpConnectionOAuthStartResult = Schema.Struct({
+  flowId: McpConnectionOAuthFlowId,
+  authorizationUrl: Schema.String,
+  /** What a preregistered OAuth app must list as its redirect URI. */
+  redirectUri: Schema.String,
+  expiresAt: IsoDateTime,
+});
+export type McpConnectionOAuthStartResult = typeof McpConnectionOAuthStartResult.Type;
+
+/** `callbackUrl` carries the authorization code: never log, trace or echo it. */
+export const McpConnectionOAuthCompleteInput = Schema.Struct({
+  connectionId: McpConnectionId,
+  flowId: McpConnectionOAuthFlowId,
+  callbackUrl: Schema.String.check(Schema.isMaxLength(8192)),
+});
+export type McpConnectionOAuthCompleteInput = typeof McpConnectionOAuthCompleteInput.Type;
+
+export const McpConnectionOAuthCancelInput = Schema.Struct({
+  connectionId: McpConnectionId,
+  flowId: McpConnectionOAuthFlowId,
+});
+export type McpConnectionOAuthCancelInput = typeof McpConnectionOAuthCancelInput.Type;
+
+export const McpConnectionOAuthConnectionInput = Schema.Struct({ connectionId: McpConnectionId });
+export type McpConnectionOAuthConnectionInput = typeof McpConnectionOAuthConnectionInput.Type;
+
+export class McpConnectionOAuthError extends Schema.TaggedError<McpConnectionOAuthError>()(
+  "McpConnectionOAuthError",
+  {
+    reason: McpConnectionOAuthFailure,
+    connectionId: Schema.optional(McpConnectionId),
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    return mcpConnectionOAuthFailureMessage(this.reason);
+  }
+}
 
 export class McpConnectionError extends Schema.TaggedError<McpConnectionError>()(
   "McpConnectionError",

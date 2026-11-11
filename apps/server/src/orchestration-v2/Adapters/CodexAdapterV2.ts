@@ -516,6 +516,36 @@ function codexMcpToolOutput(
     : { error: item.error.message, result: resultOutput };
 }
 
+/** Codex's result text when a server refused the call's token (measured on 0.167.0 and 0.167.1). */
+const CODEX_MCP_AUTH_REQUIRED = "Authentication required";
+
+/**
+ * The granted connection whose credential a failed call shows refused. Codex passes the server's
+ * `WWW-Authenticate` challenge in `_meta`, beside its fixed text; it starts no sign-in of its own.
+ */
+function refusedGrantedConnection(item: CodexSchema.V2ItemCompletedNotification__ThreadItem) {
+  if (item.type !== "mcpToolCall" || item.status !== "failed" || item.result == null) {
+    return undefined;
+  }
+  const meta = item.result._meta;
+  const challenged =
+    typeof meta === "object" &&
+    meta !== null &&
+    !Array.isArray(meta) &&
+    "mcp/www_authenticate" in meta;
+  const authRequired = item.result.content.some(
+    (content) =>
+      typeof content === "object" &&
+      content !== null &&
+      !Array.isArray(content) &&
+      "text" in content &&
+      content.text === CODEX_MCP_AUTH_REQUIRED,
+  );
+  return challenged || authRequired
+    ? McpConnectionDelivery.grantedConnectionOf(item.server)
+    : undefined;
+}
+
 // A hung MCP resource read must not hold run ingestion open.
 const MCP_APP_CAPTURE_TIMEOUT = "20 seconds";
 
@@ -2178,19 +2208,25 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           const load = threadLoads.get(nativeThreadId);
           return load === undefined || load === "unknown" ? load : load.seal;
         };
-        /** Each native thread's granted server names and their labels, to name a failed start. */
-        const grantedServerLabels = new Map<string, ReadonlyMap<string, string>>();
+        /**
+         * The granted connections each native thread was loaded with: the accounts its turns name
+         * to the model, and the labels a failed start is named by.
+         */
+        const grantedConnectionsByThread = new Map<
+          string,
+          ReadonlyArray<Pick<McpConnectionDelivery.DeliveredMcpConnection, "id" | "label">>
+        >();
         /** Granted servers that failed to start before their thread had a turn to report it in. */
         const failedGrantedServers = new Map<string, Set<string>>();
         const rememberGrantedServers = (
           nativeThreadId: string,
           granted: ReadonlyArray<McpConnectionDelivery.DeliveredMcpConnection> | undefined,
         ) => {
-          if (granted === undefined) grantedServerLabels.delete(nativeThreadId);
+          if (granted === undefined) grantedConnectionsByThread.delete(nativeThreadId);
           else
-            grantedServerLabels.set(
+            grantedConnectionsByThread.set(
               nativeThreadId,
-              new Map(granted.map(({ id, label }) => [codexGrantedServerName(id), label])),
+              granted.map(({ id, label }) => ({ id, label })),
             );
         };
         /** A sealed child turn's stop, true once its turn ended. Its root turn waits for it. */
@@ -2687,7 +2723,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
         const noticeGrantedServerFailure = Effect.fn("CodexAdapterV2.noticeGrantedServerFailure")(
           function* (context: ActiveCodexTurnContext, server: string) {
             const nativeThreadId = context.providerThread.nativeThreadRef?.nativeId ?? "";
-            const label = grantedServerLabels.get(nativeThreadId)?.get(server);
+            const label = grantedConnectionsByThread
+              .get(nativeThreadId)
+              ?.find(({ id }) => codexGrantedServerName(id) === server)?.label;
             const message = `${label === undefined ? "A granted MCP connection" : `"${label}"`} could not start, so its tools are unavailable in this conversation. Check it in Settings → MCP connections.`;
             const nativeItemId = `mcp-startup-failed:${context.nativeTurnId}:${server}`;
             const now = yield* DateTime.now;
@@ -5166,7 +5204,12 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             const nativeThreadId = payload.threadId;
             // A start's status can arrive before its thread id is known, so the name decides.
             if (payload.status !== "failed" || nativeThreadId == null) return;
-            if (!payload.name.startsWith(McpConnectionDelivery.GRANTED_SERVER_PREFIX)) return;
+            const connectionId = McpConnectionDelivery.grantedConnectionOf(payload.name);
+            if (connectionId === undefined) return;
+            // A refused token fails the start too; the next load refreshes it before reloading.
+            if (mcpConnectionDelivery !== undefined) {
+              yield* mcpConnectionDelivery.markRefused(connectionId, "startup");
+            }
             const context = yield* findActiveTurnByNativeThreadId(nativeThreadId);
             if (context !== undefined && context.subagent === null) {
               return yield* noticeGrantedServerFailure(context, payload.name);
@@ -5589,6 +5632,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
 
         yield* client.handleServerNotification("item/completed", (payload) =>
           Effect.gen(function* () {
+            // Any thread on this app-server, child work included: the raw item names the server.
+            const refused = refusedGrantedConnection(payload.item);
+            if (refused !== undefined && mcpConnectionDelivery !== undefined) {
+              yield* mcpConnectionDelivery.markRefused(refused, "call");
+            }
             if (payload.item.type === "contextCompaction")
               // Fork requests off the notification reader so it can read their responses.
               yield* restoreAdditionalContext(payload.threadId).pipe(
@@ -7536,6 +7584,14 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           ) {
             const threadId = yield* getNativeThreadId(turnInput.providerThread);
             const mcpSession = yield* mcpSessions.read(turnInput.threadId);
+            // From the thread's load, so an account left out of it is never named to the model.
+            const accounts = McpConnectionDelivery.grantedConnectionsInstructions(
+              grantedConnectionsByThread.get(threadId) ?? [],
+            );
+            const applicationInstructions =
+              turnInput.applicationInstructions === undefined || accounts === undefined
+                ? (turnInput.applicationInstructions ?? accounts)
+                : `${turnInput.applicationInstructions}\n\n${accounts}`;
             const turnStartParams = yield* buildCodexTurnStartParams({
               nativeThreadId: threadId,
               codexInput,
@@ -7546,9 +7602,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               deviceToolsAvailable: mcpSession?.capabilities?.has("device") ?? false,
               omitServiceTier: adapterOptions.resolveRuntime !== undefined,
               ...(turnInput.appContext === undefined ? {} : { appContext: turnInput.appContext }),
-              ...(turnInput.applicationInstructions === undefined
-                ? {}
-                : { applicationInstructions: turnInput.applicationInstructions }),
+              ...(applicationInstructions === undefined ? {} : { applicationInstructions }),
             });
             yield* Ref.update(pendingRootTurns, (current) => {
               const updated = new Map(current);
