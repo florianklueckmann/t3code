@@ -429,6 +429,13 @@ import {
   McpConnectionError,
   McpConnectionListInput,
   McpConnectionListResult,
+  McpConnectionOAuthCancelInput,
+  McpConnectionOAuthCompleteInput,
+  McpConnectionOAuthConnectionInput,
+  McpConnectionOAuthError,
+  McpConnectionOAuthStartInput,
+  McpConnectionOAuthStartResult,
+  McpConnectionOAuthState,
   McpConnectionRefreshInput,
   McpConnectionRemoveInput,
   McpConnectionRemoveResult,
@@ -639,6 +646,11 @@ export const WS_METHODS = {
   mcpConnectionsUpdate: "mcpConnections.update",
   mcpConnectionsRemove: "mcpConnections.remove",
   mcpConnectionsRefresh: "mcpConnections.refresh",
+  mcpConnectionsOAuthStart: "mcpConnections.oauthStart",
+  mcpConnectionsOAuthComplete: "mcpConnections.oauthComplete",
+  mcpConnectionsOAuthCancel: "mcpConnections.oauthCancel",
+  mcpConnectionsOAuthDisconnect: "mcpConnections.oauthDisconnect",
+  mcpConnectionsOAuthSubscribe: "mcpConnections.oauthSubscribe",
 
   cloudGetRelayClientStatus: "cloud.getRelayClientStatus",
   cloudInstallRelayClient: "cloud.installRelayClient",
@@ -2284,6 +2296,36 @@ const WsMcpConnectionsRefreshRpc = Rpc.make(WS_METHODS.mcpConnectionsRefresh, {
   success: McpConnectionListResult,
   error: McpConnectionRpcError,
 });
+const McpConnectionOAuthRpcError = Schema.Union([
+  McpConnectionOAuthError,
+  EnvironmentAuthorizationError,
+]);
+const WsMcpConnectionsOAuthStartRpc = Rpc.make(WS_METHODS.mcpConnectionsOAuthStart, {
+  payload: McpConnectionOAuthStartInput,
+  success: McpConnectionOAuthStartResult,
+  error: McpConnectionOAuthRpcError,
+});
+const WsMcpConnectionsOAuthCompleteRpc = Rpc.make(WS_METHODS.mcpConnectionsOAuthComplete, {
+  payload: McpConnectionOAuthCompleteInput,
+  success: McpConnectionOAuthState,
+  error: McpConnectionOAuthRpcError,
+});
+const WsMcpConnectionsOAuthCancelRpc = Rpc.make(WS_METHODS.mcpConnectionsOAuthCancel, {
+  payload: McpConnectionOAuthCancelInput,
+  success: McpConnectionOAuthState,
+  error: McpConnectionOAuthRpcError,
+});
+const WsMcpConnectionsOAuthDisconnectRpc = Rpc.make(WS_METHODS.mcpConnectionsOAuthDisconnect, {
+  payload: McpConnectionOAuthConnectionInput,
+  success: McpConnectionOAuthState,
+  error: McpConnectionOAuthRpcError,
+});
+const WsMcpConnectionsOAuthSubscribeRpc = Rpc.make(WS_METHODS.mcpConnectionsOAuthSubscribe, {
+  payload: McpConnectionOAuthConnectionInput,
+  success: McpConnectionOAuthState,
+  error: McpConnectionOAuthRpcError,
+  stream: true,
+});
 
 const WsSubscribeAuthAccessRpc = Rpc.make(WS_METHODS.subscribeAuthAccess, {
   payload: Schema.Struct({}),
@@ -2401,6 +2443,11 @@ export const WsRpcGroup = RpcGroup.make(
   WsMcpConnectionsUpdateRpc,
   WsMcpConnectionsRemoveRpc,
   WsMcpConnectionsRefreshRpc,
+  WsMcpConnectionsOAuthStartRpc,
+  WsMcpConnectionsOAuthCompleteRpc,
+  WsMcpConnectionsOAuthCancelRpc,
+  WsMcpConnectionsOAuthDisconnectRpc,
+  WsMcpConnectionsOAuthSubscribeRpc,
   WsServerReportClientActivityRpc,
   WsCloudGetRelayClientStatusRpc,
   WsCloudInstallRelayClientRpc,

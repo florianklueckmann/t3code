@@ -24,8 +24,10 @@ import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretReso
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 
 import * as BotService from "../bots/BotService.ts";
+import * as McpConnectionOAuth from "./McpConnectionOAuth.ts";
 import * as Settings from "../serverSettings.ts";
 import { requireSettingsSecret } from "../secrets/settingsSecretValue.ts";
 
@@ -94,6 +96,7 @@ const make = Effect.gen(function* () {
   const settings = yield* Settings.ServerSettingsService;
   const resolver = yield* SecretResolver.SecretResolver;
   const bots = yield* BotService.BotService;
+  const oauth = yield* McpConnectionOAuth.McpConnectionOAuth;
   // Results of the last explicit refresh, valid only for the revision they checked.
   const checks = new Map<
     McpConnectionId,
@@ -111,23 +114,39 @@ const make = Effect.gen(function* () {
       : ({ state: "unchecked" } as const);
   };
 
-  const summaryOf = (
+  const summaryOf = Effect.fn("McpConnections.summaryOf")(function* (
     id: McpConnectionId,
     definition: McpConnectionDefinition,
-  ): McpConnectionSummary => ({
-    id,
-    label: definition.label,
-    enabled: definition.enabled,
-    revision: definition.revision,
-    transport: definition.transport.type,
-    status: statusOf(id, definition),
+  ) {
+    const summary: McpConnectionSummary = {
+      id,
+      label: definition.label,
+      enabled: definition.enabled,
+      revision: definition.revision,
+      transport: definition.transport.type,
+      status: statusOf(id, definition),
+    };
+    if (definition.transport.type !== "http" || definition.transport.oauth === undefined) {
+      return summary;
+    }
+    const state = yield* oauth.state(id).pipe(Effect.option);
+    if (Option.isNone(state)) return summary;
+    return {
+      ...summary,
+      // Clients that predate `oauth` see a signed-out account as an Authorization it cannot read.
+      status:
+        summary.status.state === "blocked" || state.value.credential.state === "connected"
+          ? summary.status
+          : blocked({ reason: "binding-unresolved", binding: "Authorization" }),
+      oauth: state.value,
+    } satisfies McpConnectionSummary;
   });
 
   const summaryIn = (current: ServerSettings, id: McpConnectionId) => {
     const definition = current.mcpConnections[id];
     return definition === undefined
       ? Effect.fail(new McpConnectionError({ reason: "not-found", connectionId: id }))
-      : Effect.succeed(summaryOf(id, definition));
+      : summaryOf(id, definition);
   };
 
   // Every binding must resolve to a deliverable value; one failure fails the whole connection.
@@ -165,8 +184,9 @@ const make = Effect.gen(function* () {
   const list = Effect.gen(function* () {
     const current = yield* getSettings;
     return {
-      connections: Object.entries(current.mcpConnections).map(([id, definition]) =>
-        summaryOf(id as McpConnectionId, definition),
+      connections: yield* Effect.forEach(
+        Object.entries(current.mcpConnections),
+        ([id, definition]) => summaryOf(id as McpConnectionId, definition),
       ),
     };
   }).pipe(Effect.withSpan("McpConnections.list"));
@@ -256,6 +276,21 @@ const make = Effect.gen(function* () {
 
   const remove = Effect.fn("McpConnections.remove")(function* (input: McpConnectionRemoveInput) {
     const id = input.connectionId;
+    // Signed out while the definition still holds a preregistered app's secret for revocation.
+    const removing = (yield* getSettings).mcpConnections[id];
+    if (
+      removing?.revision === input.expectedRevision &&
+      removing.transport.type === "http" &&
+      removing.transport.oauth !== undefined
+    ) {
+      yield* oauth
+        .forget(id)
+        .pipe(
+          Effect.mapError(
+            (cause) => new McpConnectionError({ reason: "settings-unavailable", cause }),
+          ),
+        );
+    }
     yield* updateCatalog((current) => {
       const existing = current.mcpConnections[id];
       // A retried remove of a connection it already removed succeeds without another write.
@@ -316,7 +351,11 @@ const make = Effect.gen(function* () {
         checks.set(id, { revision: definition.revision, status });
       }
     }
-    return { connections: connections.map(([id, definition]) => summaryOf(id, definition)) };
+    return {
+      connections: yield* Effect.forEach(connections, ([id, definition]) =>
+        summaryOf(id, definition),
+      ),
+    };
   });
 
   return McpConnections.of({ list, create, update, remove, refresh });

@@ -3,7 +3,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   BotError,
   McpConnectionId,
-  type McpConnectionOAuth,
+  type McpConnectionOAuth as McpConnectionOAuthSetup,
   type McpConnectionTransport,
   SecretProviderId,
   ServerSettingsPatch,
@@ -24,6 +24,7 @@ import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as McpConnectionDelivery from "./McpConnectionDelivery.ts";
+import * as McpConnectionOAuth from "./McpConnectionOAuth.ts";
 import * as McpConnections from "./McpConnections.ts";
 
 const decodeServerSettingsPatch = Schema.decodeUnknownEffect(ServerSettingsPatch);
@@ -73,11 +74,27 @@ const harness = Effect.gen(function* () {
         return Effect.fail(new BotError({ message: "injected Bot database failure" }));
       }),
   });
+  // The OAuth service's own behavior is covered in its tests; the catalog reads and signs out.
+  const oauthGrants = { connected: new Set<McpConnectionId>(), forgotten: [] as string[] };
+  const oauth = Layer.mock(McpConnectionOAuth.McpConnectionOAuth)({
+    state: (id) =>
+      Effect.succeed({
+        credential: oauthGrants.connected.has(id)
+          ? { state: "connected", connectedAt: "2026-11-11T00:00:00.000Z" }
+          : { state: "signed-out", reason: "never" },
+      }),
+    forget: (id) =>
+      Effect.sync(() => {
+        oauthGrants.connected.delete(id);
+        oauthGrants.forgotten.push(id);
+      }),
+  });
   const connections = yield* McpConnections.McpConnections.pipe(
     Effect.provide(
       McpConnections.layer.pipe(
         Layer.provide(Layer.succeed(SecretResolver.SecretResolver, resolver)),
         Layer.provide(bots),
+        Layer.provide(oauth),
       ),
     ),
   );
@@ -88,7 +105,7 @@ const harness = Effect.gen(function* () {
       ),
     ),
   );
-  return { connections, delivery, secrets, reads, invalidated, holds, grantCleanup };
+  return { connections, delivery, secrets, reads, invalidated, holds, grantCleanup, oauthGrants };
 });
 
 const accountA = McpConnectionId.make("1a1a1a1a-0000-4000-8000-00000000001a");
@@ -104,7 +121,7 @@ const http = (authorization: string | typeof tokenB): McpConnectionTransport => 
 });
 const SENTINEL = "sk-sentinel-never-echoed";
 const oauthHttp = (
-  oauth: McpConnectionOAuth = { scopes: ["mail.read"] },
+  oauth: McpConnectionOAuthSetup = { scopes: ["mail.read"] },
 ): McpConnectionTransport & { readonly type: "http" } => ({
   type: "http",
   url: "https://mail.example.test/mcp",
@@ -117,7 +134,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("MCP connections"
     "keeps same-URL accounts distinct and saves only valid edits of the current revision",
     () =>
       Effect.gen(function* () {
-        const { connections, reads, grantCleanup } = yield* harness;
+        const { connections, reads, grantCleanup, oauthGrants } = yield* harness;
         const created = yield* connections.create({
           connectionId: accountA,
           label: "Work",
@@ -353,6 +370,35 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("MCP connections"
           ...oauthHttp(),
           httpHeaders: { "X-Tenant": "work" },
         });
+
+        // The summary carries the account state; older clients read a signed-out one as blocked.
+        const oauthSummary = () =>
+          connections.list.pipe(
+            Effect.map(({ connections }) => connections.find(({ id }) => id === oauthMail)),
+          );
+        assert.deepEqual(
+          [(yield* oauthSummary())?.status, (yield* oauthSummary())?.oauth?.credential],
+          [
+            {
+              state: "blocked",
+              problem: { reason: "binding-unresolved", binding: "Authorization" },
+            },
+            { state: "signed-out", reason: "never" },
+          ],
+        );
+        oauthGrants.connected.add(oauthMail);
+        assert.deepEqual((yield* oauthSummary())?.status, { state: "ready" });
+        assert.isUndefined(
+          (yield* connections.list).connections.find(({ id }) => id === local)?.oauth,
+        );
+        // Removing it signs the account out first; a refused removal does not.
+        yield* connections
+          .remove({ connectionId: oauthMail, expectedRevision: 1 })
+          .pipe(Effect.flip);
+        assert.deepEqual(oauthGrants.forgotten, []);
+        yield* connections.remove({ connectionId: oauthMail, expectedRevision: 2 });
+        assert.deepEqual(oauthGrants.forgotten, [oauthMail]);
+        assert.isFalse(oauthGrants.connected.has(oauthMail));
       }).pipe(Effect.provide(layerSettings)),
   );
 

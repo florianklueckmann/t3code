@@ -330,10 +330,14 @@ export const McpConnectionStatus = Schema.Union([
 ]);
 export type McpConnectionStatus = typeof McpConnectionStatus.Type;
 
+/** The browser path of an OAuth sign-in's redirect URI, on whichever origin the client uses. */
+export const MCP_CONNECTION_OAUTH_CALLBACK_PATH = "/oauth/mcp-connections/callback";
+
 export const McpConnectionOAuthFailure = Schema.Literals([
   "not-found",
   "not-oauth",
   "redirect-invalid",
+  "insecure",
   "discovery",
   "resource-mismatch",
   "registration-unsupported",
@@ -346,7 +350,7 @@ export const McpConnectionOAuthFailure = Schema.Literals([
 ]);
 export type McpConnectionOAuthFailure = typeof McpConnectionOAuthFailure.Type;
 
-function mcpConnectionOAuthFailureMessage(reason: McpConnectionOAuthFailure): string {
+export function mcpConnectionOAuthFailureMessage(reason: McpConnectionOAuthFailure): string {
   switch (reason) {
     case "not-found":
       return "This MCP connection no longer exists.";
@@ -354,6 +358,8 @@ function mcpConnectionOAuthFailureMessage(reason: McpConnectionOAuthFailure): st
       return "This MCP connection does not sign in with OAuth.";
     case "redirect-invalid":
       return "Sign-in needs an https address for this environment, or this computer's own.";
+    case "insecure":
+      return "This service or its sign-in uses plain http. OAuth needs https.";
     case "discovery":
       return "This service did not describe how to sign in.";
     case "resource-mismatch":

@@ -68,14 +68,18 @@ describe("RPC authorization scopes", () => {
   });
 
   it("lets thread readers see MCP connection statuses and keeps every connection edit behind settings", () => {
-    expect(requiredScopeForRpcMethod(WS_METHODS.mcpConnectionsList)).toBe(
-      AuthOrchestrationReadScope,
-    );
+    for (const method of [WS_METHODS.mcpConnectionsList, WS_METHODS.mcpConnectionsOAuthSubscribe]) {
+      expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationReadScope);
+    }
     for (const method of [
       WS_METHODS.mcpConnectionsCreate,
       WS_METHODS.mcpConnectionsUpdate,
       WS_METHODS.mcpConnectionsRemove,
       WS_METHODS.mcpConnectionsRefresh,
+      WS_METHODS.mcpConnectionsOAuthStart,
+      WS_METHODS.mcpConnectionsOAuthComplete,
+      WS_METHODS.mcpConnectionsOAuthCancel,
+      WS_METHODS.mcpConnectionsOAuthDisconnect,
       WS_METHODS.botsSetMcpGrants,
     ]) {
       expect(requiredScopeForRpcMethod(method)).toBe(AuthSettingsWriteScope);

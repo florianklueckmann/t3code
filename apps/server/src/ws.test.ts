@@ -1,4 +1,5 @@
 import * as BotContinuation from "./bots/BotContinuation.ts";
+import * as McpConnectionOAuth from "./mcpConnections/McpConnectionOAuth.ts";
 import * as McpConnections from "./mcpConnections/McpConnections.ts";
 import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
@@ -824,6 +825,7 @@ const layerUnusedConfigRpcServices = Layer.mergeAll(
   Layer.mock(ScheduledTasks.ScheduledTaskService)({}),
   Layer.mock(BotContinuation.BotContinuation)({}),
   Layer.mock(McpConnections.McpConnections)({}),
+  Layer.mock(McpConnectionOAuth.McpConnectionOAuth)({}),
   Layer.mock(BotMaintenance.BotMaintenance)({}),
   Layer.mock(BotHomeCheck.BotHomeCheck)({}),
   Layer.mock(BotService.BotService)({}),
