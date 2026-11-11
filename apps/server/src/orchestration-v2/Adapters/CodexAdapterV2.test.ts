@@ -4139,6 +4139,131 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       }),
   );
 
+  it.effect("names a granted connection that failed to start, never Codex's error text", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const scenario = "codex-grant-startup-failed";
+        const nativeThreadId = `native-${scenario}-thread`;
+        const nativeTurnId = `native-${scenario}-turn`;
+        const seal = codexHomeSealReplay(scenario, nativeThreadId);
+        const { step, resumed, configRead } = seal;
+        const preamble = seal.onMeasuredVersion(
+          codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt: "check my mail" }),
+        );
+        const secret = "MAIL_TOKEN=sk-live-51NativeLeak rejected by mail.example.test";
+        const failed = (connection: McpConnectionId) =>
+          ({
+            type: "emit_inbound",
+            label: `startup failed ${connection}`,
+            frame: {
+              method: "mcpServer/startupStatus/updated",
+              params: {
+                threadId: nativeThreadId,
+                name: `t3c-${connection}`,
+                status: "failed",
+                error: `${secret} (${connection})`,
+              },
+            },
+          }) as const;
+        const transcript = makeCodexReplayTranscript({
+          scenario,
+          entries: [
+            ...preamble.slice(0, 5),
+            ...step(
+              3,
+              "thread/unsubscribe",
+              { threadId: nativeThreadId },
+              { status: "unsubscribed" },
+            ),
+            ...step(4, "config/read", { includeLayers: false, cwd: "/workspace" }, configRead),
+            ...step(
+              5,
+              "thread/resume",
+              {
+                threadId: nativeThreadId,
+                excludeTurns: true,
+                config: {
+                  ...CodexAdapterV2.CODEX_THREAD_CONFIG,
+                  "features.memories": false,
+                  "memories.use_memories": false,
+                  "memories.generate_memories": false,
+                  "features.apps": false,
+                  "features.plugins": false,
+                  "features.remote_plugin": false,
+                  "features.skill_mcp_dependency_install": false,
+                },
+              },
+              resumed,
+            ),
+            // Codex starts the thread's servers as it loads, before any turn can show a notice.
+            failed(privateMail),
+            ...step(6, "config/read", { includeLayers: false, cwd: "/workspace" }, configRead),
+            ...step(7, "thread/memoryMode/set", { threadId: nativeThreadId, mode: "disabled" }, {}),
+            withReplayRequestId(preamble[5]!, 8),
+            withReplayRequestId(preamble[6]!, 8),
+            preamble[7]!,
+            failed(workMail),
+            {
+              type: "emit_inbound",
+              label: "turn/completed",
+              frame: {
+                method: "turn/completed",
+                params: {
+                  threadId: nativeThreadId,
+                  turn: makeCodexReplayTurn({ id: nativeTurnId, status: "completed" }),
+                },
+              },
+            },
+          ],
+        });
+        const harness = yield* makeCodexReplayHarness(transcript);
+        const grantPolicy = {
+          ...CODEX_TEST_RUNTIME_POLICY,
+          nativeMemory: "disabled",
+          mcpConnections: [privateMail, workMail],
+        } as const;
+        yield* harness.runtime.resumeThread({
+          providerThread: harness.providerThread,
+          modelSelection: CODEX_TEST_MODEL_SELECTION,
+          runtimePolicy: grantPolicy,
+        });
+        const turn = makeCodexTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make("grant-startup-failed"),
+          text: "check my mail",
+        });
+        yield* harness.runtime.startTurn({ ...turn, runtimePolicy: grantPolicy });
+        yield* harness.awaitTerminal(1);
+
+        const notices = harness.events.flatMap((event) =>
+          event.type === "turn_item.updated" && event.turnItem.type === "system_notice"
+            ? [event.turnItem.message]
+            : [],
+        );
+        assert.sameMembers(notices, [
+          '"Private mail" could not start, so its tools are unavailable in this conversation. Check it in Settings → MCP connections.',
+          '"Work mail" could not start, so its tools are unavailable in this conversation. Check it in Settings → MCP connections.',
+        ]);
+        assert.notInclude(JSON.stringify(harness.events), "sk-live-51NativeLeak");
+      }).pipe(
+        Effect.provideService(HostProcess.Platform, "darwin"),
+        Effect.provide(
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            NodeCrypto.layer,
+            Layer.succeed(McpConnectionDelivery.McpConnectionDelivery, {
+              resolve: () => Effect.succeed(grantedLoad("token-1")),
+            }),
+          ),
+        ),
+      ),
+    ),
+  );
+
   it.effect(
     "starts and forks Bot threads with only their grants, and refuses what it can't confirm",
     () =>
@@ -9264,15 +9389,35 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     };
   };
 
-  it.effect.each(["live", "finished"] as const)(
-    "refuses a Home seal only while the Home's native child is live: %s",
-    (child) =>
+  it.effect.each([
+    ["live", "seal"],
+    ["finished", "seal"],
+    ["live", "grants"],
+    ["finished", "grants"],
+  ] as const)(
+    "refuses a Home seal or grant change only while the Home's native child is live: %s, %s",
+    ([child, change]) =>
       Effect.scoped(
         Effect.gen(function* () {
-          const scenario = `codex-home-seal-children-${child}`;
+          const scenario = `codex-home-${change}-children-${child}`;
           const seal = codexHomeSealReplay(scenario, RESUME_NATIVE_THREAD);
           const { step } = seal;
           const { spawned, rootFinished } = lateChildPrefix();
+          const grantResume = {
+            threadId: RESUME_NATIVE_THREAD,
+            excludeTurns: true,
+            config: {
+              ...CodexAdapterV2.CODEX_THREAD_CONFIG,
+              "features.memories": false,
+              "memories.use_memories": false,
+              "memories.generate_memories": false,
+              "features.apps": false,
+              "features.plugins": false,
+              "features.remote_plugin": false,
+              "features.skill_mcp_dependency_install": false,
+            },
+          };
+          const resumeParams: Array<{ config: { mcp_servers?: Record<string, unknown> } }> = [];
           // A live child's transcript ends with the ordinary turn: its refusal reaches Codex with nothing.
           const harness = yield* makeCodexReplayHarness(
             makeCodexReplayTranscript({
@@ -9304,7 +9449,12 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                         { includeLayers: false, cwd: "/workspace" },
                         seal.configRead,
                       ),
-                      ...step(8, "thread/resume", seal.sealedResume, seal.resumed),
+                      ...step(
+                        8,
+                        "thread/resume",
+                        change === "seal" ? seal.sealedResume : grantResume,
+                        seal.resumed,
+                      ),
                       ...step(
                         9,
                         "config/read",
@@ -9320,6 +9470,11 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                     ],
               ),
             }),
+            undefined,
+            (method, params) =>
+              Effect.sync(() => {
+                if (method === "thread/resume") resumeParams.push(params as never);
+              }),
           );
           yield* harness.runtime.startTurn(
             makeCodexTestTurnInput({
@@ -9332,21 +9487,38 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           );
           yield* harness.awaitTerminal(1);
           yield* seal.setMcpSession;
-          const sealed = yield* harness.runtime
+          const changed = yield* harness.runtime
             .resumeThread({
               providerThread: harness.providerThread,
               modelSelection: CODEX_TEST_MODEL_SELECTION,
-              runtimePolicy: seal.sealedPolicy,
+              runtimePolicy:
+                change === "seal"
+                  ? seal.sealedPolicy
+                  : {
+                      ...CODEX_TEST_RUNTIME_POLICY,
+                      nativeMemory: "disabled",
+                      mcpConnections: [privateMail],
+                    },
             })
             .pipe(Effect.result);
           assert.equal(
-            sealed._tag === "Success"
-              ? "sealed"
-              : sealed.failure._tag === "ProviderAdapterSealRefusedError"
-                ? sealed.failure.reason
-                : sealed.failure._tag,
-            child === "live" ? "children" : "sealed",
+            changed._tag === "Success"
+              ? "loaded"
+              : changed.failure._tag === "ProviderAdapterSealRefusedError" ||
+                  changed.failure._tag === "ProviderAdapterMcpConnectionsRefusedError"
+                ? changed.failure.reason
+                : changed.failure._tag,
+            child === "live" ? "children" : "loaded",
           );
+          // The archived child is reopened by its caller's resume_agent under this new load.
+          if (change === "grants" && child === "finished") {
+            assert.deepEqual(
+              Object.keys(resumeParams.at(-1)?.config.mcp_servers ?? {}).filter((name) =>
+                name.startsWith("t3c-"),
+              ),
+              [`t3c-${privateMail}`],
+            );
+          }
         }).pipe(
           Effect.provideService(HostProcess.Platform, "darwin"),
           Effect.provide(
@@ -9355,6 +9527,13 @@ describe("CodexAdapterV2 post-settle continuation", () => {
               McpProviderSessions.layer,
               NodeServices.layer,
               NodeCrypto.layer,
+              Layer.succeed(McpConnectionDelivery.McpConnectionDelivery, {
+                resolve: () =>
+                  Effect.succeed({
+                    ...grantedLoad("token-1"),
+                    connections: grantedLoad("token-1").connections.slice(0, 1),
+                  }),
+              }),
             ),
           ),
         ),
