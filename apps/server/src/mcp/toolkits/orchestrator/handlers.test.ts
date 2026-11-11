@@ -81,6 +81,7 @@ const call = (name: string, params: unknown, accessOf: McpCallerBot.McpCallerBot
               Layer.mock(OrchestratorMcpService.OrchestratorMcpService)({
                 scheduleTask: () => reach("scheduleTask"),
                 updateScheduledTask: () => reach("updateScheduledTask"),
+                deleteScheduledTask: () => reach("deleteScheduledTask"),
                 scheduledTaskBot: (id) => Effect.succeed(owners.get(id)),
                 createThreads: () => reach("createThreads"),
                 delegateTask: () => reach("delegateTask"),
@@ -133,6 +134,10 @@ it.effect.each([
     "capability_denied",
   ],
   ["schedule_task", { scheduledTaskId: workRoutine, prompt: "Mail" }, ordinary, "reached"],
+  ["delete_scheduled_task", { scheduledTaskId: mailRoutine }, ofMailBot, "reached"],
+  ["delete_scheduled_task", { scheduledTaskId: workRoutine }, ofMailBot, "capability_denied"],
+  ["delete_scheduled_task", { scheduledTaskId: plainSchedule }, ofMailBot, "capability_denied"],
+  ["delete_scheduled_task", { scheduledTaskId: workRoutine }, ordinary, "reached"],
   // Connection ids are this environment's; a delegate here is a subagent with the Bot's grants.
   ["delegate_task", { task: "Check mail" }, ofMailBot, "reached"],
   [

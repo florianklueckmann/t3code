@@ -11,12 +11,14 @@ export type McpCallerBotValue =
   | { readonly _tag: "bot"; readonly botId: BotId }
   | { readonly _tag: "unknown" };
 
+export interface McpCallerBotThread {
+  readonly id: ThreadId;
+  readonly lineage: OrchestrationV2AppThreadLineage;
+}
+
 /** Lets MCP tools ask without depending on the Bot services. A server without Bots has none. */
 export class McpCallerBot extends Context.Reference<{
-  readonly forThread: (thread: {
-    readonly id: ThreadId;
-    readonly lineage: OrchestrationV2AppThreadLineage;
-  }) => Effect.Effect<McpCallerBotValue>;
+  readonly forThread: (thread: McpCallerBotThread) => Effect.Effect<McpCallerBotValue>;
 }>("t3/mcp/McpCallerBot", {
   defaultValue: () => ({ forThread: () => Effect.succeed({ _tag: "none" }) }),
 }) {}

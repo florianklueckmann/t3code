@@ -139,6 +139,10 @@ const handlers = {
     Effect.gen(function* () {
       const scope = yield* McpInvocationContext.McpInvocationContext;
       const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+      yield* McpToolAccess.requireOwnBot(
+        service.scheduledTaskBot(input.scheduledTaskId),
+        "deleting a scheduled task that is not your routine",
+      );
       return yield* service.deleteScheduledTask(scope, input);
     }),
   ),

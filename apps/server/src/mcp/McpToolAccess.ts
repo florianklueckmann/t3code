@@ -187,8 +187,16 @@ const outsideBotRefusal = (work: string) =>
 const otherBotRefusal = (bot: BotId, other: BotId) =>
   new OrchestratorMcpFailure({
     code: "capability_denied",
-    message: `This thread works for Bot "${bot}", so it can start and change tasks and routines only for that Bot, not for "${other}".`,
+    message: `This thread works for Bot "${bot}", so it can start and change only that Bot's tasks, routines and threads, not those of "${other}".`,
   });
+
+/** The Bot whose line `thread` belongs to; undefined for a thread of no Bot or an unknown line. */
+export const threadBot = Effect.fn("McpToolAccess.threadBot")(function* (
+  thread: McpCallerBot.McpCallerBotThread,
+) {
+  const access = yield* (yield* McpCallerBot.McpCallerBot).forThread(thread);
+  return access._tag === "bot" ? access.botId : undefined;
+});
 
 /**
  * A Bot's work loads only its granted MCP connections, which holds for its own tasks and
