@@ -573,6 +573,7 @@ it.effect("counts only the Waiting items the check's own run appended", () =>
 
 it.effect.each([
   { name: "temporary provider refusal", kind: "disabled", receipt: false, retry: true },
+  { name: "mode above the managed limit", kind: "ceiling", receipt: false, retry: true },
   { name: "receipted provider refusal", kind: "disabled", receipt: true, retry: false },
   { name: "permanent dispatch refusal", kind: "permanent", receipt: false, retry: false },
   { name: "replayed rejection", kind: "replayed", receipt: true, retry: false },
@@ -595,6 +596,15 @@ it.effect.each([
                 return yield* new ThreadManagementService.ThreadManagementProviderInstanceDisabledError(
                   { projectId: scope.projectId, instanceId: ProviderInstanceId.make("codex") },
                 );
+              if (kind === "ceiling")
+                return yield* new OrchestratorV2.OrchestratorRuntimeModeAboveCeilingError({
+                  commandId: command.commandId,
+                  threadId: home,
+                  refused: "turn",
+                  runtimeMode: "full-access",
+                  maxRuntimeMode: "auto-accept-edits",
+                  organization: "Example",
+                });
               if (kind === "replayed")
                 return yield* new OrchestratorV2.OrchestratorCommandPreviouslyRejectedError({
                   commandId: command.commandId,

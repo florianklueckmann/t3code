@@ -301,8 +301,10 @@ export const make = Effect.gen(function* () {
     );
     if (started._tag === "Failure") {
       yield* Effect.logWarning("Bot Home check was refused", { home, cause: started.failure });
+      // Refusals the user can clear in settings keep the slot and retry.
       if (
-        started.failure._tag === "ThreadManagementProviderInstanceDisabledError" &&
+        (started.failure._tag === "ThreadManagementProviderInstanceDisabledError" ||
+          started.failure._tag === "OrchestratorRuntimeModeAboveCeilingError") &&
         !(yield* threads.hasReceipt(CommandId.make(messageId)))
       ) {
         retryAfter.set(home, nowMs + RETRY_MS);
