@@ -293,6 +293,7 @@ const fullAccessLinkedClient: McpInvocationContext.McpInvocationScope = {
   client: { ...fullAccessClient.client!, linked: true },
 };
 const previewOnly = { ...fullAccess, capabilities: new Set(["preview"] as const) };
+const sealedLoad = { ...fullAccess, thread: { ...fullAccess.thread!, sealedLoad: true as const } };
 const noChanges = threadCaller(noChangesThreadId);
 const noChangesSubagent = threadCaller(noChangesSubagentThreadId);
 const unreadableTask = threadCaller(unreadableTaskThreadId);
@@ -397,6 +398,15 @@ it.effect.each([
   ["writes", orphanedNoChangesSubagent, {}, "capability_denied"],
   ["acts_as_caller", orphanedNoChangesSubagent, {}, "capability_denied"],
   ["writes", orphanedPlainSubagent, {}, "capability_denied"],
+  // A restricted Bot run's sealed load reads, and is refused every change a full-access thread makes.
+  ["reads", sealedLoad, {}, "ran"],
+  ["reads_as_caller", sealedLoad, {}, "ran"],
+  ["acts_as_caller", sealedLoad, {}, "capability_denied"],
+  ["writes", sealedLoad, {}, "capability_denied"],
+  ["writes_with_capability", sealedLoad, {}, "capability_denied"],
+  ["writes_threads", sealedLoad, {}, "capability_denied"],
+  ["starts_threads", sealedLoad, {}, "capability_denied"],
+  ["writes_environment", sealedLoad, {}, "capability_denied"],
   // Others are unchanged.
   ["writes", plainSubagent, {}, "ran"],
   ["writes_environment", fullAccess, {}, "ran"],
