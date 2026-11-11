@@ -10,7 +10,7 @@ import {
 } from "@t3tools/contracts";
 import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
-import type * as BotStore from "./BotStore.ts";
+import * as BotStore from "./BotStore.ts";
 import { isDirectHomeInput } from "./homeReturn.ts";
 
 /** The fixed instructions for the one sealed call; the packet is the only other input. */
@@ -162,18 +162,30 @@ const units = (text: string) => JSON.stringify(text).length;
 
 /** Current learning a project sees: each entry's active head and any pending revisions. */
 const isKind = Schema.is(BotLearningKind);
-const applicable = (rows: ReadonlyArray<BotStore.BotLearningRow>, projectId: string) =>
-  rows.filter(
+const applicable = (rows: ReadonlyArray<BotStore.BotLearningRow>, projectId: string) => {
+  // By the entry's scope, not the row's, so a move waiting for the user stays in its project.
+  const scopes = new Map(
+    [...Map.groupBy(rows, (row) => row.entry_id)].map(([entryId, revisions]) => [
+      entryId,
+      BotStore.learningScopeOf(revisions),
+    ]),
+  );
+  return rows.filter(
     (
       row,
     ): row is BotStore.BotLearningRow & {
       readonly status: "active" | "pending";
       readonly kind: BotLearningKind;
-    } =>
-      (row.project_id === null || row.project_id === projectId) &&
-      (row.status === "active" || row.status === "pending") &&
-      isKind(row.kind),
+    } => {
+      const scope = scopes.get(row.entry_id);
+      return (
+        (scope === null || scope === projectId) &&
+        (row.status === "active" || row.status === "pending") &&
+        isKind(row.kind)
+      );
+    },
   );
+};
 
 /**
  * Changes whenever the policy, the Bot's instructions or model, the project's guidance or

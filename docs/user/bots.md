@@ -185,7 +185,13 @@ codebase does not leak into another. You see it under each project in
   projects only when you say so, or when you adopt a lesson the Bot proposed
   for all projects. You can explicitly ask the Bot to remember a fact across
   all its projects too. The Bot tells you where the learning applies; shared
-  entries appear under **Learning for all projects** in settings.
+  entries appear under **Learning for all projects** in settings. **Apply to
+  all projects** moves a project's entry there; restore its earlier version to
+  move it back. If all projects already have the same entry, that one stays
+  and the project's copy is retired. A proposal that would move an entry says
+  so, and the entry stays in its project until you adopt it.
+- **Edit** rewords an entry as a new version, so its earlier wording stays in
+  its history.
 - **Retire** stops an entry, and **Restore** brings back an earlier version.
   A proposal made against a version that has since changed is marked outdated
   instead of being applied. The same lesson is not recorded twice.
@@ -214,7 +220,10 @@ skips while it is snoozed or archived, and runs only once after days the server
 was off. It needs a Codex model on a Mac server.
 
 The Bot gets its current learning at the start of each turn, not its whole
-history. Learning does not add preferred sources, settle project decisions or
+history: at most 40 entries or 8,000 characters, your instructions first and
+then the newest. When a project has more, its **Learning** section lists what
+is left out, so you can retire or merge entries to make room. Learning does
+not add preferred sources, settle project decisions or
 give the Bot more access. Research it did for one task stays in the
 conversation but does not become a standing preference.
 

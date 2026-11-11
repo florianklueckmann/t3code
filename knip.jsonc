@@ -43,6 +43,10 @@
       // knip run beside it in check:changed must not report.
       "ignore": ["npm-launcher/**", ".knip-test-*/**"],
     },
+    "evals": {
+      // Codex starts this fixture MCP server by path.
+      "entry": ["bot-grants/mailServer.ts"],
+    },
     "apps/server": {
       // Vite+ pack entries and the launcher used by installed background services.
       "entry": [

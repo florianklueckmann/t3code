@@ -156,14 +156,26 @@ export const learningSourceOf = (row: BotLearningRow) =>
     Effect.mapError((cause) => new BotStoreError({ operation: "decode-learning-source", cause })),
   );
 
+/**
+ * The project an entry belongs to, null when shared: that of its newest revision that was ever in
+ * use, so a proposal to move it changes nothing until adopted.
+ */
+export const learningScopeOf = (revisions: ReadonlyArray<BotLearningRow>): string | null =>
+  (
+    revisions.findLast(
+      (row) => row.status === "active" || row.status === "superseded" || row.status === "retired",
+    ) ?? revisions[0]
+  )?.project_id ?? null;
+
 /** Groups revision rows into entries, in the order each entry first appears. */
 const toLearningEntries = Effect.fn("BotStore.toLearningEntries")(function* (
   rows: ReadonlyArray<BotLearningRow>,
 ) {
-  const entries = new Map<string, { first: BotLearningRow; revisions: Array<unknown> }>();
+  const entries = new Map<string, { rows: Array<BotLearningRow>; revisions: Array<unknown> }>();
   for (const row of rows) {
     const revision = {
       revision: row.revision,
+      projectId: row.project_id,
       text: row.text,
       rationale: row.rationale,
       evidence: row.evidence,
@@ -177,14 +189,17 @@ const toLearningEntries = Effect.fn("BotStore.toLearningEntries")(function* (
       decidedAt: row.decided_at,
     };
     const entry = entries.get(row.entry_id);
-    if (entry === undefined) entries.set(row.entry_id, { first: row, revisions: [revision] });
-    else entry.revisions.push(revision);
+    if (entry === undefined) entries.set(row.entry_id, { rows: [row], revisions: [revision] });
+    else {
+      entry.rows.push(row);
+      entry.revisions.push(revision);
+    }
   }
-  return [...entries.values()].map(({ first, revisions }) => ({
-    id: first.entry_id,
-    projectId: first.project_id,
-    kind: first.kind,
-    revisions,
+  return [...entries.entries()].map(([id, entry]) => ({
+    id,
+    projectId: learningScopeOf(entry.rows),
+    kind: entry.rows[0]?.kind,
+    revisions: entry.revisions,
   }));
 });
 
