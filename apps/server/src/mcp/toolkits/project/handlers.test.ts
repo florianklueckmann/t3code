@@ -1,6 +1,7 @@
 import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
 import { expect, it } from "@effect/vitest";
 import {
+  BotId,
   EnvironmentId,
   ProjectId,
   ProviderInstanceId,
@@ -21,6 +22,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 
 import * as DocumentText from "../../../provider/DocumentText.ts";
@@ -36,7 +38,8 @@ import * as PeerForwarding from "../../../peer/PeerForwarding.ts";
 import * as GitVcsDriver from "../../../vcs/GitVcsDriver.ts";
 import * as VcsProcess from "../../../vcs/VcsProcess.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
-import { layerCallerChangesAllowed } from "../../McpToolAccess.testkit.ts";
+import * as McpCallerBot from "../../McpCallerBot.ts";
+import { layerCallerChangesAllowed, liveThreadShell } from "../../McpToolAccess.testkit.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import * as ProjectHandlers from "./handlers.ts";
 import { ProjectToolkit } from "./tools.ts";
@@ -713,4 +716,85 @@ it.effect.each(["invalid-input", "attached-bot"] as const)(
         message: rejection.message,
       });
     }),
+);
+
+const callProjectMutation = Effect.fn("test.callProjectMutation")(function* (
+  name: "t3_project_update" | "t3_project_delete",
+  accessOf: McpCallerBot.McpCallerBotValue,
+) {
+  const projectId = ProjectId.make("project:target");
+  const threadId = ThreadId.make("thread:caller");
+  const reached = yield* Ref.make<ReadonlyArray<string>>([]);
+  const reach = (method: string) =>
+    Ref.update(reached, (current) => [...current, method]).pipe(
+      Effect.andThen(Effect.fail(new Project.ProjectInvalidError({ projectId, detail: method }))),
+    );
+  const result = yield* Effect.gen(function* () {
+    const toolkit = yield* ProjectToolkit;
+    const results = yield* toolkit
+      .handle(name, {
+        projectId,
+        ...(name === "t3_project_update" ? { title: "Renamed" } : { force: true }),
+      })
+      .pipe(Stream.unwrap, Stream.runCollect);
+    return results.at(-1)?.result;
+  }).pipe(
+    Effect.provide(
+      McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(
+        Layer.provideMerge(
+          Layer.mergeAll(
+            Layer.succeed(McpInvocationContext.McpInvocationContext, {
+              environmentId: EnvironmentId.make("environment:here"),
+              requestNamespace: "provider:caller",
+              thread: {
+                threadId,
+                providerSessionId: "provider:caller",
+                providerInstanceId: ProviderInstanceId.make("codex"),
+              },
+              client: undefined,
+              capabilities: new Set(["orchestration" as const]),
+              issuedAt: 0,
+            }),
+            Layer.mock(ThreadManagement.ThreadManagementService)({
+              getThreadShell: (id) => Effect.succeed(liveThreadShell(id)),
+            }),
+            layerCallerChangesAllowed,
+            Layer.succeed(McpCallerBot.McpCallerBot, {
+              forThread: () => Effect.succeed(accessOf),
+            }),
+            Layer.mock(Project.ProjectService)({
+              update: () => reach("update"),
+              delete: () => reach("delete"),
+            }),
+            Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({}),
+            NodeCrypto.layer,
+          ),
+        ),
+      ),
+    ),
+  );
+  return { result, reached: yield* Ref.get(reached) };
+});
+
+it.effect.each(
+  (["t3_project_update", "t3_project_delete"] as const).flatMap((name) =>
+    (
+      [
+        [{ _tag: "bot", botId: BotId.make("mail-bot") }, "capability_denied"],
+        [{ _tag: "none" }, "reached"],
+        [{ _tag: "unknown" }, "capability_denied"],
+      ] as const
+    ).map(([accessOf, expected]) => [name, accessOf, expected] as const),
+  ),
+)("%s from %o: %s", ([name, accessOf, expected]) =>
+  callProjectMutation(name, accessOf).pipe(
+    Effect.map(({ result, reached }) => {
+      if (expected === "reached") {
+        expect(reached).toEqual([name === "t3_project_update" ? "update" : "delete"]);
+      } else {
+        expect(result).toMatchObject({ code: expected });
+        expect(reached).toEqual([]);
+      }
+    }),
+  ),
 );

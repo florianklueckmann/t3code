@@ -361,6 +361,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
   ),
   t3_project_update: McpToolAccess.writesEnvironment((input) =>
     Effect.gen(function* () {
+      yield* McpToolAccess.refuseBotCaller("project update");
       const projects = yield* Project.ProjectService;
       return yield* projects
         .update({ ...input, commandId: yield* newCommandId() })
@@ -369,6 +370,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
   ),
   t3_project_delete: McpToolAccess.writesEnvironment((input) =>
     Effect.gen(function* () {
+      yield* McpToolAccess.refuseBotCaller("project delete");
       const projects = yield* Project.ProjectService;
       const clones = yield* ProjectCloneTracker.ProjectCloneTracker;
       return yield* mutateProjectWithClone(projects, clones, {
