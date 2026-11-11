@@ -14,6 +14,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 
@@ -75,8 +76,20 @@ const harness = Effect.gen(function* () {
       }),
   });
   // The OAuth service's own behavior is covered in its tests; the catalog reads and signs out.
-  const oauthGrants = { connected: new Set<McpConnectionId>(), forgotten: [] as string[] };
+  const oauthGrants = {
+    connected: new Set<McpConnectionId>(),
+    forgotten: [] as string[],
+    tokens: new Map<McpConnectionId, string>(),
+    asked: [] as string[],
+    stale: [] as string[],
+  };
   const oauth = Layer.mock(McpConnectionOAuth.McpConnectionOAuth)({
+    accessToken: (id) =>
+      Effect.sync(() => {
+        oauthGrants.asked.push(id);
+        return Option.map(Option.fromUndefinedOr(oauthGrants.tokens.get(id)), Redacted.make);
+      }),
+    markStale: (id) => Effect.sync(() => void oauthGrants.stale.push(id)),
     state: (id) =>
       Effect.succeed({
         credential: oauthGrants.connected.has(id)
@@ -102,6 +115,7 @@ const harness = Effect.gen(function* () {
     Effect.provide(
       McpConnectionDelivery.layer.pipe(
         Layer.provide(Layer.succeed(SecretResolver.SecretResolver, resolver)),
+        Layer.provide(oauth),
       ),
     ),
   );
@@ -406,7 +420,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("MCP connections"
     "delivers granted connections with credentials read now, and nothing to fall back on",
     () =>
       Effect.gen(function* () {
-        const { connections, delivery, secrets, reads } = yield* harness;
+        const { connections, delivery, secrets, reads, oauthGrants } = yield* harness;
         const settings = yield* ServerSettings.ServerSettingsService;
         yield* decodeServerSettingsPatch({
           secretProviders: {
@@ -495,6 +509,48 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("MCP connections"
           (yield* delivery.resolve([accountA, unknown]).pipe(Effect.flip)).reason,
           "missing",
         );
+
+        // An OAuth account sends its current access token beside its other headers.
+        yield* connections.create({
+          connectionId: oauthMail,
+          label: "Mail",
+          enabled: true,
+          transport: oauthHttp(),
+        });
+        oauthGrants.tokens.set(oauthMail, "access-1");
+        const oauthLoad = yield* delivery.resolve([accountA, oauthMail]);
+        assert.deepEqual(
+          oauthLoad.connections.map(({ id, transport }) =>
+            transport.type === "http" ? [id, Redacted.value(transport.headers)] : [id],
+          ),
+          [
+            [accountA, { Authorization: "Bearer account-a" }],
+            [oauthMail, { Authorization: "Bearer access-1", "X-Tenant": "home" }],
+          ],
+        );
+        assert.notInclude(oauthLoad.identity, "access-1");
+        // A refreshed token reloads the thread on its next turn.
+        oauthGrants.tokens.set(oauthMail, "access-2");
+        const refreshedLoad = yield* delivery.resolve([accountA, oauthMail]);
+        assert.notEqual(refreshedLoad.identity, oauthLoad.identity);
+        // Signed out, the work runs without it: the rest still loads, and that changes the identity.
+        oauthGrants.tokens.delete(oauthMail);
+        const signedOutLoad = yield* delivery.resolve([accountA, oauthMail]);
+        assert.deepEqual(
+          signedOutLoad.connections.map(({ id }) => id),
+          [accountA],
+        );
+        assert.notEqual(signedOutLoad.identity, refreshedLoad.identity);
+        // A disabled one is never asked for a token.
+        yield* connections.update({ connectionId: oauthMail, expectedRevision: 1, enabled: false });
+        oauthGrants.asked.length = 0;
+        yield* delivery.resolve([oauthMail]);
+        assert.deepEqual(oauthGrants.asked, []);
+
+        // Only an OAuth connection's refused credential is worth a refresh.
+        yield* delivery.markRefused(accountA, "call");
+        yield* delivery.markRefused(oauthMail, "startup");
+        assert.deepEqual(oauthGrants.stale, [oauthMail]);
       }).pipe(Effect.provide(layerSettings)),
   );
 

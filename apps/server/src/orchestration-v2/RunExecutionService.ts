@@ -4,6 +4,7 @@ import {
   isOrchestrationV2WorkActive,
   CommandId,
   type EventId,
+  type McpConnectionId,
   type ModelSelection,
   type NodeId,
   type OrchestrationV2AppThread,
@@ -21,6 +22,7 @@ import {
   type ProviderThreadId,
   type ProviderTurnId,
   type RunAttemptId,
+  type ServerSettings as ServerSettingsContract,
   type ThreadId,
   type TurnItemId,
 } from "@t3tools/contracts";
@@ -32,6 +34,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
@@ -40,6 +43,7 @@ import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import * as McpAppModelContext from "../mcpApps/McpAppModelContext.ts";
 import * as BotTurnContext from "../bots/BotTurnContext.ts";
 import * as McpConnectionDelivery from "../mcpConnections/McpConnectionDelivery.ts";
+import * as McpConnectionOAuth from "../mcpConnections/McpConnectionOAuth.ts";
 import * as PreviewAgentActivity from "../preview/PreviewAgentActivity.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as CheckpointService from "./CheckpointService.ts";
@@ -623,6 +627,37 @@ export const layer: Layer.Layer<
     const turnItemPositions = yield* TurnItemPositionStore.TurnItemPositionStoreV2;
     const finalizationObserver = yield* RunFinalizationService.RunFinalizationObserver;
     const turnAnalytics = yield* ProviderUsageAnalytics.ProviderTurnAnalytics;
+    const mcpConnectionOAuth = Option.getOrUndefined(
+      yield* Effect.serviceOption(McpConnectionOAuth.McpConnectionOAuth),
+    );
+
+    /**
+     * Names each granted account's tool namespace. A signed-out OAuth account is not loaded, so
+     * the model is not told about it either.
+     */
+    const grantedConnectionsInstructions = Effect.fn(
+      "RunExecutionService.grantedConnectionsInstructions",
+    )(function* (ids: ReadonlyArray<McpConnectionId>) {
+      const catalog = yield* serverSettings.getSettings.pipe(
+        Effect.map((settings) => settings.mcpConnections),
+        Effect.catch((cause) =>
+          Effect.logWarning("Failed to read MCP connection labels.", { cause }).pipe(
+            Effect.as({} as ServerSettingsContract["mcpConnections"]),
+          ),
+        ),
+      );
+      const loaded = yield* Effect.filter(ids, (id) => {
+        const transport = catalog[id]?.transport;
+        if (transport?.type !== "http" || transport.oauth === undefined)
+          return Effect.succeed(true);
+        if (mcpConnectionOAuth === undefined) return Effect.succeed(false);
+        return mcpConnectionOAuth.state(id).pipe(
+          Effect.map((state) => state.credential.state === "connected"),
+          Effect.orElseSucceed(() => false),
+        );
+      });
+      return McpConnectionDelivery.grantedConnectionsInstructions(loaded, catalog);
+    });
 
     const writeFinalRunEvents = Effect.fn("RunExecutionService.writeFinalRunEvents")(
       function* (input: {
@@ -1705,17 +1740,7 @@ export const layer: Layer.Layer<
         const grantedConnections =
           input.runtimePolicy.mcpConnections === undefined
             ? undefined
-            : McpConnectionDelivery.grantedConnectionsInstructions(
-                input.runtimePolicy.mcpConnections,
-                yield* serverSettings.getSettings.pipe(
-                  Effect.map((settings) => settings.mcpConnections),
-                  Effect.catch((cause) =>
-                    Effect.logWarning("Failed to read MCP connection labels.", { cause }).pipe(
-                      Effect.as({}),
-                    ),
-                  ),
-                ),
-              );
+            : yield* grantedConnectionsInstructions(input.runtimePolicy.mcpConnections);
         const botInstructions =
           Exit.isSuccess(botContext) && botContext.value._tag === "active"
             ? botContext.value.instructions
