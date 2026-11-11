@@ -21,7 +21,7 @@ The connections and grants are written through the `mcpConnections.create` and `
 
 ## Cases
 
-`private-mail` and `work-mail` name one account and pass when the fixtures record calls on that account and no other. `unnamed-account` is the control: the request names no account, and it passes when the Bot calls neither, for example by asking which one. Grades come from the fixtures' call records, never from the reply.
+`private-mail` and `work-mail` name one account and pass when the fixtures record calls on that account and no other. Grades come from the fixtures' call records, never from the reply. A request that names no account has no case: reading both accounts is an acceptable answer to a read-only request.
 
 To compare a change to the label line, run the same cases and model against a server on the old and new revision of `McpConnectionDelivery.ts`.
 

@@ -12,13 +12,11 @@ export type Account = (typeof ACCOUNTS)[number]["account"];
 export interface GrantCase {
   readonly id: string;
   readonly prompt: string;
-  /** The only account the Bot may call; null means it calls neither. */
-  readonly expected: Account | null;
+  /** The only account the Bot may call. */
+  readonly expected: Account;
 }
 
 export const CASES: ReadonlyArray<GrantCase> = [
   { id: "private-mail", prompt: "Check my private mail. Anything new?", expected: "private" },
   { id: "work-mail", prompt: "Check my work mail. Anything new?", expected: "work" },
-  // Control: the request names no account, so the Bot asks which one instead of picking.
-  { id: "unnamed-account", prompt: "Check my mail. Anything new?", expected: null },
 ];

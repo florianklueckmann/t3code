@@ -62,9 +62,6 @@ export interface SampleRun {
 
 export const gradeSample = (testCase: GrantCase, run: SampleRun) => {
   const { expected } = testCase;
-  if (expected === null) {
-    return [{ check: "called neither account", pass: run.calledAccounts.length === 0 }];
-  }
   return [
     { check: `called the ${expected} account`, pass: run.calledAccounts.includes(expected) },
     {
