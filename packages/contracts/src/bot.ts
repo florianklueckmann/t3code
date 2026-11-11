@@ -208,6 +208,58 @@ export const BotLearningEntry = Schema.Struct({
 });
 export type BotLearningEntry = typeof BotLearningEntry.Type;
 
+/** How much active learning one Bot turn includes. */
+export const BOT_TURN_LEARNING_LIMITS = { entries: 40, chars: 8_000 } as const;
+
+export interface BotTurnLearningItem {
+  readonly entryId: string;
+  readonly revision: number;
+  /** Null when shared across all of the Bot's projects. */
+  readonly projectId: string | null;
+  readonly kind: string;
+  readonly origin: string;
+  readonly status: string;
+  readonly text: string;
+  readonly createdAt: string;
+}
+
+/**
+ * The active learning one turn in a project includes: its own entries and the Bot's shared ones,
+ * standing instructions first and then the newest, until either limit is reached. The server
+ * builds the turn's context with it and clients show what it leaves out, so the two cannot drift.
+ */
+export function selectBotTurnLearning<T extends BotTurnLearningItem>(
+  items: ReadonlyArray<T>,
+  projectId: string,
+): { readonly lines: ReadonlyArray<string>; readonly omitted: ReadonlyArray<T> } {
+  const active = items
+    .filter(
+      (item) =>
+        item.status === "active" && (item.projectId === null || item.projectId === projectId),
+    )
+    .sort(
+      (a, b) =>
+        Number(b.origin === "instruction") - Number(a.origin === "instruction") ||
+        b.createdAt.localeCompare(a.createdAt),
+    );
+  const lines: Array<string> = [];
+  let chars = 0;
+  for (const item of active) {
+    const line = `- [${item.entryId} r${item.revision}; ${item.kind}${
+      item.projectId === null ? ", all projects" : ""
+    }${item.origin === "instruction" ? ", standing instruction" : ""}] ${item.text}`;
+    if (
+      lines.length >= BOT_TURN_LEARNING_LIMITS.entries ||
+      chars + line.length > BOT_TURN_LEARNING_LIMITS.chars
+    ) {
+      break;
+    }
+    lines.push(line);
+    chars += line.length;
+  }
+  return { lines, omitted: active.slice(lines.length) };
+}
+
 /**
  * The environment's MCP connections a Bot's threads may use. Only these load, with their
  * credentials resolved at each load; the user's own Codex MCP servers load only when switched on.

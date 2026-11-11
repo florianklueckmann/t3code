@@ -1144,6 +1144,72 @@ it.effect("keeps facts in their project by default and shares them when explicit
           existingFacts,
         );
 
+        // Moving a lesson to all projects, and rewording it, are revisions of the same entry.
+        const user = { origin: "instruction" as const, source: { kind: "user" as const } };
+        const moved = yield* bots.recordLearning({
+          ...user,
+          botId,
+          projectId: campaignA,
+          scope: "bot",
+          kind: "fact",
+          text: "Strahd fled to the Amber Temple.",
+          replaces: { entryId: local.learned.entryId, revision: 1 },
+        });
+        const entryOf = (detail: BotDetail, entryId: string) =>
+          detail.learning.find((entry) => entry.id === entryId) ?? assert.fail();
+        assert.deepEqual(moved.learned, {
+          entryId: local.learned.entryId,
+          revision: 2,
+          status: "active",
+          duplicate: false,
+        });
+        assert.isNull(entryOf(moved.bot, local.learned.entryId).projectId);
+        assert.include(
+          yield* instructionsFor(turnContext, homeB ?? assert.fail()),
+          `[${local.learned.entryId} r2; fact, all projects, standing instruction] Strahd fled to the Amber Temple.`,
+        );
+        const edited = yield* bots.recordLearning({
+          ...user,
+          botId,
+          projectId: campaignB,
+          kind: "fact",
+          text: "Strahd fled to the Amber Temple with the Abbot.",
+          replaces: { entryId: local.learned.entryId, revision: 2 },
+        });
+        const editedEntry = entryOf(edited.bot, local.learned.entryId);
+        assert.isNull(editedEntry.projectId);
+        assert.deepEqual(
+          editedEntry.revisions.map((revision) => [revision.text, revision.status]),
+          [
+            ["Strahd fled to the Amber Temple.", "superseded"],
+            ["Strahd fled to the Amber Temple.", "superseded"],
+            ["Strahd fled to the Amber Temple with the Abbot.", "active"],
+          ],
+        );
+        const restored = yield* bots.restoreLearning({
+          ...user,
+          botId,
+          entryId: local.learned.entryId,
+          revision: 1,
+        });
+        assert.equal(entryOf(restored, local.learned.entryId).projectId, campaignA);
+        assert.notInclude(
+          yield* instructionsFor(turnContext, homeB ?? assert.fail()),
+          "Amber Temple",
+        );
+        // A move the Bot infers waits for the user, like any lesson for every project.
+        const proposedMove = yield* bots.recordLearning({
+          ...correction,
+          botId,
+          projectId: campaignA,
+          scope: "bot",
+          text: "The party meets in Vallaki.",
+          replaces: { entryId: explicitLocal.learned.entryId, revision: 1 },
+        });
+        assert.equal(proposedMove.learned.status, "pending");
+        assert.equal(entryOf(proposedMove.bot, explicitLocal.learned.entryId).projectId, campaignA);
+        assert.notInclude(yield* instructionsFor(turnContext, homeB ?? assert.fail()), "Vallaki");
+
         const detached = yield* bots.detachProject({ botId, projectId: campaignB });
         const refused = yield* bots
           .recordLearning({ ...correction, botId, projectId: campaignB })

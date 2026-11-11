@@ -1,11 +1,14 @@
 import {
   BOT_CONTINUATION_SECTIONS,
+  BOT_TURN_LEARNING_LIMITS,
   BotContinuationNoteInput,
   type BotContinuationNote,
   type BotContinuationRef,
   type BotContinuationRevision,
   type BotMaintenanceView,
   type BotHomeCheckView,
+  type BotRecordLearningInput,
+  selectBotTurnLearning,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import * as Option from "effect/Option";
@@ -167,6 +170,77 @@ export function botLearningViews(
   const rank = (view: BotLearningView) =>
     view.pending.length > 0 ? 0 : view.current !== undefined ? 1 : 2;
   return [...views].sort((a, b) => rank(a) - rank(b));
+}
+
+export const BOT_LEARNING_LEFT_OUT_EXPLANATION = `Each turn includes at most ${
+  BOT_TURN_LEARNING_LIMITS.entries
+} lessons or ${BOT_TURN_LEARNING_LIMITS.chars.toLocaleString(
+  "en-US",
+)} characters: your instructions first, then the newest. Retire or merge lessons to make room.`;
+
+/** Active entries that a Bot's turns in this project leave out, by the server's own rule. */
+export function botLearningLeftOut(
+  entries: ReadonlyArray<BotLearningEntry>,
+  projectId: ProjectId,
+): ReadonlyArray<{ readonly entry: BotLearningEntry; readonly current: BotLearningRevision }> {
+  const active = entries.flatMap((entry) =>
+    entry.revisions
+      .filter((revision) => revision.status === "active")
+      .map((current) => ({
+        entry,
+        current,
+        entryId: entry.id,
+        revision: current.revision,
+        // An entry's scope is that of its active revision.
+        projectId: entry.projectId,
+        kind: entry.kind,
+        origin: current.origin,
+        status: current.status,
+        text: current.text,
+        createdAt: current.createdAt,
+      })),
+  );
+  return selectBotTurnLearning(active, projectId).omitted;
+}
+
+/**
+ * A new revision of an entry's active text: reworded, or moved to all projects with its
+ * rationale and evidence. It is recorded from the entry's project, or for a shared entry from
+ * an attached project; null when there is no active text or no such project.
+ */
+export function botLearningRevisionInput(
+  bot: {
+    readonly id: BotId;
+    readonly projects: ReadonlyArray<Pick<BotProjectContextSummary, "projectId" | "detachedAt">>;
+  },
+  entry: BotLearningEntry,
+  change: { readonly text: string } | { readonly scope: "bot" },
+): BotRecordLearningInput | null {
+  const current = entry.revisions.find((revision) => revision.status === "active");
+  const attached = bot.projects.flatMap((project) =>
+    project.detachedAt === null ? [project.projectId] : [],
+  );
+  const projectId =
+    entry.projectId ??
+    (current !== undefined && attached.includes(current.learnedInProjectId)
+      ? current.learnedInProjectId
+      : attached[0]);
+  if (current === undefined || projectId === undefined) return null;
+  const base = {
+    botId: bot.id,
+    projectId,
+    kind: entry.kind,
+    replaces: { entryId: entry.id, revision: current.revision },
+  };
+  return "scope" in change
+    ? {
+        ...base,
+        text: current.text,
+        rationale: current.rationale,
+        evidence: current.evidence,
+        scope: change.scope,
+      }
+    : { ...base, text: change.text.trim() };
 }
 
 export interface BotConversation {

@@ -1,8 +1,11 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
   BOT_LEARNING_KIND_LABELS,
+  BOT_LEARNING_LEFT_OUT_EXPLANATION,
   BOT_LEARNING_STATUS_LABELS,
+  botLearningLeftOut,
   botLearningOriginLabel,
+  botLearningRevisionInput,
   botLearningViews,
 } from "@t3tools/client-runtime/bots";
 import {
@@ -10,7 +13,7 @@ import {
   squashAtomCommandFailure,
   type AtomCommandResult,
 } from "@t3tools/client-runtime/state/runtime";
-import type { BotId, EnvironmentId, ProjectId } from "@t3tools/contracts";
+import type { BotId, BotLearningEntry, EnvironmentId, ProjectId } from "@t3tools/contracts";
 import { useState } from "react";
 import { Pressable, View } from "react-native";
 
@@ -78,8 +81,11 @@ export function BotLearningSection({
   const canChange = useAtomValue(serverEnvironment.recordBotLearning.permissionAtom(environmentId));
   const [busy, setBusy] = useState(false);
   const [text, setText] = useState("");
+  const [editing, setEditing] = useState<{ entryId: string; text: string } | null>(null);
   const locked = disabled || busy || !canChange;
   const views = detail.data ? botLearningViews(detail.data.learning, projectId) : [];
+  const leftOut =
+    detail.data && projectId !== null ? botLearningLeftOut(detail.data.learning, projectId) : [];
 
   const run = async (
     failureTitle: string,
@@ -98,6 +104,16 @@ export function BotLearningSection({
     if (detail.data) pinBotEditorDraft(detail.data);
     detail.refresh();
     return true;
+  };
+  const revise = async (
+    failureTitle: string,
+    entry: BotLearningEntry,
+    change: Parameters<typeof botLearningRevisionInput>[2],
+  ) => {
+    const input = detail.data ? botLearningRevisionInput(detail.data, entry, change) : null;
+    if (input === null) return;
+    const revised = await run(failureTitle, () => record({ environmentId, input }));
+    if (revised) setEditing(null);
   };
 
   if (projectId === null && views.length === 0) return null;
@@ -170,8 +186,56 @@ export function BotLearningSection({
                 </View>
               </View>
             ))}
-            {view.current ? (
-              <View className="flex-row pt-1">
+            {view.current && editing?.entryId === entryId ? (
+              <View className="gap-2 pt-1">
+                <FormField
+                  label="Edit lesson"
+                  value={editing.text}
+                  multiline
+                  maxLength={1_000}
+                  disabled={locked}
+                  onChange={(next) => setEditing({ entryId, text: next })}
+                />
+                <View className="flex-row gap-5">
+                  <ActionText
+                    label="Save"
+                    disabled={
+                      locked ||
+                      editing.text.trim() === "" ||
+                      editing.text.trim() === view.current.text
+                    }
+                    onPress={() =>
+                      void revise("Could not save the change", view.entry, { text: editing.text })
+                    }
+                  />
+                  <ActionText
+                    label="Cancel"
+                    tone="muted"
+                    disabled={busy}
+                    onPress={() => setEditing(null)}
+                  />
+                </View>
+              </View>
+            ) : view.current ? (
+              <View className="flex-row flex-wrap gap-5 pt-1">
+                <ActionText
+                  label="Edit"
+                  tone="muted"
+                  disabled={locked}
+                  onPress={() => setEditing({ entryId, text: view.current?.text ?? "" })}
+                />
+                {view.entry.projectId === null ? null : (
+                  <ActionText
+                    label="Apply to all projects"
+                    tone="muted"
+                    disabled={locked}
+                    onPress={() =>
+                      void revise("Could not apply it to all projects", view.entry, {
+                        scope: "bot",
+                      })
+                    }
+                  />
+                )}
                 <ActionText
                   label="Retire"
                   tone="muted"
@@ -207,6 +271,22 @@ export function BotLearningSection({
           </View>
         );
       })}
+      {leftOut.length === 0 ? null : (
+        <View className="gap-1 border-t border-border-subtle px-4 py-3">
+          <Text textRole="footnote" className="text-foreground">
+            Left out of the Bot's turns here ({leftOut.length})
+          </Text>
+          <Text textRole="footnote" className="text-foreground-muted">
+            {BOT_LEARNING_LEFT_OUT_EXPLANATION}
+          </Text>
+          {leftOut.map(({ entry, current }) => (
+            <Text key={entry.id} textRole="body" className="text-foreground-muted">
+              {current.text}
+              {entry.projectId === null ? " · all projects" : ""}
+            </Text>
+          ))}
+        </View>
+      )}
       {projectId === null ? null : (
         <>
           <FormField
