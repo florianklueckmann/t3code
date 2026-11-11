@@ -19,6 +19,7 @@ import {
   RunId,
   ThreadId,
   ProjectId,
+  TextGenerationError,
   TurnItemId,
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2TurnItem,
@@ -56,6 +57,7 @@ import * as ProviderTurnStart from "./ProviderTurnStartService.ts";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as ProviderUsageAnalytics from "../telemetry/ProviderUsageAnalytics.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
+import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 
 const isDomainEvent = Schema.is(OrchestrationV2DomainEvent);
 
@@ -195,6 +197,7 @@ function startWithMissingWorktree(
         }),
         Layer.mock(RunExecutionService.RunExecutionServiceV2)({ startRootRun }),
         Layer.mock(RuntimePolicy.RuntimePolicyV2)({}),
+        Layer.mock(TextGeneration.TextGeneration)({}),
       ),
     ),
   );
@@ -285,6 +288,11 @@ function makeLocalCommandHarness(input: {
   readonly resumeFailure?: ProviderAdapter.ProviderAdapterV2Error;
   /** A recovery the provider thread requested; its native conversation resumes otherwise. */
   readonly recovery?: "fresh" | "rewind" | "failing rewind";
+  /** Replaces the recovered run's short request, such as one too long for the verbatim tail. */
+  readonly recoveryRequest?: string;
+  /** A summary an earlier fresh conversation wrote. */
+  readonly previousSummary?: { readonly text: string; readonly throughRunOrdinal: number };
+  readonly summaryFailure?: boolean;
   readonly interruptOpen?: boolean;
   readonly interruptRunBeforeOpenFailure?: boolean;
   readonly writeFailure?: unknown;
@@ -659,7 +667,11 @@ function makeLocalCommandHarness(input: {
   const keptRunId = RunId.make("kept-run");
   const recoveryHistory = (
     [
-      { type: "user_message", text: "Stop the controller.", attachments: [] },
+      {
+        type: "user_message",
+        text: input.recoveryRequest ?? "Stop the controller.",
+        attachments: [],
+      },
       { type: "command_execution", input: "kill -TERM 4242", output: "REFUSED_OUTPUT" },
       { type: "assistant_message", text: "The controller stopped." },
     ] as const
@@ -719,6 +731,34 @@ function makeLocalCommandHarness(input: {
           completedAt: now,
         },
       ],
+      contextHandoffs:
+        input.previousSummary === undefined
+          ? projection.contextHandoffs
+          : [
+              ...projection.contextHandoffs,
+              {
+                id: ContextHandoffId.make("previous-fresh-conversation"),
+                threadId,
+                targetRunId: keptRunId,
+                fromProviderThreadIds: [providerThreadId],
+                toProviderThreadId: providerThreadId,
+                coveredRunOrdinals: { from: 1, to: 1 },
+                strategy: "full_thread_summary",
+                status: "ready",
+                summaryMessageId: null,
+                summaryText: "",
+                history: {
+                  messages: [],
+                  coverage: "",
+                  omittedItems: 1,
+                  summary: input.previousSummary,
+                },
+                delivery: { nativeThreadId: "earlier-native", status: "inline", itemIds: [] },
+                createdByProviderInstanceId: null,
+                createdAt: now,
+                updatedAt: now,
+              },
+            ],
       providerThreads: projection.providerThreads.map((candidate) =>
         candidate.id === providerThreadId
           ? {
@@ -1054,6 +1094,18 @@ function makeLocalCommandHarness(input: {
       ),
     }),
   );
+  const generateConversationSummary = vi.fn<
+    TextGeneration.TextGeneration["Service"]["generateConversationSummary"]
+  >(() =>
+    input.summaryFailure === true
+      ? Effect.fail(
+          new TextGenerationError({
+            operation: "generateConversationSummary",
+            detail: "model unavailable",
+          }),
+        )
+      : Effect.succeed({ summary: "## Goals\n- Stop the controller" }),
+  );
   const prepareProviderHandoff = vi.fn<
     ContextHandoffService.ContextHandoffServiceV2["Service"]["prepareProviderHandoff"]
   >((handoff) =>
@@ -1165,11 +1217,13 @@ function makeLocalCommandHarness(input: {
         Layer.mock(RuntimePolicy.RuntimePolicyV2)({
           resolve: resolveRuntimePolicy,
         }),
+        Layer.mock(TextGeneration.TextGeneration)({ generateConversationSummary }),
       ),
     ),
   );
   return {
     settledRuns,
+    generateConversationSummary,
     getThreadRecords,
     getTurnStartContext,
     setProjection: (next: OrchestrationV2ThreadProjection) => {
@@ -1983,6 +2037,8 @@ effectIt.effect.each([
       expect(projection.providerThreads.at(-1)?.nativeThreadRef?.nativeId).toBe(
         recover ? "replacement-native" : "native-resume-thread",
       );
+      // Automatic recovery keeps the plain selection; only a requested one summarizes.
+      expect(harness.generateConversationSummary).not.toHaveBeenCalled();
       if (recover) {
         expect(projection.contextHandoffs).toHaveLength(1);
         expect(projection.contextTransfers).toHaveLength(1);
@@ -2049,6 +2105,70 @@ effectIt.effect.each([
       expect(projection.turnItems.filter((item) => item.type === "system_notice")).toMatchObject(
         freshFallback ? [{ conversationRecovery: "fresh" }] : [],
       );
+      // The whole conversation fits the verbatim tail, so nothing is summarized.
+      expect(harness.generateConversationSummary).not.toHaveBeenCalled();
+    }),
+);
+
+effectIt.effect.each([
+  ["summarizes", {}],
+  ["falls back without a summary", { summaryFailure: true }],
+  ["reuses the previous summary", { previousSummary: { text: "PREVIOUS", throughRunOrdinal: 1 } }],
+  ["summarizes a failed rewind", { recovery: "failing rewind" }],
+] as const)(
+  "fresh conversation recovery %s when the oldest request does not fit verbatim",
+  ([, options]) =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({
+        text: "Reply with OK.",
+        recovery: "fresh",
+        recoveryRequest: `Stop the controller. ${"Keep the logs. ".repeat(2_000)}`,
+        ...options,
+      });
+
+      yield* harness.start;
+
+      const summaryRequests = harness.generateConversationSummary.mock.calls.map(
+        ([request]) => request,
+      );
+      const handoffInput = harness.prepareProviderHandoff.mock.calls[0]?.[0];
+      const notices = harness
+        .projection()
+        .turnItems.filter((item) => item.type === "system_notice")
+        .map(({ title, message, detail }) => ({ title, message, detail }));
+      expect(harness.startTurn).toHaveBeenCalledOnce();
+      if ("previousSummary" in options) {
+        expect(summaryRequests).toEqual([]);
+        expect(handoffInput?.summary).toEqual(options.previousSummary);
+        expect(notices.at(-1)?.detail).toBe("PREVIOUS");
+        return;
+      }
+      // Only the request is older than the verbatim tail; the command and its output never go.
+      expect(summaryRequests).toMatchObject([
+        { previousSummary: undefined, messages: [{ role: "user", runOrdinal: 1 }] },
+      ]);
+      expect(JSON.stringify(summaryRequests)).not.toContain("REFUSED_OUTPUT");
+      if ("summaryFailure" in options) {
+        expect(handoffInput?.summary).toBeUndefined();
+        expect(handoffInput?.tokenCap).toBe(16_000);
+        expect(notices).toMatchObject([
+          {
+            title: "Conversation summary failed",
+            message: expect.stringContaining("model unavailable"),
+          },
+        ]);
+        return;
+      }
+      expect(handoffInput?.summary).toEqual({
+        text: "## Goals\n- Stop the controller",
+        throughRunOrdinal: 1,
+      });
+      expect(handoffInput?.tokenCap).toBeGreaterThan(20_000);
+      expect(notices.at(-1)).toMatchObject({
+        title: "Conversation summary",
+        detail: "## Goals\n- Stop the controller",
+      });
+      expect(notices).toHaveLength("recovery" in options ? 2 : 1);
     }),
 );
 

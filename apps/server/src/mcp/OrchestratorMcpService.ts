@@ -912,8 +912,9 @@ function turnItemText(item: OrchestrationV2TurnItem): string | null {
       return jsonText(item.files);
     case "run_interrupt_request":
     case "run_interrupt_result":
-    case "system_notice":
       return item.message;
+    case "system_notice":
+      return item.detail === undefined ? item.message : `${item.message}\n\n${item.detail}`;
     case "error":
       return item.failure.message;
     case "compaction":

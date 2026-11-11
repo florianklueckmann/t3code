@@ -395,6 +395,16 @@ export const V2ItemInspector = memo(function V2ItemInspector(props: V2ItemInspec
       ) : null}
       {item.type === "notification" ? <StructuredValue value={item.detail} /> : null}
       {item.type === "system_notice" ? <StructuredValue value={item.message} /> : null}
+      {item.type === "system_notice" && item.detail ? (
+        <ChatMarkdown
+          text={item.detail}
+          cwd={props.cwd}
+          threadRef={{
+            environmentId: props.environmentId,
+            threadId: props.projectedItem.sourceThreadId,
+          }}
+        />
+      ) : null}
       {item.type === "error" ? <StructuredValue value={item.failure.message} /> : null}
       {item.type === "todo_list" ? (
         <StructuredValue

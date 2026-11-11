@@ -8,7 +8,10 @@ import type {
 import type * as Effect from "effect/Effect";
 
 import type { TextGenerationPolicy } from "./textGenerationPolicy.ts";
-import type { ThreadTitleForkSource } from "./textGenerationPrompts.ts";
+import type {
+  ConversationSummaryPromptInput,
+  ThreadTitleForkSource,
+} from "./textGenerationPrompts.ts";
 
 export interface CommitMessageGenerationInput {
   cwd: string;
@@ -72,6 +75,16 @@ export interface ThreadTitleGenerationResult {
   needsRefinement?: boolean | undefined;
 }
 
+export interface ConversationSummaryGenerationInput extends ConversationSummaryPromptInput {
+  cwd: string;
+  modelSelection: ModelSelection;
+}
+
+export interface ConversationSummaryGenerationResult {
+  /** Markdown with one section per summary topic. */
+  summary: string;
+}
+
 export interface ReviewGuideStackLayer {
   readonly number: number;
   readonly title: string | null;
@@ -131,4 +144,8 @@ export interface ProviderTextGeneration {
   readonly generateReviewGuide: (
     input: ReviewGuideGenerationInput,
   ) => Effect.Effect<ReviewGuideGenerationResult, TextGenerationError>;
+
+  readonly generateConversationSummary: (
+    input: ConversationSummaryGenerationInput,
+  ) => Effect.Effect<ConversationSummaryGenerationResult, TextGenerationError>;
 }

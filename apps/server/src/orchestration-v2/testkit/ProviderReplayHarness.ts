@@ -54,6 +54,7 @@ import * as CommandOutputRecorder from "./CommandOutputRecorder.ts";
 import * as ProviderSwitchService from "../ProviderSwitchService.ts";
 import * as ProviderTurnControlService from "../ProviderTurnControlService.ts";
 import * as ProviderTurnStartService from "../ProviderTurnStartService.ts";
+import * as TextGeneration from "../../textGeneration/TextGeneration.ts";
 import * as ProviderTurnStartServiceTestkit from "../ProviderTurnStartService.testkit.ts";
 import * as McpAppModelContext from "../../mcpApps/McpAppModelContext.ts";
 import * as BotTurnContext from "../../bots/BotTurnContext.ts";
@@ -433,6 +434,8 @@ export function layerWithRegistry<Error>(
         layerRuntime,
         layerServerConfig,
         layerServerSettings,
+        // Replays never request a fresh conversation, so nothing is summarized.
+        Layer.mock(TextGeneration.TextGeneration)({}),
       ),
     ),
   );

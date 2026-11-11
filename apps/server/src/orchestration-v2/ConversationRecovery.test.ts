@@ -16,6 +16,8 @@ import * as DateTime from "effect/DateTime";
 
 import {
   conversationRecoveryHandoffItems,
+  freshConversationPlan,
+  previousConversationSummary,
   rewindKeptProviderTurn,
 } from "./ConversationRecovery.ts";
 
@@ -141,5 +143,71 @@ describe("conversationRecoveryHandoffItems", () => {
       "assistant_message: The controller stopped before any Quit.",
       "user_message: What was blocked?",
     ]);
+  });
+});
+
+describe("freshConversationPlan", () => {
+  // Ten runs of 3 KB each; the 20k verbatim tail keeps the first request and the newest five.
+  const messages = Array.from({ length: 10 }, (_, index) => ({
+    role: "user" as const,
+    text: `Request ${index + 1}: ${"x".repeat(3_000)}`,
+    runOrdinal: index + 1,
+    threadId: ThreadId.make("thread"),
+    runId: RunId.make(`run-${index + 1}`),
+    itemId: TurnItemId.make(`item-${index + 1}`),
+    providerThreadId: codex,
+    status: "completed",
+    kind: "user_message",
+  }));
+  const plan = (previousSummary?: { text: string; throughRunOrdinal: number }) =>
+    freshConversationPlan({
+      messages,
+      coverage: "Provider context handoff.",
+      tokenCap: 16_000,
+      previousSummary,
+    });
+  const runsOf = (result: ReturnType<typeof plan>) =>
+    result.type === "summarize" ? result.messages.map((message) => message.runOrdinal) : [];
+
+  it("summarizes only what the verbatim tail leaves out", () => {
+    const fresh = plan();
+    expect(fresh).toMatchObject({ type: "summarize", previousSummary: undefined });
+    expect(runsOf(fresh)).toEqual([2, 3, 4, 5]);
+    expect(fresh.type === "summarize" && fresh.throughRunOrdinal).toBe(5);
+    expect(
+      freshConversationPlan({
+        messages: messages.slice(-3),
+        coverage: "",
+        tokenCap: 16_000,
+        previousSummary: undefined,
+      }),
+    ).toEqual({ type: "verbatim" });
+  });
+
+  it("updates a previous summary with the newer omitted messages instead of rewriting it", () => {
+    const updated = plan({ text: "PREVIOUS", throughRunOrdinal: 2 });
+    expect(updated).toMatchObject({ type: "summarize", previousSummary: "PREVIOUS" });
+    expect(runsOf(updated)).toEqual([3, 4, 5]);
+    expect(updated.type === "summarize" && updated.throughRunOrdinal).toBe(5);
+    expect(plan({ text: "PREVIOUS", throughRunOrdinal: 5 })).toEqual({
+      type: "reuse",
+      summary: { text: "PREVIOUS", throughRunOrdinal: 5 },
+    });
+  });
+
+  it("ignores a previous summary whose last run a checkpoint restore rolled back", () => {
+    const handoff = (throughRunOrdinal: number) =>
+      ({
+        history: { summary: { text: `through ${throughRunOrdinal}`, throughRunOrdinal } },
+      }) as never;
+    expect(
+      previousConversationSummary(
+        [handoff(4), handoff(9), handoff(6)],
+        [
+          { ordinal: 6, status: "completed" },
+          { ordinal: 9, status: "rolled_back" },
+        ],
+      ),
+    ).toEqual({ text: "through 6", throughRunOrdinal: 6 });
   });
 });

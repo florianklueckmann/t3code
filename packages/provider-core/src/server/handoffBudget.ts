@@ -167,8 +167,19 @@ export function historicalMessage(
   };
 }
 
+// The handoff header names the thread once; per-message IDs cost more than the text they label.
 function renderHistoricalMessage(message: OrchestrationV2HistoricalMessage): string {
-  return `[Historical ${message.role}; ${message.kind}; thread=${message.threadId}; run=${message.runId ?? "imported"}; item=${message.itemId}; provider-thread=${message.providerThreadId ?? "none"}; status=${message.status}${message.runStatus === undefined ? "" : `; run-status=${message.runStatus}`}]\n${message.text}`;
+  const labels = [
+    ...(message.runOrdinal === undefined ? [] : [`run ${message.runOrdinal}`]),
+    message.role,
+    ...(message.kind === "user_message" || message.kind === "assistant_message"
+      ? []
+      : [message.kind]),
+    ...(message.runStatus === "failed" || message.runStatus === "interrupted"
+      ? [message.runStatus]
+      : []),
+  ];
+  return `[${labels.join(", ")}]\n${message.text}`;
 }
 
 export function historyResponseItems(
@@ -256,11 +267,33 @@ export function selectHistory(input: {
 export function handoffCoverage(input: {
   readonly threadId: string;
   readonly coveredRunOrdinals: OrchestrationV2ContextHandoff["coveredRunOrdinals"];
-  readonly items: ReadonlyArray<OrchestrationV2TurnItem>;
 }): string {
   return [
     `Provider context handoff. Thread: ${input.threadId}. Covered app runs: ${input.coveredRunOrdinals.from}-${input.coveredRunOrdinals.to}.`,
-    `Source item range: ${input.items.at(0)?.id ?? "none"} through ${input.items.at(-1)?.id ?? "none"}.`,
-    `Recover omitted history using t3_thread_read({threadId:"${input.threadId}",view:"activity",limit:20,maxCharsPerItem:4000}); paginate with afterPosition=nextPosition. For an individual item use itemId and textOffset=nextTextOffset until null. Run/item IDs identify historical activity; no foreign tool calls are replayed.`,
+    `Recover omitted history using t3_thread_read({threadId:"${input.threadId}",view:"activity",limit:20,maxCharsPerItem:4000}); paginate with afterPosition=nextPosition. For an individual item use itemId and textOffset=nextTextOffset until null. Each message is labeled with its app run; no foreign tool calls are replayed.`,
   ].join("\n");
+}
+
+/** A fresh conversation keeps this many newest message tokens verbatim, beside its summary. */
+export const FRESH_CONVERSATION_TAIL_TOKENS = 20_000;
+/** About 3k tokens of prose; the prompt asks for less. */
+export const CONVERSATION_SUMMARY_MAX_CHARS = 12_000;
+
+export type HandoffConversationSummary = NonNullable<
+  NonNullable<OrchestrationV2ContextHandoff["history"]>["summary"]
+>;
+
+export function conversationSummaryContext(summary: HandoffConversationSummary): string {
+  return `Summary of the earlier conversation through run ${summary.throughRunOrdinal}, written for this fresh conversation. The messages that follow are verbatim; where they overlap the summary, they win.\n${summary.text}`;
+}
+
+/** The verbatim tail plus room for the summary, so delivery drops no tail message for it. */
+export function freshConversationTokenCap(
+  tokenCap: number,
+  summary: HandoffConversationSummary | undefined,
+): number {
+  return (
+    Math.max(tokenCap, FRESH_CONVERSATION_TAIL_TOKENS) +
+    (summary === undefined ? 0 : jsonByteLength(conversationSummaryContext(summary)) + 512)
+  );
 }
