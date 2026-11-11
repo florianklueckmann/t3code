@@ -1111,6 +1111,57 @@ it.effect("starts a steer that missed the turn on the saved next-turn selection"
   ),
 );
 
+it.effect("shows a steer that could not be delivered as not sent, next to the message", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { layer, started, startFirstTurn } =
+        yield* nextTurnSelectionHarness("steering-delivery-fail");
+      yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const threadId = yield* startFirstTurn;
+        const messageId = MessageId.make("message:undelivered-steer");
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("steer"),
+          threadId,
+          messageId,
+          text: "late steer",
+          attachments: [],
+          dispatchMode: { type: "steer_active", targetRunId: started[0]!.runId },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        const failure = {
+          class: "validation_error",
+          message: "codex is turned off for this project, so this message was not sent.",
+          code: "provider_instance_disabled",
+          retryable: false,
+        } as const;
+        yield* orchestrator.dispatch({
+          type: "message.delivery.fail",
+          commandId: CommandId.make("steer-failed"),
+          threadId,
+          messageId,
+          failure,
+        });
+
+        const projection = yield* orchestrator.getThreadProjection(threadId);
+        const steer = projection.turnItems.find(
+          (item) => item.type === "user_message" && item.messageId === messageId,
+        );
+        const notSent = projection.turnItems.find((item) => item.type === "error");
+        assert.equal(steer?.type === "user_message" ? steer.text : undefined, "late steer");
+        assert.deepEqual(
+          notSent?.type === "error"
+            ? { runId: notSent.runId, title: notSent.title, failure: notSent.failure }
+            : undefined,
+          { runId: steer?.runId ?? null, title: "Message not sent", failure },
+        );
+      }).pipe(Effect.provide(layer));
+    }),
+  ),
+);
+
 // regression: #26695 cancelling a Copilot prompt to steer it kills its background agents
 it.effect("queues a steer until the turn ends when the provider cannot steer it", () =>
   Effect.scoped(

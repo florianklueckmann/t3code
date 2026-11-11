@@ -335,18 +335,23 @@ export const layerExecutor: Layer.Layer<
                           : { senderThreadId: message.senderThreadId }),
                       })
                       .pipe(
-                        // A disabled instance cannot retry this completed turn; its result stands.
+                        // A disabled instance cannot take the message; show that it was not sent.
                         Effect.catchTags({
                           ThreadManagementProviderInstanceDisabledError: (disabledError) =>
-                            Effect.logInfo(
-                              "orchestration-v2.effect-worker.steer-follow-up-disabled",
-                              {
-                                threadId: effect.threadId,
-                                messageId: message.id,
-                                projectId: disabledError.projectId,
-                                instanceId: disabledError.instanceId,
+                            threads.dispatch({
+                              type: "message.delivery.fail",
+                              commandId: CommandId.make(
+                                `command:steer-follow-up-failed:${effect.id}`,
+                              ),
+                              threadId: effect.threadId,
+                              messageId: message.id,
+                              failure: {
+                                class: "validation_error",
+                                message: `${disabledError.instanceId} is turned off for this project, so this message was not sent. Turn it on in Settings, then send the message again.`,
+                                code: "provider_instance_disabled",
+                                retryable: false,
                               },
-                            ),
+                            }),
                         }),
                       );
                   }),
