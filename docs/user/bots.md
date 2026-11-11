@@ -224,10 +224,12 @@ Codex threads keep your Codex memory settings.
 
 ## Current limits
 
-- Bots run on Codex models only. If you switch a Bot conversation to another
-  provider, its turns fail until you switch back.
+- Bots with granted MCP connections require a supported Codex version on macOS,
+  where they load only those connections. Without grants, Bots on other
+  providers or platforms keep the provider's own MCP setup with provider memory
+  off; on supported Codex versions on macOS, they load no external MCP servers.
 - Built-in email and calendar connections are not available.
-- Bots cannot use MCP connections yet. **Settings → MCP connections** stores them
+- **Settings → MCP connections** stores connections
   for an environment: one connection per account, with its credentials as header
   or environment variable values or secret-provider references. **Refresh**
   checks that those credentials can be read; it does not start or contact the
