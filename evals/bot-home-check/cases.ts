@@ -82,7 +82,10 @@ export const CASES: readonly HomeCheckCase[] = [
   {
     id: "removed-not-repeated",
     source: "Control: the user removed what an earlier check proposed",
-    seed: [`Heads-up: tomorrow at 10:00 I have ${appointment}. ${acknowledge}`],
+    // The first check must propose the item for this control to grade anything.
+    seed: [
+      `Heads-up: tomorrow at 10:00 I have ${appointment}. Remind me to bring both before then. ${acknowledge}`,
+    ],
     task: null,
     between:
       'I have packed my passport and the signed lease, so that is handled. Remove that item from Waiting in your working notes and reply only "Done." Start no tasks.',
