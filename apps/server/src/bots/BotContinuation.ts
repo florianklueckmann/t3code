@@ -853,8 +853,6 @@ const make = Effect.gen(function* () {
               return yield* invalid(
                 "The quote was not found in the supplied source window. Read the Home history and reconcile it first.",
               );
-            if (refs.length === 0)
-              return yield* invalid("New Bot note items need a source in the supplied Home basis.");
           }
           for (const taskId of item.taskIds ?? []) {
             const task = (yield* sql<{
@@ -874,6 +872,8 @@ const make = Effect.gen(function* () {
               },
             ];
           }
+          if (refs.length === 0)
+            return yield* invalid("New Bot note items need a source in the supplied Home basis.");
           items.push({ text: item.text, refs });
         }
         note = { ...note, [section]: items };
@@ -905,6 +905,25 @@ const make = Effect.gen(function* () {
         return yield* invalid(
           "This maintenance turn may only append Waiting items; every other item must stay exactly as it is.",
         );
+      const added = input.note.waiting.slice(before.waiting.length);
+      // Without a quote the item would be attributed to the user's newest message.
+      if (added.some((item) => item.quote === undefined && (item.taskIds ?? []).length === 0))
+        return yield* invalid(
+          "Each new Waiting item needs a quote from the user's message or the id of the task it is about.",
+        );
+      const seen = new Set(
+        BOT_CONTINUATION_SECTIONS.flatMap((section) => before[section]).map((item) =>
+          item.text.trim().toLowerCase(),
+        ),
+      );
+      for (const item of added) {
+        const key = item.text.trim().toLowerCase();
+        if (seen.has(key))
+          return yield* invalid(
+            `"${item.text}" is already in the working notes; do not add it again.`,
+          );
+        seen.add(key);
+      }
     }
     const revision: typeof StoredRevision.Type = {
       revision: (previous?.revision ?? 0) + 1,

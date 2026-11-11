@@ -14,6 +14,7 @@ import TaskModelSelection from "./Migrations/010_BotTaskModelSelection.ts";
 import Maintenance from "./Migrations/011_BotMaintenance.ts";
 import MaintenanceReceipts from "./Migrations/012_BotMaintenanceReceipts.ts";
 import MaintenanceNightly from "./Migrations/013_BotMaintenanceNightly.ts";
+import HomeCheck from "./Migrations/014_BotHomeCheck.ts";
 
 const routines = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -50,6 +51,7 @@ const entries = [
   [11, "BotMaintenance", Maintenance],
   [12, "BotMaintenanceReceipts", MaintenanceReceipts],
   [13, "BotMaintenanceNightly", MaintenanceNightly],
+  [14, "BotHomeCheck", HomeCheck],
 ] as const;
 const run = Migrator.make({});
 export const runMigrations = Effect.fn("BotDatabase.runMigrations")(function* () {

@@ -650,7 +650,7 @@ it.effect(
           readonly migration_id: number;
           readonly name: string;
         }>`SELECT migration_id, name FROM effect_sql_migrations ORDER BY migration_id`;
-        assert.deepEqual(history.at(-1), { migration_id: 13, name: "BotMaintenanceNightly" });
+        assert.deepEqual(history.at(-1), { migration_id: 14, name: "BotHomeCheck" });
       }).pipe(Effect.provide(connection), Effect.scoped);
     }).pipe(Effect.provide(NodeServices.layer)),
 );
@@ -677,8 +677,22 @@ it.effect("a Waiting-only run appends Waiting items and changes nothing else", (
     const basis = (yield* notes.get(scope)).basis!;
     const save = (updateId: string, note: BotContinuationNoteInput) =>
       notes.save({ ...userSave(updateId, 1, note), basis }, bot);
-    const appended = { ...base, waiting: [...base.waiting, { text: "Harbor owner's reply" }] };
+    const appended = {
+      ...base,
+      waiting: [...base.waiting, { text: "Remind the user of the Lantern date", quote: "Lantern" }],
+    };
     for (const [name, note] of [
+      [
+        "unsourced append",
+        { ...base, waiting: [...base.waiting, { text: "Harbor owner's reply" }] },
+      ],
+      [
+        "duplicate append",
+        {
+          ...base,
+          waiting: [...base.waiting, { text: "lantern DATE from the user", quote: "Lantern" }],
+        },
+      ],
       ["edit", { ...base, waiting: [{ text: "Lantern date from the client" }] }],
       ["removal", { ...base, waiting: [] }],
       ["reorder", { ...appended, waiting: [...appended.waiting].reverse() }],
@@ -697,7 +711,7 @@ it.effect("a Waiting-only run appends Waiting items and changes nothing else", (
     if (saved._tag !== "saved") return assert.fail();
     assert.deepEqual(
       saved.view.note.waiting.map((item) => item.text),
-      ["Lantern date from the user", "Harbor owner's reply"],
+      ["Lantern date from the user", "Remind the user of the Lantern date"],
     );
     // Authority belongs to the run: once it ended, the same basis saves nothing.
     yield* main`UPDATE orchestration_v2_projection_runs SET status = 'interrupted' WHERE run_id = 'run-1'`;
@@ -707,6 +721,60 @@ it.effect("a Waiting-only run appends Waiting items and changes nothing else", (
         .pipe(Effect.isFailure),
     );
   }).pipe(Effect.provide(services.pipe(Layer.provideMerge(database)))),
+);
+
+it.effect(
+  "task-only Waiting items need no Home message and still enforce task ownership and user decisions",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* task(1, "completed");
+      yield* task(2, "completed");
+      const main = yield* SqlClient.SqlClient;
+      const bots = yield* BotDatabase.BotDatabase;
+      yield* bots`UPDATE bot_tasks SET home_thread_id = 'another-home' WHERE task_id = 'task-2'`;
+      yield* main`INSERT INTO orchestration_v2_projection_runs (run_id, thread_id, ordinal, provider, status, requested_at, payload_json) VALUES ('run-1', ${home}, 1, 'codex', 'running', ${now}, '{"restriction":"botWaiting"}')`;
+      const notes = yield* BotContinuation.BotContinuation;
+      const view = yield* notes.get(scope);
+      const saved = yield* notes.save(
+        {
+          ...userSave("task-only", null, {
+            ...empty(),
+            waiting: [{ text: "Choose a venue", taskIds: [BotTaskId.make("task-1")] }],
+          }),
+          basis: view.basis!,
+        },
+        { kind: "bot", threadId: home },
+      );
+      if (saved._tag !== "saved") return assert.fail();
+      const save = (id: string, note: BotContinuationNoteInput) =>
+        notes.save(
+          { ...userSave(id, saved.view.revision, note), basis: view.basis! },
+          { kind: "bot", threadId: home },
+        );
+      for (const taskId of ["task-2", "missing-task"]) {
+        const error = yield* save(taskId, {
+          ...empty(),
+          waiting: [{ text: "Choose a venue", taskIds: [BotTaskId.make(taskId)] }],
+        }).pipe(Effect.flip);
+        assert.include(error.message, "belong to this Home");
+      }
+      yield* main`UPDATE orchestration_v2_projection_runs SET payload_json = '{}' WHERE run_id = 'run-1'`;
+      const decided = yield* save("decision", {
+        ...empty(),
+        decided: [{ text: "Choose a venue", taskIds: [BotTaskId.make("task-1")] }],
+      }).pipe(Effect.flip);
+      assert.include(decided.message, "direct user input");
+      assert.deepEqual(saved.view.note.waiting[0]?.refs, [
+        {
+          kind: "task",
+          taskId: BotTaskId.make("task-1"),
+          status: "completed",
+          resultRunId: null,
+          availability: "available",
+        },
+      ]);
+    }).pipe(Effect.provide(services.pipe(Layer.provideMerge(database)))),
 );
 
 const homeRun = Effect.fn("fixture.homeRun")(function* (id: string, ordinal: number) {
