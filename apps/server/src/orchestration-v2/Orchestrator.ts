@@ -196,7 +196,11 @@ import { planThreadDeletion } from "./ThreadDeletion.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ServerSettings from "../serverSettings.ts";
 
-import { isDirectHomeInput, latestDirectHomeInput } from "../bots/homeReturn.ts";
+import {
+  isBotMaintenanceCompaction,
+  isDirectHomeInput,
+  latestDirectHomeInput,
+} from "../bots/homeReturn.ts";
 
 const isMessageQuestionAnswer = Schema.is(
   Schema.Union([TrimmedNonEmptyString, Schema.NonEmptyArray(TrimmedNonEmptyString)]),
@@ -5893,7 +5897,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       (run) => run.id === command.restartContinuationOfRunId,
     )?.delegatedTaskId;
 
-    if (projection.thread.settledOverride !== null && command.restriction === undefined) {
+    // Maintenance leaves a settled or snoozed Home as the user left it.
+    const maintenance =
+      command.restriction !== undefined ||
+      isBotMaintenanceCompaction({ ...command, id: command.messageId, role: "user" });
+    if (projection.thread.settledOverride !== null && !maintenance) {
       const now = yield* DateTime.now;
       const thread: OrchestrationV2AppThread = {
         ...projection.thread,
@@ -5922,7 +5930,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const automaticWake =
       command.notification !== undefined ||
       command.delegatedCompletion !== undefined ||
-      command.restriction !== undefined;
+      maintenance;
     if (projection.thread.snoozedUntil != null && !automaticWake) {
       const now = yield* DateTime.now;
       const thread: OrchestrationV2AppThread = {
@@ -6061,6 +6069,22 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         }
         dispatchMode = { type: "queue_after_active" };
       }
+    }
+    // Maintenance gives way to any message that arrives before its provider starts compacting;
+    // once the provider has it, the message waits for the compaction instead.
+    const yieldingCompaction =
+      goalStopRunId === undefined && !maintenance && dispatchMode.type !== "defer_start"
+        ? projection.runs.find(
+            (run) =>
+              (run.status === "preparing" || run.status === "starting") &&
+              isBotMaintenanceCompaction(
+                projection.messages.find((message) => message.id === run.userMessageId),
+              ),
+          )
+        : undefined;
+    if (yieldingCompaction !== undefined) {
+      goalStopRunId = yieldingCompaction.id;
+      dispatchMode = { type: "queue_after_active" };
     }
     if (
       command.notification !== undefined &&
@@ -6601,7 +6625,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           projection: yield* getProjectionWithPendingEvents(command.threadId, events),
           queuedRunId: runId,
           targetRunId: goalStopRunId,
-          reason: "Stopped to apply /goal",
+          reason:
+            yieldingCompaction === undefined
+              ? "Stopped to apply /goal"
+              : "Skipped Bot maintenance compaction to send a new message",
           now,
         });
       }
@@ -14158,14 +14185,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   });
 
   // The caller captured the sequence before reading what the run acts on; any later event voids it.
-  const restrictedRunAdmitted = Effect.fn("Orchestrator.restrictedRunAdmitted")(function* (
-    command: Extract<OrchestrationV2ServerCommand, { type: "restricted_run.start" }>,
+  const idleAtSequenceAdmitted = Effect.fn("Orchestrator.idleAtSequenceAdmitted")(function* (
+    command: Extract<
+      OrchestrationV2ServerCommand,
+      { type: "restricted_run.start" | "message.dispatch" }
+    >,
+    ifIdleAtSequence: number,
   ) {
     const sequence = yield* eventSink
       .latestSequence({ threadId: command.threadId })
       .pipe(mapDispatchError(command));
-    if (sequence !== command.ifIdleAtSequence || !mayBeBotHomeThreadId(command.threadId))
-      return false;
+    if (sequence !== ifIdleAtSequence || !mayBeBotHomeThreadId(command.threadId)) return false;
     const home = yield* projectionStore
       .getThreadRecords(
         command.threadId,
@@ -14223,9 +14253,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
     const botAdmission =
       command.type === "bot-task.result.deliver" ? yield* botResultAdmission(command) : undefined;
+    const idleGuarded =
+      command.type === "restricted_run.start" || command.type === "message.dispatch"
+        ? command
+        : undefined;
     if (
       botAdmission === "defer" ||
-      (command.type === "restricted_run.start" && !(yield* restrictedRunAdmitted(command)))
+      (idleGuarded?.ifIdleAtSequence !== undefined &&
+        !(yield* idleAtSequenceAdmitted(idleGuarded, idleGuarded.ifIdleAtSequence)))
     )
       return {
         sequence: yield* eventSink

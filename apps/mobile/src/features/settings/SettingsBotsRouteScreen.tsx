@@ -28,6 +28,7 @@ import { reportBotFailure } from "../bots/reportBotFailure";
 import { useSelectWorkspaceDetail } from "../layout/workspace/useSelectWorkspaceDetail";
 import { useBotEditor, startBotEditor, startNewBotEditor } from "./bot-editor";
 import { BotContinuationSection } from "./BotContinuationSection";
+import { BotHomeCheckSection } from "./BotHomeCheckSection";
 import { BotMaintenanceSection } from "./BotMaintenanceSection";
 import { BotLearningSection } from "./BotLearningSection";
 import { BotRoutinesSection } from "./BotRoutinesSection";
@@ -623,6 +624,16 @@ function BotForm({
                 botId={draft.botId}
                 projectId={project.projectId}
                 title={`${projectTitle(project.projectId)} · Maintenance`}
+                formLocked={readOnly || !project.attached}
+              />
+            ) : null}
+            {maintenanceSupported &&
+            baseline.projects.some((saved) => saved.projectId === project.projectId) ? (
+              <BotHomeCheckSection
+                environmentId={environmentId}
+                botId={draft.botId}
+                projectId={project.projectId}
+                title={`${projectTitle(project.projectId)} · Home check`}
                 formLocked={readOnly || !project.attached}
               />
             ) : null}

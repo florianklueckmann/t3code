@@ -19,6 +19,8 @@ Write or run an eval when a change affects what a model sees or does: agent inst
 
 | [bot-maintenance](bot-maintenance/) | Whether nightly Bot maintenance learns durable, evidenced lessons through the sealed Codex call. |
 
+| [bot-home-check](bot-home-check/) | Whether the daily Bot Home check adds to Waiting only what needs the user, and nothing on a quiet day. |
+
 ## Run an eval
 
 1. Run `vp i` at the repo root.

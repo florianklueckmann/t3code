@@ -758,20 +758,6 @@ function makeLocalCommandHarness(input: {
       ),
     ),
   );
-  const fallbackEnsureThread = vi.fn(() => Effect.succeed(providerThread));
-  const resumeFallbackSession = {
-    driver: providerThread.driver,
-    resumeThread: () =>
-      Effect.fail(
-        input.resumeFailure ??
-          new ProviderAdapter.ProviderAdapterEventStreamError({
-            driver: providerThread.driver,
-            providerSessionId,
-            cause: "native thread is gone",
-          }),
-      ),
-    ensureThread: fallbackEnsureThread,
-  };
   const providerSession = {
     id: providerSessionId,
     driver: providerThread.driver,
@@ -783,6 +769,36 @@ function makeLocalCommandHarness(input: {
     createdAt: now,
     updatedAt: now,
     lastError: null,
+  };
+  const fallbackEnsureThread = vi.fn(() =>
+    Effect.succeed(
+      input.resumeFailure === undefined
+        ? providerThread
+        : {
+            ...providerThread,
+            nativeThreadRef: {
+              driver: providerThread.driver,
+              nativeId: "replacement-native",
+              strength: "strong" as const,
+            },
+          },
+    ),
+  );
+  const compactThread = vi.fn(() => Effect.void);
+  const resumeFallbackSession = {
+    providerSession,
+    compactThread,
+    driver: providerThread.driver,
+    resumeThread: () =>
+      Effect.fail(
+        input.resumeFailure ??
+          new ProviderAdapter.ProviderAdapterEventStreamError({
+            driver: providerThread.driver,
+            providerSessionId,
+            cause: "native thread is gone",
+          }),
+      ),
+    ensureThread: fallbackEnsureThread,
   };
   const startTurn = vi.fn((_turn: ProviderAdapter.ProviderAdapterV2TurnInput) => Effect.void);
   const sideChatThread = {
@@ -841,15 +857,21 @@ function makeLocalCommandHarness(input: {
   const startRootRun = vi.fn<
     (input: RunExecutionService.RunExecutionServiceV2StartRootRunInput) => Effect.Effect<void>
   >((runInput) =>
-    input.sideChat !== undefined
-      ? runInput.session.startTurn(runInput as never).pipe(Effect.orDie)
-      : input.failReadsAfterRunning === true ||
-          input.failInterruptReadsAfterRunning === true ||
-          input.previousTurn !== undefined
-        ? Effect.suspend(() =>
-            providerBusy ? Effect.die("The previous provider turn is still running.") : Effect.void,
-          )
-        : Effect.die("A local command must not start a native turn."),
+    input.resumeFailure !== undefined
+      ? input.text === "/compact"
+        ? compactThread()
+        : startTurn(runInput as never)
+      : input.sideChat !== undefined
+        ? runInput.session.startTurn(runInput as never).pipe(Effect.orDie)
+        : input.failReadsAfterRunning === true ||
+            input.failInterruptReadsAfterRunning === true ||
+            input.previousTurn !== undefined
+          ? Effect.suspend(() =>
+              providerBusy
+                ? Effect.die("The previous provider turn is still running.")
+                : Effect.void,
+            )
+          : Effect.die("A local command must not start a native turn."),
   );
   const failReadIfRunning = Effect.suspend(() =>
     input.failReadsAfterRunning === true &&
@@ -921,11 +943,15 @@ function makeLocalCommandHarness(input: {
       Layer.mergeAll(
         Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({
           prepareProviderHandoff: (handoff) =>
-            input.sideChat?.nativeForkFrom === undefined
+            input.sideChat?.nativeForkFrom === undefined && input.resumeFailure === undefined
               ? Effect.die("history read must fail first")
               : Effect.succeed({
                   ...handoff,
-                  id: ContextHandoffId.make("side-chat-fork-context"),
+                  id: ContextHandoffId.make(
+                    input.resumeFailure === undefined
+                      ? "side-chat-fork-context"
+                      : "resume-recovery",
+                  ),
                   createdByProviderInstanceId: handoff.toProviderInstanceId,
                   status: "ready",
                   summaryMessageId: null,
@@ -984,7 +1010,7 @@ function makeLocalCommandHarness(input: {
               ),
             }),
           getTurnStartHistory: () =>
-            input.sideChat !== undefined
+            input.sideChat !== undefined || input.resumeFailure !== undefined
               ? Effect.succeed([])
               : Effect.fail(
                   new ProjectionStore.ProjectionStoreReadError({
@@ -1030,6 +1056,7 @@ function makeLocalCommandHarness(input: {
     createWorktree,
     open,
     fallbackEnsureThread,
+    compactThread,
     writeIfRunCurrent,
     startRootRun,
     startTurn,
@@ -1779,38 +1806,80 @@ effectIt.effect("does not overwrite a run interrupted while its provider session
   }),
 );
 
-effectIt.effect("fails the run instead of replacing a native thread another client holds", () =>
-  Effect.gen(function* () {
-    const detail = "This conversation is open in another Codex client.";
-    const harness = makeLocalCommandHarness({
-      text: "Continue",
-      resumeFailure: new ProviderAdapter.ProviderAdapterThreadInUseError({
-        driver: ProviderDriverKind.make("codex"),
-        providerThreadId: ProviderThreadId.make("new-provider-thread"),
-        detail,
-        cause: new Error("thread native-resume-thread already has an active writer"),
-      }),
-    });
+effectIt.effect.each([
+  ["another client holds the thread", "Continue", "user", "web", false],
+  ["nightly maintenance resumes", "/compact", "system", "server", false],
+  ["a user turn resumes", "Continue", "user", "web", true],
+  ["a manual compaction resumes", "/compact", "user", "mobile", true],
+] as const)(
+  "only replaces a native conversation when allowed: %s",
+  ([name, text, createdBy, creationSource, recover]) =>
+    Effect.gen(function* () {
+      const failure =
+        name === "another client holds the thread"
+          ? new ProviderAdapter.ProviderAdapterThreadInUseError({
+              driver: ProviderDriverKind.make("codex"),
+              providerThreadId: ProviderThreadId.make("new-provider-thread"),
+              detail: "This conversation is open in another Codex client.",
+              cause: new Error("thread native-resume-thread already has an active writer"),
+            })
+          : new ProviderAdapter.ProviderAdapterResumeThreadError({
+              driver: ProviderDriverKind.make("codex"),
+              providerSessionId: ProviderSessionId.make("new-provider-session"),
+              providerThreadId: ProviderThreadId.make("new-provider-thread"),
+              cause: "temporary app-server resume failure",
+            });
+      const harness = makeLocalCommandHarness({
+        text,
+        previousMessages: ["Keep the open Harbor decision in mind."],
+        resumeFailure: failure,
+      });
+      harness.tryHandlePromptCommand.mockReturnValue(Effect.succeed(false));
+      const before = harness.projection();
+      const messageId = MessageId.make("bot-maintenance:compact:bot-home:review:1");
+      harness.setProjection({
+        ...before,
+        runs: before.runs.map((run) => ({ ...run, userMessageId: messageId })),
+        messages: before.messages.map((message) =>
+          message.id === before.runs.at(-1)?.userMessageId
+            ? { ...message, id: messageId, createdBy, creationSource }
+            : message,
+        ),
+      });
 
-    const exit = yield* Effect.exit(harness.start);
+      const exit = yield* Effect.exit(harness.start);
 
-    expect(harness.fallbackEnsureThread).not.toHaveBeenCalled();
-    expect(exit._tag).toBe("Success");
-    expect(harness.startRootRun).not.toHaveBeenCalled();
-    const projection = harness.projection();
-    expect(projection.providerThreads.at(-1)?.nativeThreadRef?.nativeId).toBe(
-      "native-resume-thread",
-    );
-    expect(projection.contextHandoffs).toEqual([]);
-    expect(projection.runs.at(-1)).toMatchObject({ status: "failed", startedAt: null });
-    expect(projection.turnItems).toMatchObject([
-      {
-        type: "error",
-        title: "Provider turn failed to start",
-        failure: { class: "provider_error", message: detail },
-      },
-    ]);
-  }),
+      expect(exit._tag).toBe("Success");
+      expect(harness.fallbackEnsureThread).toHaveBeenCalledTimes(recover ? 1 : 0);
+      expect(harness.startRootRun).toHaveBeenCalledTimes(recover ? 1 : 0);
+      expect(harness.compactThread).toHaveBeenCalledTimes(recover && text === "/compact" ? 1 : 0);
+      const projection = harness.projection();
+      expect(projection.providerThreads.at(-1)?.nativeThreadRef?.nativeId).toBe(
+        recover ? "replacement-native" : "native-resume-thread",
+      );
+      if (recover) {
+        expect(projection.contextHandoffs).toHaveLength(1);
+        expect(projection.contextTransfers).toHaveLength(1);
+        expect(projection.runs.at(-1)?.status).toBe("running");
+      } else {
+        expect(projection.contextHandoffs).toEqual([]);
+        expect(projection.contextTransfers).toEqual([]);
+        expect(projection.runs.at(-1)).toMatchObject({ status: "failed", startedAt: null });
+        expect(projection.turnItems).toMatchObject([
+          {
+            type: "error",
+            title: "Provider turn failed to start",
+            failure: {
+              class: "provider_error",
+              message:
+                name === "another client holds the thread"
+                  ? failure.message
+                  : "temporary app-server resume failure",
+            },
+          },
+        ]);
+      }
+    }),
 );
 
 effectIt.effect.each(["state", "interrupt"] as const)(

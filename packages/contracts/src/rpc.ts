@@ -12,6 +12,11 @@ import {
   BotMaintenanceView,
 } from "./botMaintenance.ts";
 import {
+  BotConfigureHomeCheckInput,
+  BotConfigureHomeCheckResult,
+  BotHomeCheckView,
+} from "./botHomeCheck.ts";
+import {
   OrchestrationV2SearchThreadError,
   OrchestrationV2SearchThreadInput,
   OrchestrationV2SearchThreadResult,
@@ -611,6 +616,8 @@ export const WS_METHODS = {
   botsSaveContinuation: "bots.saveContinuation",
   botsGetMaintenance: "bots.getMaintenance",
   botsConfigureMaintenance: "bots.configureMaintenance",
+  botsGetHomeCheck: "bots.getHomeCheck",
+  botsConfigureHomeCheck: "bots.configureHomeCheck",
   botsCreate: "bots.create",
   botsUpdate: "bots.update",
   botsSetArchived: "bots.setArchived",
@@ -2148,6 +2155,16 @@ const WsBotsConfigureMaintenanceRpc = Rpc.make(WS_METHODS.botsConfigureMaintenan
   success: BotConfigureMaintenanceResult,
   error: BotRpcError,
 });
+const WsBotsGetHomeCheckRpc = Rpc.make(WS_METHODS.botsGetHomeCheck, {
+  payload: BotContinuationScope,
+  success: BotHomeCheckView,
+  error: BotRpcError,
+});
+const WsBotsConfigureHomeCheckRpc = Rpc.make(WS_METHODS.botsConfigureHomeCheck, {
+  payload: BotConfigureHomeCheckInput,
+  success: BotConfigureHomeCheckResult,
+  error: BotRpcError,
+});
 
 const WsBotsCreateRpc = Rpc.make(WS_METHODS.botsCreate, {
   payload: BotCreateInput,
@@ -2362,6 +2379,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsBotsSaveContinuationRpc,
   WsBotsGetMaintenanceRpc,
   WsBotsConfigureMaintenanceRpc,
+  WsBotsGetHomeCheckRpc,
+  WsBotsConfigureHomeCheckRpc,
   WsBotsCreateRpc,
   WsBotsUpdateRpc,
   WsBotsSetArchivedRpc,

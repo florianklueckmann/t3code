@@ -3194,6 +3194,8 @@ export const OrchestrationV2Command = Schema.Union([
     idleCompaction: Schema.optional(OrchestrationV2IdleCompaction),
     /** Start a new provider session without the thread's earlier context. Never steers. */
     freshContext: Schema.optional(Schema.Boolean),
+    /** Server only: starts while the Bot Home is idle at this event sequence, else defers. */
+    ifIdleAtSequence: Schema.optional(NonNegativeInt),
     commandId: CommandId,
     threadId: ThreadId,
     messageId: MessageId,

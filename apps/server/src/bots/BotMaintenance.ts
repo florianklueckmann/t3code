@@ -1,5 +1,6 @@
 import {
   BOT_TASK_TERMINAL_STATUSES,
+  isCompactionCommandMessage,
   type BotConfigureMaintenanceInput,
   type BotConfigureMaintenanceResult,
   type BotContinuationScope,
@@ -48,6 +49,7 @@ import * as BotRuntimePolicy from "./BotRuntimePolicy.ts";
 import * as BotService from "./BotService.ts";
 import * as BotStore from "./BotStore.ts";
 import * as BotTaskService from "./BotTaskService.ts";
+import { botMaintenanceCompactionId, isBotMaintenanceCompaction } from "./homeReturn.ts";
 
 /** Turns one bounded packet into an unverified proposal. Never sees Home history or tools. */
 type Generator = (packet: Evidence.Packet) => Effect.Effect<unknown, SealedGenerationFailure>;
@@ -109,6 +111,36 @@ export type NoteRefresh =
     }
   | { readonly status: "deferred"; readonly runId: string; readonly reason: NoteDeferReason };
 
+export type CompactDeferReason =
+  | "home_active"
+  | "learning_pending"
+  | "note_behind"
+  | Extract<BotContinuation.NoteCoverage, { readonly _tag: "unprovable" }>["reason"]
+  /** Deliberate compaction runs on Codex Homes only. */
+  | "unsupported"
+  /** The latest attempts all failed; the Home's next ordinary run opens a new window. */
+  | "retry_exhausted"
+  | "settings_changed";
+
+export type HomeCompaction =
+  /** Nothing to compact; no turn and no run row. */
+  | {
+      readonly status: "not_needed";
+      readonly reason: "already_compacted" | "usage_unknown" | "below_threshold";
+    }
+  | { readonly status: "compacted"; readonly runId: string; readonly homeRunId: string }
+  | {
+      readonly status: "failed";
+      readonly runId: string;
+      /** `run_<status>` when the compaction run ended any way but completed. */
+      readonly reason: "start_refused" | "run_missing" | `run_${string}`;
+    }
+  | { readonly status: "deferred"; readonly runId: string; readonly reason: CompactDeferReason };
+
+/** Below this a cold re-read is cheap, so compacting mostly loses context for little saving. */
+const COMPACT_MIN_TOKENS = 100_000;
+const COMPACT_ATTEMPTS = 2;
+
 /** The whole prompt of the scoped note refresh turn. Model-facing. */
 export const NOTE_REFRESH_PROMPT =
   "Maintenance: bring your working notes up to date with this Home, then stop. Read them with t3_bot read_continuation. Its `uncovered` list holds, oldest first and in full, the Home input and returned task results no saved note has covered yet. Each item's text is split into `parts`, and each part ends with an `ack`. Reconcile each one into the note: unfinished requests, waiting questions or proposals, decisions and task results. Keep every existing item that is still open. An item marked `tooLarge` shows only its first lines: do not guess the rest, and add a waiting item naming its messageId, such as `Unreviewed large input <messageId>: <what its first lines show>`. Then save the full note once with t3_bot save_continuation, that read's exact basis and `acks`: the ack of every part you saw whole. Leave out the ack of any part you saw cut or truncated; that input stays for the next refresh. Save even when nothing changed. Keep proposals in waiting until the user approves them; a new decided item needs an exact quote from the user's own message. Do nothing else: no other tool, task or message. Reply with one short line.";
@@ -143,6 +175,8 @@ export class BotMaintenance extends Context.Service<
     readonly runNow: (scope: BotContinuationScope) => Effect.Effect<BotMaintenancePass, BotError>;
     /** Runs a scoped Home turn that saves the working note, unless it already covers the Home. */
     readonly refreshNote: (scope: BotContinuationScope) => Effect.Effect<NoteRefresh, BotError>;
+    /** Compacts a large idle Codex Home whose learning and working note are already saved. */
+    readonly compactHome: (scope: BotContinuationScope) => Effect.Effect<HomeCompaction, BotError>;
   }
 >()("t3/bots/BotMaintenance") {}
 
@@ -833,19 +867,11 @@ export const make = Effect.gen(function* () {
     return yield* passLocks.withLock(home, pass(scope, home));
   }, Effect.mapError(failure));
 
-  /**
-   * Coverage is derived from the note and the Home, never stored here, so a refresh that fails
-   * consumes nothing and the next one sees the same evidence. One outcome row per attempt.
-   */
-  const refreshPage = Effect.fn("BotMaintenance.refreshPage")(function* (
-    scope: BotContinuationScope,
-  ) {
-    const { home, active } = yield* scopeOf(scope);
-    if ((yield* stateRow(home))?.enabled !== 1 || !active)
-      return yield* invalid("Bot maintenance is off for this project.");
+  /** One outcome row for a maintenance attempt that started at `startedAt` and ends now. */
+  const attempt = Effect.fn("BotMaintenance.attempt")(function* (home: ThreadId) {
     const startedAt = DateTime.formatIso(yield* DateTime.now);
     const runId = yield* random.uuidV4();
-    const settle = (status: string, outcome: object, result: NoteRefresh) =>
+    const settle = <A>(status: string, outcome: object, result: A) =>
       DateTime.now.pipe(
         Effect.flatMap((finished) =>
           insertRun(home, {
@@ -858,21 +884,71 @@ export const make = Effect.gen(function* () {
         ),
         Effect.as(result),
       );
+    return { runId, startedAt, settle };
+  });
+
+  /**
+   * The Home run a maintenance message opened, once it ended, read back from the projection.
+   * The stream replays persisted events after the sequence, so a run that already ended arrives.
+   */
+  const homeRunEnding = Effect.fn("BotMaintenance.homeRunEnding")(function* (
+    home: ThreadId,
+    messageId: MessageId,
+    sequence: number,
+  ) {
+    const [run] = yield* main<{
+      readonly run_id: string;
+    }>`SELECT run_id FROM orchestration_v2_projection_runs WHERE thread_id = ${home} AND json_extract(payload_json, '$.userMessageId') = ${messageId}`;
+    if (run === undefined) return undefined;
+    yield* sink.stream({ threadId: home, afterSequence: sequence, eventType: "run.updated" }).pipe(
+      Stream.filter(
+        (stored) =>
+          stored.event.type === "run.updated" &&
+          stored.event.runId === run.run_id &&
+          ThreadManagementService.isTerminalRunStatus(stored.event.payload.status),
+      ),
+      Stream.runHead,
+    );
+    const [settled] = yield* main<{
+      readonly status: string;
+    }>`SELECT status FROM orchestration_v2_projection_runs WHERE run_id = ${run.run_id}`;
+    return { runId: run.run_id, status: settled?.status ?? "missing" };
+  });
+
+  /**
+   * Coverage is derived from the note and the Home, never stored here, so a refresh that fails
+   * consumes nothing and the next one sees the same evidence. One outcome row per attempt.
+   */
+  const refreshPage = Effect.fn("BotMaintenance.refreshPage")(function* (
+    scope: BotContinuationScope,
+  ) {
+    const { home, active } = yield* scopeOf(scope);
+    if ((yield* stateRow(home))?.enabled !== 1 || !active)
+      return yield* invalid("Bot maintenance is off for this project.");
+    const { runId, startedAt, settle } = yield* attempt(home);
     const deferred = (reason: NoteDeferReason) =>
-      settle("deferred", { note: "deferred", reason }, {
-        status: "deferred",
-        runId,
-        reason,
-      } as const);
+      settle<NoteRefresh>(
+        "deferred",
+        { note: "deferred", reason },
+        {
+          status: "deferred",
+          runId,
+          reason,
+        },
+      );
     const notRefreshed = (
       reason: Extract<NoteRefresh, { readonly status: "not_refreshed" }>["reason"],
       homeRunId: string | null,
     ) =>
-      settle("failed", { note: "not_refreshed", reason, homeRunId }, {
-        status: "not_refreshed",
-        runId,
-        reason,
-      } as const);
+      settle<NoteRefresh>(
+        "failed",
+        { note: "not_refreshed", reason, homeRunId },
+        {
+          status: "not_refreshed",
+          runId,
+          reason,
+        },
+      );
 
     // The sequence comes first, so any Home event after these reads refuses the start below.
     const read = yield* passLocks.withLock(
@@ -932,40 +1008,204 @@ export const make = Effect.gen(function* () {
       return yield* notRefreshed("start_refused", null);
     }
     if (started.success.deferred === true) return yield* deferred("home_active");
-    const [run] = yield* main<{
-      readonly run_id: string;
-    }>`SELECT run_id FROM orchestration_v2_projection_runs WHERE thread_id = ${home} AND json_extract(payload_json, '$.userMessageId') = ${messageId}`;
+    const run = yield* homeRunEnding(home, messageId, sequence);
     if (run === undefined) return yield* notRefreshed("run_missing", null);
-    // The stream replays persisted events after the sequence, so a run that already ended still arrives.
-    yield* sink.stream({ threadId: home, afterSequence: sequence, eventType: "run.updated" }).pipe(
-      Stream.filter(
-        (stored) =>
-          stored.event.type === "run.updated" &&
-          stored.event.runId === run.run_id &&
-          ThreadManagementService.isTerminalRunStatus(stored.event.payload.status),
-      ),
-      Stream.runHead,
-    );
-
-    const [settled] = yield* main<{
-      readonly status: string;
-    }>`SELECT status FROM orchestration_v2_projection_runs WHERE run_id = ${run.run_id}`;
-    if (settled?.status !== "completed")
-      return yield* notRefreshed(`run_${settled?.status ?? "missing"}`, run.run_id);
+    if (run.status !== "completed") return yield* notRefreshed(`run_${run.status}`, run.runId);
     const [saved] = yield* sql<{
       readonly frontier: string | null;
     }>`SELECT json_extract(revision_json, '$.frontier') AS frontier FROM bot_continuation_revisions
-      WHERE home_thread_id = ${home} AND json_extract(revision_json, '$.updatedBy.runId') = ${run.run_id}
+      WHERE home_thread_id = ${home} AND json_extract(revision_json, '$.updatedBy.runId') = ${run.runId}
       ORDER BY revision DESC LIMIT 1`;
-    if (saved === undefined) return yield* notRefreshed("not_saved", run.run_id);
+    if (saved === undefined) return yield* notRefreshed("not_saved", run.runId);
     // Only a save from a read that showed the uncovered page moves the frontier.
-    if (saved.frontier === frontier) return yield* notRefreshed("not_shown", run.run_id);
-    return yield* settle("applied", { note: "refreshed", homeRunId: run.run_id }, {
-      status: "refreshed",
-      runId,
-      homeRunId: run.run_id,
-    } as const);
+    if (saved.frontier === frontier) return yield* notRefreshed("not_shown", run.runId);
+    return yield* settle<NoteRefresh>(
+      "applied",
+      { note: "refreshed", homeRunId: run.runId },
+      {
+        status: "refreshed",
+        runId,
+        homeRunId: run.runId,
+      },
+    );
   });
+
+  /**
+   * Whether the Home's provider context is large enough to compact. Usage is the context size the
+   * provider last reported for the Home's native conversation; a compaction it already ran, or
+   * attempts that keep failing, wait for the Home's next ordinary run.
+   */
+  const compactionNeed = Effect.fn("BotMaintenance.compactionNeed")(function* (home: ThreadId) {
+    const recent = yield* main<{
+      readonly status: string;
+      readonly payload_json: string | null;
+    }>`SELECT r.status, m.payload_json FROM orchestration_v2_projection_runs r
+      LEFT JOIN orchestration_v2_projection_messages m ON m.message_id = json_extract(r.payload_json, '$.userMessageId')
+      WHERE r.thread_id = ${home} AND r.status <> 'queued'
+        AND NOT (r.status = 'cancelled' AND json_extract(r.payload_json, '$.startedAt') IS NULL)
+      ORDER BY r.ordinal DESC LIMIT ${COMPACT_ATTEMPTS}`;
+    const runs = recent.map((row) => ({
+      status: row.status,
+      message:
+        row.payload_json === null
+          ? undefined
+          : Option.getOrUndefined(decodeMessage(row.payload_json)),
+    }));
+    const latest = runs[0];
+    if (
+      latest?.status === "completed" &&
+      latest.message !== undefined &&
+      isCompactionCommandMessage(latest.message)
+    )
+      return { _tag: "not_needed", reason: "already_compacted" } as const;
+    if (
+      runs.length === COMPACT_ATTEMPTS &&
+      runs.every((run) => run.status !== "completed" && isBotMaintenanceCompaction(run.message))
+    )
+      return { _tag: "deferred", reason: "retry_exhausted" } as const;
+    const [native] = yield* main<{
+      readonly provider_thread_id: string;
+      readonly driver: string | null;
+    }>`SELECT p.provider_thread_id, p.driver FROM orchestration_v2_projection_threads t
+      JOIN orchestration_v2_projection_provider_threads p ON p.provider_thread_id = t.active_provider_thread_id
+      WHERE t.thread_id = ${home}`;
+    const [usage] =
+      native === undefined
+        ? []
+        : yield* main<{
+            readonly used: number | null;
+            readonly max: number | null;
+          }>`SELECT json_extract(payload_json, '$.tokenUsage.usedTokens') AS used, json_extract(payload_json, '$.tokenUsage.maxTokens') AS max
+            FROM orchestration_v2_projection_provider_turns
+            WHERE provider_thread_id = ${native.provider_thread_id} AND json_extract(payload_json, '$.tokenUsage') IS NOT NULL
+            ORDER BY julianday(json_extract(payload_json, '$.tokenUsage.updatedAt')) DESC, ordinal DESC LIMIT 1`;
+    if (usage?.used == null) return { _tag: "not_needed", reason: "usage_unknown" } as const;
+    if (usage.used < Math.max(COMPACT_MIN_TOKENS, Math.ceil((usage.max ?? 0) / 2)))
+      return { _tag: "not_needed", reason: "below_threshold" } as const;
+    if (native?.driver !== "codex") return { _tag: "deferred", reason: "unsupported" } as const;
+    return { _tag: "needed" } as const;
+  });
+
+  /**
+   * Every gate reads one snapshot: the Home's sequence first, then need, activity, learning
+   * receipts and note coverage. The `/compact` starts only if the Home is still idle at that
+   * sequence, and a message that arrives before the provider starts it skips it.
+   */
+  const compactHome = Effect.fn("BotMaintenance.compactHome")(function* (
+    scope: BotContinuationScope,
+  ) {
+    const { home, active } = yield* scopeOf(scope);
+    const state = yield* stateRow(home);
+    if (state?.enabled !== 1 || !active)
+      return yield* invalid("Bot maintenance is off for this project.");
+    const { runId, startedAt, settle } = yield* attempt(home);
+    const deferred = (reason: CompactDeferReason) =>
+      settle<HomeCompaction>(
+        "deferred",
+        { compact: "deferred", reason },
+        {
+          status: "deferred",
+          runId,
+          reason,
+        },
+      );
+    const failed = (
+      reason: Extract<HomeCompaction, { readonly status: "failed" }>["reason"],
+      homeRunId: string | null,
+    ) =>
+      settle<HomeCompaction>(
+        "failed",
+        { compact: "failed", reason, homeRunId },
+        {
+          status: "failed",
+          runId,
+          reason,
+        },
+      );
+
+    const admitted = yield* passLocks.withLock(
+      home,
+      Effect.gen(function* () {
+        const read = yield* homeCommands.withLock(
+          home,
+          Effect.gen(function* () {
+            const admission = yield* homeAdmission(home);
+            const need = yield* compactionNeed(home);
+            if (need._tag !== "needed") return need;
+            if (admission.activity !== null)
+              return { _tag: "deferred", reason: "home_active" } as const;
+            yield* discover(home, startedAt);
+            const pending =
+              yield* sql`SELECT 1 FROM bot_maintenance_sources WHERE home_thread_id = ${home} AND state = 'pending' LIMIT 1`;
+            if (pending.length > 0)
+              return { _tag: "deferred", reason: "learning_pending" } as const;
+            const coverage = yield* notes.coverage(scope);
+            if (coverage._tag === "behind")
+              return { _tag: "deferred", reason: "note_behind" } as const;
+            if (coverage._tag === "unprovable")
+              return { _tag: "deferred", reason: coverage.reason } as const;
+            return { _tag: "admitted", sequence: admission.sequence } as const;
+          }),
+        );
+        if (read._tag !== "admitted") return read;
+        // Settings change without a Home event, so they are checked again right before the start.
+        const latest = yield* stateRow(home);
+        if (latest?.enabled !== 1 || latest.settings_revision !== state.settings_revision)
+          return { _tag: "deferred", reason: "settings_changed" } as const;
+        const messageId = MessageId.make(botMaintenanceCompactionId(home, read.sequence));
+        const started = yield* Effect.result(
+          threads.dispatch({
+            type: "message.dispatch",
+            commandId: CommandId.make(messageId),
+            threadId: home,
+            messageId,
+            text: "/compact",
+            attachments: [],
+            createdBy: "system",
+            creationSource: "server",
+            dispatchMode: { type: "start_immediately" },
+            ifIdleAtSequence: read.sequence,
+          }),
+        );
+        return { _tag: "dispatched", started, messageId, sequence: read.sequence } as const;
+      }),
+    );
+    if (admitted._tag === "not_needed")
+      return { status: "not_needed", reason: admitted.reason } satisfies HomeCompaction;
+    if (admitted._tag === "deferred") return yield* deferred(admitted.reason);
+    const { started, messageId, sequence } = admitted;
+    if (started._tag === "Failure") {
+      yield* Effect.logWarning("Bot maintenance compaction was refused", {
+        home,
+        cause: started.failure,
+      });
+      return yield* failed("start_refused", null);
+    }
+    if (started.success.deferred === true) return yield* deferred("home_active");
+    // Admission is not the result: only the persisted run says whether the provider compacted.
+    const run = yield* homeRunEnding(home, messageId, sequence);
+    if (run === undefined) return yield* failed("run_missing", null);
+    if (run.status !== "completed") return yield* failed(`run_${run.status}`, run.runId);
+    return yield* settle<HomeCompaction>(
+      "applied",
+      { compact: "compacted", homeRunId: run.runId },
+      { status: "compacted", runId, homeRunId: run.runId },
+    );
+  }, Effect.mapError(failure));
+
+  /**
+   * The refresh run completes before its checkpoint and workspace refresh settle, and admission
+   * counts that effect as Home activity; any other activity still defers. Learning then sets the
+   * refresh prompt aside, which otherwise holds the next step back as unlearned input.
+   */
+  const afterRefreshTurn = (scope: BotContinuationScope, homeRunId: string) =>
+    outbox
+      .awaitSettled(`effect:checkpoint.capture:${homeRunId}`)
+      .pipe(
+        Effect.timeoutOption(PAGE_CHECKPOINT_WAIT),
+        Effect.ignore({ log: true }),
+        Effect.andThen(runNow(scope).pipe(Effect.ignore({ log: true }))),
+      );
 
   /**
    * Page after page until the note is current, an attempt does not refresh, or the night's bound.
@@ -976,19 +1216,23 @@ export const make = Effect.gen(function* () {
   ) {
     let last: NoteRefresh = yield* refreshPage(scope);
     for (let page = 1; page < NIGHTLY_NOTE_PAGES && last.status === "refreshed"; page += 1) {
-      // The run completes before its checkpoint and workspace refresh settle, and admission
-      // counts that effect as Home activity. Any other activity still defers the next page.
-      yield* outbox
-        .awaitSettled(`effect:checkpoint.capture:${last.homeRunId}`)
-        .pipe(Effect.timeoutOption(PAGE_CHECKPOINT_WAIT), Effect.ignore({ log: true }));
-      // Learning sets the refresh prompt aside, which otherwise holds the next page back.
-      yield* runNow(scope).pipe(Effect.ignore({ log: true }));
+      yield* afterRefreshTurn(scope, last.homeRunId);
       const next = yield* refreshPage(scope);
       if (next.status === "current") break;
       last = next;
     }
     return last;
   }, Effect.mapError(failure));
+
+  /** Preserve first, then compact; the compaction rechecks every gate itself. */
+  const maintainHome = (scope: BotContinuationScope) =>
+    refreshNote(scope).pipe(
+      Effect.flatMap((note) =>
+        note.status === "refreshed" ? afterRefreshTurn(scope, note.homeRunId) : Effect.void,
+      ),
+      Effect.ignore({ log: true }),
+      Effect.andThen(compactHome(scope).pipe(Effect.ignore({ log: true }))),
+    );
 
   /**
    * One attempt a night per enabled Home, after missed nights too. The night is claimed before
@@ -1014,18 +1258,15 @@ export const make = Effect.gen(function* () {
       yield* sql`UPDATE bot_maintenance SET nightly_at = ${DateTime.formatIso(now)} WHERE home_thread_id = ${row.home_thread_id}`;
       const scope = { botId: BotId.make(row.bot_id), projectId: ProjectId.make(row.project_id) };
       yield* runNow(scope).pipe(Effect.ignore({ log: true }));
-      // The refresh waits on a Home turn, so the other Homes' passes do not wait for it.
-      yield* FiberMap.run(
-        refreshes,
-        ThreadId.make(row.home_thread_id),
-        refreshNote(scope).pipe(Effect.ignore({ log: true })),
-        { onlyIfMissing: true },
-      );
+      // The refresh and compaction wait on Home turns, so the other Homes' passes do not wait.
+      yield* FiberMap.run(refreshes, ThreadId.make(row.home_thread_id), maintainHome(scope), {
+        onlyIfMissing: true,
+      });
     }
   });
   yield* scheduler.register("bot-maintenance", runNightly);
 
-  return BotMaintenance.of({ get, configure, runNow, refreshNote });
+  return BotMaintenance.of({ get, configure, runNow, refreshNote, compactHome });
 });
 
 export const layer = Layer.effect(BotMaintenance, make).pipe(

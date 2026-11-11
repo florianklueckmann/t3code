@@ -430,6 +430,7 @@ it.effect(
       yield* bots`DROP TABLE bot_maintenance_sources`;
       yield* bots`DROP TABLE bot_maintenance_runs`;
       yield* bots`DROP TABLE bot_maintenance`;
+      yield* bots`DROP TABLE bot_home_checks`;
       yield* bots`DROP TABLE bot_mcp_grants`;
       yield* bots`ALTER TABLE bots DROP COLUMN mcp_grant_revision`;
       yield* bots`DELETE FROM effect_sql_migrations WHERE migration_id >= 11`;
@@ -438,10 +439,11 @@ it.effect(
         readonly migration_id: number;
         readonly name: string;
       }>`SELECT migration_id, name FROM effect_sql_migrations ORDER BY migration_id`;
-      assert.deepEqual(history.slice(-4), [
+      assert.deepEqual(history.slice(-5), [
         { migration_id: 11, name: "BotMaintenance" },
         { migration_id: 12, name: "BotMaintenanceReceipts" },
         { migration_id: 13, name: "BotMaintenanceNightly" },
+        { migration_id: 14, name: "BotHomeCheck" },
         { migration_id: 15, name: "BotMcpGrants" },
       ]);
       const maintenance = yield* BotMaintenance.BotMaintenance;
@@ -824,12 +826,13 @@ const sourceStates = Effect.gen(function* () {
   return Object.fromEntries(rows.map((row) => [row.source_id, row.exclusion_reason ?? row.state]));
 });
 
-/** Learning passes only; a nightly note refresh runs beside them and records its own rows. */
+/** Learning passes only; a nightly note refresh and compaction record their own rows. */
 const runStatuses = Effect.gen(function* () {
   const bots = yield* BotDatabase.BotDatabase;
   const rows = yield* bots<{
     readonly status: string;
-  }>`SELECT status FROM bot_maintenance_runs WHERE home_thread_id = ${home} AND json_extract(outcome_json, '$.note') IS NULL ORDER BY started_at, rowid`;
+  }>`SELECT status FROM bot_maintenance_runs WHERE home_thread_id = ${home} AND json_extract(outcome_json, '$.note') IS NULL
+    AND json_extract(outcome_json, '$.compact') IS NULL ORDER BY started_at, rowid`;
   return rows.map((row) => row.status);
 });
 
@@ -2067,7 +2070,7 @@ it.effect("never learns a steer whose turn ended first and whose follow-up was r
               ),
             ),
         });
-        assert.deepEqual(yield* Ref.get(dispatched), ["message.dispatch"]);
+        assert.deepEqual(yield* Ref.get(dispatched), ["message.dispatch", "message.delivery.fail"]);
 
         const result = yield* maintenance.runNow(scope);
         assert.deepEqual(
@@ -2461,8 +2464,8 @@ const refreshHome = Effect.fn("fixture.refreshHome")(function* (instance = "code
 });
 
 /**
- * Admits `restricted_run.start` the way the orchestrator does, only at the captured Home
- * sequence, and opens its scoped run. The test then plays the provider turn.
+ * Admits `restricted_run.start`, and a message that waits for an idle Home, the way the
+ * orchestrator does: only at the captured Home sequence. Opens the run; the test plays its turn.
  */
 const scopedTurns = Effect.fn("fixture.scopedTurns")(function* (homeSequence: Ref.Ref<number>) {
   const main = yield* SqlClient.SqlClient;
@@ -2474,15 +2477,20 @@ const scopedTurns = Effect.fn("fixture.scopedTurns")(function* (homeSequence: Re
     Effect.gen(function* () {
       yield* Ref.update(commands, (all) => [...all, command]);
       const sequence = yield* Ref.get(homeSequence);
-      if (command.type !== "restricted_run.start" || command.ifIdleAtSequence !== sequence)
+      if (
+        (command.type !== "restricted_run.start" && command.type !== "message.dispatch") ||
+        command.ifIdleAtSequence !== sequence
+      )
         return { sequence, storedEvents: [], deferred: true } as const;
       const runId = `scoped-${command.messageId}`;
+      const restriction = command.type === "restricted_run.start" ? command.restriction : undefined;
+      const createdBy = command.type === "message.dispatch" ? command.createdBy : "agent";
       yield* main`INSERT INTO orchestration_v2_projection_runs (run_id, thread_id, ordinal, provider, status, requested_at, payload_json)
         VALUES (${runId}, ${home}, (SELECT COALESCE(MAX(ordinal), 0) + 1 FROM orchestration_v2_projection_runs WHERE thread_id = ${home}), 'codex', 'running', ${now},
-          ${JSON.stringify({ userMessageId: command.messageId, restriction: command.restriction })})`;
+          ${JSON.stringify({ userMessageId: command.messageId, restriction, startedAt: now })})`;
       yield* main`INSERT INTO orchestration_v2_projection_messages (message_id, thread_id, run_id, role, streaming, created_at, updated_at, payload_json)
         VALUES (${command.messageId}, ${home}, ${runId}, 'user', 0, ${now}, ${now},
-          ${JSON.stringify({ id: command.messageId, threadId: home, runId, nodeId: null, role: "user", text: command.text, attachments: [], streaming: false, createdAt: now, updatedAt: now, createdBy: "agent", creationSource: "server" })})`;
+          ${JSON.stringify({ id: command.messageId, threadId: home, runId, nodeId: null, role: "user", text: command.text, attachments: [], streaming: false, createdAt: now, updatedAt: now, createdBy, creationSource: "server" })})`;
       yield* Ref.set(homeSequence, sequence + 1);
       yield* Queue.offer(started, runId);
       return { sequence: sequence + 1, storedEvents: [] };
@@ -2822,4 +2830,263 @@ it.effect.each([
       }),
     );
   }).pipe(Effect.provide(storeOnly)),
+);
+
+/** A Home on `driver` whose latest provider turn reported `usage`, or none. */
+const compactableHome = Effect.fn("fixture.compactableHome")(function* (
+  usage: { readonly usedTokens: number; readonly maxTokens?: number } | null,
+  driver = "codex",
+) {
+  yield* refreshHome(driver);
+  const main = yield* SqlClient.SqlClient;
+  yield* main`UPDATE orchestration_v2_projection_threads SET active_provider_thread_id = 'home-native' WHERE thread_id = ${home}`;
+  yield* main`INSERT INTO orchestration_v2_projection_provider_threads (provider_thread_id, thread_id, provider, driver, status, updated_at, payload_json)
+    VALUES ('home-native', ${home}, ${driver}, ${driver}, 'idle', ${now}, '{}')`;
+  if (usage !== null)
+    yield* main`INSERT INTO orchestration_v2_projection_provider_turns (provider_turn_id, thread_id, provider_thread_id, node_id, ordinal, status, payload_json)
+      VALUES ('home-native-turn', ${home}, 'home-native', 'home-native-node', 1, 'completed', ${JSON.stringify({ tokenUsage: { ...usage, updatedAt: now } })})`;
+});
+const large = { usedTokens: 180_000, maxTokens: 272_000 };
+
+const compactOutcomes = runOutcomes.pipe(
+  Effect.map((rows) => rows.filter((row) => row.outcome?.compact !== undefined)),
+);
+
+it.effect(
+  "compacts a large idle Home only after its learning and note are saved, and only once",
+  () =>
+    Effect.gen(function* () {
+      yield* compactableHome(large);
+      const { generate } = yield* recordingGenerator(() =>
+        Effect.succeed({ operations: [add("i1", "open every session recap", goldLesson)] }),
+      );
+      yield* withEngine(generate, ({ maintenance, homeSequence, homeTurns, homeEvents }) =>
+        Effect.gen(function* () {
+          yield* enable(maintenance);
+          const turns = yield* scopedTurns(homeSequence);
+          yield* Ref.set(homeTurns, turns.dispatch);
+          yield* input("ask", gold);
+          const unlearned = yield* maintenance.compactHome(scope);
+          assert.deepEqual(unlearned.status === "deferred" && unlearned.reason, "learning_pending");
+          assert.equal((yield* maintenance.runNow(scope)).status, "applied");
+          const unsaved = yield* maintenance.compactHome(scope);
+          assert.deepEqual(unsaved.status === "deferred" && unsaved.reason, "note_behind");
+
+          const refresh = yield* maintenance
+            .refreshNote(scope)
+            .pipe(Effect.forkChild({ startImmediately: true }));
+          const refreshRun = yield* Queue.take(turns.started);
+          assert.equal((yield* saveNoteAsBot("refresh"))._tag, "saved");
+          yield* endScopedRun(refreshRun, "completed", homeSequence, homeEvents);
+          assert.equal((yield* Fiber.join(refresh)).status, "refreshed");
+          assert.deepEqual(yield* maintenance.runNow(scope), { status: "idle" });
+
+          yield* Ref.set(homeSequence, 40);
+          const compaction = yield* maintenance
+            .compactHome(scope)
+            .pipe(Effect.forkChild({ startImmediately: true }));
+          const runId = yield* Queue.take(turns.started);
+          const messageId = `bot-maintenance:compact:${home}:40`;
+          assert.deepEqual((yield* Ref.get(turns.commands)).at(-1) as unknown, {
+            type: "message.dispatch",
+            commandId: messageId,
+            threadId: home,
+            messageId,
+            text: "/compact",
+            attachments: [],
+            createdBy: "system",
+            creationSource: "server",
+            dispatchMode: { type: "start_immediately" },
+            ifIdleAtSequence: 40,
+          });
+          yield* endScopedRun(runId, "completed", homeSequence, homeEvents);
+          const compacted = yield* Fiber.join(compaction);
+          assert.deepEqual(compacted.status === "compacted" && compacted.homeRunId, runId);
+          // Preservation committed before the compaction was asked for.
+          assert.deepEqual(
+            (yield* runOutcomes).map((row) =>
+              row.outcome?.compact !== undefined
+                ? `compact:${row.outcome.compact}`
+                : row.outcome?.note !== undefined
+                  ? `note:${row.outcome.note}`
+                  : `learning:${row.status}`,
+            ),
+            [
+              "compact:deferred",
+              "learning:applied",
+              "compact:deferred",
+              "note:refreshed",
+              "compact:compacted",
+            ],
+          );
+          assert.equal((yield* learningRows).length, 1);
+
+          // Nothing happened since, so the next night leaves the compacted Home alone.
+          assert.deepEqual(yield* maintenance.runNow(scope), { status: "idle" });
+          assert.deepEqual(yield* maintenance.compactHome(scope), {
+            status: "not_needed",
+            reason: "already_compacted",
+          });
+          assert.lengthOf(yield* Ref.get(turns.commands), 2);
+          assert.lengthOf(yield* compactOutcomes, 3);
+        }),
+      );
+    }).pipe(Effect.provide(storeOnly), Effect.provideService(HostProcess.Platform, "darwin")),
+);
+
+it.effect.each([
+  { name: "a small context", usage: { usedTokens: 60_000, maxTokens: 272_000 } },
+  { name: "less than half the window", usage: { usedTokens: 130_000, maxTokens: 272_000 } },
+  { name: "unknown usage", usage: null },
+])("leaves a Home with $name uncompacted, without a turn or a row", ({ usage }) =>
+  Effect.gen(function* () {
+    yield* compactableHome(usage);
+    const { generate } = yield* recordingGenerator(() => Effect.succeed({ operations: [] }));
+    yield* withEngine(generate, ({ maintenance, homeSequence, homeTurns }) =>
+      Effect.gen(function* () {
+        yield* enable(maintenance);
+        const turns = yield* scopedTurns(homeSequence);
+        yield* Ref.set(homeTurns, turns.dispatch);
+        assert.deepEqual(yield* maintenance.compactHome(scope), {
+          status: "not_needed",
+          reason: usage === null ? "usage_unknown" : "below_threshold",
+        });
+        assert.lengthOf(yield* Ref.get(turns.commands), 0);
+        assert.lengthOf(yield* compactOutcomes, 0);
+      }),
+    );
+  }).pipe(Effect.provide(storeOnly)),
+);
+
+it.effect.each([
+  { name: "a running Home turn", reason: "home_active" },
+  { name: "unlearned Home input", reason: "learning_pending" },
+  { name: "a note behind the Home", reason: "note_behind" },
+  { name: "Home input after the captured sequence", reason: "home_active" },
+  { name: "a Home on another provider", reason: "unsupported" },
+] as const)("defers the compaction without a lasting turn for $name", ({ name, reason }) =>
+  Effect.gen(function* () {
+    yield* compactableHome(large, name === "a Home on another provider" ? "claude" : "codex");
+    const { generate } = yield* recordingGenerator(() => Effect.succeed({ operations: [] }));
+    yield* withEngine(generate, ({ maintenance, homeSequence, homeTurns }) =>
+      Effect.gen(function* () {
+        yield* enable(maintenance);
+        const turns = yield* scopedTurns(homeSequence);
+        if (name === "a running Home turn") yield* homeRun("busy", "running");
+        if (name === "unlearned Home input" || name === "a note behind the Home")
+          yield* input("ask", gold);
+        if (name === "a note behind the Home") yield* maintenance.runNow(scope);
+        const lateInput: typeof turns.dispatch = (command) =>
+          Ref.update(homeSequence, (sequence) => sequence + 1).pipe(
+            Effect.andThen(turns.dispatch(command)),
+          );
+        yield* Ref.set(
+          homeTurns,
+          name === "Home input after the captured sequence" ? lateInput : turns.dispatch,
+        );
+        const result = yield* maintenance.compactHome(scope);
+        assert.deepEqual(result.status === "deferred" && result.reason, reason);
+        assert.deepEqual(
+          (yield* compactOutcomes).map((row) => [row.status, row.outcome]),
+          [["deferred", { compact: "deferred", reason }]],
+        );
+        const main = yield* SqlClient.SqlClient;
+        assert.deepEqual(
+          yield* main`SELECT run_id FROM orchestration_v2_projection_runs WHERE run_id LIKE 'scoped-%'`,
+          [],
+        );
+        assert.lengthOf(
+          yield* Ref.get(turns.commands),
+          name === "Home input after the captured sequence" ? 1 : 0,
+        );
+      }),
+    );
+  }).pipe(Effect.provide(storeOnly)),
+);
+
+it.effect("retries a failed compaction under a new identity, at most twice in a row", () =>
+  Effect.gen(function* () {
+    yield* compactableHome(large);
+    const { generate } = yield* recordingGenerator(() => Effect.succeed({ operations: [] }));
+    yield* withEngine(generate, ({ maintenance, homeSequence, homeTurns, homeEvents }) =>
+      Effect.gen(function* () {
+        yield* enable(maintenance);
+        const turns = yield* scopedTurns(homeSequence);
+        yield* Ref.set(homeTurns, turns.dispatch);
+        const failedAttempt = Effect.gen(function* () {
+          // Learning sets the previous attempt's `/compact` aside as not the user's.
+          yield* maintenance.runNow(scope);
+          const attempt = yield* maintenance
+            .compactHome(scope)
+            .pipe(Effect.forkChild({ startImmediately: true }));
+          const runId = yield* Queue.take(turns.started);
+          yield* endScopedRun(runId, "failed", homeSequence, homeEvents);
+          const result = yield* Fiber.join(attempt);
+          assert.deepEqual(result.status === "failed" && result.reason, "run_failed");
+          return runId;
+        });
+        const first = yield* failedAttempt;
+        const second = yield* failedAttempt;
+        assert.notEqual(first, second);
+        assert.deepEqual(
+          new Set((yield* Ref.get(turns.commands)).map((command) => command.commandId)).size,
+          2,
+        );
+
+        yield* maintenance.runNow(scope);
+        const exhausted = yield* maintenance.compactHome(scope);
+        assert.deepEqual(exhausted.status === "deferred" && exhausted.reason, "retry_exhausted");
+        assert.lengthOf(yield* Ref.get(turns.commands), 2);
+        assert.deepEqual(
+          (yield* compactOutcomes).map((row) => [row.status, row.outcome]),
+          [
+            ["failed", { compact: "failed", reason: "run_failed", homeRunId: first }],
+            ["failed", { compact: "failed", reason: "run_failed", homeRunId: second }],
+            ["deferred", { compact: "deferred", reason: "retry_exhausted" }],
+          ],
+        );
+        // The failed attempts leave the Home's history and saved note as they were.
+        const notes = yield* BotContinuation.BotContinuation;
+        assert.deepEqual(yield* notes.coverage(scope), { _tag: "current" });
+        const main = yield* SqlClient.SqlClient;
+        assert.lengthOf(
+          yield* main`SELECT message_id FROM orchestration_v2_projection_messages WHERE thread_id = ${home}`,
+          2,
+        );
+      }),
+    );
+  }).pipe(Effect.provide(storeOnly)),
+);
+
+it.effect(
+  "the nightly pass compacts after the refresh turn's checkpoint settles and its prompt is set aside",
+  () =>
+    Effect.gen(function* () {
+      yield* compactableHome(large);
+      const { generate } = yield* recordingGenerator(() => Effect.succeed({ operations: [] }));
+      yield* withEngine(
+        generate,
+        ({ maintenance, homeSequence, homeTurns, homeEvents, runScheduled, settling }) =>
+          Effect.gen(function* () {
+            yield* at("2026-11-09T14:00:00.000Z");
+            yield* enable(maintenance);
+            const turns = yield* scopedTurns(homeSequence);
+            yield* Ref.set(homeTurns, turns.dispatch);
+            yield* input("ask", gold);
+            yield* at("2026-11-10T03:00:00.000Z");
+            yield* runScheduled;
+            const refreshRun = yield* Queue.take(turns.started);
+            assert.equal((yield* saveNoteAsBot("nightly"))._tag, "saved");
+            yield* endScopedRun(refreshRun, "completed", homeSequence, homeEvents);
+            assert.equal(yield* Queue.take(settling), `effect:checkpoint.capture:${refreshRun}`);
+            yield* Queue.take(turns.started);
+            assert.deepEqual(
+              (yield* Ref.get(turns.commands)).map((command) =>
+                command.type === "message.dispatch" ? command.text : command.type,
+              ),
+              ["restricted_run.start", "/compact"],
+            );
+          }),
+      );
+    }).pipe(Effect.provide(storeOnly), Effect.provideService(HostProcess.Platform, "darwin")),
 );

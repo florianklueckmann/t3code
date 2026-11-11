@@ -5109,19 +5109,27 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
   it.effect.each([
     ["T3 Code's idle compaction", "agent", "server", undefined, true, "/compact"],
     ["compacting on return", "user", "web", "onReturn", true, "/compact"],
+    ["nightly Bot maintenance compaction", "system", "server", undefined, true, "/compact", true],
+    ["a web maintenance-shaped command", "user", "web", undefined, false, "/compact", true],
+    ["a mobile maintenance-shaped command", "user", "mobile", undefined, false, "/compact", true],
+    ["an agent maintenance-shaped command", "agent", "mcp", undefined, false, "/compact", true],
     ["a typed /compact", "user", "mobile", undefined, false, "/compact"],
     ["a normalized idle command", "agent", "server", undefined, true, " \t\u00a0/COMPACT\u3000\n"],
     ["an ordinary prompt with idle metadata", "user", "web", "onReturn", false, "Continue"],
   ] as const)(
     "keeps the shell on the user's last turn only during %s",
-    ([name, createdBy, creationSource, idleCompaction, silent, text]) =>
+    ([name, createdBy, creationSource, idleCompaction, silent, text, maintenanceId = false]) =>
       Effect.gen(function* () {
         const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
         const now = yield* DateTime.now;
         const key = name.replaceAll(/\W+/g, "-");
         const threadId = ThreadId.make(`thread:projection-shell-silent:${key}`);
         const runId = RunId.make(`run:projection-shell-silent:${key}`);
-        const messageId = MessageId.make(`message:projection-shell-silent:${key}`);
+        const messageId = MessageId.make(
+          maintenanceId
+            ? `bot-maintenance:compact:${threadId}:123`
+            : `message:projection-shell-silent:${key}`,
+        );
         yield* projectionStore.apply({
           id: EventId.make(`event:projection-shell-silent:${key}:thread`),
           type: "thread.created",
@@ -5225,21 +5233,34 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           activeRunId: null,
           latestUserMessageAt: false,
         };
-        assert.deepStrictEqual(yield* presented, [
-          silent ? hidden : visible,
-          silent ? hidden : visible,
-        ]);
+        const runningPresentation = yield* presented;
 
-        // A run that fails outright, e.g. on a provider error, needs the user too.
         const running = (yield* projectionStore.getThreadProjection(threadId)).runs[0]!;
-        const setRunStatus = (status: "failed" | "running") =>
+        const setRunStatus = (status: "completed" | "failed" | "running") =>
           projectionStore.apply({
             id: EventId.make(`event:projection-shell-silent:${key}:run-${status}`),
             type: "run.updated",
             threadId,
             occurredAt: now,
-            payload: { ...running, status, completedAt: status === "failed" ? now : null },
+            payload: { ...running, status, completedAt: status === "running" ? null : now },
           });
+        yield* setRunStatus("completed");
+        const sqlShell = (yield* projectionStore.getShellSnapshot()).threads.find(
+          (thread) => thread.id === threadId,
+        )!;
+        const memoryShell = ProjectionStore.threadShellFromProjection(
+          yield* projectionStore.getThreadProjection(threadId),
+        );
+        for (const shell of [sqlShell, memoryShell]) {
+          assert.equal(shell.latestRunId, silent ? null : runId);
+          assert.deepEqual(shell.latestRunCompletedAt, silent ? null : now);
+          assert.deepEqual(shell.latestUserMessageAt, silent ? null : now);
+        }
+
+        assert.deepStrictEqual(runningPresentation, [
+          silent ? hidden : visible,
+          silent ? hidden : visible,
+        ]);
         yield* setRunStatus("failed");
         assert.deepStrictEqual(
           (yield* presented).map((shell) => shell.latestRunId),
