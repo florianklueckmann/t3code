@@ -23,6 +23,21 @@ describe("conversation summary source", () => {
         expect(prompt).toMatch(new RegExp(`fact ${message.runOrdinal}(\\n|$)`));
     }
   });
+
+  it("continues a message longer than one call in the next, under the same label", () => {
+    const text = `${"x".repeat(320_000)} decision at the end`;
+    const chunks = conversationSummaryChunks([{ role: "user", runOrdinal: 7, text }]);
+    expect(chunks.length).toBeGreaterThan(2);
+    expect(
+      chunks
+        .flat()
+        .map((piece) => piece.text)
+        .join(""),
+    ).toBe(text);
+    const last = buildConversationSummaryPrompt({ messages: chunks.at(-1)! }).prompt;
+    expect(last).toContain("[run 7, user]\n");
+    expect(last).toMatch(/decision at the end$/);
+  });
 });
 
 describe("normalizeCliError", () => {

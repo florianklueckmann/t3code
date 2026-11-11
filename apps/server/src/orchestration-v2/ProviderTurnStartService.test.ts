@@ -292,7 +292,7 @@ function makeLocalCommandHarness(input: {
   readonly recoveryRequest?: string;
   /** A summary an earlier fresh conversation wrote. */
   readonly previousSummary?: { readonly text: string; readonly throughRunOrdinal: number };
-  readonly summaryFailure?: boolean;
+  readonly summaryFailure?: "error" | "empty";
   readonly interruptOpen?: boolean;
   readonly interruptRunBeforeOpenFailure?: boolean;
   readonly writeFailure?: unknown;
@@ -1094,17 +1094,24 @@ function makeLocalCommandHarness(input: {
       ),
     }),
   );
+  let summaryCalls = 0;
   const generateConversationSummary = vi.fn<
     TextGeneration.TextGeneration["Service"]["generateConversationSummary"]
   >(() =>
-    input.summaryFailure === true
+    input.summaryFailure === "error"
       ? Effect.fail(
           new TextGenerationError({
             operation: "generateConversationSummary",
             detail: "model unavailable",
           }),
         )
-      : Effect.succeed({ summary: "## Goals\n- Stop the controller" }),
+      : Effect.sync(() => ({
+          // Only the first of several calls is empty; the later ones would hide its loss.
+          summary:
+            input.summaryFailure === "empty" && ++summaryCalls === 1
+              ? " "
+              : "## Goals\n- Stop the controller",
+        })),
   );
   const prepareProviderHandoff = vi.fn<
     ContextHandoffService.ContextHandoffServiceV2["Service"]["prepareProviderHandoff"]
@@ -2112,7 +2119,11 @@ effectIt.effect.each([
 
 effectIt.effect.each([
   ["summarizes", {}],
-  ["falls back without a summary", { summaryFailure: true }],
+  ["falls back without a summary", { summaryFailure: "error" }],
+  [
+    "falls back on an empty summary",
+    { summaryFailure: "empty", recoveryRequest: "Keep the logs. ".repeat(20_000) },
+  ],
   ["reuses the previous summary", { previousSummary: { text: "PREVIOUS", throughRunOrdinal: 1 } }],
   ["summarizes a failed rewind", { recovery: "failing rewind" }],
 ] as const)(
@@ -2144,16 +2155,20 @@ effectIt.effect.each([
         return;
       }
       // The request falls out of the verbatim tail, so its whole run is summarized; the command
-      // and its output never go.
-      expect(summaryRequests).toMatchObject([
-        {
-          previousSummary: undefined,
-          messages: [
-            { role: "user", runOrdinal: 1 },
-            { role: "assistant", runOrdinal: 1, text: "The controller stopped." },
-          ],
-        },
-      ]);
+      // and its output never go. A request too long for one call stops at an empty first call.
+      expect(summaryRequests).toMatchObject(
+        "summaryFailure" in options && options.summaryFailure === "empty"
+          ? [{ messages: [{ role: "user", runOrdinal: 1 }] }]
+          : [
+              {
+                previousSummary: undefined,
+                messages: [
+                  { role: "user", runOrdinal: 1 },
+                  { role: "assistant", runOrdinal: 1, text: "The controller stopped." },
+                ],
+              },
+            ],
+      );
       expect(JSON.stringify(summaryRequests)).not.toContain("REFUSED_OUTPUT");
       if ("summaryFailure" in options) {
         expect(handoffInput?.summary).toBeUndefined();
@@ -2161,7 +2176,11 @@ effectIt.effect.each([
         expect(notices).toMatchObject([
           {
             title: "Conversation summary failed",
-            message: expect.stringContaining("model unavailable"),
+            message: expect.stringContaining(
+              options.summaryFailure === "error"
+                ? "model unavailable"
+                : "the model returned an empty summary",
+            ),
           },
         ]);
         return;

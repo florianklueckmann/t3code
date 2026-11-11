@@ -15,6 +15,7 @@ import {
   parseGoalCommand,
   type ProviderTurnId,
   RunId,
+  TextGenerationError,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -1161,12 +1162,19 @@ export const layer: Layer.Layer<
                   messages: chunk.map(({ role, runOrdinal, text }) => ({ role, runOrdinal, text })),
                 })
                 .pipe(Effect.timeout(FRESH_CONVERSATION_SUMMARY_TIMEOUT));
+              // An empty update would drop what the earlier calls summarized.
+              if (generated.summary.trim() === "") {
+                return yield* new TextGenerationError({
+                  operation: "generateConversationSummary",
+                  detail: "the model returned an empty summary",
+                });
+              }
               summary = generated.summary;
             }
             return summary ?? "";
           }),
         );
-        if (generated._tag === "Success" && generated.success.trim() !== "") {
+        if (generated._tag === "Success") {
           const summary: HandoffConversationSummary = {
             text: generated.success,
             throughRunOrdinal: plan.throughRunOrdinal,
@@ -1174,13 +1182,11 @@ export const layer: Layer.Layer<
           return { type: "summary", summary } as const;
         }
         const reason =
-          generated._tag === "Success"
-            ? "the model returned an empty summary"
-            : generated.failure._tag === "TimeoutError"
-              ? "it took longer than two minutes"
-              : generated.failure._tag === "TextGenerationError"
-                ? generated.failure.detail
-                : generated.failure.message;
+          generated.failure._tag === "TimeoutError"
+            ? "it took longer than two minutes"
+            : generated.failure._tag === "TextGenerationError"
+              ? generated.failure.detail
+              : generated.failure.message;
         yield* Effect.logWarning("Fresh conversation summary failed", {
           threadId: projection.thread.id,
           runId,

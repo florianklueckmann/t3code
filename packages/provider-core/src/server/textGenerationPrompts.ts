@@ -530,7 +530,24 @@ const CONVERSATION_SUMMARY_SECTIONS: ReadonlyArray<
 const CONVERSATION_SUMMARY_SOURCE_CHARS = 160_000;
 
 const renderSummaryMessage = (message: ConversationSummaryMessage) =>
-  `[${message.runOrdinal === undefined ? "" : `run ${message.runOrdinal}, `}${message.role}]\n${limitSection(message.text, CONVERSATION_SUMMARY_SOURCE_CHARS)}`;
+  `[${message.runOrdinal === undefined ? "" : `run ${message.runOrdinal}, `}${message.role}]\n${message.text}`;
+
+/** A message longer than one call takes continues, under the same label, in the next. */
+function summaryMessagePieces<Message extends ConversationSummaryMessage>(
+  message: Message,
+): ReadonlyArray<Message> {
+  const pieces: Array<Message> = [];
+  let rest = message.text;
+  const max = CONVERSATION_SUMMARY_SOURCE_CHARS - 100;
+  while (rest.length > max) {
+    // Half an emoji serializes to a lone surrogate escape, which provider JSON parsers reject.
+    const last = rest.charCodeAt(max - 1);
+    const end = last >= 0xd800 && last <= 0xdbff ? max - 1 : max;
+    pieces.push({ ...message, text: rest.slice(0, end) });
+    rest = rest.slice(end);
+  }
+  return [...pieces, { ...message, text: rest }];
+}
 
 /** Oldest first, each small enough for one call; each call updates the summary of the ones before. */
 export function conversationSummaryChunks<Message extends ConversationSummaryMessage>(
@@ -538,7 +555,7 @@ export function conversationSummaryChunks<Message extends ConversationSummaryMes
 ): ReadonlyArray<ReadonlyArray<Message>> {
   const chunks: Array<Array<Message>> = [];
   let length = Infinity;
-  for (const message of messages) {
+  for (const message of messages.flatMap(summaryMessagePieces)) {
     const size = renderSummaryMessage(message).length + 2;
     if (length + size > CONVERSATION_SUMMARY_SOURCE_CHARS) {
       chunks.push([]);
