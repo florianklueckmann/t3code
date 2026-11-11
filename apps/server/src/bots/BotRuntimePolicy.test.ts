@@ -32,15 +32,19 @@ const unreadableTaskThread = ThreadId.make("bot-work:bot-task:unreadable");
 // Forks and subagents are not Bot conversations, but their MCP access follows their Bot.
 const botForkThread = ThreadId.make("fork-of-bot-home");
 const ungrantedBotThread = ThreadId.make("bot-home:ungranted:campaign");
+const ungrantedBotForkThread = ThreadId.make("fork-of-ungranted-bot-home");
+const botSubagentThread = ThreadId.make("subagent-of-codex-bot-home");
+const ungrantedBotSubagentThread = ThreadId.make("subagent-of-ungranted-codex-bot-home");
 const orphanThread = ThreadId.make("subagent-of-lost-parent");
 const privateMail = McpConnectionId.make("2a2a2a2a-0000-4000-8000-00000000002a");
 
 const mcpAccessOf = (id: ThreadId): BotTurnContext.BotMcpAccess => {
   const bot = (connectionIds: ReadonlyArray<McpConnectionId>) =>
     ({ _tag: "bot", botId: BotId.make("companion"), botName: "Mail Bot", connectionIds }) as const;
-  if ([botThread, workThread, noChangesThread, botForkThread].includes(id))
+  if ([botThread, workThread, noChangesThread, botForkThread, botSubagentThread].includes(id))
     return bot([privateMail]);
-  if (id === ungrantedBotThread) return bot([]);
+  if ([ungrantedBotThread, ungrantedBotForkThread, ungrantedBotSubagentThread].includes(id))
+    return bot([]);
   if (id === archivedBotThread || id === archivedNoChangesThread || id === orphanThread)
     return { _tag: "refused", message: "parent lost" };
   return { _tag: "none" };
@@ -103,7 +107,9 @@ const usePolicy = <A, E>(
                     ? ({ driverKind: ProviderDriverKind.make("codex") } as ProviderInstance)
                     : id === "codex"
                       ? ({ driverKind: ProviderDriverKind.make("claudeAgent") } as ProviderInstance)
-                      : undefined,
+                      : id === "pi"
+                        ? ({ driverKind: ProviderDriverKind.make("pi") } as ProviderInstance)
+                        : undefined,
                 ),
             }),
             Layer.mock(BotTurnContext.BotTurnContext)({
@@ -200,21 +206,36 @@ it.effect(
       );
       assert.isUndefined((yield* resolveFor(ThreadId.make("plain"))).mcpConnections);
 
-      // A provider that keeps its own MCP servers never runs a Bot's thread, granted or not.
-      for (const [threadId, options] of [
-        [botThread, { instanceId: "codex" }],
-        [ungrantedBotThread, { instanceId: "codex" }],
-        [botForkThread, { instanceId: "codex" }],
-        [botForkThread, { instanceId: "missing" }],
-        [botThread, { platform: "linux" }],
-      ] as const) {
-        const refused = yield* resolveFor(threadId, options).pipe(Effect.flip);
-        assert.equal(refused._tag, "RuntimePolicyMcpUnsupportedError", threadId);
-        assert.include(refused.message, "Mail Bot uses only the MCP connections granted to it");
-      }
       const orphan = yield* resolveFor(orphanThread).pipe(Effect.flip);
       assert.equal(orphan._tag, "RuntimePolicyMcpUnsupportedError");
       assert.equal(orphan.message, "parent lost");
+    }),
+);
+
+it.effect.each([
+  ["Claude Bot", botThread, ungrantedBotThread, { instanceId: "codex" }],
+  ["Claude fork", botForkThread, ungrantedBotForkThread, { instanceId: "codex" }],
+  ["Linux Bot", botThread, ungrantedBotThread, { platform: "linux" }],
+  [
+    "Codex Bot delegating to Claude",
+    botSubagentThread,
+    ungrantedBotSubagentThread,
+    { instanceId: "codex" },
+  ],
+  ["missing instance", botForkThread, ungrantedBotForkThread, { instanceId: "missing" }],
+  ["Pi Bot", botThread, ungrantedBotThread, { instanceId: "pi" }],
+] as const)(
+  "allows %s without grants and refuses it with grants where they cannot be enforced",
+  ([_, grantedThreadId, ungrantedThreadId, options]) =>
+    Effect.gen(function* () {
+      const refused = yield* resolveFor(grantedThreadId, options).pipe(Effect.flip);
+      assert.equal(refused._tag, "RuntimePolicyMcpUnsupportedError");
+      assert.include(refused.message, "Mail Bot uses only the MCP connections granted to it");
+
+      const policy = yield* resolveFor(ungrantedThreadId, options);
+      assert.isFalse(Object.hasOwn(policy, "mcpConnections"));
+      assert.equal(policy.nativeMemory, "disabled");
+      assert.isUndefined(policy.nativeTools);
     }),
 );
 

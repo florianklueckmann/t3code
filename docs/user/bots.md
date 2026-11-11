@@ -243,11 +243,12 @@ read-only. T3 Code cannot check that mark.
 
 ## Current limits
 
-- Bots run on Codex models only. If you switch a Bot conversation to another
-  provider, its turns fail until you switch back.
-- MCP connections apply only to Codex on a Mac server. Elsewhere, a Bot without
-  connections uses the provider's own MCP setup, and a Bot with connections does
-  not run.
+- MCP connections apply only to Codex 0.166.0 or later on a Mac server.
+  Elsewhere, a Bot without connections uses the provider's own MCP setup, and a
+  Bot with connections does not run.
+- Bots turn off Claude's automatic memory and Grok's cross-session memory.
+  Providers without a per-session memory switch, such as Kiro and Antigravity,
+  may still use their own memories in Bot conversations.
 - Built-in email and calendar connections are not available.
 
 ## Detach and archive
