@@ -196,6 +196,7 @@ const makeHarness = Effect.fn("makePullRequestsToolkitHarness")(function* (
     }),
     Layer.succeed(SecureRandom.SecureRandom, testCrypto),
     McpToolAccessTestkit.liveThreadsLayer,
+    McpToolAccessTestkit.layerCallerChangesAllowed,
   );
   const toolkit = yield* PullRequestsToolkit.pipe(
     Effect.provide(

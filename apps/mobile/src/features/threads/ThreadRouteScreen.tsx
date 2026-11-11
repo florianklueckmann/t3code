@@ -1,3 +1,4 @@
+import { BotTaskNotificationResult } from "../bots/BotTaskNotificationResult";
 import * as Dialog from "../../components/ui/Dialog";
 import { useHomeThreadBot } from "./useHomeThreadBot";
 import { useRememberThreadProject } from "./useRememberThreadProject";
@@ -160,6 +161,7 @@ type ThreadRouteScreenRouteProps = StaticScreenProps<{
   readonly draft?: NewTaskDraftRouteParams;
   readonly inspector?: ThreadInspectorTarget;
   readonly prompt?: string | string[];
+  readonly botTaskId?: string;
 }>;
 
 interface ThreadRouteScreenProps extends ThreadRouteScreenRouteProps {
@@ -1091,6 +1093,16 @@ function ThreadRouteContent(
       ) : null}
 
       {renderThreadRouteBody()}
+      {props.route.params?.botTaskId && selectedThread !== null ? (
+        <BotTaskNotificationResult
+          key={`${selectedThread.environmentId}:${props.route.params.botTaskId}`}
+          environmentId={selectedThread.environmentId}
+          projectId={selectedThread.projectId}
+          threadId={selectedThread.id}
+          taskId={props.route.params.botTaskId}
+          onClose={() => navigation.setParams({ botTaskId: undefined })}
+        />
+      ) : null}
     </>
   );
 }

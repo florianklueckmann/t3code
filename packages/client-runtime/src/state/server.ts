@@ -3,10 +3,13 @@ import {
   type BotContinuationReadInput,
   type BotContinuationView,
   type BotContinuationHistory,
+  type BotMaintenanceView,
+  type BotHomeCheckView,
   type EnvironmentId,
   type BotSummary,
   type BotTaskResult,
   type BotTaskResultInput,
+  type McpConnectionListResult,
   type ProviderInstanceId,
   type ServerConfig,
   type ServerConfigStreamEvent,
@@ -34,7 +37,7 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
-import { AsyncResult, Atom } from "effect/reactivity";
+import { AsyncResult, Atom, type AtomRegistry } from "effect/reactivity";
 
 import {
   createAtomCommandScheduler,
@@ -71,6 +74,12 @@ import {
 } from "./serverConfigProjection.ts";
 
 export type { ServerConfigProjection } from "./serverConfigProjection.ts";
+
+/**
+ * A work thread's task restriction: "none" for No changes, null for none, and "unknown" until
+ * its task loads, which must not be shown as unrestricted.
+ */
+export type WorkThreadChanges = "none" | "unknown" | null;
 
 export type ServerUpdateStage = "downloading" | "installing" | "resuming";
 
@@ -1303,6 +1312,85 @@ export function createServerEnvironmentAtoms<R, E>(
       (refresh) => refresh(query),
     );
   });
+  // Each saved edit advances a revision in the settings snapshot, from this client or another.
+  const mcpConnectionRevisionsAtom = Atom.family((environmentId: EnvironmentId) =>
+    Atom.make((get) =>
+      JSON.stringify(
+        Object.entries(get(settingsValueAtom(environmentId))?.mcpConnections ?? {}).map(
+          ([id, definition]) => [id, definition.revision],
+        ),
+      ),
+    ).pipe(Atom.withLabel(`environment-data:server:mcp-connections:revisions:${environmentId}`)),
+  );
+  // Listing reads no secret provider on the server, so following every revision is cheap.
+  const mcpConnectionsQuery = createEnvironmentRpcQueryAtomFamily(runtime, {
+    label: "environment-data:server:mcp-connections",
+    tag: WS_METHODS.mcpConnectionsList,
+    staleTimeMs: 0,
+    idleTtlMs: 0,
+    refreshTrigger: (target) => mcpConnectionRevisionsAtom(target.environmentId),
+  });
+  const mcpConnectionsFamily = Atom.family((environmentId: EnvironmentId) => {
+    const query = mcpConnectionsQuery({ environmentId, input: {} });
+    return Atom.readable(
+      (get): AsyncResult.AsyncResult<McpConnectionListResult | null, unknown> => {
+        const config = get(configValueAtom(environmentId));
+        if (config === null) return AsyncResult.initial(true);
+        if (config.environment.capabilities.mcpConnections !== true)
+          return AsyncResult.success(null);
+        return get(query);
+      },
+      (refresh) => refresh(query),
+    ).pipe(Atom.withLabel(`environment-data:server:mcp-connections:view:${environmentId}`));
+  });
+  const refreshMcpConnections = (
+    target: { readonly environmentId: EnvironmentId },
+    registry: AtomRegistry.AtomRegistry,
+  ) => Effect.sync(() => registry.refresh(mcpConnectionsFamily(target.environmentId)));
+
+  const botMaintenanceQuery = createEnvironmentRpcQueryAtomFamily(runtime, {
+    label: "environment-data:server:bots:botMaintenance",
+    tag: WS_METHODS.botsGetMaintenance,
+    staleTimeMs: 0,
+    idleTtlMs: 0,
+    refreshTrigger: (target) =>
+      botContinuationActiveFamily(JSON.stringify([target.environmentId, target.input])),
+  });
+  const botMaintenanceFamily = Atom.family((key: string) => {
+    const [environmentId, input] = JSON.parse(key) as [EnvironmentId, BotContinuationScope];
+    const query = botMaintenanceQuery({ environmentId, input });
+    return Atom.readable(
+      (get): AsyncResult.AsyncResult<BotMaintenanceView | null, unknown> => {
+        const config = get(configValueAtom(environmentId));
+        if (config === null) return AsyncResult.initial(true);
+        if (config.environment.capabilities.botMaintenance !== true)
+          return AsyncResult.success(null);
+        return get(query);
+      },
+      (refresh) => refresh(query),
+    );
+  });
+  const botHomeCheckQuery = createEnvironmentRpcQueryAtomFamily(runtime, {
+    label: "environment-data:server:bots:botHomeCheck",
+    tag: WS_METHODS.botsGetHomeCheck,
+    staleTimeMs: 0,
+    idleTtlMs: 0,
+    refreshTrigger: (target) =>
+      botContinuationActiveFamily(JSON.stringify([target.environmentId, target.input])),
+  });
+  const botHomeCheckFamily = Atom.family((key: string) => {
+    const [environmentId, input] = JSON.parse(key) as [EnvironmentId, BotContinuationScope];
+    const query = botHomeCheckQuery({ environmentId, input });
+    return Atom.readable(
+      (get): AsyncResult.AsyncResult<BotHomeCheckView | null, unknown> => {
+        const config = get(configValueAtom(environmentId));
+        if (config === null) return AsyncResult.initial(true);
+        if (config.environment.capabilities.botHomeCheck !== true) return AsyncResult.success(null);
+        return get(query);
+      },
+      (refresh) => refresh(query),
+    );
+  });
   const workThreadBotFamily = Atom.family((key: string) => {
     const [environmentId, threadId] = JSON.parse(key) as [EnvironmentId, string];
     return Atom.make((get): BotSummary | null => {
@@ -1319,10 +1407,29 @@ export function createServerEnvironmentAtoms<R, E>(
     }).pipe(Atom.withLabel(`environment-data:server:bots:work-thread:${key}`));
   });
 
+  // Reads only the admitted task, so an archived Bot or detached project keeps the restriction.
+  const workThreadChangesFamily = Atom.family((key: string) => {
+    const [environmentId, threadId] = JSON.parse(key) as [EnvironmentId, string];
+    return Atom.make((get): WorkThreadChanges => {
+      if (!mayBeBotWorkThreadId(threadId)) return null;
+      const config = get(configValueAtom(environmentId));
+      if (config === null) return "unknown";
+      if (config.environment.capabilities.bots !== true) return null;
+      const tasks = AsyncResult.value(
+        get(botTasksLive({ environmentId, input: { workThreadId: ThreadId.make(threadId) } })),
+      );
+      if (Option.isNone(tasks)) return "unknown";
+      return tasks.value.tasks.some((task) => task.changes === "none") ? "none" : null;
+    }).pipe(Atom.withLabel(`environment-data:server:bots:work-thread-changes:${key}`));
+  });
+
   return {
     configValueAtom,
     workThreadBot: (thread: { readonly environmentId: EnvironmentId; readonly id: string }) =>
       workThreadBotFamily(JSON.stringify([thread.environmentId, thread.id])),
+    /** "none" while the thread runs a No changes routine task; its mode cannot lift that. */
+    workThreadChanges: (thread: { readonly environmentId: EnvironmentId; readonly id: string }) =>
+      workThreadChangesFamily(JSON.stringify([thread.environmentId, thread.id])),
     runStorageCleanup: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:run-storage-cleanup",
       tag: WS_METHODS.serverRunStorageCleanup,
@@ -1473,6 +1580,64 @@ export function createServerEnvironmentAtoms<R, E>(
       readonly environmentId: EnvironmentId;
       readonly input: BotContinuationScope;
     }) => botContinuationHistoryFamily(JSON.stringify([target.environmentId, target.input])),
+    /** Safe statuses only; `null` when the server has no catalog. Definitions come from settings. */
+    mcpConnections: mcpConnectionsFamily,
+    createMcpConnection: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:mcp-connections:create",
+      tag: WS_METHODS.mcpConnectionsCreate,
+      scheduler: configScheduler,
+      concurrency: configConcurrency,
+      onSuccess: refreshMcpConnections,
+    }),
+    updateMcpConnection: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:mcp-connections:update",
+      tag: WS_METHODS.mcpConnectionsUpdate,
+      scheduler: configScheduler,
+      concurrency: configConcurrency,
+      onSuccess: refreshMcpConnections,
+    }),
+    removeMcpConnection: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:mcp-connections:remove",
+      tag: WS_METHODS.mcpConnectionsRemove,
+      scheduler: configScheduler,
+      concurrency: configConcurrency,
+      onSuccess: refreshMcpConnections,
+    }),
+    // Off the config lane: a secret provider may wait for an unlock.
+    refreshMcpConnections: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:mcp-connections:refresh",
+      tag: WS_METHODS.mcpConnectionsRefresh,
+      onSuccess: refreshMcpConnections,
+    }),
+    mcpConnectionOAuthState: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "environment-data:server:mcp-connections:oauth-state",
+      tag: WS_METHODS.mcpConnectionsOAuthSubscribe,
+      idleTtlMs: 0,
+    }),
+    startMcpConnectionOAuth: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:mcp-connections:oauth-start",
+      tag: WS_METHODS.mcpConnectionsOAuthStart,
+    }),
+    completeMcpConnectionOAuth: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:mcp-connections:oauth-complete",
+      tag: WS_METHODS.mcpConnectionsOAuthComplete,
+    }),
+    cancelMcpConnectionOAuth: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:mcp-connections:oauth-cancel",
+      tag: WS_METHODS.mcpConnectionsOAuthCancel,
+    }),
+    disconnectMcpConnectionOAuth: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:mcp-connections:oauth-disconnect",
+      tag: WS_METHODS.mcpConnectionsOAuthDisconnect,
+    }),
+    botMaintenance: (target: {
+      readonly environmentId: EnvironmentId;
+      readonly input: BotContinuationScope;
+    }) => botMaintenanceFamily(JSON.stringify([target.environmentId, target.input])),
+    botHomeCheck: (target: {
+      readonly environmentId: EnvironmentId;
+      readonly input: BotContinuationScope;
+    }) => botHomeCheckFamily(JSON.stringify([target.environmentId, target.input])),
     botDetail: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:server:bots:detail",
       tag: WS_METHODS.botsGet,
@@ -1745,6 +1910,12 @@ export function createServerEnvironmentAtoms<R, E>(
       scheduler: configScheduler,
       concurrency: configConcurrency,
     }),
+    setBotMcpGrants: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bots:set-mcp-grants",
+      tag: WS_METHODS.botsSetMcpGrants,
+      scheduler: configScheduler,
+      concurrency: configConcurrency,
+    }),
     attachBotProject: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:bots:attach-project",
       tag: WS_METHODS.botsAttachProject,
@@ -1775,6 +1946,18 @@ export function createServerEnvironmentAtoms<R, E>(
     saveBotContinuation: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:bots:save-continuation",
       tag: WS_METHODS.botsSaveContinuation,
+      scheduler: configScheduler,
+      concurrency: configConcurrency,
+    }),
+    configureBotMaintenance: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bots:configure-maintenance",
+      tag: WS_METHODS.botsConfigureMaintenance,
+      scheduler: configScheduler,
+      concurrency: configConcurrency,
+    }),
+    configureBotHomeCheck: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bots:configure-home-check",
+      tag: WS_METHODS.botsConfigureHomeCheck,
       scheduler: configScheduler,
       concurrency: configConcurrency,
     }),

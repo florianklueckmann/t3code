@@ -12,7 +12,8 @@ import {
   TrimmedNonEmptyString,
   TrimmedString,
 } from "./baseSchemas.ts";
-import { ModelSelection } from "./modelSelection.ts";
+import { MCP_CONNECTIONS_MAX, McpConnectionId } from "./mcpConnection.ts";
+import { ModelSelection, ModelSelectionInput } from "./modelSelection.ts";
 import { RuntimeMode } from "./providerPolicy.ts";
 
 /** No colons: the server derives home thread ids from the Bot and project ids. */
@@ -181,6 +182,8 @@ const BotLearningNote = TrimmedString.check(Schema.isMaxLength(2_000));
 
 export const BotLearningRevision = Schema.Struct({
   revision: PositiveInt,
+  /** The scope this revision gives its entry once in use; null for all projects. */
+  projectId: Schema.NullOr(ProjectId),
   text: BotLearningText,
   rationale: BotLearningNote,
   evidence: BotLearningNote,
@@ -207,6 +210,71 @@ export const BotLearningEntry = Schema.Struct({
 });
 export type BotLearningEntry = typeof BotLearningEntry.Type;
 
+/** How much active learning one Bot turn includes. */
+export const BOT_TURN_LEARNING_LIMITS = { entries: 40, chars: 8_000 } as const;
+
+export interface BotTurnLearningItem {
+  readonly entryId: string;
+  readonly revision: number;
+  /** Null when shared across all of the Bot's projects. */
+  readonly projectId: string | null;
+  readonly kind: string;
+  readonly origin: string;
+  readonly status: string;
+  readonly text: string;
+  readonly createdAt: string;
+}
+
+/**
+ * The active learning one turn in a project includes: its own entries and the Bot's shared ones,
+ * standing instructions first and then the newest, until either limit is reached. The server
+ * builds the turn's context with it and clients show what it leaves out, so the two cannot drift.
+ */
+export function selectBotTurnLearning<T extends BotTurnLearningItem>(
+  items: ReadonlyArray<T>,
+  projectId: string,
+): { readonly lines: ReadonlyArray<string>; readonly omitted: ReadonlyArray<T> } {
+  const active = items
+    .filter(
+      (item) =>
+        item.status === "active" && (item.projectId === null || item.projectId === projectId),
+    )
+    .sort(
+      (a, b) =>
+        Number(b.origin === "instruction") - Number(a.origin === "instruction") ||
+        b.createdAt.localeCompare(a.createdAt),
+    );
+  const lines: Array<string> = [];
+  let chars = 0;
+  for (const item of active) {
+    const line = `- [${item.entryId} r${item.revision}; ${item.kind}${
+      item.projectId === null ? ", all projects" : ""
+    }${item.origin === "instruction" ? ", standing instruction" : ""}] ${item.text}`;
+    if (
+      lines.length >= BOT_TURN_LEARNING_LIMITS.entries ||
+      chars + line.length > BOT_TURN_LEARNING_LIMITS.chars
+    ) {
+      break;
+    }
+    lines.push(line);
+    chars += line.length;
+  }
+  return { lines, omitted: active.slice(lines.length) };
+}
+
+/**
+ * The environment's MCP connections a Bot's threads may use. Only these load, with their
+ * credentials resolved at each load; the user's own Codex MCP servers load only when switched on.
+ */
+export const BotMcpGrants = Schema.Struct({
+  /** Advances on every change to the set or the switch. */
+  revision: NonNegativeInt,
+  connectionIds: Schema.Array(McpConnectionId),
+  /** Absent on servers without the switch. */
+  ownCodexMcpServers: Schema.optionalKey(Schema.Boolean),
+});
+export type BotMcpGrants = typeof BotMcpGrants.Type;
+
 export const BotSummary = Schema.Struct({
   id: BotId,
   name: BotName,
@@ -214,6 +282,8 @@ export const BotSummary = Schema.Struct({
   learningPolicy: BotLearningPolicy,
   /** Null uses the default derived from the Bot id; absent on servers without appearance. */
   appearance: Schema.optionalKey(Schema.NullOr(ReceivedBotAppearance)),
+  /** Absent on servers without grants: the feature is unavailable, not an empty grant set. */
+  mcpGrants: Schema.optionalKey(BotMcpGrants),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   archivedAt: Schema.NullOr(IsoDateTime),
@@ -263,6 +333,16 @@ export const BotUpdateInput = Schema.Struct({
   appearance: Schema.optional(Schema.NullOr(BotAppearance)),
 });
 export type BotUpdateInput = typeof BotUpdateInput.Type;
+
+/** Replaces the whole grant set. Only connections currently in the catalog can be granted. */
+export const BotSetMcpGrantsInput = Schema.Struct({
+  botId: BotId,
+  expectedRevision: NonNegativeInt,
+  connectionIds: Schema.Array(McpConnectionId).check(Schema.isMaxLength(MCP_CONNECTIONS_MAX)),
+  /** Absent keeps the saved choice. */
+  ownCodexMcpServers: Schema.optionalKey(Schema.Boolean),
+});
+export type BotSetMcpGrantsInput = typeof BotSetMcpGrantsInput.Type;
 
 export const BotSetArchivedInput = Schema.Struct({
   botId: BotId,
@@ -388,6 +468,16 @@ export const BotTaskSummary = Schema.Struct({
   updatedAt: IsoDateTime,
   completedAt: Schema.NullOr(IsoDateTime),
   returnToHome: Schema.optional(Schema.Boolean),
+  /**
+   * What a direct task runs on: its own selection, or the Bot's when it was started. Absent for
+   * routines, which follow the Bot, and for tasks started before this was recorded.
+   */
+  modelSelection: Schema.optional(ModelSelection),
+  /**
+   * "none" when the task was admitted as a No changes routine run, which no thread mode lifts.
+   * Absent from servers that predate enforcement, where nothing restricted the task.
+   */
+  changes: Schema.optional(Schema.NullOr(Schema.Literal("none"))),
 });
 export type BotTaskSummary = typeof BotTaskSummary.Type;
 
@@ -408,6 +498,8 @@ export const BotStartTaskInput = Schema.Struct({
   projectId: ProjectId,
   prompt: TrimmedNonEmptyString.check(Schema.isMaxLength(BOT_INSTRUCTIONS_MAX_CHARS)),
   title: Schema.optional(BotName),
+  /** Runs only this task on that model and options; omitted follows the Bot. */
+  modelSelection: Schema.optional(ModelSelectionInput),
   /** Makes a retried start return the same task. */
   commandId: Schema.optional(CommandId),
 });

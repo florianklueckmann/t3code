@@ -35,7 +35,7 @@ describe("RPC authorization scopes", () => {
     expect(new Set(Object.keys(RPC_REQUIRED_SCOPES))).toEqual(new Set(WsRpcGroup.requests.keys()));
   });
 
-  it("allows continuation inspection with read and guards user edits with operate", () => {
+  it("allows continuation and maintenance inspection with read and guards user edits with operate", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.botsGetContinuation)).toBe(
       AuthOrchestrationReadScope,
     );
@@ -43,6 +43,16 @@ describe("RPC authorization scopes", () => {
       AuthOrchestrationReadScope,
     );
     expect(requiredScopeForRpcMethod(WS_METHODS.botsSaveContinuation)).toBe(
+      AuthOrchestrationOperateScope,
+    );
+    expect(requiredScopeForRpcMethod(WS_METHODS.botsGetMaintenance)).toBe(
+      AuthOrchestrationReadScope,
+    );
+    expect(requiredScopeForRpcMethod(WS_METHODS.botsConfigureMaintenance)).toBe(
+      AuthOrchestrationOperateScope,
+    );
+    expect(requiredScopeForRpcMethod(WS_METHODS.botsGetHomeCheck)).toBe(AuthOrchestrationReadScope);
+    expect(requiredScopeForRpcMethod(WS_METHODS.botsConfigureHomeCheck)).toBe(
       AuthOrchestrationOperateScope,
     );
   });
@@ -54,6 +64,25 @@ describe("RPC authorization scopes", () => {
       WS_METHODS.scheduledTasksRotateWebhookToken,
     ]) {
       expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationOperateScope);
+    }
+  });
+
+  it("lets thread readers see MCP connection statuses and keeps every connection edit behind settings", () => {
+    for (const method of [WS_METHODS.mcpConnectionsList, WS_METHODS.mcpConnectionsOAuthSubscribe]) {
+      expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationReadScope);
+    }
+    for (const method of [
+      WS_METHODS.mcpConnectionsCreate,
+      WS_METHODS.mcpConnectionsUpdate,
+      WS_METHODS.mcpConnectionsRemove,
+      WS_METHODS.mcpConnectionsRefresh,
+      WS_METHODS.mcpConnectionsOAuthStart,
+      WS_METHODS.mcpConnectionsOAuthComplete,
+      WS_METHODS.mcpConnectionsOAuthCancel,
+      WS_METHODS.mcpConnectionsOAuthDisconnect,
+      WS_METHODS.botsSetMcpGrants,
+    ]) {
+      expect(requiredScopeForRpcMethod(method)).toBe(AuthSettingsWriteScope);
     }
   });
 

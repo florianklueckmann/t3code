@@ -1,6 +1,20 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
+import * as Ref from "effect/Ref";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
+import * as SqlClient from "effect/sql/SqlClient";
+import * as OrchestratorMcpService from "../mcp/OrchestratorMcpService.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
+import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
+import * as ProjectService from "../project/ProjectService.ts";
+import * as ServerSettings from "../serverSettings.ts";
+import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
+import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import { liveThreadShell, idleThreadProjection } from "../mcp/McpToolAccess.testkit.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
-import { expect, it } from "@effect/vitest";
+import { assert, expect, it } from "@effect/vitest";
 import { ScheduledTaskUpsertInput } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -233,4 +247,188 @@ it.effect(
         expect(yield* Deferred.await(launched)).toBe(created.task.title);
       }).pipe(Effect.provide(ScheduledTaskService.layer.pipe(Layer.provide(layerDependencies))));
     }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect.each([
+  "same-project new thread",
+  "cross-project default",
+  "same-project default",
+  "fresh session",
+] as const)("keeps the Bot grant lineage for scheduled work: %s", (mode) =>
+  Effect.gen(function* () {
+    const home = ThreadId.make("bot-home:mail:project");
+    const shell = liveThreadShell(home);
+    const launches = yield* Ref.make<ThreadLaunchService.ThreadLaunchInput[]>([]);
+    const shared = Layer.mergeAll(
+      NodeServices.layer,
+      NodeCrypto.layer,
+      ManagedPolicy.layerTest(),
+      Layer.mock(ThreadLaunchService.ThreadLaunchService)({
+        launch: (input) =>
+          Ref.update(launches, (all) => [...all, input]).pipe(
+            Effect.as({ threadId: ThreadId.make("scheduled-child"), resumed: false } as never),
+          ),
+      }),
+      Layer.mock(ThreadManagementService.ThreadManagementService)({
+        getThreadShell: () => Effect.succeed(shell),
+        getThreadRecords: () => Effect.succeed(idleThreadProjection(shell)),
+        sendToThread: () => Effect.succeed({} as never),
+      }),
+      Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+        namedProjectsRoot: "/synthetic/projects",
+        isScratchProject: () => Effect.succeed(false),
+      }),
+      Layer.mock(SecretRequests.SecretRequests)({}),
+      Layer.succeed(Scheduler.Scheduler, { register: () => Effect.void }),
+    );
+    const scheduled = ScheduledTaskService.layer.pipe(Layer.provide(shared));
+    const service = OrchestratorMcpService.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          scheduled,
+          shared,
+          ServerSettings.layerTest(),
+          Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
+          Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
+            list: () => Effect.succeed([]),
+          }),
+          Layer.mock(ProjectService.ProjectService)({
+            getById: (id) =>
+              Effect.succeedSome({
+                id,
+                workspaceRoot: "/synthetic/project",
+                defaultModelSelection: shell.modelSelection,
+              } as never),
+          }),
+          Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+          Layer.mock(GitVcsDriver.GitVcsDriver)({
+            resolvePrimaryRemoteName: () => Effect.succeed("origin"),
+            resolveDefaultBranchName: () => Effect.succeed("main"),
+            resolveCommit: () => Effect.succeed({ commitSha: "synthetic-commit" }),
+          }),
+        ),
+      ),
+    );
+    yield* Effect.gen(function* () {
+      const mcp = yield* OrchestratorMcpService.OrchestratorMcpService;
+      const tasks = yield* ScheduledTaskService.ScheduledTaskService;
+      const scope = {
+        environmentId: EnvironmentId.make("synthetic-environment"),
+        requestNamespace: "synthetic:bot-home",
+        thread: {
+          threadId: home,
+          providerInstanceId: shell.modelSelection.instanceId,
+          providerSessionId: "synthetic",
+        },
+        client: undefined,
+        capabilities: new Set(["orchestration" as const]),
+        issuedAt: 0,
+      };
+      const created = yield* mcp.scheduleTask(scope, {
+        prompt: "Check the mail account granted to this Bot",
+        schedule: { type: "interval", everyMs: 60000 },
+        ...(mode === "same-project new thread"
+          ? { bindToCurrentThread: false }
+          : mode === "cross-project default"
+            ? { projectId: ProjectId.make("project:other") }
+            : mode === "fresh session"
+              ? { bindToCurrentThread: false, freshSession: true }
+              : {}),
+      });
+      const result = yield* tasks.runNow({ id: created.scheduledTaskId });
+      const inputs = yield* Ref.get(launches);
+      if (mode === "same-project default") {
+        assert.equal(result.threadId, home);
+        assert.equal(inputs.length, 0);
+        return;
+      }
+      assert.equal(result.threadId, "scheduled-child");
+      assert.equal(inputs.length, 1);
+      assert.equal(inputs[0]?.createdByThreadId, home);
+      assert.isUndefined(result.task.bot);
+      yield* tasks.runNow({ id: created.scheduledTaskId });
+      const repeated = yield* Ref.get(launches);
+      assert.equal(repeated.length, mode === "fresh session" ? 1 : 2);
+      assert.isTrue(repeated.every((input) => input.createdByThreadId === home));
+    }).pipe(Effect.provide(Layer.mergeAll(service, scheduled)));
+  }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect.each(["agent", "client"] as const)(
+  "preserves server-controlled schedule provenance across database reopen for %s",
+  (caller) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "schedule-provenance-" });
+      const dbPath = path.join(directory, "statev2.sqlite");
+      const creator = ThreadId.make("bot-home:mail:project");
+      const forged = ThreadId.make("bot-home:forged:project");
+      const launches = yield* Ref.make<ThreadLaunchService.ThreadLaunchInput[]>([]);
+      const dependencies = Layer.mergeAll(
+        NodeCrypto.layer,
+        ManagedPolicy.layerTest(),
+        Layer.succeed(Scheduler.Scheduler, { register: () => Effect.void }),
+        Layer.mock(ThreadLaunchService.ThreadLaunchService)({
+          launch: (input) =>
+            Ref.update(launches, (all) => [...all, input]).pipe(
+              Effect.as({ threadId: ThreadId.make("scheduled-child"), resumed: false } as never),
+            ),
+        }),
+        Layer.mock(ThreadManagementService.ThreadManagementService)({}),
+        Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+          namedProjectsRoot: "/synthetic/projects",
+          isScratchProject: () => Effect.succeed(false),
+        }),
+        Layer.mock(SecretRequests.SecretRequests)({}),
+      );
+      const persisted = () =>
+        ScheduledTaskService.layer.pipe(
+          Layer.provide(dependencies),
+          Layer.provideMerge(SqlitePersistence.layerFromPath(dbPath)),
+        );
+      const input = yield* decodeUpsertInput({
+        id: "schedule:provenance",
+        title: "Check mail",
+        prompt: "Check the granted account",
+        enabled: true,
+        schedule: { type: "interval", everyMs: 60_000 },
+        projectId: "project:mail",
+        threadMode: "new_thread",
+        workspaceStrategy: { type: "root" },
+        modelSelection: { instanceId: "codex", model: "gpt-5.4" },
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        createdByThreadId: forged,
+      });
+      const id = yield* Effect.gen(function* () {
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+        const { task } = yield* service.upsert(
+          input,
+          caller === "agent" ? { createdByThreadId: creator } : undefined,
+        );
+        yield* service.upsert({ ...input, title: "Edited by a client" });
+        return task.id;
+      }).pipe(Effect.provide(persisted()));
+
+      yield* Effect.gen(function* () {
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+        const sql = yield* SqlClient.SqlClient;
+        const rows =
+          yield* sql`SELECT created_by_thread_id FROM scheduled_tasks WHERE task_id = ${id}`;
+        assert.deepEqual(rows, [{ created_by_thread_id: caller === "agent" ? creator : null }]);
+        for (let run = 0; run < 2; run++) {
+          const result = yield* service.runNow({ id });
+          assert.equal(result.threadId, "scheduled-child");
+          assert.isUndefined(result.task.bot);
+        }
+        const inputs = yield* Ref.get(launches);
+        assert.equal(inputs.length, 2);
+        assert.isTrue(
+          inputs.every(
+            (launch) => launch.createdByThreadId === (caller === "agent" ? creator : undefined),
+          ),
+        );
+      }).pipe(Effect.provide(persisted()));
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

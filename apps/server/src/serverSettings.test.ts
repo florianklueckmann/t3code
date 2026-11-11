@@ -4,6 +4,7 @@ import {
   DEFAULT_SERVER_SETTINGS,
   globalIdleCompaction,
   type ManagedPolicyDocument,
+  McpConnectionId,
   ModelSelection,
   ProjectId,
   ProjectScript,
@@ -36,7 +37,7 @@ import * as ServerConfig from "./config.ts";
 import * as SqlitePersistence from "./persistence/Sqlite.ts";
 import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
 import * as ServerSettingsModule from "./serverSettings.ts";
-import { SECRET_REDACTED } from "./settingsSecrets.ts";
+import { mcpConnectionSecretName, SECRET_REDACTED } from "./settingsSecrets.ts";
 import * as ManagedPolicy from "./policy/ManagedPolicy.ts";
 import { resolveProviderInstanceTerminalEnvironment } from "./terminal/Manager.ts";
 
@@ -1577,6 +1578,122 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
         for (const name of secretNames) {
           assert.isTrue(Option.isNone(yield* store.get(name)));
         }
+
+        // Two accounts of one service at one URL are two connections with their own slots.
+        const accountA = McpConnectionId.make("0a0a0a0a-0000-4000-8000-00000000000a");
+        const accountB = McpConnectionId.make("0b0b0b0b-0000-4000-8000-00000000000b");
+        const local = McpConnectionId.make("0c0c0c0c-0000-4000-8000-00000000000c");
+        const sameUrl = (label: string, authorization: string) => ({
+          label,
+          enabled: true,
+          revision: 1,
+          authentication: { type: "bindings" as const },
+          transport: {
+            type: "http" as const,
+            url: "https://mcp.example.test/mcp",
+            httpHeaders: { Authorization: authorization },
+          },
+        });
+        const catalog = (mcpConnections: ServerSettings["mcpConnections"]) =>
+          service.updateMcpConnections((current) =>
+            Effect.succeed({
+              mcpConnections,
+              retiredMcpConnectionIds: current.retiredMcpConnectionIds,
+            }),
+          );
+        const oauthApp = McpConnectionId.make("0f0f0f0f-0000-4000-8000-00000000000f");
+        const withConnections = yield* catalog({
+          [accountA]: sameUrl("Work", "Bearer account-a-secret"),
+          [accountB]: sameUrl("Personal", "Bearer account-b-secret"),
+          [oauthApp]: {
+            ...sameUrl("Mail", ""),
+            transport: {
+              type: "http",
+              url: "https://mcp.example.test/mcp",
+              httpHeaders: {},
+              oauth: { scopes: [], client: { id: "app-id", secret: "oauth-client-secret" } },
+            },
+          },
+          [local]: {
+            ...sameUrl("Local", ""),
+            transport: {
+              type: "stdio",
+              command: "mcp-server",
+              args: ["--stdio"],
+              env: { API_KEY: "upper-env-secret", api_key: "lower-env-secret", TOKEN: secret },
+            },
+          },
+        });
+        const mcpValues = [
+          "Bearer account-a-secret",
+          "Bearer account-b-secret",
+          "upper-env-secret",
+          "lower-env-secret",
+          "oauth-client-secret",
+        ];
+        const mcpClient = ServerSettingsModule.redactServerSettingsForClient(withConnections, {
+          secretReferences: true,
+        });
+        const mcpDisk = yield* fs.readFileString(config.settingsPath);
+        for (const value of mcpValues) {
+          assert.include(JSON.stringify(withConnections.mcpConnections), value);
+          assert.notInclude(JSON.stringify(mcpClient), value);
+          assert.notInclude(mcpDisk, value);
+        }
+        assert.deepEqual(mcpClient.mcpConnections[local]?.transport, {
+          type: "stdio",
+          command: "mcp-server",
+          args: ["--stdio"],
+          env: { API_KEY: SECRET_REDACTED, api_key: SECRET_REDACTED, TOKEN: secret },
+        });
+        const storedText = (name: string) =>
+          store.get(name).pipe(Effect.map(Option.map((bytes) => new TextDecoder().decode(bytes))));
+        assert.deepEqual(
+          yield* storedText(mcpConnectionSecretName(accountA, "header", "Authorization")),
+          Option.some("Bearer account-a-secret"),
+        );
+        assert.deepEqual(
+          yield* storedText(mcpConnectionSecretName(accountB, "header", "Authorization")),
+          Option.some("Bearer account-b-secret"),
+        );
+        assert.deepEqual(
+          yield* storedText(mcpConnectionSecretName(local, "env", "api_key")),
+          Option.some("lower-env-secret"),
+        );
+        assert.deepEqual(
+          yield* storedText(mcpConnectionSecretName(oauthApp, "oauth", "client-secret")),
+          Option.some("oauth-client-secret"),
+        );
+        assert.isTrue(
+          Option.isNone(yield* store.get(mcpConnectionSecretName(local, "env", "TOKEN"))),
+        );
+        // A saved-value marker echoed back keeps its secret; an older client's marker keeps the reference.
+        const olderClient = ServerSettingsModule.redactServerSettingsForClient(withConnections, {
+          secretReferences: false,
+        });
+        assert.equal(
+          olderClient.mcpConnections[local]?.transport.type === "stdio"
+            ? olderClient.mcpConnections[local].transport.env.TOKEN
+            : undefined,
+          SECRET_REDACTED,
+        );
+        for (const echoedCatalog of [mcpClient.mcpConnections, olderClient.mcpConnections]) {
+          const echoedConnections = yield* catalog(echoedCatalog);
+          assert.deepEqual(echoedConnections.mcpConnections, withConnections.mcpConnections);
+        }
+        // A generic settings patch cannot carry the catalog.
+        assert.notProperty(
+          yield* decodeServerSettingsPatch({ mcpConnections: {}, retiredMcpConnectionIds: [] }),
+          "mcpConnections",
+        );
+        yield* catalog({});
+        for (const name of [
+          mcpConnectionSecretName(accountA, "header", "Authorization"),
+          mcpConnectionSecretName(local, "env", "API_KEY"),
+          mcpConnectionSecretName(oauthApp, "oauth", "client-secret"),
+        ]) {
+          assert.isTrue(Option.isNone(yield* store.get(name)));
+        }
       }).pipe(Effect.provide(layerServerSettingsWithSecrets())),
   );
 
@@ -1890,6 +2007,28 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
           },
         ],
       });
+      const connection = McpConnectionId.make("0d0d0d0d-0000-4000-8000-00000000000d");
+      const otherConnection = McpConnectionId.make("0e0e0e0e-0000-4000-8000-00000000000e");
+      const httpConnection = (authorization: typeof work) => ({
+        label: "Docs",
+        enabled: true,
+        revision: 3,
+        authentication: { type: "bindings" as const },
+        transport: {
+          type: "http" as const,
+          url: "https://mcp.example.test/mcp",
+          httpHeaders: { Authorization: authorization },
+        },
+      });
+      yield* service.updateMcpConnections(() =>
+        Effect.succeed({
+          mcpConnections: {
+            [connection]: httpConnection(personal("Docs/token")),
+            [otherConnection]: httpConnection(work),
+          },
+          retiredMcpConnectionIds: [],
+        }),
+      );
 
       // An older client's save echoes a reference it cannot decode as the redacted marker.
       const removed = yield* service.updateSettings({
@@ -1916,6 +2055,13 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
       assert.equal(removed.usageLimitSources[hub]?.managementKey, "");
       assert.deepEqual(removed.cloudSpeechCredentials, { openai: "", xai: work, openrouter: "" });
       assert.equal(removed.easDeviceHosts[0]?.accessToken, "");
+      // An unset connection binding is an edit the connection then refuses, not a silent drop.
+      assert.deepEqual(removed.mcpConnections[connection], {
+        ...httpConnection(work),
+        revision: 4,
+        transport: { ...httpConnection(work).transport, httpHeaders: { Authorization: "" } },
+      });
+      assert.deepEqual(removed.mcpConnections[otherConnection], httpConnection(work));
       assert.deepEqual(Object.keys(removed.secretProviders), ["work"]);
     }).pipe(Effect.provide(layerServerSettingsWithSecrets())),
   );
@@ -1930,6 +2076,10 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
         "easDeviceHosts.[].accessToken",
         "simlockDeviceHosts.[].agentToken",
         "usageLimitSources.*.managementKey",
+        // No shipped client decodes this; clients that do also read references. The walk visits
+        // the bindings schema once, though `httpHeaders` shares it.
+        "mcpConnections.*.transport.env.*",
+        "mcpConnections.*.transport.oauth.client.secret",
       ]);
     }),
   );

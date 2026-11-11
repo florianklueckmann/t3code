@@ -115,7 +115,7 @@ export function BotRoutinesSection(props: {
     <>
       <SettingsSection
         title={`Routines · ${props.projectTitle}`}
-        footer="Each run starts a new work thread in Full access without approval prompts. The change mode controls the Bot's instructions, not its tool access."
+        footer="Each run starts a new work thread without approval prompts. Changes allowed runs in Full access; No changes can read and report but not change anything."
       >
         {scheduled.error ? (
           <Text className="p-4 text-base text-danger-foreground">{scheduled.error}</Text>

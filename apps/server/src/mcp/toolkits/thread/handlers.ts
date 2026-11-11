@@ -95,7 +95,8 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
     Effect.gen(function* () {
       const scheduler = yield* ScheduledTasks.ScheduledTaskService;
       const { tasks } = yield* scheduler.list().pipe(Effect.mapError(unavailable));
-      if (!tasks.some((task) => task.id === input.taskId))
+      const scheduled = tasks.find((task) => task.id === input.taskId);
+      if (scheduled === undefined)
         return yield* new OrchestratorMcpFailure({
           code: "invalid_request",
           message: "The scheduled task was not found.",
@@ -165,7 +166,6 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
           const commandId = yield* newCommandId();
           if (input.action === "merge_back") {
             const targetThreadId = yield* required(input.targetThreadId, "targetThreadId");
-            yield* readThread(targetThreadId);
             const result = yield* threads
               .dispatch({
                 type: "thread.merge_back",

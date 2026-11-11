@@ -28,6 +28,9 @@ import { reportBotFailure } from "../bots/reportBotFailure";
 import { useSelectWorkspaceDetail } from "../layout/workspace/useSelectWorkspaceDetail";
 import { useBotEditor, startBotEditor, startNewBotEditor } from "./bot-editor";
 import { BotContinuationSection } from "./BotContinuationSection";
+import { BotHomeCheckSection } from "./BotHomeCheckSection";
+import { BotMaintenanceSection } from "./BotMaintenanceSection";
+import { BotMcpGrantsSection } from "./BotMcpGrantsSection";
 import { BotLearningSection } from "./BotLearningSection";
 import { BotRoutinesSection } from "./BotRoutinesSection";
 import {
@@ -402,6 +405,7 @@ function BotForm({
   const config = useEnvironmentServerConfig(environmentId);
   const routinesSupported = config?.environment.capabilities.botRoutines === true;
   const notesSupported = config?.environment.capabilities.botContinuation === true;
+  const maintenanceSupported = config?.environment.capabilities.botMaintenance === true;
   const canOperate = useAtomValue(serverEnvironment.updateBot.permissionAtom(environmentId));
   const projects = useProjects().filter((project) => project.environmentId === environmentId);
   const projectTitle = (projectId: ProjectId) =>
@@ -592,6 +596,14 @@ function BotForm({
             </Pressable>
           ))}
         </SettingsSection>
+        {baseline.created ? (
+          <BotMcpGrantsSection
+            environmentId={environmentId}
+            environmentLabel={environmentLabel ?? "this environment"}
+            botId={draft.botId}
+            formLocked={saving || archiving || environmentUnavailable}
+          />
+        ) : null}
         {draft.projects.map((project) => (
           <Fragment key={project.projectId}>
             <BotProjectSection
@@ -611,6 +623,27 @@ function BotForm({
                 projectId={project.projectId}
                 title={`${projectTitle(project.projectId)} · Working notes`}
                 disabled={readOnly || !project.attached}
+              />
+            ) : null}
+            {/* Shown while archived or detached so pausing stays reachable. */}
+            {maintenanceSupported &&
+            baseline.projects.some((saved) => saved.projectId === project.projectId) ? (
+              <BotMaintenanceSection
+                environmentId={environmentId}
+                botId={draft.botId}
+                projectId={project.projectId}
+                title={`${projectTitle(project.projectId)} · Maintenance`}
+                formLocked={readOnly || !project.attached}
+              />
+            ) : null}
+            {maintenanceSupported &&
+            baseline.projects.some((saved) => saved.projectId === project.projectId) ? (
+              <BotHomeCheckSection
+                environmentId={environmentId}
+                botId={draft.botId}
+                projectId={project.projectId}
+                title={`${projectTitle(project.projectId)} · Home check`}
+                formLocked={readOnly || !project.attached}
               />
             ) : null}
             {routinesSupported &&

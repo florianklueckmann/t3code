@@ -26,6 +26,7 @@ import {
 } from "../shared/devServerTools.ts";
 import { CASES, type ContinuationCase } from "./cases.ts";
 import { gradeSample, isMissingContinuationApi, type Observation } from "./grade.ts";
+import { readToolCalls } from "./observe.ts";
 
 // Wire-only subset: never import candidate continuation decoders into the old-server harness.
 const Ref = Schema.Struct({
@@ -80,16 +81,6 @@ const Manifest = Schema.Struct({
   captures: Schema.Array(Capture),
 });
 const decodeManifest = Schema.decodeEffect(Schema.fromJsonString(Manifest));
-const decodeCall = Schema.decodeUnknownSync(
-  Schema.Struct({
-    toolName: Schema.String,
-    input: Schema.Struct({
-      action: Schema.optional(Schema.String),
-      botId: Schema.optional(Schema.String),
-      projectId: Schema.optional(Schema.String),
-    }),
-  }),
-);
 type Captured = typeof Capture.Type;
 const files = (root: string): string =>
   encodeJson(
@@ -256,24 +247,7 @@ const resume = Effect.fn("botContinuationEval.resume")(function* (
   const continued = yield* turn(call, captured.homeThreadId, testCase.resume);
   const after = yield* inspect(call, captured);
   const items = yield* readItems(call, captured.homeThreadId, "activity");
-  const calls = items.flatMap((item) => {
-    if (item.type === "user_message" || item.type === "assistant_message") return [];
-    try {
-      const decoded: unknown = JSON.parse(item.text ?? "");
-      const result = decodeCall(decoded);
-      return [
-        {
-          runId: item.runId,
-          ...result.input,
-          action: result.toolName.endsWith("t3_bot")
-            ? (result.input.action ?? "")
-            : (result.toolName.split(".").at(-1) ?? result.toolName),
-        },
-      ];
-    } catch {
-      return [];
-    }
-  });
+  const calls = readToolCalls(items);
   const bot = yield* call(
     "t3_bot",
     { action: "read", botId: captured.botId },

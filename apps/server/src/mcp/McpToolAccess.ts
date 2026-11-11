@@ -14,7 +14,7 @@ import * as Ref from "effect/Ref";
 import * as Struct from "effect/Struct";
 import type * as Layer from "effect/Layer";
 import type * as Scope from "effect/Scope";
-import type { Tool, Toolkit } from "effect/ai";
+import { Tool, type Toolkit } from "effect/ai";
 
 import {
   DispatchModeLimit,
@@ -22,6 +22,7 @@ import {
 } from "../orchestration-v2/DispatchModeLimit.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import { assertNotLinked, assertSameLink, callerLinkOrigin } from "./linkOrigin.ts";
+import * as McpCallerChanges from "./McpCallerChanges.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import { resolveInteractionMode, resolveRuntimeMode } from "./delegatedTaskModes.ts";
 import {
@@ -104,14 +105,71 @@ const refuseReadOnlyClient = McpInvocationContext.McpInvocationContext.pipe(
   ),
 );
 
+const MAX_SUBAGENT_DEPTH = 16;
+
+const noChangesRefusal = new OrchestratorMcpFailure({
+  code: "capability_denied",
+  message:
+    "This task is set to No changes, so tools that change things are refused. Report what you found, or describe the change you propose, in your result.",
+});
+
+const restrictedRunRefusal = new OrchestratorMcpFailure({
+  code: "capability_denied",
+  message:
+    "This Bot maintenance turn may only save its own Home's working note, so other tools that change things are refused.",
+});
+
+const endedRestrictedRunRefusal = new OrchestratorMcpFailure({
+  code: "capability_denied",
+  message:
+    "This call comes from a Bot maintenance turn that has ended, so tools that change things are refused.",
+});
+
+const missingAncestorRefusal = new OrchestratorMcpFailure({
+  code: "capability_denied",
+  message:
+    "This subagent's parent thread could not be found, so tools that change things are refused.",
+});
+
+/**
+ * A subagent acts for its parents, so a restriction anywhere up its line applies to it. A
+ * recorded parent that cannot be found is unknown authority, not the end of the line.
+ */
+const refuseRestrictedCaller = Effect.fn("McpToolAccess.refuseRestrictedCaller")(function* (
+  caller: Caller,
+) {
+  if (caller.caller === undefined) return;
+  // A sealed load serves only a restricted run, which these tools refuse whatever its state.
+  if ((yield* McpInvocationContext.McpInvocationContext).thread?.sealedLoad === true)
+    return yield* restrictedRunRefusal;
+  const changes = yield* McpCallerChanges.McpCallerChanges;
+  let shell = caller.caller;
+  for (let depth = 0; ; depth++) {
+    if (depth >= MAX_SUBAGENT_DEPTH) return yield* noChangesRefusal;
+    const answer = yield* changes.forThread(shell.id);
+    if (answer === "none") return yield* noChangesRefusal;
+    if (answer !== "allowed") return yield* restrictedRunRefusal;
+    const parentId =
+      shell.lineage.relationshipToParent === "subagent" ? shell.lineage.parentThreadId : null;
+    if (parentId === null) return;
+    const parent = yield* caller.threads
+      .getThreadShell(parentId)
+      .pipe(Effect.mapError(unavailable));
+    if (parent === null) return yield* missingAncestorRefusal;
+    shell = parent;
+  }
+});
+
 const writingCaller = refuseReadOnlyClient.pipe(
   Effect.andThen(loadCaller()),
   Effect.tap(assertLiveCaller),
+  Effect.tap(refuseRestrictedCaller),
 );
 
 const orchestratingCaller = refuseReadOnlyClient.pipe(
   Effect.andThen(readCaller()),
   Effect.tap(assertLiveCaller),
+  Effect.tap(refuseRestrictedCaller),
 );
 
 const requireThreadCaller = McpInvocationContext.McpInvocationContext.pipe(
@@ -314,6 +372,31 @@ export const writesEnvironment = <P, A, E, R>(
         Effect.tap((caller) => assertFullAccess(caller, fullAccessRequired)),
       ),
   );
+};
+
+/**
+ * Saves the calling Home's own working note: `writesEnvironment`'s checks, except that a restricted
+ * run may pass. Only a thread's own credential qualifies, never a subagent, outside client or link.
+ */
+export const writesOwnHomeNote = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>) => {
+  const check = Effect.gen(function* () {
+    const scope = yield* requireThreadCaller;
+    const caller = yield* refuseReadOnlyClient.pipe(Effect.andThen(readCaller()));
+    yield* assertLiveCaller(caller);
+    yield* assertNotLinked(caller, "change projects or environment settings");
+    yield* assertFullAccess(caller, fullAccessRequired);
+    if (
+      scope.thread.subagent === true ||
+      caller.caller === undefined ||
+      caller.caller.lineage.relationshipToParent === "subagent"
+    )
+      return yield* restrictedRunRefusal;
+    const answer = yield* (yield* McpCallerChanges.McpCallerChanges).forThread(caller.caller.id);
+    if (answer === "none") return yield* noChangesRefusal;
+    if (answer === "allowed" && scope.thread.sealedLoad === true)
+      return yield* endedRestrictedRunRefusal;
+  });
+  return declare((params: P) => check.pipe(Effect.flatMap(() => handle(params))), undefined);
 };
 
 type CheckServices = Effect.Services<typeof orchestratingCaller>;

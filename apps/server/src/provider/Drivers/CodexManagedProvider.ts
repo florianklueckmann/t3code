@@ -10,6 +10,8 @@ import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
 import * as Option from "effect/Option";
 import { ChildProcessSpawner } from "effect/process";
+import { SealedGenerationRefused } from "@t3tools/provider-core/server/sealedGeneration";
+import { makeCodexSealedGeneration } from "../../textGeneration/CodexSealedGeneration.ts";
 import { makeCodexTextGeneration } from "../../textGeneration/CodexTextGeneration.ts";
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
 import { chatGptModels } from "../CodexChatGptModels.ts";
@@ -20,6 +22,7 @@ import {
   checkCodexProviderStatus,
   makePendingCodexProvider,
   probeCodexSkillsForCwd,
+  withCodexAppServerClient,
 } from "../CodexProvider.ts";
 import { makeManagedServerProvider } from "@t3tools/provider-core/server/managedProvider";
 import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
@@ -273,6 +276,37 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
           }),
       ),
     );
+  const sealed = yield* makeCodexSealedGeneration({
+    getSnapshot: snapshot.getSnapshot,
+    storeHomePath: runtime.homePath,
+    openClient: (cwd) =>
+      runtime.resolve.pipe(
+        Effect.mapError(() => new SealedGenerationRefused({ reason: "provider_signed_out" })),
+        Effect.flatMap((effective) =>
+          withCodexAppServerClient({
+            binaryPath: effective.config.binaryPath,
+            homePath: effective.config.homePath,
+            launchArgs: effective.config.launchArgs,
+            cwd,
+            environment: effective.environment,
+          }),
+        ),
+        Effect.map(({ client }) => client),
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      ),
+  });
+  const sealedGeneration: NonNullable<ProviderInstance["sealedGeneration"]> = {
+    availability: sealed.availability,
+    // Sign-in changes interrupt work registered here, as for managed text generation.
+    generate: (input) =>
+      runtime.auth.controller.withAccess!(sealed.generate(input)).pipe(
+        Effect.scoped,
+        Effect.catchTags({
+          ProviderSetupError: () =>
+            Effect.fail(new SealedGenerationRefused({ reason: "provider_signed_out" })),
+        }),
+      ),
+  };
   const textGeneration: ProviderInstance["textGeneration"] = {
     generateCommitMessage: (value) =>
       protect("generateCommitMessage", nativeGeneration.generateCommitMessage(value)),
@@ -300,6 +334,7 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
     snapshot,
     orchestrationAdapter,
     textGeneration,
+    sealedGeneration,
     auth: runtime.auth.controller,
     snapshotForCwd: (cwd: string) =>
       enabled

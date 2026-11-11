@@ -14,6 +14,7 @@ import { Tool, Toolkit } from "effect/ai";
 
 import * as HtmlRender from "../../../htmlRender/HtmlRender.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
+import * as McpCallerChanges from "../../McpCallerChanges.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 
 const Html = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(512_000)).annotate({
@@ -65,6 +66,7 @@ export const HtmlPreviewTool = Tool.make("html_preview", {
   dependencies: [
     McpInvocationContext.McpInvocationContext,
     ThreadManagementService.ThreadManagementService,
+    McpCallerChanges.McpCallerChanges,
     HtmlRender.HtmlRender,
   ],
 })
@@ -102,6 +104,7 @@ const HtmlRenderTool = Tool.make(HTML_RENDER_TOOL_NAME, {
   dependencies: [
     McpInvocationContext.McpInvocationContext,
     ThreadManagementService.ThreadManagementService,
+    McpCallerChanges.McpCallerChanges,
     HtmlRender.HtmlRender,
   ],
 })

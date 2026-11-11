@@ -101,10 +101,10 @@ it.effect("keeps writes moving past a 48 MiB WAL while a reader retains its snap
     Effect.ensuring(Effect.sync(() => NodeFS.rmSync(tempDir, { recursive: true, force: true }))),
   );
 });
-it.effect.each([0, 78, 79, 80])(
-  "starts isolated persistence from migration %s and preserves canonical 80 across reopen",
+it.effect.each([0, 78, 79, 80, 81])(
+  "starts isolated persistence from migration %s and preserves canonical 81 across reopen",
   (previousMigrationId) => {
-    const tempDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-sqlite-80-"));
+    const tempDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-sqlite-81-"));
     const dbPath = NodePath.join(tempDir, "statev2.sqlite");
     const persistence = () =>
       SqlitePersistence.layerFromPath(dbPath).pipe(Layer.provide(NodeServices.layer));
@@ -134,8 +134,11 @@ it.effect.each([0, 78, 79, 80])(
         ) VALUES (${threadId ?? "unbound"}, 'Schedule', 'brief', 0, '{}', 'project', ${threadId},
           '{}', '{}', 'full-access', 'default', 'user', 'mcp', 'created', 'updated', 'never', 0)`;
       }
-      if (previousMigrationId === 0 || previousMigrationId === 80) {
+      if (previousMigrationId === 0 || previousMigrationId >= 80) {
         yield* sql`UPDATE scheduled_tasks SET thread_mode = 'fresh_session' WHERE task_id = 'bound'`;
+      }
+      if (previousMigrationId === 0 || previousMigrationId >= 81) {
+        yield* sql`UPDATE scheduled_tasks SET created_by_thread_id = 'creator' WHERE task_id = 'unbound'`;
       }
     });
 
@@ -157,30 +160,42 @@ it.effect.each([0, 78, 79, 80])(
           migrationManifest.map(([id, name]) => [id, name]),
         );
         assert.deepStrictEqual(
-          current.schedules.map(({ task_id, thread_id, thread_mode }) => ({
+          current.schedules.map(({ task_id, thread_id, thread_mode, created_by_thread_id }) => ({
             task_id,
             thread_id,
             thread_mode,
+            created_by_thread_id,
           })),
           [
             {
               task_id: "bound",
               thread_id: "bound",
+              created_by_thread_id: null,
               thread_mode:
-                previousMigrationId === 0 || previousMigrationId === 80
+                previousMigrationId === 0 || previousMigrationId >= 80
                   ? "fresh_session"
                   : "continue",
             },
-            { task_id: "unbound", thread_id: null, thread_mode: "new_thread" },
+            {
+              task_id: "unbound",
+              thread_id: null,
+              thread_mode: "new_thread",
+              created_by_thread_id:
+                previousMigrationId === 0 || previousMigrationId >= 81 ? "creator" : null,
+            },
           ],
         );
         assert.lengthOf(current.indexes, 2);
         assert.deepStrictEqual(current.data, [{ id: "preserved", payload: "invalid JSON" }]);
-        if (previousMigrationId === 80) assert.deepStrictEqual(current, before);
+        if (previousMigrationId === 81) assert.deepStrictEqual(current, before);
         if (before)
           assert.deepStrictEqual(
-            current.schedules.map(({ thread_mode: _mode, ...row }) => row),
-            before.schedules.map(({ thread_mode: _mode, ...row }) => row),
+            current.schedules.map(
+              ({ thread_mode: _mode, created_by_thread_id: _creator, ...row }) => row,
+            ),
+            before.schedules.map(
+              ({ thread_mode: _mode, created_by_thread_id: _creator, ...row }) => row,
+            ),
           );
         if (before)
           assert.deepStrictEqual(current.history.slice(0, before.history.length), before.history);
@@ -198,6 +213,13 @@ it.effect.each([0, 78, 79, 80])(
             [7, "BotTaskHomeReturn"],
             [8, "BotTaskHomeInput"],
             [9, "BotContinuation"],
+            [10, "BotTaskModelSelection"],
+            [11, "BotMaintenance"],
+            [12, "BotMaintenanceReceipts"],
+            [13, "BotMaintenanceNightly"],
+            [14, "BotHomeCheck"],
+            [15, "BotMcpGrants"],
+            [16, "BotMcpOwnServers"],
           ],
         );
         return { ...current, botHistory };

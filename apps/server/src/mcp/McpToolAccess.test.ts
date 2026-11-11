@@ -18,6 +18,7 @@ import { McpSchema, McpServer, Tool, Toolkit } from "effect/ai";
 import { OrchestratorProjectionError } from "../orchestration-v2/Orchestrator.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
+import * as McpCallerChanges from "./McpCallerChanges.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpToolAccess from "./McpToolAccess.ts";
@@ -31,6 +32,25 @@ const backgroundThreadId = ThreadId.make("thread:background");
 const oldProviderThreadId = ThreadId.make("thread:old-provider-background");
 const archivedThreadId = ThreadId.make("thread:archived-background");
 const unknownOwnerThreadId = ThreadId.make("thread:unknown-background-owner");
+const noChangesThreadId = ThreadId.make("thread:no-changes");
+const noChangesSubagentThreadId = ThreadId.make("thread:no-changes-subagent");
+const unreadableTaskThreadId = ThreadId.make("thread:unreadable-task");
+const plainSubagentThreadId = ThreadId.make("thread:plain-subagent");
+// Recorded parents with no thread shell: one whose task row is restricted, one unrestricted.
+const missingNoChangesParentId = ThreadId.make("thread:missing-no-changes-parent");
+const missingPlainParentId = ThreadId.make("thread:missing-plain-parent");
+const orphanedNoChangesSubagentThreadId = ThreadId.make("thread:orphaned-no-changes-subagent");
+const orphanedPlainSubagentThreadId = ThreadId.make("thread:orphaned-plain-subagent");
+const botHomeThreadId = ThreadId.make("bot-home:mail-bot:project");
+const botSubagentThreadId = ThreadId.make("thread:mail-bot-subagent");
+
+const subagentShell = (threadId: ThreadId, parentThreadId: ThreadId) => {
+  const shell = liveThreadShell(threadId);
+  return {
+    ...shell,
+    lineage: { ...shell.lineage, parentThreadId, relationshipToParent: "subagent" as const },
+  };
+};
 
 const backgroundShell = (threadId: ThreadId, providerInstanceId: ProviderInstanceId) => ({
   ...liveThreadShell(threadId, { activeRunId: null }),
@@ -63,7 +83,33 @@ const shells = new Map([
       pendingBackgroundTasks: [{ taskId: "task:unknown", kind: "subagent" as const }],
     },
   ],
+  [noChangesThreadId, liveThreadShell(noChangesThreadId)],
+  [noChangesSubagentThreadId, subagentShell(noChangesSubagentThreadId, noChangesThreadId)],
+  [unreadableTaskThreadId, liveThreadShell(unreadableTaskThreadId)],
+  [plainSubagentThreadId, subagentShell(plainSubagentThreadId, fullAccessThreadId)],
+  [
+    orphanedNoChangesSubagentThreadId,
+    subagentShell(orphanedNoChangesSubagentThreadId, missingNoChangesParentId),
+  ],
+  [
+    orphanedPlainSubagentThreadId,
+    subagentShell(orphanedPlainSubagentThreadId, missingPlainParentId),
+  ],
+  [botHomeThreadId, liveThreadShell(botHomeThreadId)],
+  [botSubagentThreadId, subagentShell(botSubagentThreadId, botHomeThreadId)],
 ]);
+
+/** Stands in for the Bot task lookup; an unreadable task answers "none", as the live port does. */
+const layerCallerChanges = Layer.succeed(McpCallerChanges.McpCallerChanges, {
+  forThread: (threadId) =>
+    Effect.succeed(
+      threadId === noChangesThreadId ||
+        threadId === unreadableTaskThreadId ||
+        threadId === missingNoChangesParentId
+        ? "none"
+        : "allowed",
+    ),
+});
 
 const threadCaller = (threadId: ThreadId): McpInvocationContext.McpInvocationScope => ({
   environmentId: EnvironmentId.make("environment"),
@@ -109,6 +155,7 @@ const probe = {
   dependencies: [
     McpInvocationContext.McpInvocationContext,
     ThreadManagement.ThreadManagementService,
+    McpCallerChanges.McpCallerChanges,
   ],
 };
 const ProbeToolkit = Toolkit.make(
@@ -194,6 +241,7 @@ const probeServer = (threads: Layer.Layer<ThreadManagement.ThreadManagementServi
   McpHttpServer.toolkitRegistration(ProbeToolkit, layerProbeHandlers).pipe(
     Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
     Layer.provideMerge(threads),
+    Layer.provideMerge(layerCallerChanges),
   );
 
 const decodeOutcome = Schema.decodeUnknownEffect(
@@ -242,6 +290,15 @@ const fullAccessLinkedClient: McpInvocationContext.McpInvocationScope = {
   client: { ...fullAccessClient.client!, linked: true },
 };
 const previewOnly = { ...fullAccess, capabilities: new Set(["preview"] as const) };
+const sealedLoad = { ...fullAccess, thread: { ...fullAccess.thread!, sealedLoad: true as const } };
+const noChanges = threadCaller(noChangesThreadId);
+const noChangesSubagent = threadCaller(noChangesSubagentThreadId);
+const unreadableTask = threadCaller(unreadableTaskThreadId);
+const plainSubagent = threadCaller(plainSubagentThreadId);
+const botHome = threadCaller(botHomeThreadId);
+const botSubagent = threadCaller(botSubagentThreadId);
+const orphanedNoChangesSubagent = threadCaller(orphanedNoChangesSubagentThreadId);
+const orphanedPlainSubagent = threadCaller(orphanedPlainSubagentThreadId);
 
 it.effect.each([
   ["reads", ended, {}, "ran"],
@@ -315,6 +372,41 @@ it.effect.each([
   ["writes_environment", plan, {}, "capability_denied"],
   ["writes_environment", fullAccessClient, {}, "ran"],
   ["writes_environment", supervisedClient, {}, "capability_denied"],
+
+  // A No changes task reads, and is refused every change however its thread's mode reads.
+  ["reads", noChanges, {}, "ran"],
+  ["reads_as_caller", noChanges, {}, "ran"],
+  ["acts_as_caller", noChanges, {}, "capability_denied"],
+  ["writes", noChanges, {}, "capability_denied"],
+  ["writes_with_capability", noChanges, {}, "capability_denied"],
+  ["writes_threads", noChanges, {}, "capability_denied"],
+  ["writes_threads", noChanges, { threadId: fullAccessThreadId }, "capability_denied"],
+  ["starts_threads", noChanges, {}, "capability_denied"],
+  ["writes_environment", noChanges, {}, "capability_denied"],
+  // Its subagents act for it.
+  ["reads_as_caller", noChangesSubagent, {}, "ran"],
+  ["acts_as_caller", noChangesSubagent, {}, "capability_denied"],
+  ["writes", noChangesSubagent, {}, "capability_denied"],
+  ["starts_threads", noChangesSubagent, {}, "capability_denied"],
+  // A task that cannot be read is treated as restricted.
+  ["writes", unreadableTask, {}, "capability_denied"],
+  // So is a subagent whose recorded parent cannot be found.
+  ["reads_as_caller", orphanedNoChangesSubagent, {}, "ran"],
+  ["writes", orphanedNoChangesSubagent, {}, "capability_denied"],
+  ["acts_as_caller", orphanedNoChangesSubagent, {}, "capability_denied"],
+  ["writes", orphanedPlainSubagent, {}, "capability_denied"],
+  // A restricted Bot run's sealed load reads, and is refused every change a full-access thread makes.
+  ["reads", sealedLoad, {}, "ran"],
+  ["reads_as_caller", sealedLoad, {}, "ran"],
+  ["acts_as_caller", sealedLoad, {}, "capability_denied"],
+  ["writes", sealedLoad, {}, "capability_denied"],
+  ["writes_with_capability", sealedLoad, {}, "capability_denied"],
+  ["writes_threads", sealedLoad, {}, "capability_denied"],
+  ["starts_threads", sealedLoad, {}, "capability_denied"],
+  ["writes_environment", sealedLoad, {}, "capability_denied"],
+  // Others are unchanged.
+  ["writes", plainSubagent, {}, "ran"],
+  ["writes_environment", fullAccess, {}, "ran"],
 ] as const)("%s from %o with %o: %s", ([tool, scope, args, expected]) =>
   call(tool, scope, args).pipe(
     Effect.map((outcome) => expect(outcome).toBe(expected)),
@@ -370,7 +462,7 @@ const linkedProbe = {
   }),
 };
 const LinkedProbeToolkit = Toolkit.make(
-  Tool.make("reads", linkedProbe),
+  Tool.make("reads", linkedProbe).annotate(Tool.Readonly, true),
   Tool.make("writes", linkedProbe),
   Tool.make("writes_with_capability", linkedProbe),
   Tool.make("writes_threads", linkedProbe),
@@ -398,6 +490,7 @@ const linkedProbeServer = McpHttpServer.toolkitRegistration(
       getThreadShell: (threadId) => Effect.succeed(shells.get(threadId) ?? null),
     }),
   ),
+  Layer.provideMerge(layerCallerChanges),
   // Stands in for the linked environment, answering with where the call went.
   Layer.provide(
     Layer.mock(PeerForwarding.PeerForwarding)({
@@ -432,6 +525,19 @@ it.effect.each([
     "writes_environment in environment-box",
   ],
   ["writes_environment", fullAccess, { environmentId: here }, "here"],
+  ["reads", botHome, { environmentId: box }, "reads in environment-box"],
+  ["writes", botHome, { environmentId: box }, "writes in environment-box"],
+  ["writes_environment", botHome, { environmentId: box }, "writes_environment in environment-box"],
+  ["writes_environment", botHome, { environmentId: here }, "here"],
+  ["starts_threads", botSubagent, { environmentId: box }, "starts_threads in environment-box"],
+  // A No changes task cannot reach a linked environment's tools either.
+  ["reads", noChanges, { environmentId: box }, "reads in environment-box"],
+  ["writes", noChanges, { environmentId: box }, "capability_denied"],
+  ["writes_threads", noChanges, { environmentId: box }, "capability_denied"],
+  ["starts_threads", noChanges, { environmentId: box }, "capability_denied"],
+  ["writes_environment", noChanges, { environmentId: box }, "capability_denied"],
+  ["writes", orphanedNoChangesSubagent, { environmentId: box }, "capability_denied"],
+  ["starts_threads", orphanedPlainSubagent, { environmentId: box }, "capability_denied"],
 
   // A thread id names a thread where the call runs, and is checked there.
   [

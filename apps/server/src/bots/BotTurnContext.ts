@@ -3,6 +3,8 @@ import {
   type BotId,
   BotSourcePreference,
   BotTaskId,
+  type McpConnectionId,
+  type OrchestrationV2AppThread,
   type ProjectId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -42,6 +44,23 @@ interface WorkTask {
   readonly allowChanges: boolean;
 }
 
+/** Which Bot's MCP grants a thread's loads get, following forks and subagents to their Bot. */
+export type BotMcpAccess =
+  | { readonly _tag: "none" }
+  /** Bot-derived, but its Bot is inactive or its line cannot be followed: nothing may run. */
+  | { readonly _tag: "refused"; readonly message: string }
+  | {
+      readonly _tag: "bot";
+      readonly botId: BotId;
+      readonly botName: string;
+      readonly connectionIds: ReadonlyArray<McpConnectionId>;
+      readonly ownCodexMcpServers: boolean;
+    };
+
+type BotMcpAccessThread = Pick<OrchestrationV2AppThread, "id" | "lineage" | "createdByThreadId">;
+
+const MAX_LINEAGE_DEPTH = 16;
+
 export class BotTurnContext extends Context.Service<
   BotTurnContext,
   {
@@ -49,6 +68,13 @@ export class BotTurnContext extends Context.Service<
     readonly forThread: (
       threadId: ThreadId,
     ) => Effect.Effect<BotTurnContextResult, BotStore.BotStoreError>;
+    /**
+     * Unlike `forThread`, a fork, subagent or agent-created thread of a Bot thread belongs to that
+     * Bot here: only MCP access follows the line, never instructions or learning.
+     */
+    readonly mcpAccessForThread: (
+      thread: BotMcpAccessThread,
+    ) => Effect.Effect<BotMcpAccess, BotStore.BotStoreError>;
   }
 >()("t3/bots/BotTurnContext") {}
 
@@ -204,7 +230,8 @@ export const layer = Layer.effect(
       } satisfies WorkTask;
     });
 
-    const forThread = Effect.fn("BotTurnContext.forThread")(function* (threadId: ThreadId) {
+    /** The Bot conversation a Home or work thread belongs to, and whether it may run. */
+    const botOfThread = Effect.fn("BotTurnContext.botOfThread")(function* (threadId: ThreadId) {
       const homeContext = yield* store.getContextByThread(threadId);
       const task = homeContext === undefined ? yield* findWorkTask(threadId) : null;
       const context =
@@ -212,7 +239,7 @@ export const layer = Layer.effect(
         (task === null
           ? undefined
           : yield* store.getContextByThread(ThreadId.make(task.homeThreadId)));
-      if (context === undefined) return { _tag: "none" } as const;
+      if (context === undefined) return undefined;
       const bot = yield* store.getBot(context.bot_id);
       if (bot === undefined || bot.archived_at !== null) {
         return {
@@ -226,6 +253,72 @@ export const layer = Layer.effect(
           message: `${bot.name} is detached from this project. Reattach it to continue this conversation.`,
         } as const;
       }
+      return { _tag: "active", bot, context, task } as const;
+    });
+
+    const parentOf = Effect.fn("BotTurnContext.parentOf")(function* (threadId: ThreadId) {
+      const rows = yield* main<{
+        readonly parent_thread_id: string | null;
+        readonly relationship: string | null;
+        readonly created_by_thread_id: string | null;
+      }>`
+        SELECT
+          json_extract(payload_json, '$.lineage.parentThreadId') AS parent_thread_id,
+          json_extract(payload_json, '$.lineage.relationshipToParent') AS relationship,
+          json_extract(payload_json, '$.createdByThreadId') AS created_by_thread_id
+        FROM orchestration_v2_projection_threads WHERE thread_id = ${threadId}
+      `.pipe(
+        Effect.mapError(
+          (cause) => new BotStore.BotStoreError({ operation: "read-lineage", cause }),
+        ),
+      );
+      const row = rows[0];
+      return row === undefined
+        ? undefined
+        : lineageParent(row.parent_thread_id, row.relationship, row.created_by_thread_id);
+    });
+
+    const mcpAccessForThread = Effect.fn("BotTurnContext.mcpAccessForThread")(function* (
+      thread: BotMcpAccessThread,
+    ) {
+      let threadId = thread.id;
+      let parent = lineageParent(
+        thread.lineage.parentThreadId,
+        thread.lineage.relationshipToParent,
+        thread.createdByThreadId ?? null,
+      );
+      for (let depth = 0; depth < MAX_LINEAGE_DEPTH; depth++) {
+        const owner = yield* botOfThread(threadId);
+        if (owner?._tag === "inactive") return { _tag: "refused", message: owner.message } as const;
+        if (owner !== undefined) {
+          const grants = (yield* store.listMcpGrants(owner.bot.bot_id)).get(owner.bot.bot_id);
+          return {
+            _tag: "bot",
+            botId: owner.bot.bot_id as BotId,
+            botName: owner.bot.name,
+            connectionIds: grants?.connectionIds ?? [],
+            ownCodexMcpServers: grants?.ownCodexMcpServers === true,
+          } as const;
+        }
+        if (parent === null) return { _tag: "none" } as const;
+        threadId = parent;
+        const next = yield* parentOf(threadId);
+        if (next === undefined) break;
+        parent = next;
+      }
+      // An ancestor that cannot be read could be a Bot's, so its MCP access is unknown.
+      return {
+        _tag: "refused",
+        message:
+          "This thread's parent conversation could not be found, so the MCP connections it may use are unknown. Start a new thread.",
+      } as const;
+    });
+
+    const forThread = Effect.fn("BotTurnContext.forThread")(function* (threadId: ThreadId) {
+      const owner = yield* botOfThread(threadId);
+      if (owner === undefined) return { _tag: "none" } as const;
+      if (owner._tag === "inactive") return owner;
+      const { bot, context, task } = owner;
       const project = yield* main<{ readonly title: string }>`
         SELECT title FROM projection_projects WHERE project_id = ${context.project_id}
       `.pipe(
@@ -275,14 +368,30 @@ export const layer = Layer.effect(
       } as const;
     });
 
-    return BotTurnContext.of({ forThread });
+    return BotTurnContext.of({ forThread, mcpAccessForThread });
   }),
 ).pipe(Layer.provide(Layer.merge(BotStore.layer, BotContinuation.layer)));
+
+/** A fork or subagent follows its parent, a thread an agent created its creator; null ends the line. */
+function lineageParent(
+  parentThreadId: string | null,
+  relationship: string | null,
+  createdByThreadId: string | null,
+) {
+  return parentThreadId !== null && (relationship === "fork" || relationship === "subagent")
+    ? ThreadId.make(parentThreadId)
+    : createdByThreadId === null
+      ? null
+      : ThreadId.make(createdByThreadId);
+}
 
 export const layerEmpty = Layer.succeed(
   BotTurnContext,
   BotTurnContext.of({
     forThread: Effect.fn("BotTurnContext.forThreadEmpty")(function* (_threadId: ThreadId) {
+      return yield* Effect.succeed({ _tag: "none" } as const);
+    }),
+    mcpAccessForThread: Effect.fn("BotTurnContext.mcpAccessForThreadEmpty")(function* () {
       return yield* Effect.succeed({ _tag: "none" } as const);
     }),
   }),

@@ -127,6 +127,8 @@ import * as ThreadMessageIntake from "./orchestration-v2/ThreadMessageIntake.ts"
 import * as DocumentText from "./provider/DocumentText.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
+import * as BotHomeCheck from "./bots/BotHomeCheck.ts";
+import * as BotMaintenance from "./bots/BotMaintenance.ts";
 import * as BotService from "./bots/BotService.ts";
 import * as BotTaskService from "./bots/BotTaskService.ts";
 import * as SecretRequests from "./secrets/SecretRequests.ts";
@@ -189,6 +191,8 @@ import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
 import * as ServerRuntimeStartup from "./serverRuntimeStartup.ts";
 import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
 import * as ServerSettings from "./serverSettings.ts";
+import * as McpConnectionOAuth from "./mcpConnections/McpConnectionOAuth.ts";
+import * as McpConnections from "./mcpConnections/McpConnections.ts";
 import { invalidateSettingsSecrets } from "./sourceControl/sourceControlHostSecrets.ts";
 import * as DatabaseStorage from "./persistence/DatabaseStorage.ts";
 import * as StorageCleanup from "./storageCleanup.ts";
@@ -1452,6 +1456,10 @@ export const layerWsRpc = (
       const bots = yield* BotService.BotService;
       const botTasks = yield* BotTaskService.BotTaskService;
       const botContinuation = yield* BotContinuation.BotContinuation;
+      const mcpConnections = yield* McpConnections.McpConnections;
+      const mcpConnectionOAuth = yield* McpConnectionOAuth.McpConnectionOAuth;
+      const botMaintenance = yield* BotMaintenance.BotMaintenance;
+      const botHomeCheck = yield* BotHomeCheck.BotHomeCheck;
       const secretRequests = yield* SecretRequests.SecretRequests;
       const guestShares = yield* GuestShareService.GuestShareService;
       const pullRequests = yield* PullRequestService.PullRequestService;
@@ -2378,9 +2386,14 @@ export const layerWsRpc = (
         [WS_METHODS.botsGetContinuation]: (input) => botContinuation.get(input),
         [WS_METHODS.botsListContinuationRevisions]: (input) => botContinuation.history(input),
         [WS_METHODS.botsSaveContinuation]: (input) => botContinuation.save(input, { kind: "user" }),
+        [WS_METHODS.botsGetMaintenance]: (input) => botMaintenance.get(input),
+        [WS_METHODS.botsConfigureMaintenance]: (input) => botMaintenance.configure(input),
+        [WS_METHODS.botsGetHomeCheck]: (input) => botHomeCheck.get(input),
+        [WS_METHODS.botsConfigureHomeCheck]: (input) => botHomeCheck.configure(input),
         [WS_METHODS.botsCreate]: (input) => bots.create(input),
         [WS_METHODS.botsUpdate]: (input) => bots.update(input),
         [WS_METHODS.botsSetArchived]: (input) => bots.setArchived(input),
+        [WS_METHODS.botsSetMcpGrants]: (input) => bots.setMcpGrants(input),
         [WS_METHODS.botsAttachProject]: (input) => bots.attachProject(input),
         [WS_METHODS.botsUpdateProjectContext]: (input) => bots.updateProjectContext(input),
         [WS_METHODS.botsDetachProject]: (input) => bots.detachProject(input),
@@ -2397,6 +2410,18 @@ export const layerWsRpc = (
         [WS_METHODS.botsRetireLearning]: (input) => bots.retireLearning(input),
         [WS_METHODS.botsRestoreLearning]: (input) =>
           bots.restoreLearning({ ...input, source: { kind: "user" } }),
+        [WS_METHODS.mcpConnectionsList]: (_input) => mcpConnections.list,
+        [WS_METHODS.mcpConnectionsCreate]: (input) => mcpConnections.create(input),
+        [WS_METHODS.mcpConnectionsUpdate]: (input) => mcpConnections.update(input),
+        [WS_METHODS.mcpConnectionsRemove]: (input) => mcpConnections.remove(input),
+        [WS_METHODS.mcpConnectionsRefresh]: (input) => mcpConnections.refresh(input),
+        [WS_METHODS.mcpConnectionsOAuthStart]: (input) => mcpConnectionOAuth.start(input),
+        [WS_METHODS.mcpConnectionsOAuthComplete]: (input) => mcpConnectionOAuth.complete(input),
+        [WS_METHODS.mcpConnectionsOAuthCancel]: (input) => mcpConnectionOAuth.cancel(input),
+        [WS_METHODS.mcpConnectionsOAuthDisconnect]: (input) =>
+          mcpConnectionOAuth.disconnect(input.connectionId),
+        [WS_METHODS.mcpConnectionsOAuthSubscribe]: (input) =>
+          mcpConnectionOAuth.subscribe(input.connectionId),
         [WS_METHODS.guestShareCreate]: (input) =>
           Effect.annotateCurrentSpan({ "orchestration_v2.thread_id": input.threadId }).pipe(
             Effect.andThen(guestShares.create(input)),

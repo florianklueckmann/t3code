@@ -1,3 +1,4 @@
+import { isBotMaintenanceCompaction } from "../bots/homeReturn.ts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import {
@@ -52,6 +53,7 @@ import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import {
   ContextHandoffBackgroundWorkError,
+  ContextHandoffBudgetError,
   knownProviderFailureMessage,
   makeProviderFailure,
 } from "@t3tools/provider-core/server/failure";
@@ -707,20 +709,57 @@ export const layer: Layer.Layer<
         .resolve({
           thread: projection.thread,
           modelSelection: run.modelSelection,
+          ...(run.restriction === undefined ? {} : { restriction: run.restriction }),
         })
         .pipe(Effect.result);
       if (resolvedPolicy._tag === "Failure") {
         const error = resolvedPolicy.failure;
-        if (error._tag !== "RuntimePolicyAboveCeilingError") return yield* error;
+        if (error._tag === "RuntimePolicyResolveError") return yield* error;
+        // Neither refusal can pass on a retry, so both settle the run now.
+        yield* settleStartFailure(
+          error._tag === "RuntimePolicyAboveCeilingError"
+            ? {
+                signal: "runtime-mode-above-ceiling",
+                title: "Thread mode is above the policy limit",
+                error,
+                message: error.message,
+              }
+            : error._tag === "RuntimePolicyMcpUnsupportedError"
+              ? {
+                  signal: "runtime-mcp-connections-unsupported",
+                  title: "MCP connections can't be enforced",
+                  error,
+                  message: error.message,
+                }
+              : {
+                  signal: "runtime-no-changes-unsupported",
+                  title:
+                    run.restriction === undefined
+                      ? "No changes can't be enforced"
+                      : "Bot maintenance can't be restricted",
+                  error,
+                  message: error.message,
+                },
+        );
+        return;
+      }
+      const resolvedRuntimePolicy = resolvedPolicy.success;
+      // Any policy layer that does not seal a restricted run refuses it, whatever its stack.
+      if (run.restriction !== undefined && resolvedRuntimePolicy.nativeTools !== "t3BotOnly") {
+        const error = new RuntimePolicy.RuntimePolicyUnsupportedError({
+          threadId: projection.thread.id,
+          providerInstanceId: run.providerInstanceId,
+          reason: "home",
+          restriction: run.restriction,
+        });
         yield* settleStartFailure({
-          signal: "runtime-mode-above-ceiling",
-          title: "Thread mode is above the policy limit",
+          signal: "runtime-no-changes-unsupported",
+          title: "Bot maintenance can't be restricted",
           error,
           message: error.message,
         });
         return;
       }
-      const resolvedRuntimePolicy = resolvedPolicy.success;
       if (!(yield* isCurrentAttemptInStatus("starting"))) return;
       const existingSessionProjection = projection.providerSessions.find(
         (candidate) => candidate.id === providerSessionId,
@@ -1335,11 +1374,31 @@ export const layer: Layer.Layer<
         if (!(yield* isCurrentAttemptInStatus("starting"))) return undefined;
         // Another client is still writing to the native thread. A fresh
         // session here would silently split the conversation from it.
+        // A refused seal must not fall back to a fresh, unsealed native thread.
         if (
           resumed._tag === "Failure" &&
-          resumed.failure._tag === "ProviderAdapterThreadInUseError"
+          (resumed.failure._tag === "ProviderAdapterThreadInUseError" ||
+            resumed.failure._tag === "ProviderAdapterSealRefusedError" ||
+            resumed.failure._tag === "ProviderAdapterMcpConnectionsRefusedError")
         ) {
           return yield* loadFromProvider(Effect.fail(resumed.failure));
+        }
+
+        // Unattended maintenance must preserve the Home's native conversation.
+        if (isBotMaintenanceCompaction(message)) {
+          return yield* loadFromProvider(
+            Effect.fail(
+              resumed._tag === "Failure"
+                ? resumed.failure
+                : new ProviderAdapter.ProviderAdapterTurnStartError({
+                    driver: session.driver,
+                    threadId: projection.thread.id,
+                    providerThreadId: providerThread.id,
+                    runId,
+                    cause: new ContextHandoffBudgetError(),
+                  }),
+            ),
+          );
         }
 
         yield* Effect.logWarning("Recovering provider context in a fresh native session", {

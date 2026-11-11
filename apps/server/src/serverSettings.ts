@@ -183,6 +183,18 @@ function withoutUnknownSecretProviderConfigs(
   ) as ServerSettings["secretProviders"];
 }
 
+export type McpConnectionCatalog = Pick<
+  ServerSettings,
+  "mcpConnections" | "retiredMcpConnectionIds"
+>;
+
+// A generic settings patch never edits the catalog, whatever keys reach `applyServerSettingsPatch`.
+const withCatalogOf = (current: ServerSettings, next: ServerSettings): ServerSettings => ({
+  ...next,
+  mcpConnections: current.mcpConnections,
+  retiredMcpConnectionIds: current.retiredMcpConnectionIds,
+});
+
 export function applyProviderInstanceMutation(
   settings: ServerSettings,
   mutation: ProviderInstanceMutation,
@@ -271,6 +283,18 @@ export class ServerSettingsService extends Context.Service<
       patch?: ServerSettingsPatch,
     ) => Effect.Effect<ServerSettings, ServerSettingsError>;
 
+    /**
+     * The only writer of the MCP connection catalog. `update` sees the stored settings under the
+     * write lock, so a revision it checks cannot change before its result is saved. Stored literal
+     * secrets are redacted in `current`; `withSecrets` reads them, from the same snapshot.
+     */
+    readonly updateMcpConnections: <E>(
+      update: (
+        current: ServerSettings,
+        withSecrets: Effect.Effect<ServerSettings, ServerSettingsError>,
+      ) => Effect.Effect<McpConnectionCatalog, E>,
+    ) => Effect.Effect<ServerSettings, E | ServerSettingsError>;
+
     readonly withSettingsSnapshot: <A, E, R>(
       use: (settings: ServerSettings) => Effect.Effect<A, E, R>,
     ) => Effect.Effect<A, E | ServerSettingsError, R>;
@@ -307,9 +331,9 @@ const makeTest = Effect.fn("serverSettings.makeTest")(function* (
   const writeSemaphore = yield* Semaphore.make(1);
   const getSettings = Ref.get(currentSettingsRef).pipe(Effect.map(resolveTextGenerationProvider));
 
-  const updateTestSettings = (
-    update: (current: ServerSettings) => Effect.Effect<ServerSettings, ServerSettingsError>,
-  ): Effect.Effect<ServerSettings, ServerSettingsError> =>
+  const updateTestSettings = <E = ServerSettingsError>(
+    update: (current: ServerSettings) => Effect.Effect<ServerSettings, E>,
+  ): Effect.Effect<ServerSettings, E | ServerSettingsError> =>
     writeSemaphore.withPermits(1)(
       Ref.get(currentSettingsRef).pipe(
         Effect.flatMap(update),
@@ -326,15 +350,23 @@ const makeTest = Effect.fn("serverSettings.makeTest")(function* (
     getSettings,
     updateSettings: (patch) =>
       updateTestSettings((currentSettings) =>
-        Effect.succeed(applyServerSettingsPatch(currentSettings, patch)),
+        Effect.succeed(
+          withCatalogOf(currentSettings, applyServerSettingsPatch(currentSettings, patch)),
+        ),
       ),
     updateProviderInstance: (mutation, patch = {}) =>
       updateTestSettings((currentSettings) =>
         Effect.gen(function* () {
           yield* ensureProviderInstanceMutationAllowed(currentSettings, mutation, "test settings");
           const patched = applyServerSettingsPatch(currentSettings, patch);
-          return applyProviderInstanceMutation(patched, mutation);
+          return withCatalogOf(currentSettings, applyProviderInstanceMutation(patched, mutation));
         }),
+      ),
+    updateMcpConnections: (update) =>
+      updateTestSettings((currentSettings) =>
+        update(currentSettings, Effect.succeed(currentSettings)).pipe(
+          Effect.map((catalog) => ({ ...currentSettings, ...catalog })),
+        ),
       ),
     withSettingsSnapshot: (use) =>
       writeSemaphore.withPermits(1)(getSettings.pipe(Effect.flatMap(use))),
@@ -1183,10 +1215,10 @@ const make = Effect.gen(function* () {
     );
   };
 
-  const updateAndPersistSettings = (
+  const updateAndPersistSettings = <E = ServerSettingsError>(
     patch: ServerSettingsPatch,
-    update: (current: ServerSettings) => Effect.Effect<ServerSettings, ServerSettingsError>,
-  ): Effect.Effect<ServerSettings, ServerSettingsError> =>
+    update: (current: ServerSettings) => Effect.Effect<ServerSettings, E>,
+  ): Effect.Effect<ServerSettings, E | ServerSettingsError> =>
     writeSemaphore.withPermits(1)(
       Effect.gen(function* () {
         const { settings: current, parseFailure } = yield* reloadSettings;
@@ -1370,7 +1402,7 @@ const make = Effect.gen(function* () {
     updateSettings: (patch) =>
       updateAndPersistSettings(patch, (current) =>
         ensureSecretProviderWritesAllowed(patch, settingsPath).pipe(
-          Effect.as(applyServerSettingsPatch(current, patch)),
+          Effect.as(withCatalogOf(current, applyServerSettingsPatch(current, patch))),
         ),
       ),
     updateProviderInstance: (mutation, patch = {}) =>
@@ -1379,8 +1411,14 @@ const make = Effect.gen(function* () {
           yield* ensureSecretProviderWritesAllowed(patch, settingsPath);
           yield* ensureProviderInstanceMutationAllowed(current, mutation, settingsPath);
           const patched = applyServerSettingsPatch(current, patch);
-          return applyProviderInstanceMutation(patched, mutation);
+          return withCatalogOf(current, applyProviderInstanceMutation(patched, mutation));
         }),
+      ),
+    updateMcpConnections: (update) =>
+      updateAndPersistSettings({}, (current) =>
+        update(current, materializeSettingsSecrets(current)).pipe(
+          Effect.map((catalog) => ({ ...current, ...catalog })),
+        ),
       ),
     withSettingsSnapshot,
     get streamChanges() {

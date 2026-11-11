@@ -14,6 +14,7 @@ import * as Path from "effect/Path";
 import * as ServerConfig from "../../../config.ts";
 import { Tool, Toolkit } from "effect/ai";
 
+import * as McpCallerChanges from "../../McpCallerChanges.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as DeviceService from "../../../device/DeviceService.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
@@ -22,6 +23,7 @@ import * as ProjectService from "../../../project/ProjectService.ts";
 const dependencies = [
   McpInvocationContext.McpInvocationContext,
   ThreadManagementService.ThreadManagementService,
+  McpCallerChanges.McpCallerChanges,
   DeviceService.DeviceService,
 ];
 

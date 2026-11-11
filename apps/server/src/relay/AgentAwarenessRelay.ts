@@ -12,7 +12,10 @@ import {
   type RelayAgentActivityPublishProofPayload,
   type RelayAgentActivityState,
 } from "@t3tools/contracts/relay";
-import { projectThreadAwarenessV2 } from "@t3tools/shared/agentAwareness";
+import {
+  buildAgentAwarenessDeepLink,
+  projectThreadAwarenessV2,
+} from "@t3tools/shared/agentAwareness";
 import { turnItemUpdateCanEndBackgroundWork } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import { withRelayClientTracing } from "@t3tools/shared/relayTracing";
@@ -34,6 +37,7 @@ import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
 import * as HttpApiClient from "effect/http-api/HttpApiClient";
 
+import * as BotTaskService from "../bots/BotTaskService.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import {
   isAgentActivityPublishingEnabledValue,
@@ -358,6 +362,7 @@ export function resolveAgentAwarenessRelayActiveThreadIds(input: {
 
 /** @public */
 export const make = Effect.gen(function* () {
+  const botTasks = yield* BotTaskService.BotTaskService;
   const secrets = yield* ServerSecretStore.ServerSecretStore;
   const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
   const threads = yield* ThreadManagement.ThreadManagementService;
@@ -524,18 +529,71 @@ export const make = Effect.gen(function* () {
     const project = Option.isSome(thread)
       ? yield* projects.getById(thread.value.projectId)
       : Option.none<Project>();
-    const snapshot = resolveAgentAwarenessRelayPublishSnapshot({
+    let snapshot = resolveAgentAwarenessRelayPublishSnapshot({
       environmentId,
       thread,
       project,
     });
+    const task = (yield* botTasks.getAwarenessTasks(threadId))[0];
+    const savedResultAt =
+      task?.status === "completed" &&
+      task.resultRunId !== null &&
+      task.completedAt !== null &&
+      Option.isSome(thread) &&
+      task.projectId === thread.value.projectId &&
+      task.resultRunId === thread.value.latestRunId
+        ? task.completedAt
+        : undefined;
+    const projectTaskState = (
+      state: RelayAgentActivityState | null,
+    ): RelayAgentActivityState | null => {
+      if (
+        state === null ||
+        task === undefined ||
+        Option.isNone(thread) ||
+        task.projectId !== thread.value.projectId
+      )
+        return state;
+      if (
+        (task.status === "cancelled" || task.status === "skipped") &&
+        task.resultRunId === thread.value.latestRunId
+      )
+        return null;
+      if (state.phase === "completed" && task.completedAt === null) {
+        // Reconciliation must persist the saved run before the generic completion can alert.
+        return { ...state, phase: "running", headline: "Agent is working", detail: undefined };
+      }
+      if (state.phase === "completed" && savedResultAt !== undefined) {
+        return {
+          ...state,
+          threadTitle: "Bot task result",
+          headline: "Bot task finished",
+          detail: "Review the saved Bot task result.",
+          updatedAt: savedResultAt,
+          deepLink: buildAgentAwarenessDeepLink({
+            environmentId,
+            threadId,
+            botTaskId: task.taskId,
+          }),
+        };
+      }
+      return state;
+    };
+    snapshot = { ...snapshot, state: projectTaskState(snapshot.state) };
     const publishIdentity = agentAwarenessPublishIdentity(snapshot.state);
     const publishedStateByThread = yield* Ref.get(publishedStateByThreadRef);
     if (
       (snapshot.state?.phase === "completed" || snapshot.state?.phase === "failed") &&
       !hasLivePublishedState(publishedStateByThread, threadId)
     ) {
-      if (Option.isNone(thread) || !terminalWorkSinceStart(thread.value, startedAt)) return;
+      const recentSavedResult =
+        savedResultAt !== undefined &&
+        savedResultAt >= DateTime.formatIso(DateTime.subtract(yield* DateTime.now, { minutes: 2 }));
+      if (
+        !recentSavedResult &&
+        (Option.isNone(thread) || !terminalWorkSinceStart(thread.value, startedAt))
+      )
+        return;
     }
     if (
       publishedStateByThread.get(threadId) === publishIdentity &&
@@ -597,7 +655,8 @@ export const make = Effect.gen(function* () {
             })
           : null;
       if (unsettled?.state?.phase === "completed") {
-        const completion = unsettled.state;
+        const completion = projectTaskState(unsettled.state);
+        if (completion === null) return;
         yield* publishState({
           projectId: unsettled.projectId,
           state: completion,
@@ -726,14 +785,23 @@ export const make = Effect.gen(function* () {
       projects: projectSnapshot.projects,
       threads: activitySnapshot.threads,
     });
-    if (activeThreadIds.length === 0) {
+    const recentTasks = yield* botTasks.getAwarenessTasks();
+    const threadIds = [
+      ...new Set([
+        ...activeThreadIds,
+        ...recentTasks
+          .filter((task) => task.status === "completed" && task.resultRunId !== null)
+          .map((task) => task.workThreadId),
+      ]),
+    ];
+    if (threadIds.length === 0) {
       yield* Effect.logDebug("agent activity snapshot has no publishable threads");
       return "published" as const;
     }
     yield* Effect.logInfo("publishing active agent activity snapshot", {
-      count: activeThreadIds.length,
+      count: threadIds.length,
     });
-    yield* Effect.forEach(activeThreadIds, enqueueThreadPublish, { discard: true });
+    yield* Effect.forEach(threadIds, enqueueThreadPublish, { discard: true });
     yield* worker.drain;
     return "published" as const;
   });
@@ -812,6 +880,21 @@ export const make = Effect.gen(function* () {
       yield* forkParked(
         Effect.sleep("1 second").pipe(
           Effect.andThen(publishActiveThreadsWhenConfigured(startupState !== "enabled")),
+        ),
+      );
+      const taskChanges = yield* botTasks.changes;
+      yield* forkParked(
+        Stream.runForEach(taskChanges, (taskId) =>
+          botTasks.get(taskId).pipe(
+            Effect.flatMap((task) =>
+              task.workThreadId === null ? Effect.void : enqueueThreadPublish(task.workThreadId),
+            ),
+            Effect.catchCause(() =>
+              Effect.logWarning("Bot result awareness refresh failed", { taskId }).pipe(
+                Effect.andThen(Queue.offer(catchUpRequests, undefined)),
+              ),
+            ),
+          ),
         ),
       );
       yield* forkParked(

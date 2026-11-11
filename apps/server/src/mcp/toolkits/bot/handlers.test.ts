@@ -19,9 +19,12 @@ import * as Stream from "effect/Stream";
 import * as BotService from "../../../bots/BotService.ts";
 import * as BotTaskService from "../../../bots/BotTaskService.ts";
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
+import { advertisedJsonSchema } from "../../advertisedJsonSchema.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
-import { liveThreadShell } from "../../McpToolAccess.testkit.ts";
+import * as McpCallerChanges from "../../McpCallerChanges.ts";
+import type { McpCallerChangesValue } from "../../McpCallerChanges.ts";
+import { layerCallerChangesAllowed, liveThreadShell } from "../../McpToolAccess.testkit.ts";
 import * as BotHandlers from "./handlers.ts";
 import { BotToolkit, type BotToolInput } from "./tools.ts";
 
@@ -45,12 +48,58 @@ const detail = {
   pendingLearning: 0,
 } satisfies BotDetail;
 
+const otherBot = BotId.make("work-companion");
+const ownTask = BotTaskId.make("bot-task:1");
+const otherTask = BotTaskId.make("bot-task:work");
+const taskSummary = {
+  id: ownTask,
+  botId,
+  projectId: campaignA,
+  homeThreadId: threadId,
+  workThreadId: ThreadId.make("bot-work:bot-task:1"),
+  origin: "direct" as const,
+  title: "Recap",
+  scheduledTaskId: null,
+  occurrenceDueAt: null,
+  sessionAt: null,
+  runtimeMode: "full-access" as const,
+  status: "accepted" as const,
+  detail: null,
+  createdAt: "2026-11-02T00:00:00.000Z",
+  updatedAt: "2026-11-02T00:00:00.000Z",
+  completedAt: null,
+  modelSelection: detail.modelSelection,
+};
+
+const continuationView = (input: { readonly botId: BotId; readonly projectId: ProjectId }) => ({
+  ...input,
+  homeThreadId: threadId,
+  revision: null,
+  note: { requests: [], waiting: [], decided: [], context: [] },
+  updatedBy: null,
+  updatedAt: null,
+  restoredFrom: null,
+  coverage: null,
+  basis: null,
+  writable: true,
+  newerInputs: { count: 0, firstOrdinal: null, lastOrdinal: null },
+  sources: [],
+  moreSources: 0,
+  activeTasks: [],
+  moreActiveTasks: 0,
+});
+
 const callTool = (
   params: BotToolInput,
   access: "read-only" | undefined,
   /** The Bot conversation the calling thread is, if any. */
   callerBot?: { readonly botId: BotId; readonly projectId: ProjectId; readonly taskId?: BotTaskId },
   external = false,
+  caller: {
+    readonly changes?: McpCallerChangesValue;
+    readonly subagent?: boolean;
+    readonly sealedLoad?: boolean;
+  } = {},
 ) =>
   Effect.gen(function* () {
     const calls = yield* Ref.make<ReadonlyArray<string>>([]);
@@ -76,6 +125,8 @@ const callTool = (
                       threadId,
                       providerSessionId: "provider:bots",
                       providerInstanceId: ProviderInstanceId.make("codex"),
+                      ...(caller.subagent === true ? { subagent: true } : {}),
+                      ...(caller.sealedLoad === true ? { sealedLoad: true as const } : {}),
                     },
                 client:
                   access === undefined && !external
@@ -91,25 +142,21 @@ const callTool = (
               Layer.mock(ThreadManagement.ThreadManagementService)({
                 getThreadShell: () => Effect.succeed(liveThreadShell(threadId)),
               }),
-              Layer.mock(BotContinuation.BotContinuation)({
-                get: (input) =>
-                  Effect.succeed({
-                    ...input,
-                    homeThreadId: threadId,
-                    revision: null,
-                    note: { requests: [], waiting: [], decided: [], context: [] },
-                    updatedBy: null,
-                    updatedAt: null,
-                    restoredFrom: null,
-                    coverage: null,
-                    basis: null,
-                    writable: true,
-                    newerInputs: { count: 0, firstOrdinal: null, lastOrdinal: null },
-                    sources: [],
-                    moreSources: 0,
-                    activeTasks: [],
-                    moreActiveTasks: 0,
+              caller.changes === undefined
+                ? layerCallerChangesAllowed
+                : Layer.succeed(McpCallerChanges.McpCallerChanges, {
+                    forThread: () => Effect.succeed(caller.changes!),
                   }),
+              Layer.mock(BotContinuation.BotContinuation)({
+                save: (input) =>
+                  record("save_continuation").pipe(
+                    Effect.as({
+                      _tag: "conflict",
+                      reason: "revision",
+                      current: continuationView(input),
+                    } as const),
+                  ),
+                get: (input) => Effect.succeed(continuationView(input)),
               }),
               Layer.mock(BotService.BotService)({
                 list: Effect.succeed({ bots: [] }),
@@ -117,7 +164,15 @@ const callTool = (
                 attachProject: (input) => record(`attach:${input.projectId}`),
                 updateProjectContext: (input) =>
                   record(`project:${input.projectId}:${input.guidance}:${input.sources?.length}`),
-                update: () => Effect.fail(new BotError({ message: "This Bot is archived." })),
+                update: () =>
+                  record("update").pipe(
+                    Effect.andThen(Effect.fail(new BotError({ message: "This Bot is archived." }))),
+                  ),
+                create: () => record("create"),
+                setArchived: (input) => record(input.archived ? "archive" : "restore"),
+                detachProject: () => record("detach"),
+                retireLearning: () => record("retire"),
+                restoreLearning: () => record("reinstate"),
                 scopeOfThread: () =>
                   Effect.succeed(
                     callerBot === undefined
@@ -141,11 +196,28 @@ const callTool = (
                     })),
                   ),
                 decideLearning: (input) => record(`decide:${input.decision}`),
+                resolveProject: (input) =>
+                  Effect.succeed({ projectId: input.projectId ?? campaignA } as never),
               }),
               Layer.mock(BotTaskService.BotTaskService)({
                 list: () =>
                   Ref.update(calls, (current) => [...current, "list_tasks"]).pipe(
                     Effect.as({ tasks: [] }),
+                  ),
+                cancel: () =>
+                  Ref.update(calls, (current) => [...current, "cancel"]).pipe(
+                    Effect.as(taskSummary),
+                  ),
+                start: (input) =>
+                  Ref.update(calls, (current) => [
+                    ...current,
+                    `start:${JSON.stringify(input.modelSelection ?? null)}`,
+                  ]).pipe(
+                    Effect.as({
+                      ...taskSummary,
+                      projectId: input.projectId,
+                      modelSelection: input.modelSelection ?? detail.modelSelection,
+                    }),
                   ),
               }),
             ),
@@ -231,6 +303,119 @@ it.effect(
     }),
 );
 
+it.effect("starts a task on its own model without updating the Bot", () =>
+  Effect.gen(function* () {
+    const modelSelection = {
+      instanceId: ProviderInstanceId.make("codex"),
+      model: "gpt-5.1",
+      options: [{ id: "reasoningEffort", value: "low" }],
+    };
+    const started = yield* callTool(
+      { action: "start_task", botId, task: "Recap.", modelSelection },
+      undefined,
+    );
+    expect(started.calls).toEqual([`start:${JSON.stringify(modelSelection)}`]);
+    expect(started.result).toMatchObject({ task: { modelSelection } });
+    const inherited = yield* callTool({ action: "start_task", botId, task: "Recap." }, undefined);
+    expect(inherited.calls).toEqual(["start:null"]);
+    const malformed = yield* callTool(
+      {
+        action: "start_task",
+        botId,
+        task: "Recap.",
+        modelSelection: { ...modelSelection, options: { reasoningEffort: 123 } },
+      } as unknown as BotToolInput,
+      undefined,
+    );
+    expect(malformed.result).toMatchObject({
+      reason: { _tag: "ToolParameterValidationError" },
+    });
+    expect(malformed.calls).toEqual([]);
+    const value = { anyOf: [{ type: "string" }, { type: "boolean" }] };
+    const options = {
+      anyOf: [
+        { type: "array", items: { properties: { value } } },
+        { type: "object", additionalProperties: value },
+      ],
+    };
+    expect(advertisedJsonSchema(BotToolkit.tools.t3_bot)).toMatchObject({
+      properties: {
+        modelSelection: {
+          anyOf: [
+            { required: ["instanceId", "model"], properties: { options } },
+            { required: ["provider", "model"], properties: { options } },
+          ],
+        },
+      },
+    });
+  }),
+);
+
+const learning = { origin: "correction", kind: "preference", text: "Always recap." } as const;
+const entry = { entryId: BotLearningEntryId.make("entry-1"), revision: 1 };
+const botChanges: ReadonlyArray<readonly [(bot: BotId) => BotToolInput, string]> = [
+  [(bot) => ({ action: "start_task", botId: bot, task: "Check mail." }), "start:null"],
+  [(bot) => ({ action: "cancel_task", taskId: bot === botId ? ownTask : otherTask }), "cancel"],
+  [(bot) => ({ action: "update", botId: bot, instructions: "Process work mail." }), "update"],
+  [
+    (bot) => ({ action: "update", botId: bot, projectId: campaignA, guidance: "Changed." }),
+    `project:${campaignA}:Changed.:undefined`,
+  ],
+  [(bot) => ({ action: "archive", botId: bot }), "archive"],
+  [(bot) => ({ action: "restore", botId: bot }), "restore"],
+  [(bot) => ({ action: "attach", botId: bot, projectId: campaignA }), `attach:${campaignA}`],
+  [(bot) => ({ action: "detach", botId: bot, projectId: campaignA }), "detach"],
+  [
+    (bot) => ({
+      action: "create",
+      botId: bot,
+      name: "Work Companion",
+      modelSelection: detail.modelSelection,
+      learningPolicy: "automatic",
+    }),
+    "create",
+  ],
+  [
+    (bot) => ({ action: "learn", botId: bot, projectId: campaignA, learning }),
+    `learn:${campaignA}:correction:${threadId}`,
+  ],
+  // A Bot never decides its own learning; the user does, in Settings.
+  [(bot) => ({ action: "adopt", botId: bot, ...entry }), "invalid_request"],
+  [(bot) => ({ action: "reject", botId: bot, ...entry }), "invalid_request"],
+  [(bot) => ({ action: "retire", botId: bot, ...entry }), "invalid_request"],
+  [(bot) => ({ action: "reinstate", botId: bot, ...entry }), "invalid_request"],
+];
+const ordinaryCallerReaches: Record<string, string> = {
+  adopt: "decide:adopt",
+  reject: "decide:reject",
+  retire: "retire",
+  reinstate: "reinstate",
+};
+
+it.effect.each(
+  botChanges.flatMap(([params, ownCall]) => {
+    const own = params(botId);
+    const other = params(otherBot);
+    return [
+      [own, { botId, projectId: campaignA }, ownCall],
+      [
+        other,
+        { botId, projectId: campaignA },
+        other.action === "learn"
+          ? "invalid_request"
+          : (ordinaryCallerReaches[other.action] ?? ownCall),
+      ],
+      [other, undefined, ordinaryCallerReaches[other.action] ?? ownCall],
+    ] as const;
+  }),
+)("t3_bot %o from %o: %s", ([params, scope, expected]) =>
+  callTool(params, undefined, scope).pipe(
+    Effect.map(({ calls, result }) =>
+      expect(calls[0] ?? (result as { readonly code?: string } | undefined)?.code).toBe(expected),
+    ),
+  ),
+);
+
 it.effect("lets read-only clients read Bots but not change them", () =>
   Effect.gen(function* () {
     const read = yield* callTool({ action: "read", botId }, "read-only");
@@ -295,9 +480,78 @@ it.effect(
         undefined,
         true,
       );
-      expect(save.result).toMatchObject({
-        code: "invalid_request",
-        message: "Working-note writes require this project's active Home thread credential.",
-      });
+      expect(save.result).toMatchObject({ code: "thread_credential_required" });
+      expect(save.calls).toEqual([]);
     }),
+);
+
+const saveNote = {
+  action: "save_continuation",
+  botId,
+  projectId: campaignA,
+  continuation: {
+    baseRevision: null,
+    updateId: "maintenance",
+    note: { requests: [], waiting: [], decided: [], context: [] },
+  },
+} as const;
+
+const learnFromHome = {
+  action: "learn",
+  botId,
+  projectId: campaignA,
+  learning: { origin: "correction", kind: "preference", text: "Always recap." },
+} as const;
+
+it.effect.each(["botNote", "botWaiting"] as const)(
+  "a restricted Home run may save its own note and change nothing else: %s",
+  (changes) =>
+    Effect.gen(function* () {
+      const restricted = (params: BotToolInput, subagent = false) =>
+        callTool(params, undefined, { botId, projectId: campaignA }, false, {
+          changes,
+          subagent,
+        });
+      expect((yield* restricted(saveNote)).calls).toEqual(["save_continuation"]);
+      for (const params of [
+        { action: "start_task", botId, task: "Prepare.", returnToHome: true },
+        {
+          action: "learn",
+          botId,
+          projectId: campaignA,
+          learning: { origin: "correction", kind: "preference", text: "Always recap." },
+        },
+        { action: "update", botId, projectId: campaignA, guidance: "Changed." },
+        { action: "attach", botId, projectId: campaignA },
+      ] as const) {
+        const refused = yield* restricted(params as BotToolInput);
+        expect(refused.result, params.action).toMatchObject({ code: "capability_denied" });
+        expect(refused.calls).toEqual([]);
+      }
+      const fromSubagent = yield* restricted(saveNote, true);
+      expect(fromSubagent.result).toMatchObject({ code: "capability_denied" });
+      expect(fromSubagent.calls).toEqual([]);
+    }),
+);
+
+it.effect("a sealed load's call never gets ordinary authority once its Home is ordinary", () =>
+  Effect.gen(function* () {
+    // A native child of a restricted run keeps the sealed load's credential after the run ends.
+    for (const params of [learnFromHome, saveNote]) {
+      const refused = yield* callTool(params, undefined, { botId, projectId: campaignA }, false, {
+        changes: "allowed",
+        sealedLoad: true,
+      });
+      expect(refused.result, params.action).toMatchObject({ code: "capability_denied" });
+      expect(refused.calls).toEqual([]);
+    }
+  }),
+);
+
+it.effect("a No changes routine task still cannot save a working note", () =>
+  Effect.gen(function* () {
+    const refused = yield* callTool(saveNote, undefined, undefined, false, { changes: "none" });
+    expect(refused.result).toMatchObject({ code: "capability_denied" });
+    expect(refused.calls).toEqual([]);
+  }),
 );

@@ -7,6 +7,16 @@ import {
   BotSaveContinuationResult,
 } from "./botContinuation.ts";
 import {
+  BotConfigureMaintenanceInput,
+  BotConfigureMaintenanceResult,
+  BotMaintenanceView,
+} from "./botMaintenance.ts";
+import {
+  BotConfigureHomeCheckInput,
+  BotConfigureHomeCheckResult,
+  BotHomeCheckView,
+} from "./botHomeCheck.ts";
+import {
   OrchestrationV2SearchThreadError,
   OrchestrationV2SearchThreadInput,
   OrchestrationV2SearchThreadResult,
@@ -402,6 +412,7 @@ import {
   BotRestoreLearningInput,
   BotRetireLearningInput,
   BotSetArchivedInput,
+  BotSetMcpGrantsInput,
   BotUpdateInput,
   BotUpdateProjectContextInput,
   BotCancelTaskInput,
@@ -413,6 +424,24 @@ import {
   BotTaskSummary,
 } from "./bot.ts";
 import { SecretRequestAnswerInput, SecretRequestError } from "./secretRequest.ts";
+import {
+  McpConnectionCreateInput,
+  McpConnectionError,
+  McpConnectionListInput,
+  McpConnectionListResult,
+  McpConnectionOAuthCancelInput,
+  McpConnectionOAuthCompleteInput,
+  McpConnectionOAuthConnectionInput,
+  McpConnectionOAuthError,
+  McpConnectionOAuthStartInput,
+  McpConnectionOAuthStartResult,
+  McpConnectionOAuthState,
+  McpConnectionRefreshInput,
+  McpConnectionRemoveInput,
+  McpConnectionRemoveResult,
+  McpConnectionSummary,
+  McpConnectionUpdateInput,
+} from "./mcpConnection.ts";
 import {
   ProjectCloneActionInput,
   ProjectCloneActionResult,
@@ -592,9 +621,14 @@ export const WS_METHODS = {
   botsGetContinuation: "bots.getContinuation",
   botsListContinuationRevisions: "bots.listContinuationRevisions",
   botsSaveContinuation: "bots.saveContinuation",
+  botsGetMaintenance: "bots.getMaintenance",
+  botsConfigureMaintenance: "bots.configureMaintenance",
+  botsGetHomeCheck: "bots.getHomeCheck",
+  botsConfigureHomeCheck: "bots.configureHomeCheck",
   botsCreate: "bots.create",
   botsUpdate: "bots.update",
   botsSetArchived: "bots.setArchived",
+  botsSetMcpGrants: "bots.setMcpGrants",
   botsAttachProject: "bots.attachProject",
   botsUpdateProjectContext: "bots.updateProjectContext",
   botsDetachProject: "bots.detachProject",
@@ -606,6 +640,17 @@ export const WS_METHODS = {
   botsDecideLearning: "bots.decideLearning",
   botsRetireLearning: "bots.retireLearning",
   botsRestoreLearning: "bots.restoreLearning",
+
+  mcpConnectionsList: "mcpConnections.list",
+  mcpConnectionsCreate: "mcpConnections.create",
+  mcpConnectionsUpdate: "mcpConnections.update",
+  mcpConnectionsRemove: "mcpConnections.remove",
+  mcpConnectionsRefresh: "mcpConnections.refresh",
+  mcpConnectionsOAuthStart: "mcpConnections.oauthStart",
+  mcpConnectionsOAuthComplete: "mcpConnections.oauthComplete",
+  mcpConnectionsOAuthCancel: "mcpConnections.oauthCancel",
+  mcpConnectionsOAuthDisconnect: "mcpConnections.oauthDisconnect",
+  mcpConnectionsOAuthSubscribe: "mcpConnections.oauthSubscribe",
 
   cloudGetRelayClientStatus: "cloud.getRelayClientStatus",
   cloudInstallRelayClient: "cloud.installRelayClient",
@@ -2112,6 +2157,26 @@ const WsBotsSaveContinuationRpc = Rpc.make(WS_METHODS.botsSaveContinuation, {
   success: BotSaveContinuationResult,
   error: BotRpcError,
 });
+const WsBotsGetMaintenanceRpc = Rpc.make(WS_METHODS.botsGetMaintenance, {
+  payload: BotContinuationScope,
+  success: BotMaintenanceView,
+  error: BotRpcError,
+});
+const WsBotsConfigureMaintenanceRpc = Rpc.make(WS_METHODS.botsConfigureMaintenance, {
+  payload: BotConfigureMaintenanceInput,
+  success: BotConfigureMaintenanceResult,
+  error: BotRpcError,
+});
+const WsBotsGetHomeCheckRpc = Rpc.make(WS_METHODS.botsGetHomeCheck, {
+  payload: BotContinuationScope,
+  success: BotHomeCheckView,
+  error: BotRpcError,
+});
+const WsBotsConfigureHomeCheckRpc = Rpc.make(WS_METHODS.botsConfigureHomeCheck, {
+  payload: BotConfigureHomeCheckInput,
+  success: BotConfigureHomeCheckResult,
+  error: BotRpcError,
+});
 
 const WsBotsCreateRpc = Rpc.make(WS_METHODS.botsCreate, {
   payload: BotCreateInput,
@@ -2127,6 +2192,12 @@ const WsBotsUpdateRpc = Rpc.make(WS_METHODS.botsUpdate, {
 
 const WsBotsSetArchivedRpc = Rpc.make(WS_METHODS.botsSetArchived, {
   payload: BotSetArchivedInput,
+  success: BotDetail,
+  error: BotRpcError,
+});
+
+const WsBotsSetMcpGrantsRpc = Rpc.make(WS_METHODS.botsSetMcpGrants, {
+  payload: BotSetMcpGrantsInput,
   success: BotDetail,
   error: BotRpcError,
 });
@@ -2196,6 +2267,64 @@ const WsBotsRestoreLearningRpc = Rpc.make(WS_METHODS.botsRestoreLearning, {
   payload: BotRestoreLearningInput,
   success: BotDetail,
   error: BotRpcError,
+});
+
+const McpConnectionRpcError = Schema.Union([McpConnectionError, EnvironmentAuthorizationError]);
+
+const WsMcpConnectionsListRpc = Rpc.make(WS_METHODS.mcpConnectionsList, {
+  payload: McpConnectionListInput,
+  success: McpConnectionListResult,
+  error: McpConnectionRpcError,
+});
+const WsMcpConnectionsCreateRpc = Rpc.make(WS_METHODS.mcpConnectionsCreate, {
+  payload: McpConnectionCreateInput,
+  success: McpConnectionSummary,
+  error: McpConnectionRpcError,
+});
+const WsMcpConnectionsUpdateRpc = Rpc.make(WS_METHODS.mcpConnectionsUpdate, {
+  payload: McpConnectionUpdateInput,
+  success: McpConnectionSummary,
+  error: McpConnectionRpcError,
+});
+const WsMcpConnectionsRemoveRpc = Rpc.make(WS_METHODS.mcpConnectionsRemove, {
+  payload: McpConnectionRemoveInput,
+  success: McpConnectionRemoveResult,
+  error: McpConnectionRpcError,
+});
+const WsMcpConnectionsRefreshRpc = Rpc.make(WS_METHODS.mcpConnectionsRefresh, {
+  payload: McpConnectionRefreshInput,
+  success: McpConnectionListResult,
+  error: McpConnectionRpcError,
+});
+const McpConnectionOAuthRpcError = Schema.Union([
+  McpConnectionOAuthError,
+  EnvironmentAuthorizationError,
+]);
+const WsMcpConnectionsOAuthStartRpc = Rpc.make(WS_METHODS.mcpConnectionsOAuthStart, {
+  payload: McpConnectionOAuthStartInput,
+  success: McpConnectionOAuthStartResult,
+  error: McpConnectionOAuthRpcError,
+});
+const WsMcpConnectionsOAuthCompleteRpc = Rpc.make(WS_METHODS.mcpConnectionsOAuthComplete, {
+  payload: McpConnectionOAuthCompleteInput,
+  success: McpConnectionOAuthState,
+  error: McpConnectionOAuthRpcError,
+});
+const WsMcpConnectionsOAuthCancelRpc = Rpc.make(WS_METHODS.mcpConnectionsOAuthCancel, {
+  payload: McpConnectionOAuthCancelInput,
+  success: McpConnectionOAuthState,
+  error: McpConnectionOAuthRpcError,
+});
+const WsMcpConnectionsOAuthDisconnectRpc = Rpc.make(WS_METHODS.mcpConnectionsOAuthDisconnect, {
+  payload: McpConnectionOAuthConnectionInput,
+  success: McpConnectionOAuthState,
+  error: McpConnectionOAuthRpcError,
+});
+const WsMcpConnectionsOAuthSubscribeRpc = Rpc.make(WS_METHODS.mcpConnectionsOAuthSubscribe, {
+  payload: McpConnectionOAuthConnectionInput,
+  success: McpConnectionOAuthState,
+  error: McpConnectionOAuthRpcError,
+  stream: true,
 });
 
 const WsSubscribeAuthAccessRpc = Rpc.make(WS_METHODS.subscribeAuthAccess, {
@@ -2290,9 +2419,14 @@ export const WsRpcGroup = RpcGroup.make(
   WsBotsGetContinuationRpc,
   WsBotsListContinuationRevisionsRpc,
   WsBotsSaveContinuationRpc,
+  WsBotsGetMaintenanceRpc,
+  WsBotsConfigureMaintenanceRpc,
+  WsBotsGetHomeCheckRpc,
+  WsBotsConfigureHomeCheckRpc,
   WsBotsCreateRpc,
   WsBotsUpdateRpc,
   WsBotsSetArchivedRpc,
+  WsBotsSetMcpGrantsRpc,
   WsBotsAttachProjectRpc,
   WsBotsUpdateProjectContextRpc,
   WsBotsDetachProjectRpc,
@@ -2304,6 +2438,16 @@ export const WsRpcGroup = RpcGroup.make(
   WsBotsDecideLearningRpc,
   WsBotsRetireLearningRpc,
   WsBotsRestoreLearningRpc,
+  WsMcpConnectionsListRpc,
+  WsMcpConnectionsCreateRpc,
+  WsMcpConnectionsUpdateRpc,
+  WsMcpConnectionsRemoveRpc,
+  WsMcpConnectionsRefreshRpc,
+  WsMcpConnectionsOAuthStartRpc,
+  WsMcpConnectionsOAuthCompleteRpc,
+  WsMcpConnectionsOAuthCancelRpc,
+  WsMcpConnectionsOAuthDisconnectRpc,
+  WsMcpConnectionsOAuthSubscribeRpc,
   WsServerReportClientActivityRpc,
   WsCloudGetRelayClientStatusRpc,
   WsCloudInstallRelayClientRpc,

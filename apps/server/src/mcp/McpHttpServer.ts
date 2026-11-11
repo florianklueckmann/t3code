@@ -41,6 +41,7 @@ import {
   toolOutcome,
 } from "../telemetry/ProviderDimensions.ts";
 import { advertisedJsonSchema } from "./advertisedJsonSchema.ts";
+import * as McpCallerChanges from "./McpCallerChanges.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpToolAccess from "./McpToolAccess.ts";
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
@@ -232,8 +233,13 @@ const makeMcpAuthMiddleware = Effect.gen(function* () {
         offerOAuth: Option.isSome(clients) && !looksLikeProviderToken(token),
       });
     }
-    const asked = withModeLimit(invocation, request);
-    if (asked === undefined) return invalidModeLimit;
+    const modeLimited = withModeLimit(invocation, request);
+    if (modeLimited === undefined) return invalidModeLimit;
+    const asked =
+      modeLimited.thread !== undefined &&
+      request.headers[McpInvocationContext.SEALED_LOAD_HEADER] !== undefined
+        ? { ...modeLimited, thread: { ...modeLimited.thread, sealedLoad: true as const } }
+        : modeLimited;
     const limited = McpInvocationContext.withRuntimeModeCeiling(asked, runtimeModeCeiling);
     const linkedEnvironments = yield* linksEnabled;
     if (limited.client?.linked === true && !linkedEnvironments) return linkedEnvironmentsOff;
@@ -514,6 +520,7 @@ const registerPreviewSnapshot = Effect.fn("McpHttpServer.registerPreviewSnapshot
   const server = yield* McpServer.McpServer;
   const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
   const threads = yield* ThreadManagementService.ThreadManagementService;
+  const callerChanges = yield* McpCallerChanges.McpCallerChanges;
   const saveServices = yield* Effect.context<
     ServerConfig.ServerConfig | FileSystem.FileSystem | Path.Path | SecureRandom.SecureRandom
   >();
@@ -548,6 +555,7 @@ const registerPreviewSnapshot = Effect.fn("McpHttpServer.registerPreviewSnapshot
           Effect.flatMap(Effect.fromOption),
           Effect.provideService(PreviewAutomationBroker.PreviewAutomationBroker, broker),
           Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
+          Effect.provideService(McpCallerChanges.McpCallerChanges, callerChanges),
           Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
           Effect.flatMap(({ encodedResult }) =>
             Effect.gen(function* () {
@@ -779,6 +787,7 @@ const registerImageTool = Effect.fn("McpHttpServer.registerImageTool")(function*
 const registerDeviceScreenshot = Effect.fn("McpHttpServer.registerDeviceScreenshot")(function* () {
   const devices = yield* DeviceService.DeviceService;
   const threads = yield* ThreadManagementService.ThreadManagementService;
+  const callerChanges = yield* McpCallerChanges.McpCallerChanges;
   const built = yield* decodeAsAdvertised(DeviceScreenshotToolkit);
   yield* registerImageTool(
     DeviceScreenshotTool,
@@ -790,6 +799,7 @@ const registerDeviceScreenshot = Effect.fn("McpHttpServer.registerDeviceScreensh
       effect.pipe(
         Effect.provideService(DeviceService.DeviceService, devices),
         Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
+        Effect.provideService(McpCallerChanges.McpCallerChanges, callerChanges),
       ),
     "screenshot",
     (error) => {
@@ -809,6 +819,7 @@ const isDeviceToolError = Schema.is(DeviceToolError);
 const registerHtmlPreview = Effect.fn("McpHttpServer.registerHtmlPreview")(function* () {
   const htmlRender = yield* HtmlRender.HtmlRender;
   const threads = yield* ThreadManagementService.ThreadManagementService;
+  const callerChanges = yield* McpCallerChanges.McpCallerChanges;
   const built = yield* decodeAsAdvertised(HtmlPreviewToolkit);
   yield* registerImageTool(
     HtmlPreviewTool,
@@ -820,6 +831,7 @@ const registerHtmlPreview = Effect.fn("McpHttpServer.registerHtmlPreview")(funct
       effect.pipe(
         Effect.provideService(HtmlRender.HtmlRender, htmlRender),
         Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
+        Effect.provideService(McpCallerChanges.McpCallerChanges, callerChanges),
       ),
     "preview",
 

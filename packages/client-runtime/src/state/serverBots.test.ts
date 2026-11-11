@@ -15,6 +15,7 @@ import {
   type ServerConfig,
   WS_METHODS,
 } from "@t3tools/contracts";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -38,7 +39,9 @@ import type { RpcSession } from "../rpc/session.ts";
 import { createServerEnvironmentAtoms } from "./server.ts";
 
 const CONFIG = {
-  environment: { capabilities: { bots: true, botTaskResults: true, botContinuation: true } },
+  environment: {
+    capabilities: { bots: true, botTaskResults: true, botContinuation: true, botMaintenance: true },
+  },
   providers: [],
 } as unknown as ServerConfig;
 
@@ -58,6 +61,7 @@ const makeHarness = Effect.gen(function* () {
                   const {
                     botTaskResults: _resultSupport,
                     botContinuation: _noteSupport,
+                    botMaintenance: _maintenanceSupport,
                     ...capabilities
                   } = CONFIG.environment.capabilities;
                   return { ...capabilities, bots: name !== "unsupported" };
@@ -67,6 +71,8 @@ const makeHarness = Effect.gen(function* () {
           : CONFIG;
       const resultReads = yield* Ref.make<ReadonlyArray<BotTaskResultInput>>([]);
       const failResults = yield* Ref.make(false);
+      const taskGate = yield* Ref.make<Deferred.Deferred<void> | undefined>(undefined);
+      const failTasks = yield* Ref.make(false);
       const continuationReads = yield* Ref.make<ReadonlyArray<string>>([]);
       const bots = yield* SubscriptionRef.make<BotListResult>({
         bots: [
@@ -121,6 +127,21 @@ const makeHarness = Effect.gen(function* () {
             ...all,
             `history:${input.botId}:${input.projectId}`,
           ]).pipe(Effect.as({ revisions: [] })),
+        [WS_METHODS.botsGetMaintenance]: (input: BotContinuationScope) =>
+          Ref.update(continuationReads, (all) => [
+            ...all,
+            `maintenance:${input.botId}:${input.projectId}`,
+          ]).pipe(
+            Effect.as({
+              ...input,
+              homeThreadId: ThreadId.make(`home-${environmentId}`),
+              revision: 0,
+              enabled: false,
+              startedAt: null,
+              unavailableReason: "no_tool_profile_unavailable",
+              writable: true,
+            }),
+          ),
         [WS_METHODS.botsGetTaskResult]: (input: BotTaskResultInput) =>
           Effect.gen(function* () {
             yield* Ref.update(resultReads, (all) => [...all, input]);
@@ -137,7 +158,7 @@ const makeHarness = Effect.gen(function* () {
         },
         [WS_METHODS.botsSubscribeTasks]: (input: BotTaskListInput) => {
           if (input.workThreadId === undefined) throw new Error("Unfiltered work-thread lookup");
-          return Stream.succeed({
+          const tasks = Stream.succeed({
             tasks:
               input.workThreadId === THREAD
                 ? [
@@ -147,7 +168,12 @@ const makeHarness = Effect.gen(function* () {
                       projectId: ProjectId.make("project"),
                       homeThreadId: ThreadId.make("home"),
                       workThreadId: ThreadId.make(THREAD),
-                      origin: "direct",
+                      // "legacy" stands for an older server that omits `changes`.
+                      ...(name === "first"
+                        ? { origin: "routine", changes: "none" }
+                        : name === "legacy"
+                          ? { origin: "direct" }
+                          : { origin: "direct", changes: null }),
                       title: "Prepare",
                       scheduledTaskId: null,
                       occurrenceDueAt: null,
@@ -162,6 +188,13 @@ const makeHarness = Effect.gen(function* () {
                   ]
                 : [],
           });
+          return Stream.unwrap(
+            Ref.get(taskGate).pipe(
+              Effect.flatMap((gate) => (gate === undefined ? Effect.void : Deferred.await(gate))),
+              Effect.andThen(Ref.get(failTasks)),
+              Effect.map((fail) => (fail ? Stream.fail("synthetic-task-failure") : tasks)),
+            ),
+          );
         },
       } as unknown as WsRpcProtocolClient;
       const session: RpcSession = {
@@ -194,6 +227,8 @@ const makeHarness = Effect.gen(function* () {
         config,
         resultReads,
         failResults,
+        taskGate,
+        failTasks,
         continuationReads,
       };
     }),
@@ -289,6 +324,46 @@ describe("work-thread Bot identity", () => {
       ).toBeNull();
     }).pipe(Effect.scoped),
   );
+
+  it.effect("keeps a work thread's task changes unknown until its task loads", () =>
+    Effect.gen(function* () {
+      const { atoms, registry, environments } = yield* makeHarness;
+      const expected = { first: "none", second: "unknown", legacy: null } as const;
+      for (const { environmentId, taskGate, failTasks } of environments.filter(
+        (entry) => entry.environmentId !== "unsupported",
+      )) {
+        const gate = yield* Deferred.make<void>();
+        yield* Ref.set(taskGate, gate);
+        yield* Ref.set(failTasks, environmentId === "second");
+        const atom = atoms.workThreadChanges({ environmentId, id: THREAD });
+        yield* Effect.acquireRelease(
+          Effect.sync(() => registry.mount(atom)),
+          (unmount) => Effect.sync(unmount),
+        );
+        expect(registry.get(atom)).toBe("unknown");
+        yield* Deferred.succeed(gate, undefined);
+        const tasks = atoms.botTasksLive({
+          environmentId,
+          input: { workThreadId: ThreadId.make(THREAD) },
+        });
+        yield* AtomRegistry.toStream(registry, tasks).pipe(
+          Stream.filter((result) => !AsyncResult.isInitial(result)),
+          Stream.runHead,
+        );
+        expect(registry.get(atom)).toBe(expected[environmentId as keyof typeof expected]);
+      }
+      expect(
+        registry.get(
+          atoms.workThreadChanges({ environmentId: EnvironmentId.make("unsupported"), id: THREAD }),
+        ),
+      ).toBeNull();
+      expect(
+        registry.get(
+          atoms.workThreadChanges({ environmentId: EnvironmentId.make("first"), id: "ordinary" }),
+        ),
+      ).toBeNull();
+    }).pipe(Effect.scoped),
+  );
 });
 
 describe("saved Bot task results", () => {
@@ -366,6 +441,9 @@ it.effect("loads continuation details in the destination and never calls old-ser
         Atom.map(atoms.botContinuationHistory(target), (result) =>
           AsyncResult.map(result, (value) => value !== null),
         ),
+        Atom.map(atoms.botMaintenance(target), (result) =>
+          AsyncResult.map(result, (value) => value !== null),
+        ),
       ]) {
         yield* Effect.acquireRelease(
           Effect.sync(() => registry.mount(atom)),
@@ -381,7 +459,11 @@ it.effect("loads continuation details in the destination and never calls old-ser
       }
       expect(yield* Ref.get(continuationReads)).toEqual(
         environmentId === "first" || environmentId === "second"
-          ? ["get:same-bot:same-project", "history:same-bot:same-project"]
+          ? [
+              "get:same-bot:same-project",
+              "history:same-bot:same-project",
+              "maintenance:same-bot:same-project",
+            ]
           : [],
       );
     }

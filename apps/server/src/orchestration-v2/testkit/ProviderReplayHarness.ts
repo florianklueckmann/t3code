@@ -66,6 +66,7 @@ import * as TurnItemPositionStore from "../TurnItemPositionStore.ts";
 import * as RuntimeRequestService from "../RuntimeRequestService.ts";
 import * as ThreadCommandExecutor from "../ThreadCommandExecutor.ts";
 import * as ThreadForkService from "../ThreadForkService.ts";
+import * as BotHomes from "../../bots/BotHomes.ts";
 import {
   runOrchestratorV2Scenario,
   type OrchestratorV2ScenarioStepError,
@@ -350,6 +351,7 @@ export function layerWithRegistry<Error>(
         layerEventSinkProvided,
         IdAllocator.layer,
         ThreadCommandExecutor.layer,
+        Layer.mock(BotHomes.BotHomes)({ isHome: () => Effect.succeed(false) }),
         GitVcsDriver.layer.pipe(
           Layer.provide(layerServerConfig),
           Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),

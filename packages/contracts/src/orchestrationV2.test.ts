@@ -9,6 +9,7 @@ import {
   OrchestrationV2ProviderThread,
   OrchestrationV2ProviderThreadJson,
   OrchestrationV2RpcSchemas,
+  OrchestrationV2Run,
   OrchestrationV2Subagent,
   OrchestrationV2ThreadShellJson,
   OrchestrationV2SubagentJson,
@@ -18,6 +19,11 @@ import {
 } from "./orchestrationV2.ts";
 
 const now = DateTime.makeUnsafe("2026-04-20T00:00:00.000Z");
+const decodeRunJson = Schema.decodeSync(Schema.toCodecJson(OrchestrationV2Run));
+const { restriction: _restriction, ...runFieldsWithoutRestriction } = OrchestrationV2Run.fields;
+const decodeRunJsonWithoutRestriction = Schema.decodeSync(
+  Schema.toCodecJson(Schema.Struct(runFieldsWithoutRestriction)),
+);
 
 const decodeOrchestrationV2TurnItemJson = Schema.decodeUnknownSync(OrchestrationV2TurnItemJson);
 const encodeOrchestrationV2TurnItemJson = Schema.encodeSync(OrchestrationV2TurnItemJson);
@@ -444,6 +450,29 @@ describe("orchestration V2 contracts", () => {
     expect(runtimeThread.pendingBackgroundTasks).toEqual([]);
     expect(runtimeThread.contextUsage).toBeNull();
     expect(runtimeThread.nativeMetadata).toBeNull();
+  });
+
+  it("keeps a run's restriction, and clients without the field still decode the run", () => {
+    const run = {
+      id: "run-1",
+      threadId: "bot-home:bot:project",
+      ordinal: 2,
+      providerInstanceId: "codex",
+      modelSelection: { instanceId: "codex", model: "gpt-5.4" },
+      providerThreadId: null,
+      userMessageId: "message-1",
+      rootNodeId: null,
+      activeAttemptId: null,
+      status: "running",
+      requestedAt: "2026-04-20T00:00:00.000Z",
+      startedAt: null,
+      completedAt: null,
+      checkpointId: null,
+      contextHandoffId: null,
+      restriction: "botWaiting",
+    };
+    expect(decodeRunJson(run).restriction).toBe("botWaiting");
+    expect(decodeRunJsonWithoutRestriction(run)).not.toHaveProperty("restriction");
   });
 });
 

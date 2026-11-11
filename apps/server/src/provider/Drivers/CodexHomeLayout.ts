@@ -4,6 +4,8 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as PlatformError from "effect/PlatformError";
+import * as Result from "effect/Result";
+import * as Semaphore from "effect/Semaphore";
 
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -46,9 +48,15 @@ function resolveHomePath(path: Path.Path, home: string, value: string | undefine
   return path.resolve(expanded);
 }
 
+/** `environmentHome` is the instance environment's CODEX_HOME, used when no home is configured. */
 export const resolveCodexHomeLayout = Effect.fn("resolveCodexHomeLayout")(function* (
-  config: CodexSettings,
+  configured: CodexSettings,
+  environmentHome?: string,
 ): Effect.fn.Return<CodexHomeLayout, never, Path.Path> {
+  const config =
+    !configured.homePath.trim() && !configured.shadowHomePath.trim() && environmentHome?.trim()
+      ? { ...configured, homePath: environmentHome }
+      : configured;
   const path = yield* Path.Path;
   const home = yield* HostProcess.HomeDirectory;
   const sharedHomePath = resolveHomePath(path, home, config.homePath);
@@ -442,6 +450,51 @@ export const materializeCodexShadowHome = Effect.fn("materializeCodexShadowHome"
     sharedHomePath: layout.sharedHomePath,
     effectiveHomePath,
   });
+});
+
+/** Where Codex keeps the account's conversation store when no `sqlite_home` moves it. */
+export const codexAccountHomePath = (layout: CodexHomeLayout) =>
+  layout.effectiveHomePath ?? layout.sharedHomePath;
+
+/**
+ * A path's physical identity, the same before and after its missing directories are created: the
+ * deepest existing ancestor resolved, then the missing names. Fails when that cannot be known.
+ */
+const codexPhysicalPath = Effect.fn("CodexHomeLayout.codexPhysicalPath")(function* (
+  target: string,
+) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const missing: Array<string> = [];
+  let existing = path.resolve(target);
+  while (true) {
+    const real = yield* Effect.result(fileSystem.realPath(existing));
+    if (Result.isSuccess(real)) return path.join(real.success, ...missing);
+    // A dangling link is not missing: its identity moves once its target appears.
+    const link = yield* Effect.result(fileSystem.readLink(existing));
+    const absent = Result.isFailure(link) && link.failure.reason._tag === "NotFound";
+    if (real.failure.reason._tag !== "NotFound" || !absent) return yield* real.failure;
+    missing.unshift(path.basename(existing));
+    existing = path.dirname(existing);
+  }
+});
+
+// One server process, one filesystem: permits are keyed by physical store, across instances.
+const storeStartPermits = new Map<string, Semaphore.Semaphore>();
+
+/**
+ * Codex fails to create a fresh state store when two of its processes initialize it at once, so
+ * every process this server starts on one physical store spawns and initializes in turn.
+ */
+export const codexStoreStartPermit = Effect.fn("CodexHomeLayout.codexStoreStartPermit")(function* (
+  storeHomePath: string,
+) {
+  const key = yield* codexPhysicalPath(storeHomePath);
+  const existing = storeStartPermits.get(key);
+  if (existing !== undefined) return existing;
+  const permit = Semaphore.makeUnsafe(1);
+  storeStartPermits.set(key, permit);
+  return permit;
 });
 
 export function codexContinuationIdentity(layout: CodexHomeLayout) {

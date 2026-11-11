@@ -1700,6 +1700,7 @@ export const layer: Layer.Layer<
         // A Bot conversation never runs without its instructions: a failed
         // read, an inactive Bot or a provider that cannot carry them fails the turn.
         const botContext = yield* Effect.exit(botTurnContext.forThread(input.run.threadId));
+        // The adapter adds the granted accounts, from what it actually loaded for the turn.
         const applicationInstructions =
           Exit.isSuccess(botContext) && botContext.value._tag === "active"
             ? botContext.value.instructions

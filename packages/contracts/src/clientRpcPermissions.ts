@@ -80,6 +80,21 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.botsRetireLearning]: AuthOrchestrationOperateScope,
   [WS_METHODS.botsRestoreLearning]: AuthOrchestrationOperateScope,
   [WS_METHODS.botsSaveContinuation]: AuthOrchestrationOperateScope,
+  // MCP connection definitions hold credential bindings, like other settings secrets.
+  [WS_METHODS.mcpConnectionsCreate]: AuthSettingsWriteScope,
+  [WS_METHODS.mcpConnectionsUpdate]: AuthSettingsWriteScope,
+  [WS_METHODS.mcpConnectionsRemove]: AuthSettingsWriteScope,
+  // A grant hands a Bot those credentials, so it needs the authority that manages them.
+  [WS_METHODS.botsSetMcpGrants]: AuthSettingsWriteScope,
+  // Refreshing may read secrets from a secret provider, which can prompt an unlock.
+  [WS_METHODS.mcpConnectionsRefresh]: AuthSettingsWriteScope,
+  // Signing in or out changes which account the connection's credentials reach.
+  [WS_METHODS.mcpConnectionsOAuthStart]: AuthSettingsWriteScope,
+  [WS_METHODS.mcpConnectionsOAuthComplete]: AuthSettingsWriteScope,
+  [WS_METHODS.mcpConnectionsOAuthCancel]: AuthSettingsWriteScope,
+  [WS_METHODS.mcpConnectionsOAuthDisconnect]: AuthSettingsWriteScope,
+  [WS_METHODS.botsConfigureMaintenance]: AuthOrchestrationOperateScope,
+  [WS_METHODS.botsConfigureHomeCheck]: AuthOrchestrationOperateScope,
   [ORCHESTRATION_V2_WS_METHODS.stopWorkflow]: AuthOrchestrationOperateScope,
   // Force stop kills agent processes, as Stop on a terminal does.
   [ORCHESTRATION_V2_WS_METHODS.forceStopThread]: AuthOrchestrationOperateScope,

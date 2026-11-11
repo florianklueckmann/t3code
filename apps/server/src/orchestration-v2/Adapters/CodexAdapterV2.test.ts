@@ -11,7 +11,9 @@ import {
   CheckpointId,
   CodexSettings,
   EnvironmentId,
+  McpConnectionId,
   MessageId,
+  isOrchestrationV2WorkActive,
   type ModelSelection,
   NodeId,
   type OrchestrationV2AppThread,
@@ -43,6 +45,8 @@ import * as Digest from "effect/crypto/Digest";
 import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
 import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { MCP_APP_OUTPUT_KEY, readMcpAppReference } from "@t3tools/shared/mcpApp";
 import { toolOutputImages } from "@t3tools/shared/toolOutput";
 import { resolveAttachmentPathById } from "../../attachmentStore.ts";
@@ -50,6 +54,7 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
+import * as Redacted from "effect/Redacted";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
@@ -71,6 +76,9 @@ import * as ProviderReplayHarness from "../testkit/ProviderReplayHarness.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import type * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import * as ModelManifest from "../../provider/ModelManifest.ts";
+import * as McpConnectionDelivery from "../../mcpConnections/McpConnectionDelivery.ts";
+import * as ServerConfig from "../../config.ts";
+import { codexStoreStartPermit } from "../../provider/Drivers/CodexHomeLayout.ts";
 import * as PortScanner from "../../preview/PortScanner.ts";
 import { resolveProviderCompatibility } from "../../provider/providerCompatibility.ts";
 import * as CodexAdapterV2 from "./CodexAdapterV2.ts";
@@ -152,6 +160,20 @@ describe("CodexAdapterV2 assistant message streaming", () => {
 });
 
 describe("CodexAdapterV2 runtime policy", () => {
+  it.each([
+    ["0.166.0", true],
+    ["0.167.0", true],
+    ["0.167.1", true],
+    ["0.168.0", true],
+    ["1.0.0", true],
+    ["0.165.9", false],
+    ["0.166.0-alpha.1", false],
+    ["dev", false],
+    [undefined, false],
+  ] as const)("gates seals and grants on Codex %s: %s", (version, supported) => {
+    assert.equal(CodexAdapterV2.codexSealVersionSupported(version), supported);
+  });
+
   it.effect.each([undefined, false, true])(
     "selects native collaboration modes without prompt overrides with hasT3Mcp=%s",
     (hasT3Mcp) =>
@@ -222,6 +244,24 @@ describe("CodexAdapterV2 runtime policy", () => {
       assert.equal(fullAccess.approvalPolicy, "never");
       assert.equal(fullAccess.approvalsReviewer, "user");
       assert.equal(fullAccess.sandboxPolicy?.type, "dangerFullAccess");
+
+      // A run that may change nothing ignores the mode and every override.
+      const restricted = yield* CodexAdapterV2.buildCodexTurnStartParams({
+        nativeThreadId: "native-no-changes",
+        codexInput: [{ type: "text", text: "test" }],
+        runtimePolicy: {
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          cwd: null,
+          nativeTools: "readOnly",
+          approvalPolicy: "on-request",
+          sandboxPolicy: { type: "dangerFullAccess" },
+        },
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+      });
+      assert.equal(restricted.approvalPolicy, "never");
+      assert.equal(restricted.approvalsReviewer, "user");
+      assert.deepEqual(restricted.sandboxPolicy, { type: "readOnly", networkAccess: false });
     }),
   );
 
@@ -276,73 +316,478 @@ describe("CodexAdapterV2 runtime policy", () => {
 });
 
 describe("CodexAdapterV2 native protocol logging", () => {
-  it.effect("logs decoded app-server frames once with credentials redacted", () =>
-    Effect.gen(function* () {
-      const writes: Array<{
-        readonly event: unknown;
-        readonly threadId: ThreadId | null;
-      }> = [];
-      const logger: ProviderEventLoggers.EventNdjsonLogger = {
-        filePath: "/tmp/events.log",
-        write: (event, threadId) =>
-          Effect.sync(() => {
-            writes.push({ event, threadId });
-          }),
-        close: () => Effect.void,
-      };
-      const threadId = ThreadId.make("thread-1");
-      const providerSessionId = ProviderSessionId.make("provider-session-1");
-      const protocolLogger = CodexAdapterV2.makeCodexAppServerProtocolLogger({
-        nativeEventLogger: logger,
-        threadId,
-        providerSessionId,
-      });
-
-      assert.notEqual(protocolLogger, undefined);
-      if (protocolLogger === undefined) {
-        return;
-      }
-
-      yield* protocolLogger({
-        direction: "incoming",
-        stage: "decoded",
-        payload: {
-          method: "thread/event",
-          params: {
-            id: "evt-1",
-            http_headers: { Authorization: "Bearer secret-codex-token" },
-            usage: { inputTokens: 12, outputTokens: 8, totalTokens: 20 },
-          },
+  const cases = [
+    {
+      name: "generic authorization and usage",
+      frame: (secret: string) => ({
+        method: "thread/event",
+        params: {
+          http_headers: { Authorization: `Bearer ${secret}` },
+          usage: { inputTokens: 12, outputTokens: 8, totalTokens: 20 },
         },
-      });
-      yield* protocolLogger({
-        direction: "incoming",
-        stage: "raw",
-        payload:
-          '{"method":"thread/event","params":{"http_headers":{"Authorization":"Bearer secret-codex-token"}}}\n',
-      });
-
-      assert.equal(writes.length, 1);
-      assert.equal(writes[0]?.threadId, threadId);
-      assert.deepEqual(writes[0]?.event, {
-        provider: "codex",
-        protocol: "codex.app-server",
-        kind: "protocol",
-        providerSessionId,
-        event: {
-          direction: "incoming",
-          stage: "decoded",
-          payload: {
-            method: "thread/event",
-            params: {
-              id: "evt-1",
-              http_headers: { Authorization: "[REDACTED]" },
-              usage: { inputTokens: 12, outputTokens: 8, totalTokens: 20 },
+      }),
+      names: ["Authorization", '"inputTokens":12', '"totalTokens":20'],
+    },
+    {
+      name: "flat dotted outgoing start",
+      frame: (secret: string) => ({
+        method: "thread/start",
+        params: { config: { "mcp_servers.a.env.CUSTOM_KEY": secret } },
+      }),
+      names: ["mcp_servers.a.env.CUSTOM_KEY"],
+    },
+    {
+      name: "deeper dotted outgoing resume",
+      frame: (secret: string) => ({
+        method: "thread/resume",
+        params: { config: { "mcp_servers.a.http_headers": { "X-Custom-Key": secret } } },
+      }),
+      names: ["mcp_servers.a.http_headers", "X-Custom-Key"],
+    },
+    {
+      name: "nested incoming config/read layer",
+      frame: (secret: string) => ({
+        id: 1,
+        result: {
+          config: { mcp_servers: { a: { http_headers: { "X-Custom-Key": secret } } } },
+          layers: [{ config: { mcp_servers: { a: { env: { CUSTOM_KEY: secret } } } } }],
+        },
+      }),
+      names: ["mcp_servers", "X-Custom-Key", "CUSTOM_KEY", "layers"],
+    },
+    {
+      name: "granted connections as a Bot load sends them",
+      frame: (secret: string) => ({
+        method: "thread/resume",
+        params: {
+          config: {
+            mcp_servers: {
+              "t3c-2a2a2a2a-0000-4000-8000-00000000002a": {
+                command: "mail-mcp",
+                env: { MAIL_TOKEN: secret },
+              },
+              "t3c-2b2b2b2b-0000-4000-8000-00000000002b": {
+                url: "https://mail.example.test/mcp",
+                http_headers: { Authorization: `Bearer ${secret}` },
+              },
             },
           },
         },
-      });
-    }),
+      }),
+      names: ["t3c-2a2a2a2a-0000-4000-8000-00000000002a", "MAIL_TOKEN", "Authorization"],
+    },
+    {
+      name: "dotted table outgoing fork",
+      frame: (secret: string) => ({
+        method: "thread/fork",
+        params: { config: { "mcp_servers.a": { env: { CUSTOM_KEY: secret } } } },
+      }),
+      names: ["mcp_servers.a", "CUSTOM_KEY"],
+    },
+    {
+      name: "mixed paths and array wrappers",
+      frame: (secret: string) => ({
+        result: [
+          { config: [{ mcp_servers: { "a.env": { CUSTOM_KEY: [secret, { child: secret }] } } }] },
+        ],
+      }),
+      names: ["mcp_servers", "a.env", "CUSTOM_KEY", "child"],
+    },
+    {
+      name: "quoted and dotted server names",
+      frame: (secret: string) => ({
+        params: {
+          config: {
+            'mcp_servers."a.b".env.CUSTOM_KEY': secret,
+            "mcp_servers.'c.d'.http_headers": { "X-Custom-Key": secret },
+            "mcp_servers.e.f.env.CUSTOM_KEY": secret,
+            mcp_servers: { "g.h": { env: { CUSTOM_KEY: secret } } },
+          },
+        },
+      }),
+      names: ["a.b", "c.d", "e.f", "g.h", "CUSTOM_KEY", "X-Custom-Key"],
+    },
+    {
+      name: "escaped quoted paths and fully dotted headers",
+      frame: (secret: string) => ({
+        params: {
+          config: {
+            'mcp_servers."a\\"b.c".env.CUSTOM_KEY': secret,
+            'mcp_servers.a."\\u0065nv".CUSTOM_KEY': secret,
+            "mcp_servers.a.http_headers.X-Custom-Key": secret,
+          },
+        },
+      }),
+      names: ["CUSTOM_KEY", "X-Custom-Key"],
+    },
+    ...["nested", "encoded", "mixed", "dotted"].map((shape) => ({
+      name: `config-named MCP server ${shape}`,
+      frame: (secret: string) => {
+        const config =
+          shape === "dotted"
+            ? {
+                'mcp_servers."config".env.CUSTOM_KEY': secret,
+                'mcp_servers."config".http_headers.X-Custom-Key': secret,
+                'mcp_servers."config".bearer_token_env_var': "ACCOUNT_TOKEN",
+                'mcp_servers."config".env_http_headers.Authorization': "HEADER_ENV",
+              }
+            : {
+                mcp_servers: {
+                  config: {
+                    bearer_token_env_var: "ACCOUNT_TOKEN",
+                    env_http_headers: { Authorization: "HEADER_ENV" },
+                    ...(shape === "mixed"
+                      ? { "env.CUSTOM_KEY": secret, "http_headers.X-Custom-Key": secret }
+                      : { env: { CUSTOM_KEY: secret }, http_headers: { "X-Custom-Key": secret } }),
+                  },
+                },
+              };
+        return { result: { config: shape === "encoded" ? JSON.stringify(config) : config } };
+      },
+      names: ["mcp_servers", "CUSTOM_KEY", "X-Custom-Key", "ACCOUNT_TOKEN", "HEADER_ENV"],
+    })),
+    {
+      name: "encoded config and credential containers",
+      frame: (secret: string) => ({
+        result: {
+          config: JSON.stringify({
+            mcp_servers: {
+              a: {
+                command: "safe-command",
+                url: "https://example.invalid/mcp",
+                env_http_headers: { Authorization: "ACCOUNT_TOKEN" },
+                bearer_token_env_var: "ACCOUNT_TOKEN",
+                env: JSON.stringify({ CUSTOM_KEY: secret }),
+                http_headers: { "X-Custom-Key": { nested: secret } },
+              },
+            },
+          }),
+        },
+      }),
+      names: [
+        "mcp_servers",
+        "CUSTOM_KEY",
+        "X-Custom-Key",
+        "nested",
+        "safe-command",
+        "https://example.invalid/mcp",
+        "ACCOUNT_TOKEN",
+      ],
+    },
+    {
+      name: "encoded frame",
+      frame: (secret: string) => ({
+        result: JSON.stringify({ config: { mcp_servers: { a: { env: { CUSTOM_KEY: secret } } } } }),
+      }),
+      names: ["CUSTOM_KEY", "mcp_servers"],
+    },
+    ...["object", "encoded config", "encoded frame", "scalar container"].map((shape) => ({
+      name: `100 KiB ${shape}`,
+      frame: (secret: string) => {
+        const config = {
+          mcp_servers: {
+            a: {
+              env:
+                shape === "scalar container"
+                  ? secret.repeat(Math.ceil((100 * 1024) / secret.length))
+                  : { CUSTOM_KEY: secret.repeat(Math.ceil((100 * 1024) / secret.length)) },
+            },
+          },
+        };
+        return shape === "encoded frame"
+          ? { result: JSON.stringify({ config }) }
+          : { params: { config: shape === "encoded config" ? JSON.stringify(config) : config } };
+      },
+      names: ["mcp_servers"],
+    })),
+    {
+      name: "variable references and generic credential masks",
+      frame: (secret: string) => ({
+        method: "thread/event",
+        params: {
+          config: {
+            mcp_servers: {
+              a: {
+                env_http_headers: { Authorization: "ACCOUNT_TOKEN", "X-Custom-Key": "HEADER_ENV" },
+                bearer_token_env_var: "ACCOUNT_TOKEN",
+                "env_http_headers.Authorization": "ACCOUNT_TOKEN",
+                http_headers: { Authorization: secret },
+                env: { PASSWORD: secret },
+              },
+            },
+          },
+          apiKey: secret,
+          password: secret,
+          text: `Bearer ${secret}`,
+          usage: { inputTokens: 12, outputTokens: 8, totalTokens: 20 },
+        },
+      }),
+      names: [
+        "ACCOUNT_TOKEN",
+        "HEADER_ENV",
+        "Authorization",
+        "PASSWORD",
+        '"inputTokens":12',
+        '"totalTokens":20',
+      ],
+    },
+    {
+      name: "OAuth credentials and authorization URLs",
+      frame: (secret: string) => ({
+        params: {
+          config: {
+            "oauth.client_secret": secret,
+            oauth: {
+              code: secret,
+              authorization_code: secret,
+              code_verifier: secret,
+              device_code: secret,
+              user_code: secret,
+              client_id: "public-client-id",
+              scopes: ["calendar.readonly"],
+            },
+          },
+          oauth: {
+            client_secret: secret,
+            access_token: secret,
+            refresh_token: secret,
+            code: secret,
+          },
+        },
+        result: { authorizationUrl: `https://example.invalid/authorize?code=${secret}` },
+      }),
+      names: [
+        "oauth",
+        "client_secret",
+        "authorizationUrl",
+        "public-client-id",
+        "calendar.readonly",
+      ],
+    },
+    {
+      name: "OAuth method code",
+      frame: (secret: string) => ({
+        method: "mcpServer/oauth/login",
+        params: { code: secret, status: "waiting-for-authorization" },
+        result: { code: secret, authorization_code: secret, access_token: secret },
+      }),
+      names: ["mcpServer/oauth/login", "code", "waiting-for-authorization"],
+    },
+    ...["scalar", "array", "encoded array"].map((shape) => ({
+      name: `malformed OAuth table ${shape}`,
+      frame: (secret: string) => ({
+        params: {
+          config:
+            shape === "scalar"
+              ? { mcp_servers: { a: { oauth: `client_secret = "${secret}"` } } }
+              : { oauth: shape === "array" ? [secret] : JSON.stringify([secret]) },
+        },
+      }),
+      names: ["oauth", "[OMITTED: unparseable config]"],
+    })),
+    ...["nested", "encoded", "config wrapper", "server-map wrapper", "server wrapper"].map(
+      (shape) => ({
+        name: `malformed header-reference table array ${shape}`,
+        frame: (secret: string) => {
+          const references = { Authorization: secret };
+          const server = {
+            env_http_headers:
+              shape === "nested"
+                ? [references]
+                : shape === "encoded"
+                  ? JSON.stringify([references])
+                  : references,
+          };
+          return {
+            result: {
+              config:
+                shape === "config wrapper"
+                  ? [{ mcp_servers: { alpha: server } }]
+                  : {
+                      mcp_servers:
+                        shape === "server-map wrapper"
+                          ? [{ alpha: server }]
+                          : { alpha: shape === "server wrapper" ? [server] : server },
+                    },
+            },
+          };
+        },
+        names:
+          shape === "nested" || shape === "encoded"
+            ? ["env_http_headers", "[OMITTED: unparseable config]"]
+            : ["env_http_headers", "Authorization", "[REDACTED]"],
+      }),
+    ),
+    {
+      name: "encoded OAuth table with safe diagnostics",
+      frame: (secret: string) => ({
+        params: {
+          config: {
+            oauth: JSON.stringify({ client_secret: secret, client_id: "public-client-id" }),
+          },
+        },
+      }),
+      names: ["oauth", "client_secret", "public-client-id"],
+    },
+    ...["nested", "encoded config", "encoded frame"].map((shape) => ({
+      name: `reference-like dotted server names ${shape}`,
+      frame: (secret: string) => {
+        const server = {
+          env: { CUSTOM_KEY: secret },
+          http_headers: { "X-Custom-Key": secret },
+          oauth: { client_secret: secret, code_verifier: secret, client_id: "public-client-id" },
+        };
+        const config = {
+          mcp_servers: { "a.env_http_headers": server, "b.bearer_token_env_var": server },
+        };
+        return shape === "encoded frame"
+          ? { result: JSON.stringify({ config }) }
+          : { result: { config: shape === "encoded config" ? JSON.stringify(config) : config } };
+      },
+      names: [
+        "a.env_http_headers",
+        "b.bearer_token_env_var",
+        "CUSTOM_KEY",
+        "X-Custom-Key",
+        "public-client-id",
+      ],
+    })),
+    ...["object", "encoded config"].map((shape) => ({
+      name: `dotted OAuth credential descendants ${shape}`,
+      frame: (secret: string) => {
+        const config = Object.fromEntries([
+          ...["client_secret", "access_token", "refresh_token", "code_verifier", "code"].flatMap(
+            (field) => [
+              [`oauth.${field}.nested`, secret],
+              [`mcp_servers.a.oauth.${field}.nested`, secret],
+            ],
+          ),
+          ['mcp_servers."a.b".oauth."code_verifier".nested', secret],
+        ]);
+        return { params: { config: shape === "encoded config" ? JSON.stringify(config) : config } };
+      },
+      names: ["oauth.client_secret.nested", "mcp_servers.a.oauth.code.nested"],
+    })),
+    {
+      name: "structured reference slots and credential-like identifiers",
+      frame: (secret: string) => ({
+        params: {
+          config: {
+            mcp_servers: {
+              a: {
+                env_http_headers: {
+                  Authorization: "ACCOUNT_TOKEN",
+                  "X-Custom-Key": { nested: secret },
+                },
+                "env_http_headers.X-Other": [secret],
+                bearer_token_env_var: { nested: secret },
+              },
+              client_secret: {
+                env_http_headers: { env: "HEADER_ENV" },
+                bearer_token_env_var: "IDENTIFIER_ENV",
+              },
+            },
+          },
+        },
+      }),
+      names: ["ACCOUNT_TOKEN", "X-Custom-Key", "X-Other", "HEADER_ENV", "IDENTIFIER_ENV"],
+    },
+    ...[
+      '{"mcp_servers":{"a":{"env":{"CUSTOM_KEY":',
+      "[mcp_servers.a.env]\nCUSTOM_KEY = ",
+      '{"mcp_servers."unclosed.env":',
+    ].map((prefix, index) => ({
+      name: `malformed config ${index}`,
+      frame: (secret: string) => ({ result: { config: `${prefix}${secret}` } }),
+      names: ["[OMITTED: unparseable config]"],
+    })),
+    {
+      name: "malformed encoded frame with recognizable config",
+      frame: (secret: string) => ({
+        result: `{"config":{"mcp_servers":{"a":{"env":{"CUSTOM_KEY":"${secret}`,
+      }),
+      names: ["[OMITTED: unparseable config]"],
+    },
+    {
+      name: "recognizable unrecognized encoded config",
+      frame: (secret: string) => ({ result: `[mcp_servers.a.env]\nCUSTOM_KEY = ${secret}` }),
+      names: ["[OMITTED: unparseable config]"],
+    },
+    {
+      name: "malformed dotted config path",
+      frame: (secret: string) => ({ params: { config: { 'mcp_servers."unclosed.env': secret } } }),
+      names: ["[OMITTED: unparseable config]"],
+    },
+    {
+      name: "ordinary tool text and dotted keys",
+      frame: (secret: string) => ({
+        params: { apiKey: secret },
+        result: {
+          text: "Documentation: mcp_servers.a.env.CUSTOM_KEY is a config path.",
+          "tool.mcp_servers.a.env.CUSTOM_KEY": "ordinary dotted tool key",
+          code: "ordinary program code",
+        },
+      }),
+      names: [
+        "Documentation: mcp_servers.a.env.CUSTOM_KEY is a config path.",
+        "ordinary dotted tool key",
+        "ordinary program code",
+      ],
+    },
+  ];
+
+  it.effect.each(cases)(
+    "logs decoded app-server frames once with credentials redacted: $name",
+    ({ name, frame, names }) =>
+      Effect.gen(function* () {
+        const writes: Array<{ readonly event: unknown; readonly threadId: ThreadId | null }> = [];
+        const logger: ProviderEventLoggers.EventNdjsonLogger = {
+          filePath: "/tmp/events.log",
+          write: (event, threadId) =>
+            Effect.sync(() => {
+              writes.push({ event, threadId });
+            }),
+          close: () => Effect.void,
+        };
+        const threadId = ThreadId.make("thread-1");
+        const providerSessionId = ProviderSessionId.make("provider-session-1");
+        const protocolLogger = CodexAdapterV2.makeCodexAppServerProtocolLogger({
+          nativeEventLogger: logger,
+          threadId,
+          providerSessionId,
+        });
+        assert.notEqual(protocolLogger, undefined);
+        if (protocolLogger === undefined) return;
+
+        const secret = "fixture-credential-value";
+        const payload = frame(secret);
+        const original = encodeUnknownJson(payload);
+        for (const direction of ["incoming", "outgoing"] as const) {
+          const event = { direction, stage: "decoded" as const, payload };
+          yield* protocolLogger(event);
+          yield* protocolLogger({ direction, stage: "raw", payload: original });
+          const write = writes.at(-1);
+          const serialized = encodeUnknownJson(write?.event);
+          assert.equal(
+            serialized.includes(secret.slice(0, 12)),
+            false,
+            `${name}: credential retained`,
+          );
+          for (const safeName of names) {
+            assert.equal(serialized.includes(safeName), true, `${name}: safe name missing`);
+          }
+          if (!names.includes("[OMITTED: unparseable config]")) {
+            assert.equal(serialized.includes("[OMITTED:"), false, `${name}: unexpected omission`);
+          }
+          assert.isBelow(serialized.length, 64 * 1024);
+          assert.equal(write?.threadId, threadId);
+          assert.equal(encodeUnknownJson(payload) === original, true, `${name}: input mutated`);
+          assert.equal(serialized.includes(`"direction":"${direction}"`), true);
+          assert.equal(serialized.includes(`"providerSessionId":"${providerSessionId}"`), true);
+          assert.equal(serialized.includes('"protocol":"codex.app-server"'), true);
+        }
+        assert.equal(writes.length, 2);
+      }),
   );
 });
 
@@ -601,6 +1046,7 @@ function codexReplayPreamble(input: {
   readonly prompt: string;
   readonly sentPrompt?: string;
   readonly effort?: string;
+  readonly additionalContext?: Readonly<Record<string, { readonly kind: string; value: string }>>;
 }): Array<CodexReplay.CodexAppServerReplayEntry> {
   return [
     {
@@ -700,6 +1146,9 @@ function codexReplayPreamble(input: {
           sandboxPolicy: { type: "dangerFullAccess" },
           summary: "detailed",
           ...(input.effort === undefined ? {} : { effort: input.effort }),
+          ...(input.additionalContext === undefined
+            ? {}
+            : { additionalContext: input.additionalContext }),
           collaborationMode: {
             mode: "default",
             settings: {
@@ -1229,6 +1678,89 @@ describe("CodexAdapterV2 session initialize", () => {
         ),
       ),
     ),
+  );
+});
+
+describe("CodexAdapterV2 store start permit", () => {
+  it.effect.each(["explicit", "environment"] as const)(
+    "holds the permit of the store the process launches on with %s CODEX_HOME",
+    (mode) =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: "codex-store-permit-" });
+        const home = path.join(root, "home");
+        const accountHome = path.join(root, "account-store");
+        yield* fileSystem.makeDirectory(home);
+        yield* fileSystem.makeDirectory(accountHome);
+        const accountPermit = yield* codexStoreStartPermit(accountHome);
+        const defaultPermit = yield* codexStoreStartPermit(path.join(home, ".codex"));
+        const isHeld = (permit: typeof accountPermit) =>
+          permit.takeIfAvailable(1).pipe(
+            Effect.tap((free) => (free ? permit.release(1) : Effect.void)),
+            Effect.map((free) => !free),
+          );
+        const launched = yield* Deferred.make<{
+          readonly accountStoreHeld: boolean;
+          readonly defaultStoreHeld: boolean;
+          readonly launchHome: string | undefined;
+        }>();
+        const instanceId = ProviderInstanceId.make("codex-store-permit");
+        const adapter = yield* CodexAdapterV2.createCodexAdapterV2({
+          instanceId,
+          displayName: undefined,
+          enabled: true,
+          environment: [{ name: "CODEX_HOME", value: accountHome, sensitive: false }],
+          config: {
+            ...DEFAULT_CODEX_SETTINGS,
+            homePath: mode === "explicit" ? accountHome : "",
+            shadowHomePath: "",
+          },
+        }).pipe(
+          Effect.provideService(HostProcess.HomeDirectory, home),
+          Effect.provideService(HostProcess.Environment, {}),
+          Effect.provideService(CodexAdapterV2.CodexAppServerClientFactory, {
+            open: (launch) =>
+              Effect.all({
+                accountStoreHeld: isHeld(accountPermit),
+                defaultStoreHeld: isHeld(defaultPermit),
+                launchHome: Effect.succeed(
+                  launch.settings.homePath || launch.environment.CODEX_HOME,
+                ),
+              }).pipe(
+                Effect.flatMap((observed) => Deferred.succeed(launched, observed)),
+                Effect.andThen(Effect.die("stop before spawning Codex")),
+              ),
+          }),
+        );
+
+        yield* adapter
+          .openSession({
+            threadId: ThreadId.make("thread-store-permit"),
+            providerSessionId: ProviderSessionId.make("session-store-permit"),
+            modelSelection: { instanceId, model: "gpt-5.4" },
+            runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+          })
+          .pipe(Effect.scoped, Effect.exit);
+
+        assert.deepStrictEqual(yield* Deferred.await(launched), {
+          accountStoreHeld: true,
+          defaultStoreHeld: false,
+          launchHome: accountHome,
+        });
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(
+            Layer.effect(
+              ServerConfig.ServerConfig,
+              ProviderReplayHarness.makeReplayServerConfig("store-permit").pipe(Effect.orDie),
+            ),
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+          ).pipe(Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+        ),
+      ),
   );
 });
 
@@ -3028,6 +3560,1495 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         ),
       ),
     ),
+  );
+
+  /** Frames of a Home seal on Codex 0.166.0, the first measured version. */
+  const codexHomeSealReplay = (scenario: string, nativeThreadId: string) => {
+    const step = (
+      id: number,
+      method: string,
+      params: unknown,
+      result: unknown,
+    ): Array<CodexReplay.CodexAppServerReplayEntry> => [
+      { type: "expect_outbound", label: `${method} ${id}`, frame: { id, method, params } },
+      { type: "emit_inbound", label: `${method} ${id}`, frame: { id, result } },
+    ];
+    return {
+      setMcpSession: Effect.gen(function* () {
+        yield* (yield* McpProviderSessions.McpProviderSessions).set({
+          environmentId: EnvironmentId.make("environment-codex-home-seal"),
+          threadId: ThreadId.make(`thread-${scenario}`),
+          providerSessionId: `provider-session-${scenario}`,
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          endpoint: "http://127.0.0.1:43123/mcp",
+          authorizationHeader: "Bearer home-seal-token",
+          browserToolsAvailable: false,
+        });
+      }),
+      onMeasuredVersion: (entries: ReadonlyArray<CodexReplay.CodexAppServerReplayEntry>) =>
+        entries.map((entry) =>
+          entry.type === "emit_inbound" && entry.label === "initialize"
+            ? {
+                ...entry,
+                frame: {
+                  id: 1,
+                  result: {
+                    userAgent: "codex_cli_rs/0.166.0",
+                    codexHome: "/tmp/codex-home",
+                    platformFamily: "unix",
+                    platformOs: "macos",
+                  },
+                },
+              }
+            : entry,
+        ),
+      step,
+      resumed: { thread: { id: nativeThreadId, updatedAt: 1782622450 } },
+      sealedResume: {
+        threadId: nativeThreadId,
+        excludeTurns: true,
+        sandbox: "read-only",
+        approvalPolicy: "never",
+        approvalsReviewer: "user",
+        config: {
+          ...CodexAdapterV2.CODEX_THREAD_CONFIG,
+          "features.memories": false,
+          "memories.use_memories": false,
+          "memories.generate_memories": false,
+          ...Object.fromEntries(
+            [
+              "shell_tool",
+              "unified_exec",
+              "multi_agent",
+              "multi_agent_v2",
+              "view_image",
+              "goals",
+              "apps",
+              "plugins",
+              "remote_plugin",
+              "hooks",
+              "browser_use",
+              "browser_use_external",
+              "computer_use",
+              "in_app_browser",
+              "in_app_local_automation",
+              "image_generation",
+              "tool_suggest",
+              "skill_mcp_dependency_install",
+            ].map((name) => [`features.${name}`, false]),
+          ),
+          web_search: "disabled",
+          notify: [],
+        },
+      },
+      ordinaryResume: {
+        threadId: nativeThreadId,
+        excludeTurns: true,
+        config: CodexAdapterV2.CODEX_THREAD_CONFIG,
+      },
+      // As Codex 0.166.0 reports them: `launch` comes from launch arguments, not a config file.
+      configRead: {
+        config: {
+          mcp_servers: {
+            probe: {
+              command: "probe",
+              args: ["serve"],
+              environment_id: "local",
+              enabled: true,
+              tool_timeout_sec: null,
+            },
+            launch: {
+              command: "node",
+              args: ["launch.mjs"],
+              environment_id: "local",
+              enabled: true,
+              tool_timeout_sec: null,
+            },
+            remote: {
+              url: "https://mcp.example.test/mcp",
+              environment_id: "local",
+              enabled: true,
+              tool_timeout_sec: null,
+            },
+            "t3-code": {},
+          },
+        },
+        origins: {},
+      },
+      // Codex refuses the whole load for an entry with no transport, which a launch-argument
+      // server's entry would be without its own, or for a reported null it reads back as "".
+      disabledUserServers: {
+        probe: { command: "probe", enabled: false },
+        launch: { command: "node", enabled: false },
+        remote: { url: "https://mcp.example.test/mcp", enabled: false },
+      },
+      sealedPolicy: {
+        ...CODEX_TEST_RUNTIME_POLICY,
+        nativeMemory: "disabled",
+        nativeTools: "t3BotOnly",
+      } as const,
+      readOnlyPolicy: {
+        ...CODEX_TEST_RUNTIME_POLICY,
+        nativeMemory: "disabled",
+        nativeTools: "readOnly",
+      } as const,
+      // The shell stays for reading; everything that acts outside the sandbox is off.
+      readOnlyLoad: {
+        sandbox: "read-only",
+        approvalPolicy: "never",
+        approvalsReviewer: "user",
+        config: {
+          ...CodexAdapterV2.CODEX_THREAD_CONFIG,
+          "features.memories": false,
+          "memories.use_memories": false,
+          "memories.generate_memories": false,
+          ...Object.fromEntries(
+            [
+              "multi_agent",
+              "multi_agent_v2",
+              "goals",
+              "apps",
+              "plugins",
+              "remote_plugin",
+              "hooks",
+              "browser_use",
+              "browser_use_external",
+              "computer_use",
+              "in_app_browser",
+              "in_app_local_automation",
+              "image_generation",
+              "tool_suggest",
+              "skill_mcp_dependency_install",
+            ].map((name) => [`features.${name}`, false]),
+          ),
+          notify: [],
+        },
+      },
+    };
+  };
+
+  it.effect("seals a Home load after releasing it, and releases it again for ordinary work", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const scenario = "codex-home-seal";
+        const nativeThreadId = `native-${scenario}-thread`;
+        const seal = codexHomeSealReplay(scenario, nativeThreadId);
+        const { step, resumed, configRead, sealedResume, ordinaryResume, sealedPolicy } = seal;
+        yield* seal.setMcpSession;
+        const preamble = seal.onMeasuredVersion(
+          codexReplayPreamble({
+            nativeThreadId,
+            nativeTurnId: "unused-turn",
+            prompt: "unused-prompt",
+          }).slice(0, 5),
+        );
+        const userDirect = {
+          ...configRead,
+          config: {
+            mcp_servers: {
+              ...configRead.config.mcp_servers,
+              "t3-code-direct": { url: "http://user" },
+            },
+          },
+        };
+        const transcript = makeCodexReplayTranscript({
+          scenario,
+          entries: [
+            ...preamble,
+            // Normal to sealed: release, read the user's servers, load sealed.
+            ...step(
+              3,
+              "thread/unsubscribe",
+              { threadId: nativeThreadId },
+              { status: "unsubscribed" },
+            ),
+            ...step(4, "config/read", { includeLayers: false, cwd: "/workspace" }, configRead),
+            ...step(5, "thread/resume", sealedResume, resumed),
+            // Read again, so a server added while it loaded is found.
+            ...step(6, "config/read", { includeLayers: false, cwd: "/workspace" }, configRead),
+            {
+              type: "expect_outbound",
+              label: "thread/memoryMode/set 7",
+              frame: {
+                id: 7,
+                method: "thread/memoryMode/set",
+                params: { threadId: nativeThreadId, mode: "disabled" },
+              },
+            },
+            // A request from the sealed thread is declined at once, before the load returns.
+            {
+              type: "emit_inbound",
+              label: "sealed approval",
+              frame: {
+                id: 100,
+                method: "item/fileChange/requestApproval",
+                params: {
+                  threadId: nativeThreadId,
+                  turnId: "unknown-turn",
+                  itemId: "item-sealed",
+                  startedAtMs: 2,
+                  reason: null,
+                  grantRoot: null,
+                },
+              },
+            },
+            {
+              type: "expect_outbound",
+              label: "sealed approval declined",
+              frame: { id: 100, result: { decision: "decline" } },
+            },
+            {
+              type: "emit_inbound",
+              label: "thread/memoryMode/set 7",
+              frame: { id: 7, result: {} },
+            },
+            // Same seal again: no release.
+            // This time the user's own config also defines T3's direct server name.
+            ...step(8, "config/read", { includeLayers: false, cwd: "/workspace" }, userDirect),
+            ...step(9, "thread/resume", sealedResume, resumed),
+            ...step(10, "config/read", { includeLayers: false, cwd: "/workspace" }, userDirect),
+            ...step(
+              11,
+              "thread/memoryMode/set",
+              { threadId: nativeThreadId, mode: "disabled" },
+              {},
+            ),
+            // Sealed to normal: release, then an ordinary load.
+            ...step(
+              12,
+              "thread/unsubscribe",
+              { threadId: nativeThreadId },
+              { status: "unsubscribed" },
+            ),
+            ...step(13, "thread/resume", ordinaryResume, resumed),
+            // A sealed load that fails after its release leaves the thread unknown.
+            ...step(
+              14,
+              "thread/unsubscribe",
+              { threadId: nativeThreadId },
+              { status: "unsubscribed" },
+            ),
+            ...step(15, "config/read", { includeLayers: false, cwd: "/workspace" }, configRead),
+            {
+              type: "expect_outbound",
+              label: "thread/resume 16",
+              frame: { id: 16, method: "thread/resume", params: sealedResume },
+            },
+            {
+              type: "emit_inbound",
+              label: "thread/resume 16",
+              frame: { id: 16, error: { code: -32603, message: "resume failed" } },
+            },
+            // Unknown is released before the next ordinary load too.
+            ...step(
+              17,
+              "thread/unsubscribe",
+              { threadId: nativeThreadId },
+              { status: "notLoaded" },
+            ),
+            ...step(18, "thread/resume", ordinaryResume, resumed),
+          ],
+        });
+        const resumeParams: Array<unknown> = [];
+        const harness = yield* makeCodexReplayHarness(transcript, undefined, (method, params) =>
+          Effect.sync(() => {
+            if (method === "thread/resume") resumeParams.push(params);
+          }),
+        );
+        const resume = (runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy) =>
+          harness.runtime.resumeThread({
+            providerThread: harness.providerThread,
+            modelSelection: CODEX_TEST_MODEL_SELECTION,
+            runtimePolicy,
+          });
+        const turnWith = (runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy) =>
+          Effect.gen(function* () {
+            const turn = makeCodexTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now: yield* DateTime.now,
+              attemptId: RunAttemptId.make("seal-check"),
+              text: "work",
+            });
+            return yield* harness.runtime.startTurn({ ...turn, runtimePolicy }).pipe(Effect.flip);
+          });
+
+        yield* resume(sealedPolicy);
+        assert.equal(
+          (yield* turnWith(CODEX_TEST_RUNTIME_POLICY))._tag,
+          "ProviderAdapterSealRefusedError",
+        );
+        yield* resume(sealedPolicy);
+        yield* resume(CODEX_TEST_RUNTIME_POLICY);
+        assert.equal((yield* turnWith(sealedPolicy))._tag, "ProviderAdapterSealRefusedError");
+        assert.equal(
+          (yield* Effect.flip(resume(sealedPolicy)))._tag,
+          "ProviderAdapterResumeThreadError",
+        );
+        assert.equal(
+          (yield* turnWith(CODEX_TEST_RUNTIME_POLICY))._tag,
+          "ProviderAdapterSealRefusedError",
+        );
+        yield* resume(CODEX_TEST_RUNTIME_POLICY);
+
+        // The sealed load keeps t3_bot and T3 Code's reads and turns the user's servers off.
+        const sealedServers = (resumeParams[0] as { config: { mcp_servers: unknown } }).config
+          .mcp_servers;
+        const sealedTools = [
+          "t3_bot",
+          "t3_thread_read",
+          "t3_thread_list",
+          "t3_thread_search",
+          "list_scheduled_tasks",
+          "t3_project_list",
+          "t3_project_read",
+          "t3_environment_read",
+          "t3_environment_links",
+          "t3_worktree_list",
+          "list_thread_pull_requests",
+        ];
+        assert.deepEqual(sealedServers, {
+          ...seal.disabledUserServers,
+          "t3-code": {
+            url: "http://127.0.0.1:43123/mcp",
+            tool_timeout_sec: 65 * 60,
+            http_headers: { Authorization: "Bearer home-seal-token", "t3-sealed-load": "1" },
+            enabled_tools: sealedTools,
+            tools: Object.fromEntries(
+              sealedTools.map((name) => [name, { approval_mode: "approve" }]),
+            ),
+          },
+        });
+        assert.deepEqual(
+          (resumeParams[1] as { config: { mcp_servers: Record<string, unknown> } }).config
+            .mcp_servers["t3-code-direct"],
+          { url: "http://user", enabled: false },
+        );
+        assert.notProperty((resumeParams[2] as { config: object }).config, "mcp_servers");
+      }).pipe(
+        Effect.provideService(HostProcess.Platform, "darwin"),
+        Effect.provide(
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            NodeCrypto.layer,
+          ),
+        ),
+      ),
+    ),
+  );
+
+  const privateMail = McpConnectionId.make("2a2a2a2a-0000-4000-8000-00000000002a");
+  const workMail = McpConnectionId.make("2b2b2b2b-0000-4000-8000-00000000002b");
+  /** What the catalog delivers, as the test sets it; each value stands for a credential. */
+  const grantedLoad = (token: string): McpConnectionDelivery.McpConnectionLoad => ({
+    identity: `identity-${token}`,
+    connections: [
+      {
+        id: privateMail,
+        label: "Private mail",
+        transport: {
+          type: "stdio",
+          command: "mail-mcp",
+          args: ["--stdio"],
+          env: Redacted.make({ MAIL_TOKEN: token }),
+        },
+      },
+      {
+        id: workMail,
+        label: "Work mail",
+        transport: {
+          type: "http",
+          url: "https://mail.example.test/mcp",
+          headers: Redacted.make({ Authorization: "Bearer work-header" }),
+        },
+      },
+    ],
+  });
+  type DeliveryResult = Effect.Effect<
+    McpConnectionDelivery.McpConnectionLoad,
+    McpConnectionDelivery.McpConnectionDeliveryError
+  >;
+  const makeDelivery = Effect.gen(function* () {
+    const current = yield* Ref.make<DeliveryResult>(Effect.succeed(grantedLoad("token-1")));
+    return {
+      set: (next: DeliveryResult) => Ref.set(current, next),
+      layer: Layer.succeed(McpConnectionDelivery.McpConnectionDelivery, {
+        resolve: () => Effect.flatten(Ref.get(current)),
+        markRefused: () => Effect.void,
+      }),
+    };
+  });
+
+  it.effect(
+    "loads exactly a Bot's granted connections and reloads only when what they resolve to changes",
+    () =>
+      Effect.gen(function* () {
+        const delivery = yield* makeDelivery;
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const scenario = "codex-grant-load";
+            const nativeThreadId = `native-${scenario}-thread`;
+            const seal = codexHomeSealReplay(scenario, nativeThreadId);
+            const { step, resumed, configRead, readOnlyLoad } = seal;
+            yield* seal.setMcpSession;
+            const preamble = seal.onMeasuredVersion(
+              codexReplayPreamble({
+                nativeThreadId,
+                nativeTurnId: "unused-turn",
+                prompt: "unused-prompt",
+              }).slice(0, 5),
+            );
+            const grantResume = {
+              threadId: nativeThreadId,
+              excludeTurns: true,
+              config: {
+                ...CodexAdapterV2.CODEX_THREAD_CONFIG,
+                "features.memories": false,
+                "memories.use_memories": false,
+                "memories.generate_memories": false,
+                "features.apps": false,
+                "features.plugins": false,
+                "features.remote_plugin": false,
+                "features.skill_mcp_dependency_install": false,
+              },
+            };
+            const load = (first: number, release: boolean, params: unknown) => [
+              ...(release
+                ? step(
+                    first,
+                    "thread/unsubscribe",
+                    { threadId: nativeThreadId },
+                    { status: "unsubscribed" },
+                  )
+                : []),
+              ...step(
+                release ? first + 1 : first,
+                "config/read",
+                { includeLayers: false, cwd: "/workspace" },
+                configRead,
+              ),
+              ...step(release ? first + 2 : first + 1, "thread/resume", params, resumed),
+              ...step(
+                release ? first + 3 : first + 2,
+                "config/read",
+                { includeLayers: false, cwd: "/workspace" },
+                configRead,
+              ),
+              ...step(
+                release ? first + 4 : first + 3,
+                "thread/memoryMode/set",
+                { threadId: nativeThreadId, mode: "disabled" },
+                {},
+              ),
+            ];
+            const transcript = makeCodexReplayTranscript({
+              scenario,
+              entries: [
+                ...preamble,
+                // Ordinary to granted: release, read the user's servers, load, read again.
+                ...load(3, true, grantResume),
+                // The same connections resolving to the same values: no release.
+                ...load(8, false, grantResume),
+                // A rotated credential releases before the reload.
+                ...load(12, true, grantResume),
+                // No changes keeps its grants under the read-only seal.
+                ...load(17, true, {
+                  threadId: nativeThreadId,
+                  excludeTurns: true,
+                  ...readOnlyLoad,
+                }),
+                // The Bot's own-servers switch releases and loads without turning the user's off.
+                ...step(
+                  22,
+                  "thread/unsubscribe",
+                  { threadId: nativeThreadId },
+                  { status: "unsubscribed" },
+                ),
+                ...step(23, "thread/resume", grantResume, resumed),
+                ...step(
+                  24,
+                  "thread/memoryMode/set",
+                  { threadId: nativeThreadId, mode: "disabled" },
+                  {},
+                ),
+                // Switching it off again releases and turns them off.
+                ...load(25, true, grantResume),
+              ],
+            });
+            const resumeParams: Array<{ config: { mcp_servers: Record<string, unknown> } }> = [];
+            const harness = yield* makeCodexReplayHarness(transcript, undefined, (method, params) =>
+              Effect.sync(() => {
+                if (method === "thread/resume") resumeParams.push(params as never);
+              }),
+            );
+            const grantPolicy = {
+              ...CODEX_TEST_RUNTIME_POLICY,
+              nativeMemory: "disabled",
+              mcpConnections: [privateMail, workMail],
+            } as const;
+            const resume = (runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy) =>
+              harness.runtime.resumeThread({
+                providerThread: harness.providerThread,
+                modelSelection: CODEX_TEST_MODEL_SELECTION,
+                runtimePolicy,
+              });
+            const turnWith = (runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy) =>
+              Effect.gen(function* () {
+                const turn = makeCodexTestTurnInput({
+                  threadId: harness.threadId,
+                  providerThread: harness.providerThread,
+                  now: yield* DateTime.now,
+                  attemptId: RunAttemptId.make("grant-check"),
+                  text: "check my private mail",
+                });
+                return yield* harness.runtime
+                  .startTurn({ ...turn, runtimePolicy })
+                  .pipe(Effect.flip);
+              });
+
+            yield* resume(grantPolicy);
+            yield* resume(grantPolicy);
+            yield* delivery.set(Effect.succeed(grantedLoad("token-2")));
+            // A turn never runs on a thread still loaded with the earlier credential.
+            const stale = yield* turnWith(grantPolicy);
+            assert.equal(stale._tag, "ProviderAdapterMcpConnectionsRefusedError");
+            yield* resume(grantPolicy);
+            assert.equal(
+              (yield* turnWith(CODEX_TEST_RUNTIME_POLICY))._tag,
+              "ProviderAdapterMcpConnectionsRefusedError",
+            );
+            // A broken binding refuses before any native call, naming the connection only.
+            yield* delivery.set(
+              Effect.fail(
+                new McpConnectionDelivery.McpConnectionDeliveryError({
+                  reason: "invalid",
+                  connectionId: privateMail,
+                  label: "Private mail",
+                  problem: { reason: "binding-unresolved", binding: "MAIL_TOKEN" },
+                }),
+              ),
+            );
+            const broken = yield* resume(grantPolicy).pipe(Effect.flip);
+            assert.equal(
+              broken.message,
+              '"Private mail" can\'t be used: MAIL_TOKEN could not be read from its secret provider. Fix it in Settings → MCP connections, or remove it from this Bot. Nothing ran.',
+            );
+            yield* delivery.set(Effect.succeed(grantedLoad("token-2")));
+            yield* resume({ ...seal.readOnlyPolicy, mcpConnections: [privateMail, workMail] });
+            const ownServersPolicy = { ...grantPolicy, userMcpServers: "enabled" } as const;
+            yield* resume(ownServersPolicy);
+            // A turn never runs with the user's servers on a thread loaded without them, or back.
+            assert.equal(
+              (yield* turnWith(grantPolicy))._tag,
+              "ProviderAdapterMcpConnectionsRefusedError",
+            );
+            yield* resume(grantPolicy);
+            assert.equal(
+              (yield* turnWith(ownServersPolicy))._tag,
+              "ProviderAdapterMcpConnectionsRefusedError",
+            );
+
+            const granted = {
+              [`t3c-${privateMail}`]: {
+                command: "mail-mcp",
+                args: ["--stdio"],
+                env: { MAIL_TOKEN: "token-1" },
+              },
+              [`t3c-${workMail}`]: {
+                url: "https://mail.example.test/mcp",
+                http_headers: { Authorization: "Bearer work-header" },
+              },
+            };
+            const servers = resumeParams[0]!.config.mcp_servers;
+            assert.deepEqual(
+              Object.fromEntries(
+                Object.entries(servers).filter(([name]) => !name.startsWith("t3-code")),
+              ),
+              { ...seal.disabledUserServers, ...granted },
+            );
+            assert.hasAllKeys(servers, [
+              ...Object.keys(seal.disabledUserServers),
+              ...Object.keys(granted),
+              "t3-code",
+              "t3-code-direct",
+            ]);
+            assert.deepEqual(resumeParams[2]!.config.mcp_servers[`t3c-${privateMail}`], {
+              command: "mail-mcp",
+              args: ["--stdio"],
+              env: { MAIL_TOKEN: "token-2" },
+            });
+            assert.deepEqual(
+              Object.keys(resumeParams[3]!.config.mcp_servers).filter((name) =>
+                name.startsWith("t3c-"),
+              ),
+              Object.keys(granted),
+            );
+            const withOwnServers = resumeParams[4]!.config.mcp_servers;
+            assert.hasAllKeys(withOwnServers, [
+              ...Object.keys(granted),
+              "t3-code",
+              "t3-code-direct",
+            ]);
+            assert.deepEqual(
+              Object.fromEntries(
+                Object.entries(resumeParams[5]!.config.mcp_servers).filter(
+                  ([name]) => !name.startsWith("t3"),
+                ),
+              ),
+              seal.disabledUserServers,
+            );
+          }).pipe(
+            Effect.provideService(HostProcess.Platform, "darwin"),
+            Effect.provide(
+              Layer.mergeAll(
+                IdAllocator.layer,
+                McpProviderSessions.layer,
+                NodeServices.layer,
+                NodeCrypto.layer,
+                delivery.layer,
+              ),
+            ),
+          ),
+        );
+      }),
+  );
+
+  it.effect("names the accounts a turn loaded, and a failed one without its error", () => {
+    const refused: Array<readonly [McpConnectionId, "startup" | "call"]> = [];
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const scenario = "codex-grant-startup-failed";
+        const nativeThreadId = `native-${scenario}-thread`;
+        const nativeTurnId = `native-${scenario}-turn`;
+        const seal = codexHomeSealReplay(scenario, nativeThreadId);
+        const { step, resumed, configRead } = seal;
+        // Granted but not delivered, as a signed-out OAuth account is: the model is not told of it.
+        const lapsedMail = McpConnectionId.make("2e2e2e2e-0000-4000-8000-00000000002e");
+        const preamble = seal.onMeasuredVersion(
+          codexReplayPreamble({
+            nativeThreadId,
+            nativeTurnId,
+            prompt: "check my mail",
+            additionalContext: {
+              t3_bot_01: {
+                kind: "application",
+                value: [
+                  "Mail Bot canon.",
+                  "",
+                  "MCP connections granted to you, each a separate account. Use the one the request is about:",
+                  '- "Private mail": tools in the mcp__t3c_2a2a2a2a_0000_4000_8000_00000000002a namespace',
+                  '- "Work mail": tools in the mcp__t3c_2b2b2b2b_0000_4000_8000_00000000002b namespace',
+                ].join("\n"),
+              },
+            },
+          }),
+        );
+        const secret = "MAIL_TOKEN=sk-live-51NativeLeak rejected by mail.example.test";
+        const failed = (connection: McpConnectionId) =>
+          ({
+            type: "emit_inbound",
+            label: `startup failed ${connection}`,
+            frame: {
+              method: "mcpServer/startupStatus/updated",
+              params: {
+                threadId: nativeThreadId,
+                name: `t3c-${connection}`,
+                status: "failed",
+                error: `${secret} (${connection})`,
+              },
+            },
+          }) as const;
+        // A call's result as Codex 0.167 reports a server's 401 (measured, T3B-15 evidence 3b).
+        const call = (
+          id: string,
+          server: string,
+          status: "completed" | "failed",
+          result: { readonly text: string; readonly challenged: boolean },
+        ) =>
+          ({
+            type: "emit_inbound",
+            label: `call ${id}`,
+            frame: {
+              method: "item/completed",
+              params: {
+                threadId: nativeThreadId,
+                turnId: nativeTurnId,
+                completedAtMs: 1,
+                item: {
+                  type: "mcpToolCall",
+                  id,
+                  server,
+                  tool: "whoami",
+                  status,
+                  arguments: {},
+                  appContext: null,
+                  mcpAppUi: null,
+                  pluginId: null,
+                  readOnlyHint: true,
+                  result: {
+                    content: [{ type: "text", text: result.text }],
+                    structuredContent: null,
+                    ...(result.challenged
+                      ? { _meta: { "mcp/www_authenticate": ["[REDACTED]"] } }
+                      : {}),
+                  },
+                  error: null,
+                  durationMs: 1,
+                },
+              },
+            },
+          }) as const;
+        const transcript = makeCodexReplayTranscript({
+          scenario,
+          entries: [
+            ...preamble.slice(0, 5),
+            ...step(
+              3,
+              "thread/unsubscribe",
+              { threadId: nativeThreadId },
+              { status: "unsubscribed" },
+            ),
+            ...step(4, "config/read", { includeLayers: false, cwd: "/workspace" }, configRead),
+            ...step(
+              5,
+              "thread/resume",
+              {
+                threadId: nativeThreadId,
+                excludeTurns: true,
+                config: {
+                  ...CodexAdapterV2.CODEX_THREAD_CONFIG,
+                  "features.memories": false,
+                  "memories.use_memories": false,
+                  "memories.generate_memories": false,
+                  "features.apps": false,
+                  "features.plugins": false,
+                  "features.remote_plugin": false,
+                  "features.skill_mcp_dependency_install": false,
+                },
+              },
+              resumed,
+            ),
+            // Codex starts the thread's servers as it loads, before any turn can show a notice.
+            failed(privateMail),
+            ...step(6, "config/read", { includeLayers: false, cwd: "/workspace" }, configRead),
+            ...step(7, "thread/memoryMode/set", { threadId: nativeThreadId, mode: "disabled" }, {}),
+            withReplayRequestId(preamble[5]!, 8),
+            withReplayRequestId(preamble[6]!, 8),
+            preamble[7]!,
+            failed(workMail),
+            // Only a granted server's refused token counts: not other failures, not a user server.
+            call("auth-text", `t3c-${privateMail}`, "failed", {
+              text: "Authentication required",
+              challenged: false,
+            }),
+            call("auth-meta", `t3c-${workMail}`, "failed", { text: "401", challenged: true }),
+            call("crashed", `t3c-${privateMail}`, "failed", {
+              text: "mailbox locked",
+              challenged: false,
+            }),
+            call("user-server", "my-mail", "failed", {
+              text: "Authentication required",
+              challenged: true,
+            }),
+            call("worked", `t3c-${privateMail}`, "completed", {
+              text: "Authentication required",
+              challenged: false,
+            }),
+            {
+              type: "emit_inbound",
+              label: "turn/completed",
+              frame: {
+                method: "turn/completed",
+                params: {
+                  threadId: nativeThreadId,
+                  turn: makeCodexReplayTurn({ id: nativeTurnId, status: "completed" }),
+                },
+              },
+            },
+          ],
+        });
+        const harness = yield* makeCodexReplayHarness(transcript);
+        const grantPolicy = {
+          ...CODEX_TEST_RUNTIME_POLICY,
+          nativeMemory: "disabled",
+          mcpConnections: [privateMail, workMail, lapsedMail],
+        } as const;
+        yield* harness.runtime.resumeThread({
+          providerThread: harness.providerThread,
+          modelSelection: CODEX_TEST_MODEL_SELECTION,
+          runtimePolicy: grantPolicy,
+        });
+        const turn = makeCodexTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make("grant-startup-failed"),
+          text: "check my mail",
+        });
+        yield* harness.runtime.startTurn({
+          ...turn,
+          runtimePolicy: grantPolicy,
+          applicationInstructions: "Mail Bot canon.",
+        });
+        yield* harness.awaitTerminal(1);
+
+        const notices = harness.events.flatMap((event) =>
+          event.type === "turn_item.updated" && event.turnItem.type === "system_notice"
+            ? [event.turnItem.message]
+            : [],
+        );
+        assert.sameMembers(notices, [
+          '"Private mail" could not start, so its tools are unavailable in this conversation. Check it in Settings → MCP connections.',
+          '"Work mail" could not start, so its tools are unavailable in this conversation. Check it in Settings → MCP connections.',
+        ]);
+        assert.notInclude(JSON.stringify(harness.events), "sk-live-51NativeLeak");
+        // Each refusal reaches the catalog, so an OAuth account refreshes before its next load.
+        assert.deepEqual(refused, [
+          [privateMail, "startup"],
+          [workMail, "startup"],
+          [privateMail, "call"],
+          [workMail, "call"],
+        ]);
+      }).pipe(
+        Effect.provideService(HostProcess.Platform, "darwin"),
+        Effect.provide(
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            NodeCrypto.layer,
+            Layer.succeed(McpConnectionDelivery.McpConnectionDelivery, {
+              resolve: () => Effect.succeed(grantedLoad("token-1")),
+              markRefused: (id, source) => Effect.sync(() => void refused.push([id, source])),
+            }),
+          ),
+        ),
+      ),
+    );
+  });
+
+  it.effect(
+    "starts and forks Bot threads with only their grants, and refuses what it can't confirm",
+    () =>
+      Effect.gen(function* () {
+        const delivery = yield* makeDelivery;
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const scenario = "codex-grant-start";
+            const nativeThreadId = `native-${scenario}-thread`;
+            const seal = codexHomeSealReplay(scenario, nativeThreadId);
+            const { step, configRead } = seal;
+            const joined = {
+              ...configRead,
+              config: {
+                mcp_servers: {
+                  ...configRead.config.mcp_servers,
+                  newly_added: { command: "added" },
+                },
+              },
+            };
+            const measured = seal.onMeasuredVersion(
+              codexReplayPreamble({
+                nativeThreadId,
+                nativeTurnId: "unused-turn",
+                prompt: "unused-prompt",
+              }).slice(0, 5),
+            );
+            const ordinaryStart = measured[4] as { frame: { result: { thread: object } } };
+            const started = (id: string) => ({
+              ...ordinaryStart.frame.result,
+              thread: { ...ordinaryStart.frame.result.thread, id },
+            });
+            const grantConfig = {
+              config: {
+                ...CodexAdapterV2.CODEX_THREAD_CONFIG,
+                "features.memories": false,
+                "memories.use_memories": false,
+                "memories.generate_memories": false,
+                "features.apps": false,
+                "features.plugins": false,
+                "features.remote_plugin": false,
+                "features.skill_mcp_dependency_install": false,
+              },
+            };
+            const read = (id: number, result: unknown) =>
+              step(id, "config/read", { includeLayers: false, cwd: "/workspace" }, result);
+            const transcript = makeCodexReplayTranscript({
+              scenario,
+              entries: [
+                ...measured,
+                // A user server joins while a fresh Bot thread loads: released and refused.
+                ...read(3, configRead),
+                ...step(4, "thread/start", grantConfig, started(`${nativeThreadId}-fresh`)),
+                ...read(5, joined),
+                ...step(
+                  6,
+                  "thread/unsubscribe",
+                  { threadId: `${nativeThreadId}-fresh` },
+                  { status: "unsubscribed" },
+                ),
+                // A fork of a Bot thread starts with the Bot's grants and nothing of the user's.
+                ...read(7, configRead),
+                ...step(
+                  8,
+                  "thread/fork",
+                  { threadId: nativeThreadId, ...grantConfig },
+                  started(`${nativeThreadId}-fork`),
+                ),
+                ...read(9, configRead),
+              ],
+            });
+            const startParams: Array<{ config: { mcp_servers: Record<string, unknown> } }> = [];
+            const harness = yield* makeCodexReplayHarness(transcript, undefined, (method, params) =>
+              Effect.sync(() => {
+                if (method === "thread/start" || method === "thread/fork")
+                  startParams.push(params as never);
+              }),
+            );
+            const grantPolicy = {
+              ...CODEX_TEST_RUNTIME_POLICY,
+              nativeMemory: "disabled",
+              mcpConnections: [privateMail, workMail],
+            } as const;
+            const fresh = yield* harness.runtime
+              .ensureThread({
+                threadId: ThreadId.make(`thread-${scenario}-fresh`),
+                modelSelection: CODEX_TEST_MODEL_SELECTION,
+                runtimePolicy: grantPolicy,
+              })
+              .pipe(Effect.flip);
+            assert.equal(fresh._tag, "ProviderAdapterMcpConnectionsRefusedError");
+            const fork = yield* harness.runtime.forkThread({
+              sourceProviderThread: harness.providerThread,
+              sourceProviderTurns: [],
+              targetThreadId: ThreadId.make(`thread-${scenario}-fork`),
+              modelSelection: CODEX_TEST_MODEL_SELECTION,
+              runtimePolicy: grantPolicy,
+            });
+            assert.equal(fork.nativeThreadRef?.nativeId, `${nativeThreadId}-fork`);
+            // The first start is the harness's own ordinary thread.
+            assert.lengthOf(startParams, 3);
+            for (const params of startParams.slice(1)) {
+              assert.deepEqual(
+                Object.keys(params.config.mcp_servers).filter(
+                  (name) => !name.startsWith("t3-code"),
+                ),
+                [...Object.keys(seal.disabledUserServers), `t3c-${privateMail}`, `t3c-${workMail}`],
+              );
+            }
+          }).pipe(
+            Effect.provideService(HostProcess.Platform, "darwin"),
+            Effect.provide(
+              Layer.mergeAll(
+                IdAllocator.layer,
+                McpProviderSessions.layer,
+                NodeServices.layer,
+                NodeCrypto.layer,
+                delivery.layer,
+              ),
+            ),
+          ),
+        );
+
+        // An unmeasured Codex version or platform loads nothing, so no global server can start.
+        for (const [scenario, platform, measured, reason] of [
+          ["codex-grant-version", "darwin", false, "version"],
+          ["codex-grant-platform", "linux", true, "platform"],
+        ] as const) {
+          yield* Effect.scoped(
+            Effect.gen(function* () {
+              const nativeThreadId = `native-${scenario}-thread`;
+              const seal = codexHomeSealReplay(scenario, nativeThreadId);
+              const preamble = codexReplayPreamble({
+                nativeThreadId,
+                nativeTurnId: "unused-turn",
+                prompt: "unused-prompt",
+              }).slice(0, 5);
+              const harness = yield* makeCodexReplayHarness(
+                makeCodexReplayTranscript({
+                  scenario,
+                  entries: measured ? seal.onMeasuredVersion(preamble) : preamble,
+                }),
+              );
+              const refused = yield* harness.runtime
+                .resumeThread({
+                  providerThread: harness.providerThread,
+                  modelSelection: CODEX_TEST_MODEL_SELECTION,
+                  runtimePolicy: { ...CODEX_TEST_RUNTIME_POLICY, mcpConnections: [] },
+                })
+                .pipe(Effect.flip);
+              assert.equal(
+                refused._tag === "ProviderAdapterMcpConnectionsRefusedError" && refused.reason,
+                reason,
+              );
+            }).pipe(
+              Effect.provideService(HostProcess.Platform, platform),
+              Effect.provide(
+                Layer.mergeAll(
+                  IdAllocator.layer,
+                  McpProviderSessions.layer,
+                  NodeServices.layer,
+                  NodeCrypto.layer,
+                  delivery.layer,
+                ),
+              ),
+            ),
+          );
+        }
+      }),
+  );
+
+  it.effect(
+    "starts a No changes work thread read-only in the process its ordinary threads use",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const scenario = "codex-read-only-seal";
+          const nativeThreadId = `native-${scenario}-thread`;
+          const workNativeThreadId = `native-${scenario}-work`;
+          const workThreadId = ThreadId.make(`thread-${scenario}-work`);
+          const seal = codexHomeSealReplay(scenario, nativeThreadId);
+          const { step, configRead, readOnlyPolicy, readOnlyLoad } = seal;
+          yield* (yield* McpProviderSessions.McpProviderSessions).set({
+            environmentId: EnvironmentId.make("environment-codex-read-only-seal"),
+            threadId: workThreadId,
+            providerSessionId: `provider-session-${scenario}`,
+            providerInstanceId: ProviderInstanceId.make("codex"),
+            endpoint: "http://127.0.0.1:43123/mcp",
+            authorizationHeader: "Bearer routine-token",
+            browserToolsAvailable: false,
+          });
+          const preamble = seal.onMeasuredVersion(
+            codexReplayPreamble({
+              nativeThreadId,
+              nativeTurnId: "unused-turn",
+              prompt: "unused-prompt",
+            }).slice(0, 5),
+          );
+          const ordinaryStart = preamble[4] as { frame: { result: { thread: object } } };
+          const workStart = {
+            ...ordinaryStart.frame.result,
+            thread: { ...ordinaryStart.frame.result.thread, id: workNativeThreadId },
+          };
+          const workThreadResult = codexReplayThreadResult({
+            nativeThreadId: workNativeThreadId,
+            forkedFromId: null,
+          });
+          const readConfig = (id: number) =>
+            step(id, "config/read", { includeLayers: false, cwd: "/workspace" }, configRead);
+          const transcript = makeCodexReplayTranscript({
+            scenario,
+            entries: [
+              ...preamble,
+              // Each sealed load reads the user's servers before and after it.
+              ...readConfig(3),
+              ...step(4, "thread/start", readOnlyLoad, workStart),
+              ...readConfig(5),
+              // Same seal again: no release.
+              ...readConfig(6),
+              ...step(
+                7,
+                "thread/resume",
+                { threadId: workNativeThreadId, excludeTurns: true, ...readOnlyLoad },
+                { thread: { id: workNativeThreadId, updatedAt: 1782622450 } },
+              ),
+              ...readConfig(8),
+              ...step(
+                9,
+                "thread/memoryMode/set",
+                { threadId: workNativeThreadId, mode: "disabled" },
+                {},
+              ),
+              // The ordinary thread beside it keeps its ordinary load: no release.
+              ...step(10, "thread/resume", seal.ordinaryResume, seal.resumed),
+              // A rollback loads an unloaded work thread with the work thread's own seal, not the
+              // ordinary session's.
+              ...step(
+                11,
+                "thread/read",
+                { threadId: workNativeThreadId, includeTurns: false },
+                {
+                  thread: {
+                    id: workNativeThreadId,
+                    historyMode: "paginated",
+                    status: { type: "notLoaded" },
+                  },
+                },
+              ),
+              ...readConfig(12),
+              ...step(
+                13,
+                "thread/resume",
+                { threadId: workNativeThreadId, excludeTurns: true, ...readOnlyLoad },
+                workThreadResult,
+              ),
+              ...readConfig(14),
+              ...step(
+                15,
+                "thread/turns/list",
+                {
+                  threadId: workNativeThreadId,
+                  cursor: null,
+                  limit: 1,
+                  sortDirection: "desc",
+                  itemsView: "summary",
+                },
+                {
+                  data: [{ id: "native-turn-second", items: [], status: "completed", error: null }],
+                  nextCursor: null,
+                },
+              ),
+              ...step(
+                16,
+                "thread/revert",
+                { threadId: workNativeThreadId, beforeTurnId: "native-turn-second" },
+                workThreadResult,
+              ),
+              // So the next routine turn finds it already sealed: no release.
+              ...readConfig(17),
+              ...step(
+                18,
+                "thread/resume",
+                { threadId: workNativeThreadId, excludeTurns: true, ...readOnlyLoad },
+                { thread: { id: workNativeThreadId, updatedAt: 1782622450 } },
+              ),
+              ...readConfig(19),
+              ...step(
+                20,
+                "thread/memoryMode/set",
+                { threadId: workNativeThreadId, mode: "disabled" },
+                {},
+              ),
+            ],
+          });
+          const loadParams: Array<unknown> = [];
+          const harness = yield* makeCodexReplayHarness(transcript, undefined, (method, params) =>
+            Effect.sync(() => {
+              if (method === "thread/start" || method === "thread/resume") loadParams.push(params);
+            }),
+          );
+          const workThread = yield* harness.runtime.ensureThread({
+            threadId: workThreadId,
+            modelSelection: CODEX_TEST_MODEL_SELECTION,
+            runtimePolicy: readOnlyPolicy,
+          });
+          assert.equal(workThread.nativeThreadRef?.nativeId, workNativeThreadId);
+          const turnOn = (
+            providerThread: OrchestrationV2ProviderThread,
+            runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy,
+          ) =>
+            Effect.gen(function* () {
+              const turn = makeCodexTestTurnInput({
+                threadId: providerThread.appThreadId ?? harness.threadId,
+                providerThread,
+                now: yield* DateTime.now,
+                attemptId: RunAttemptId.make("read-only-seal-check"),
+                text: "work",
+              });
+              return yield* harness.runtime.startTurn({ ...turn, runtimePolicy }).pipe(Effect.flip);
+            });
+          // A turn runs only on a thread loaded with its own run's seal.
+          assert.equal(
+            (yield* turnOn(workThread, CODEX_TEST_RUNTIME_POLICY))._tag,
+            "ProviderAdapterSealRefusedError",
+          );
+          assert.equal(
+            (yield* turnOn(harness.providerThread, readOnlyPolicy))._tag,
+            "ProviderAdapterSealRefusedError",
+          );
+          yield* harness.runtime.resumeThread({
+            providerThread: workThread,
+            threadId: workThreadId,
+            modelSelection: CODEX_TEST_MODEL_SELECTION,
+            runtimePolicy: readOnlyPolicy,
+          });
+          yield* harness.runtime.resumeThread({
+            providerThread: harness.providerThread,
+            modelSelection: CODEX_TEST_MODEL_SELECTION,
+            runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+          });
+          const now = yield* DateTime.now;
+          const [firstTurn, secondTurn] = [1, 2].map((ordinal) =>
+            codexReplaySourceTurn({
+              id: `provider-turn-${ordinal}`,
+              ordinal,
+              nativeId: ordinal === 1 ? "native-turn-first" : "native-turn-second",
+              providerThreadId: workThread.id,
+              now,
+            }),
+          ) as [OrchestrationV2ProviderTurn, OrchestrationV2ProviderTurn];
+          yield* harness.runtime.rollbackThread({
+            providerThread: workThread,
+            target: {
+              type: "provider_turn",
+              checkpointId: CheckpointId.make("checkpoint-read-only-rollback"),
+              appRunOrdinal: 1,
+              providerTurn: firstTurn,
+            },
+            providerThreadTurns: [firstTurn, secondTurn],
+            runtimePolicy: readOnlyPolicy,
+          });
+          yield* harness.runtime.resumeThread({
+            providerThread: workThread,
+            threadId: workThreadId,
+            modelSelection: CODEX_TEST_MODEL_SELECTION,
+            runtimePolicy: readOnlyPolicy,
+          });
+
+          // The user's servers are off; T3 Code's server stays whole, and its writes refuse the task.
+          const t3Server = {
+            url: "http://127.0.0.1:43123/mcp",
+            tool_timeout_sec: 65 * 60,
+            http_headers: { Authorization: "Bearer routine-token" },
+          };
+          for (const index of [1, 2, 4, 5]) {
+            assert.deepEqual(
+              (loadParams[index] as { config: { mcp_servers: unknown } }).config.mcp_servers,
+              {
+                ...seal.disabledUserServers,
+                "t3-code": { ...t3Server, disabled_tools: ["t3_thread_wait"] },
+                "t3-code-direct": {
+                  ...t3Server,
+                  enabled_tools: ["t3_thread_wait"],
+                  omit_tools_from: ["code_mode", "deferred"],
+                },
+              },
+            );
+          }
+          assert.notProperty((loadParams[3] as { config: object }).config, "mcp_servers");
+        }).pipe(
+          Effect.provideService(HostProcess.Platform, "darwin"),
+          Effect.provide(
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              NodeCrypto.layer,
+            ),
+          ),
+        ),
+      ),
+  );
+
+  it.effect("releases and refuses a sealed load a user MCP server joined while it loaded", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const scenario = "codex-seal-config-race";
+        const nativeThreadId = `native-${scenario}-thread`;
+        const workNativeThreadId = `native-${scenario}-work`;
+        const seal = codexHomeSealReplay(scenario, nativeThreadId);
+        const { step, configRead, readOnlyPolicy, readOnlyLoad, resumed } = seal;
+        // Another writer adds a server after the seal read the config, before Codex loads it.
+        const joined = {
+          ...configRead,
+          config: {
+            mcp_servers: { ...configRead.config.mcp_servers, newly_added: { command: "added" } },
+          },
+        };
+        const preamble = seal.onMeasuredVersion(
+          codexReplayPreamble({
+            nativeThreadId,
+            nativeTurnId: "unused-turn",
+            prompt: "unused-prompt",
+          }).slice(0, 5),
+        );
+        const ordinaryStart = preamble[4] as { frame: { result: { thread: object } } };
+        const workStart = {
+          ...ordinaryStart.frame.result,
+          thread: { ...ordinaryStart.frame.result.thread, id: workNativeThreadId },
+        };
+        const sealedResume = { threadId: nativeThreadId, excludeTurns: true, ...readOnlyLoad };
+        const unsubscribe = (id: number, threadId: string) =>
+          step(id, "thread/unsubscribe", { threadId }, { status: "unsubscribed" });
+        const transcript = makeCodexReplayTranscript({
+          scenario,
+          entries: [
+            ...preamble,
+            // A fresh routine thread.
+            ...step(3, "config/read", { includeLayers: false, cwd: "/workspace" }, configRead),
+            ...step(4, "thread/start", readOnlyLoad, workStart),
+            ...step(5, "config/read", { includeLayers: false, cwd: "/workspace" }, joined),
+            ...unsubscribe(6, workNativeThreadId),
+            // An existing thread.
+            ...unsubscribe(7, nativeThreadId),
+            ...step(8, "config/read", { includeLayers: false, cwd: "/workspace" }, configRead),
+            ...step(9, "thread/resume", sealedResume, resumed),
+            ...step(10, "config/read", { includeLayers: false, cwd: "/workspace" }, joined),
+            ...unsubscribe(11, nativeThreadId),
+            // The next sealed load names the new server too, and runs.
+            ...unsubscribe(12, nativeThreadId),
+            ...step(13, "config/read", { includeLayers: false, cwd: "/workspace" }, joined),
+            ...step(14, "thread/resume", sealedResume, resumed),
+            ...step(15, "config/read", { includeLayers: false, cwd: "/workspace" }, joined),
+            ...step(
+              16,
+              "thread/memoryMode/set",
+              { threadId: nativeThreadId, mode: "disabled" },
+              {},
+            ),
+          ],
+        });
+        const loadParams: Array<unknown> = [];
+        const harness = yield* makeCodexReplayHarness(transcript, undefined, (method, params) =>
+          Effect.sync(() => {
+            if (method === "thread/resume") loadParams.push(params);
+          }),
+        );
+        const fresh = yield* Effect.flip(
+          harness.runtime.ensureThread({
+            threadId: ThreadId.make(`thread-${scenario}-work`),
+            modelSelection: CODEX_TEST_MODEL_SELECTION,
+            runtimePolicy: readOnlyPolicy,
+          }),
+        );
+        assert.equal(fresh._tag, "ProviderAdapterSealRefusedError");
+        const resume = harness.runtime.resumeThread({
+          providerThread: harness.providerThread,
+          modelSelection: CODEX_TEST_MODEL_SELECTION,
+          runtimePolicy: readOnlyPolicy,
+        });
+        assert.equal((yield* Effect.flip(resume))._tag, "ProviderAdapterSealRefusedError");
+        const turn = makeCodexTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make("config-race-check"),
+          text: "work",
+        });
+        assert.equal(
+          (yield* Effect.flip(
+            harness.runtime.startTurn({ ...turn, runtimePolicy: readOnlyPolicy }),
+          ))._tag,
+          "ProviderAdapterSealRefusedError",
+        );
+        yield* resume;
+        assert.deepEqual(
+          (loadParams[1] as { config: { mcp_servers: Record<string, unknown> } }).config
+            .mcp_servers["newly_added"],
+          { command: "added", enabled: false },
+        );
+      }).pipe(
+        Effect.provideService(HostProcess.Platform, "darwin"),
+        Effect.provide(
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            NodeCrypto.layer,
+          ),
+        ),
+      ),
+    ),
+  );
+
+  it.effect.each([
+    { name: "version", userAgent: "codex_cli_rs/0.165.0", platform: "darwin", mcp: true },
+    { name: "platform", userAgent: "codex_cli_rs/0.166.0", platform: "linux", mcp: true },
+    { name: "unavailable", userAgent: "codex_cli_rs/0.166.0", platform: "darwin", mcp: false },
+  ] as const)(
+    "refuses a Home seal it cannot enforce: $name",
+    ({ name, userAgent, platform, mcp }) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const scenario = `codex-home-seal-refused-${name}`;
+          const nativeThreadId = `native-${scenario}-thread`;
+          if (mcp)
+            yield* (yield* McpProviderSessions.McpProviderSessions).set({
+              environmentId: EnvironmentId.make("environment-codex-home-seal"),
+              threadId: ThreadId.make(`thread-${scenario}`),
+              providerSessionId: `provider-session-${scenario}`,
+              providerInstanceId: ProviderInstanceId.make("codex"),
+              endpoint: "http://127.0.0.1:43123/mcp",
+              authorizationHeader: "Bearer home-seal-token",
+              browserToolsAvailable: false,
+            });
+          const transcript = makeCodexReplayTranscript({
+            scenario,
+            entries: codexReplayPreamble({
+              nativeThreadId,
+              nativeTurnId: "unused-turn",
+              prompt: "unused-prompt",
+            })
+              .slice(0, 5)
+              .map((entry) =>
+                entry.type === "emit_inbound" && entry.label === "initialize"
+                  ? {
+                      ...entry,
+                      frame: {
+                        id: 1,
+                        result: {
+                          userAgent,
+                          codexHome: "/tmp/codex-home",
+                          platformFamily: "unix",
+                          platformOs: "macos",
+                        },
+                      },
+                    }
+                  : entry,
+              ),
+          });
+          const harness = yield* makeCodexReplayHarness(transcript);
+          const sealed = { ...CODEX_TEST_RUNTIME_POLICY, nativeTools: "t3BotOnly" } as const;
+          const reasonOf = (error: { readonly _tag: string }) =>
+            error._tag === "ProviderAdapterSealRefusedError" && "reason" in error
+              ? error.reason
+              : error._tag;
+          // Refused before anything reaches Codex: the transcript has no release or load.
+          const refused = yield* harness.runtime
+            .resumeThread({
+              providerThread: harness.providerThread,
+              modelSelection: CODEX_TEST_MODEL_SELECTION,
+              runtimePolicy: sealed,
+            })
+            .pipe(Effect.flip, Effect.provideService(HostProcess.Platform, platform));
+          assert.equal(reasonOf(refused), name);
+          // A sealed run never starts a fresh native conversation instead.
+          const fresh = yield* harness.runtime
+            .ensureThread({
+              threadId: harness.threadId,
+              modelSelection: CODEX_TEST_MODEL_SELECTION,
+              runtimePolicy: sealed,
+            })
+            .pipe(Effect.flip);
+          assert.equal(reasonOf(fresh), "unavailable");
+          // A No changes routine needs no T3 Code tools, but the same version and platform.
+          if (name === "unavailable") return;
+          const readOnly = { ...CODEX_TEST_RUNTIME_POLICY, nativeTools: "readOnly" } as const;
+          for (const load of [
+            harness.runtime.ensureThread({
+              threadId: harness.threadId,
+              modelSelection: CODEX_TEST_MODEL_SELECTION,
+              runtimePolicy: readOnly,
+            }),
+            harness.runtime.resumeThread({
+              providerThread: harness.providerThread,
+              modelSelection: CODEX_TEST_MODEL_SELECTION,
+              runtimePolicy: readOnly,
+            }),
+          ]) {
+            const refusal = yield* load.pipe(
+              Effect.flip,
+              Effect.provideService(HostProcess.Platform, platform),
+            );
+            assert.equal(reasonOf(refusal), name);
+            assert.equal(
+              refusal.message,
+              `This routine task is set to No changes, which its provider can't enforce here because ${name === "version" ? "this Codex version's tools have not been verified" : "it is only verified on macOS"}, so nothing ran. Start a new routine task once that is fixed, or ask the Bot directly.`,
+            );
+          }
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              NodeCrypto.layer,
+            ),
+          ),
+        ),
+      ),
   );
 
   it.effect.each([
@@ -7532,6 +9553,349 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       rootFinished: entries.slice(rootCompleted - 1, rootCompleted + 1),
     };
   };
+
+  it.effect.each([
+    ["live", "seal"],
+    ["finished", "seal"],
+    ["live", "grants"],
+    ["finished", "grants"],
+  ] as const)(
+    "refuses a Home seal or grant change only while the Home's native child is live: %s, %s",
+    ([child, change]) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const scenario = `codex-home-${change}-children-${child}`;
+          const seal = codexHomeSealReplay(scenario, RESUME_NATIVE_THREAD);
+          const { step } = seal;
+          const { spawned, rootFinished } = lateChildPrefix();
+          const grantResume = {
+            threadId: RESUME_NATIVE_THREAD,
+            excludeTurns: true,
+            config: {
+              ...CodexAdapterV2.CODEX_THREAD_CONFIG,
+              "features.memories": false,
+              "memories.use_memories": false,
+              "memories.generate_memories": false,
+              "features.apps": false,
+              "features.plugins": false,
+              "features.remote_plugin": false,
+              "features.skill_mcp_dependency_install": false,
+            },
+          };
+          const resumeParams: Array<{ config: { mcp_servers?: Record<string, unknown> } }> = [];
+          // A live child's transcript ends with the ordinary turn: its refusal reaches Codex with nothing.
+          const harness = yield* makeCodexReplayHarness(
+            makeCodexReplayTranscript({
+              scenario,
+              entries: seal.onMeasuredVersion(
+                child === "live"
+                  ? [...spawned, ...rootFinished]
+                  : [
+                      ...spawned,
+                      childTurnCompleted(RESUME_CHILD_TURN_1),
+                      ...rootFinished,
+                      // Still loaded, a finished child could be woken by the sealed turn.
+                      ...step(
+                        4,
+                        "thread/loaded/list",
+                        {},
+                        { data: [RESUME_NATIVE_THREAD, RESUME_CHILD_THREAD] },
+                      ),
+                      ...step(5, "thread/archive", { threadId: RESUME_CHILD_THREAD }, {}),
+                      ...step(
+                        6,
+                        "thread/unsubscribe",
+                        { threadId: RESUME_NATIVE_THREAD },
+                        { status: "unsubscribed" },
+                      ),
+                      ...step(
+                        7,
+                        "config/read",
+                        { includeLayers: false, cwd: "/workspace" },
+                        seal.configRead,
+                      ),
+                      ...step(
+                        8,
+                        "thread/resume",
+                        change === "seal" ? seal.sealedResume : grantResume,
+                        seal.resumed,
+                      ),
+                      ...step(
+                        9,
+                        "config/read",
+                        { includeLayers: false, cwd: "/workspace" },
+                        seal.configRead,
+                      ),
+                      ...step(
+                        10,
+                        "thread/memoryMode/set",
+                        { threadId: RESUME_NATIVE_THREAD, mode: "disabled" },
+                        {},
+                      ),
+                    ],
+              ),
+            }),
+            undefined,
+            (method, params) =>
+              Effect.sync(() => {
+                if (method === "thread/resume") resumeParams.push(params as never);
+              }),
+          );
+          yield* harness.runtime.startTurn(
+            makeCodexTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now: yield* DateTime.now,
+              attemptId: RunAttemptId.make("seal-children-ordinary"),
+              text: RESUME_PROMPT,
+            }),
+          );
+          yield* harness.awaitTerminal(1);
+          yield* seal.setMcpSession;
+          const changed = yield* harness.runtime
+            .resumeThread({
+              providerThread: harness.providerThread,
+              modelSelection: CODEX_TEST_MODEL_SELECTION,
+              runtimePolicy:
+                change === "seal"
+                  ? seal.sealedPolicy
+                  : {
+                      ...CODEX_TEST_RUNTIME_POLICY,
+                      nativeMemory: "disabled",
+                      mcpConnections: [privateMail],
+                    },
+            })
+            .pipe(Effect.result);
+          assert.equal(
+            changed._tag === "Success"
+              ? "loaded"
+              : changed.failure._tag === "ProviderAdapterSealRefusedError" ||
+                  changed.failure._tag === "ProviderAdapterMcpConnectionsRefusedError"
+                ? changed.failure.reason
+                : changed.failure._tag,
+            child === "live" ? "children" : "loaded",
+          );
+          // The archived child is reopened by its caller's resume_agent under this new load.
+          if (change === "grants" && child === "finished") {
+            assert.deepEqual(
+              Object.keys(resumeParams.at(-1)?.config.mcp_servers ?? {}).filter((name) =>
+                name.startsWith("t3c-"),
+              ),
+              [`t3c-${privateMail}`],
+            );
+          }
+        }).pipe(
+          Effect.provideService(HostProcess.Platform, "darwin"),
+          Effect.provide(
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              NodeCrypto.layer,
+              Layer.succeed(McpConnectionDelivery.McpConnectionDelivery, {
+                resolve: () =>
+                  Effect.succeed({
+                    ...grantedLoad("token-1"),
+                    connections: grantedLoad("token-1").connections.slice(0, 1),
+                  }),
+                markRefused: () => Effect.void,
+              }),
+            ),
+          ),
+        ),
+      ),
+  );
+
+  // The child finishes before its interrupt lands, so only the interrupt makes it "stopped".
+  it.effect.each([
+    { stop: "confirmed", order: ["child interrupted", "root completed"] },
+    { stop: "refused", order: ["root failed"] },
+  ] as const)(
+    "a sealed run settles only once its native child's stop is $stop, and the child stays sealed",
+    ({ stop, order: expectedOrder }) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const scenario = `codex-home-seal-child-${stop}`;
+          const seal = codexHomeSealReplay(scenario, RESUME_NATIVE_THREAD);
+          const { step } = seal;
+          yield* seal.setMcpSession;
+          const { spawned, rootFinished } = lateChildPrefix();
+          const askedUser = yield* Deferred.make<void>();
+          const order: Array<string> = [];
+          const harness = yield* makeCodexReplayHarness(
+            makeCodexReplayTranscript({
+              scenario,
+              entries: [
+                ...seal.onMeasuredVersion(spawned.slice(0, 5)),
+                ...step(
+                  3,
+                  "thread/unsubscribe",
+                  { threadId: RESUME_NATIVE_THREAD },
+                  { status: "unsubscribed" },
+                ),
+                ...step(
+                  4,
+                  "config/read",
+                  { includeLayers: false, cwd: "/workspace" },
+                  seal.configRead,
+                ),
+                ...step(5, "thread/resume", seal.sealedResume, seal.resumed),
+                ...step(
+                  6,
+                  "config/read",
+                  { includeLayers: false, cwd: "/workspace" },
+                  seal.configRead,
+                ),
+                ...step(
+                  7,
+                  "thread/memoryMode/set",
+                  { threadId: RESUME_NATIVE_THREAD, mode: "disabled" },
+                  {},
+                ),
+                {
+                  type: "expect_outbound",
+                  label: "sealed turn/start",
+                  frame: {
+                    id: 8,
+                    method: "turn/start",
+                    params: {
+                      threadId: RESUME_NATIVE_THREAD,
+                      input: [{ type: "text", text: RESUME_PROMPT }],
+                      cwd: "/workspace",
+                      model: "gpt-5.4",
+                      approvalPolicy: "never",
+                      approvalsReviewer: "user",
+                      sandboxPolicy: { type: "readOnly", networkAccess: false },
+                      summary: "detailed",
+                      collaborationMode: { mode: "default", settings: { model: "gpt-5.4" } },
+                    },
+                  },
+                },
+                {
+                  type: "emit_inbound",
+                  label: "sealed turn/start",
+                  frame: {
+                    id: 8,
+                    result: {
+                      turn: makeCodexReplayTurn({ id: RESUME_NATIVE_TURN, status: "inProgress" }),
+                    },
+                  },
+                },
+                // turn/started, then the child spawns; its turn is stopped as it starts.
+                ...spawned.slice(7),
+                {
+                  type: "expect_outbound",
+                  label: "turn/interrupt 9",
+                  frame: {
+                    id: 9,
+                    method: "turn/interrupt",
+                    params: { threadId: RESUME_CHILD_THREAD, turnId: RESUME_CHILD_TURN_1 },
+                  },
+                },
+                {
+                  type: "emit_inbound",
+                  label: "turn/interrupt 9",
+                  frame:
+                    stop === "confirmed"
+                      ? { id: 9, result: {} }
+                      : { id: 9, error: { code: -32603, message: "interrupt failed" } },
+                },
+                ...rootFinished,
+                ...(stop === "confirmed" ? [childTurnCompleted(RESUME_CHILD_TURN_1)] : []),
+                ...step(
+                  10,
+                  "thread/unsubscribe",
+                  { threadId: RESUME_NATIVE_THREAD },
+                  { status: "unsubscribed" },
+                ),
+                {
+                  type: "expect_outbound",
+                  label: "thread/resume 11",
+                  frame: { id: 11, method: "thread/resume", params: seal.ordinaryResume },
+                },
+                // The child asks while its parent is being loaded for ordinary work.
+                {
+                  type: "emit_inbound",
+                  label: "child approval",
+                  frame: {
+                    id: 100,
+                    method: "execCommandApproval",
+                    params: {
+                      conversationId: RESUME_CHILD_THREAD,
+                      callId: "child-exec",
+                      command: ["touch", "child.txt"],
+                      cwd: "/workspace",
+                      parsedCmd: [],
+                    },
+                  },
+                },
+                {
+                  type: "expect_outbound",
+                  label: "child approval declined",
+                  frame: {
+                    id: 100,
+                    result: { decision: { denied: { rejection: "User declined the request." } } },
+                  },
+                },
+                {
+                  type: "emit_inbound",
+                  label: "thread/resume 11",
+                  frame: { id: 11, result: seal.resumed },
+                },
+              ],
+            }),
+            (event) => {
+              if (event.type === "turn.terminal") order.push(`root ${event.status}`);
+              if (
+                event.type === "subagent.updated" &&
+                !isOrchestrationV2WorkActive(event.subagent.status)
+              )
+                order.push(`child ${event.subagent.status}`);
+              return event.type === "runtime_request.updated"
+                ? Deferred.succeed(askedUser, undefined)
+                : Effect.void;
+            },
+          );
+          const resume = (runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy) =>
+            harness.runtime.resumeThread({
+              providerThread: harness.providerThread,
+              modelSelection: CODEX_TEST_MODEL_SELECTION,
+              runtimePolicy,
+            });
+          yield* resume(seal.sealedPolicy);
+          // Without a session the turn frame carries no T3 instructions; the seal is already loaded.
+          yield* (yield* McpProviderSessions.McpProviderSessions).clear(harness.threadId);
+          yield* harness.runtime.startTurn({
+            ...makeCodexTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now: yield* DateTime.now,
+              attemptId: RunAttemptId.make("seal-child-sealed"),
+              text: RESUME_PROMPT,
+            }),
+            runtimePolicy: seal.sealedPolicy,
+          });
+          yield* harness.awaitTerminal(1);
+          assert.deepEqual(order, [...expectedOrder]);
+          // The ordinary load completes only after the child's request was declined, never shown.
+          const outcome = yield* Effect.raceFirst(
+            resume(CODEX_TEST_RUNTIME_POLICY).pipe(Effect.as("declined")),
+            Deferred.await(askedUser).pipe(Effect.as("asked the user")),
+          );
+          assert.equal(outcome, "declined");
+        }).pipe(
+          Effect.provideService(HostProcess.Platform, "darwin"),
+          Effect.provide(
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              NodeCrypto.layer,
+            ),
+          ),
+        ),
+      ),
+  );
 
   it.effect.each(["completed", "failed", "interrupted", "starting", "replied-last"] as const)(
     "handles a late native child after the capacity retry %s",

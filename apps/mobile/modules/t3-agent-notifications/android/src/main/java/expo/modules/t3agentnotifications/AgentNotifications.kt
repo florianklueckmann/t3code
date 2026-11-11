@@ -149,7 +149,7 @@ object AgentNotifications {
         Lifecycle.State.RESUMED
       )
       val visibleThread = threadOnScreen
-      val onScreen = resumed && visibleThread != null && data["alert_path"] == visibleThread
+      val onScreen = resumed && visibleThread != null && data["alert_path"]?.substringBefore('?') == visibleThread
       if (!onScreen) {
         postAlert(context, scheme, data, alertId)
       }
@@ -381,7 +381,12 @@ object AgentNotifications {
     id: Int
   ): PendingIntent? {
     val threadPath = path?.takeIf { it.startsWith("/threads/") }
-    val route = threadPath?.takeUnless { it.contains('?') || it.contains('#') } ?: "/"
+    val route = threadPath?.takeIf {
+      !it.contains('#') && (!it.contains('?') ||
+        (Uri.parse(it).queryParameterNames == setOf("botTaskId") &&
+          Uri.parse(it).getQueryParameters("botTaskId").size == 1 &&
+          !Uri.parse(it).getQueryParameter("botTaskId").isNullOrBlank()))
+    } ?: "/"
     val intent = context.packageManager.getLaunchIntentForPackage(context.packageName)
       ?: return null
     intent.setAction(Intent.ACTION_VIEW).setData(Uri.parse("$scheme:/$route"))

@@ -21,6 +21,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 
 import * as DocumentText from "../../../provider/DocumentText.ts";
@@ -36,6 +37,7 @@ import * as PeerForwarding from "../../../peer/PeerForwarding.ts";
 import * as GitVcsDriver from "../../../vcs/GitVcsDriver.ts";
 import * as VcsProcess from "../../../vcs/VcsProcess.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
+import { layerCallerChangesAllowed, liveThreadShell } from "../../McpToolAccess.testkit.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import * as ProjectHandlers from "./handlers.ts";
 import { ProjectToolkit } from "./tools.ts";
@@ -94,6 +96,7 @@ const clientLaunchHarness = (input: {
       issuedAt: 0,
       capabilities: new Set(["orchestration" as const]),
     }),
+    layerCallerChangesAllowed,
     Layer.mock(ThreadManagement.ThreadManagementService)({
       // A thread exists once a launch started it.
       getThreadShell: (threadId) => {
@@ -174,6 +177,52 @@ const clientLaunchHarness = (input: {
   return { projectId, modelSelection, projectDefaults, dependencies: layerDependencies };
 };
 
+it.effect("a Home thread launches top-level work on its current model", () =>
+  Effect.gen(function* () {
+    const callerId = ThreadId.make("bot-home:mail-bot:project");
+    const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
+    const harness = clientLaunchHarness({ runtimeModeCeiling: "full-access", launched });
+    const dependencies = Layer.mergeAll(
+      harness.dependencies,
+      Layer.succeed(McpInvocationContext.McpInvocationContext, {
+        environmentId: EnvironmentId.make("environment"),
+        requestNamespace: "provider:home",
+        thread: {
+          threadId: callerId,
+          providerSessionId: "provider:home",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+        },
+        client: undefined,
+        issuedAt: 0,
+        capabilities: new Set(["orchestration" as const]),
+      }),
+      Layer.mock(ThreadManagement.ThreadManagementService)({
+        getThreadShell: (id) => Effect.succeed(liveThreadShell(id)),
+      }),
+    );
+    const toolkit = yield* ProjectToolkit.pipe(
+      Effect.provide(
+        McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(Layer.provide(dependencies)),
+      ),
+    );
+    const result = yield* toolkit
+      .handle("t3_thread_launch", {
+        projectId: harness.projectId,
+        title: "Requested work",
+        message: "Check the project.",
+      })
+      .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
+    expect(result.at(-1)?.isFailure).toBe(false);
+    expect(launched).toHaveLength(1);
+    expect(launched[0]).toMatchObject({
+      projectId: harness.projectId,
+      modelSelection: liveThreadShell(callerId).modelSelection,
+      initialMessage: { senderThreadId: callerId },
+      createdByThreadId: callerId,
+    });
+  }),
+);
+
 it.effect(
   "a client launches with the project's default model and mode, capped at its ceiling",
   () =>
@@ -225,6 +274,7 @@ it.effect(
       });
       expect(belowCeiling.launched[0]?.runtimeMode).toBe("approval-required");
       expect(belowCeiling.launched[0]?.initialMessage?.senderThreadId).toBeUndefined();
+      expect(belowCeiling.launched[0]?.createdByThreadId).toBeUndefined();
 
       const aboveCeiling = yield* launchWith("auto-accept-edits", "full-access", {
         title: "Fix",
@@ -711,4 +761,68 @@ it.effect.each(["invalid-input", "attached-bot"] as const)(
         message: rejection.message,
       });
     }),
+);
+
+const callProjectMutation = Effect.fn("test.callProjectMutation")(function* (
+  name: "t3_project_update" | "t3_project_delete",
+) {
+  const projectId = ProjectId.make("project:target");
+  const threadId = ThreadId.make("thread:caller");
+  const reached = yield* Ref.make<ReadonlyArray<string>>([]);
+  const reach = (method: string) =>
+    Ref.update(reached, (current) => [...current, method]).pipe(
+      Effect.andThen(Effect.fail(new Project.ProjectInvalidError({ projectId, detail: method }))),
+    );
+  const result = yield* Effect.gen(function* () {
+    const toolkit = yield* ProjectToolkit;
+    const results = yield* toolkit
+      .handle(name, {
+        projectId,
+        ...(name === "t3_project_update" ? { title: "Renamed" } : { force: true }),
+      })
+      .pipe(Stream.unwrap, Stream.runCollect);
+    return results.at(-1)?.result;
+  }).pipe(
+    Effect.provide(
+      McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(
+        Layer.provideMerge(
+          Layer.mergeAll(
+            Layer.succeed(McpInvocationContext.McpInvocationContext, {
+              environmentId: EnvironmentId.make("environment:here"),
+              requestNamespace: "provider:caller",
+              thread: {
+                threadId,
+                providerSessionId: "provider:caller",
+                providerInstanceId: ProviderInstanceId.make("codex"),
+              },
+              client: undefined,
+              capabilities: new Set(["orchestration" as const]),
+              issuedAt: 0,
+            }),
+            Layer.mock(ThreadManagement.ThreadManagementService)({
+              getThreadShell: (id) => Effect.succeed(liveThreadShell(id)),
+            }),
+            layerCallerChangesAllowed,
+            Layer.mock(Project.ProjectService)({
+              update: () => reach("update"),
+              delete: () => reach("delete"),
+            }),
+            Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({}),
+            NodeCrypto.layer,
+          ),
+        ),
+      ),
+    ),
+  );
+  return { result, reached: yield* Ref.get(reached) };
+});
+
+it.effect.each(["t3_project_update", "t3_project_delete"] as const)(
+  "%s reaches its service from a thread",
+  (name) =>
+    callProjectMutation(name).pipe(
+      Effect.map(({ reached }) => {
+        expect(reached).toEqual([name === "t3_project_update" ? "update" : "delete"]);
+      }),
+    ),
 );

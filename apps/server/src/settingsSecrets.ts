@@ -10,6 +10,7 @@ import {
   SimlockDeviceHostConfig,
   UsageLimitSourceConfig,
   isSecretReference,
+  mcpConnectionBindings,
   secretSettingsFields,
 } from "@t3tools/contracts";
 import { acpRegistryClient } from "@t3tools/provider-acp-registry/client";
@@ -95,7 +96,7 @@ export function mapSettingsSecrets(
     return next;
   };
 
-  return mapSecretFieldGroups(settings, mapFields, (instanceId, environment) =>
+  const mapped = mapSecretFieldGroups(settings, mapFields, (instanceId, environment) =>
     environment.map((variable) => {
       const { valueRedacted: _omit, ...rest } = variable;
       // A secret reference is not itself secret; storage sees the value cleared.
@@ -117,6 +118,77 @@ export function mapSettingsSecrets(
       };
     }),
   );
+  return {
+    ...mapped,
+    mcpConnections: mapMcpConnectionBindings(mapped.mcpConnections, (value, secretName) => {
+      if (isSecretReference(value)) return value;
+      const result = map({
+        secretName,
+        kind: "field",
+        value,
+        redacted: value === SECRET_REDACTED,
+        sensitive: true,
+      });
+      return result.redacted ? SECRET_REDACTED : result.value;
+    }),
+  };
+}
+
+/** The secret store slot of one MCP connection binding: immutable id, slot and exact key. */
+export const mcpConnectionSecretName = (
+  connectionId: string,
+  slot: "env" | "header" | "oauth",
+  key: string,
+) => `mcp-connection-${encode(connectionId)}-${slot}-${encode(key)}`;
+
+// Keys keep their exact spelling: env names are case-sensitive, so no host-map normalization.
+function mapMcpConnectionBindings(
+  connections: ServerSettings["mcpConnections"],
+  map: (value: SettingsSecretValue, secretName: string) => SettingsSecretValue,
+): ServerSettings["mcpConnections"] {
+  return Object.fromEntries(
+    Object.entries(connections).map(([connectionId, definition]) => {
+      const transport = definition.transport;
+      const { slot, bindings } = mcpConnectionBindings(transport);
+      let changed = false;
+      const mapped = Object.fromEntries(
+        Object.entries(bindings).map(([key, value]) => {
+          const next = map(value, mcpConnectionSecretName(connectionId, slot, key));
+          changed ||= next !== value;
+          return [key, next];
+        }),
+      );
+      const client = transport.type === "http" ? transport.oauth?.client : undefined;
+      const clientSecret =
+        client?.secret === undefined
+          ? undefined
+          : map(client.secret, mcpConnectionSecretName(connectionId, "oauth", "client-secret"));
+      changed ||= clientSecret !== client?.secret;
+      // Unchanged definitions keep their identity so callers can tell which ones a map touched.
+      if (!changed) return [connectionId, definition];
+      return [
+        connectionId,
+        {
+          ...definition,
+          transport:
+            transport.type === "stdio"
+              ? { ...transport, env: mapped }
+              : {
+                  ...transport,
+                  httpHeaders: mapped,
+                  ...(transport.oauth?.client === undefined || clientSecret === undefined
+                    ? {}
+                    : {
+                        oauth: {
+                          ...transport.oauth,
+                          client: { ...transport.oauth.client, secret: clientSecret },
+                        },
+                      }),
+                },
+        },
+      ];
+    }),
+  ) as ServerSettings["mcpConnections"];
 }
 
 /**
@@ -129,7 +201,7 @@ export function mapSettingsSecretValues(
 ): ServerSettings {
   const mapValue = (value: unknown, secretName: string) =>
     typeof value === "string" || isSecretReference(value) ? map(value, secretName) : value;
-  return mapSecretFieldGroups(settings, (fields, secretFields, name) => {
+  const mapped = mapSecretFieldGroups(settings, (fields, secretFields, name) => {
     const next = { ...fields };
     for (const field of secretFields) {
       if (!(field in next)) continue;
@@ -149,6 +221,7 @@ export function mapSettingsSecretValues(
     }
     return next;
   });
+  return { ...mapped, mcpConnections: mapMcpConnectionBindings(mapped.mcpConnections, map) };
 }
 
 function mapSecretFieldGroups(
@@ -263,6 +336,15 @@ export function withoutRemovedSecretProviderReferences(
   const fields = mapSettingsSecretValues(next, (value) => (isRemoved(value) ? "" : value));
   return {
     ...fields,
+    // An unset binding is a binding edit: it advances the revision, and the connection refuses it.
+    mcpConnections: Object.fromEntries(
+      Object.entries(fields.mcpConnections).map(([id, definition]) => [
+        id,
+        definition === next.mcpConnections[id as keyof typeof next.mcpConnections]
+          ? definition
+          : { ...definition, revision: definition.revision + 1 },
+      ]),
+    ) as ServerSettings["mcpConnections"],
     providerInstances: Object.fromEntries(
       Object.entries(fields.providerInstances).map(([instanceId, instance]) => [
         instanceId,

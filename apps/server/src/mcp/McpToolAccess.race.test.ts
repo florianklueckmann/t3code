@@ -24,7 +24,9 @@ import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterReg
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ProviderReplayHarness from "../orchestration-v2/testkit/ProviderReplayHarness.ts";
+import * as McpCallerChanges from "./McpCallerChanges.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
+import { layerCallerChangesAllowed } from "./McpToolAccess.testkit.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpToolAccess from "./McpToolAccess.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -56,6 +58,7 @@ const RenameTool = Tool.make("rename", {
   dependencies: [
     McpInvocationContext.McpInvocationContext,
     ThreadManagement.ThreadManagementService,
+    McpCallerChanges.McpCallerChanges,
   ],
 });
 const RenameToolkit = Toolkit.make(RenameTool);
@@ -142,6 +145,7 @@ const renameRacingTheUser = (threadId: ThreadId, userRaises: boolean) =>
       Effect.provide(
         McpHttpServer.toolkitRegistration(RenameToolkit, handlers).pipe(
           Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+          Layer.provideMerge(layerCallerChangesAllowed),
         ),
       ),
     );

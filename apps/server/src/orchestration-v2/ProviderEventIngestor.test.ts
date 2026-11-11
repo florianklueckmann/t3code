@@ -40,6 +40,7 @@ import * as Stream from "effect/Stream";
 import { toolOutputImages } from "@t3tools/shared/toolOutput";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ServerConfig from "../config.ts";
+import * as BotHomes from "../bots/BotHomes.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as EventSink from "./EventSink.ts";
 import * as EventStore from "./EventStore.ts";
@@ -76,6 +77,7 @@ const layerGit = GitVcsDriver.layer.pipe(
 const layerEmptyInstances = Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
   getInstance: () => Effect.undefined,
 });
+const layerNoBotHomes = Layer.mock(BotHomes.BotHomes)({ isHome: () => Effect.succeed(false) });
 const makeLayerTest = <E>(
   ingestorEventSink: Layer.Layer<EventSink.EventSinkV2, E>,
   instances = layerEmptyInstances,
@@ -87,6 +89,7 @@ const makeLayerTest = <E>(
     layerTestEventSink,
     IdAllocator.layer,
     ThreadCommandExecutor.layer,
+    layerNoBotHomes,
     layerGit,
     ProviderEventIngestor.layer.pipe(
       Layer.provide(
@@ -96,6 +99,7 @@ const makeLayerTest = <E>(
           ingestorEventSink,
           IdAllocator.layer,
           ThreadCommandExecutor.layer,
+          layerNoBotHomes,
           layerGit,
         ),
       ),
@@ -2144,6 +2148,73 @@ layer("ProviderEventIngestorV2", (it) => {
         assert.deepEqual(yield* ingest(recovered, true), []);
         assert.deepEqual(yield* projectionStore.getThread(childThreadId), saved);
       }),
+  );
+
+  it.effect.each([
+    { name: "a child starting on a Bot Home", home: true, status: "running", locked: true },
+    { name: "a child ending on a Bot Home", home: true, status: "completed", locked: false },
+    { name: "a child starting on any other thread", home: false, status: "running", locked: false },
+  ] as const)("takes the thread's command lock only for $name", ({ home, status, locked }) =>
+    Effect.gen(function* () {
+      const now = yield* DateTime.now;
+      const eventSink = yield* EventSink.EventSinkV2;
+      const ids = yield* IdAllocator.IdAllocatorV2;
+      const root = yield* threadCreatedEvent(now);
+      yield* eventSink.write({ events: [root] });
+      const executor = yield* ThreadCommandExecutor.ThreadCommandExecutor;
+      const lockedThreads: Array<string> = [];
+      const ingestor = yield* ProviderEventIngestor.ProviderEventIngestorV2.pipe(
+        Effect.provide(Layer.fresh(ProviderEventIngestor.layer)),
+        Effect.provideService(ThreadCommandExecutor.ThreadCommandExecutor, {
+          ...executor,
+          withLock: (key, effect) => {
+            lockedThreads.push(key);
+            return executor.withLock(key, effect);
+          },
+        }),
+        Effect.provideService(BotHomes.BotHomes, {
+          isHome: (threadId) => Effect.succeed(home && threadId === root.threadId),
+        }),
+      );
+      const stored = yield* ingestor.ingestNormalized({
+        providerSessionId: yield* ids.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId: root.threadId,
+        }),
+        providerInstanceId: modelSelection.instanceId,
+        threadId: root.threadId,
+        event: {
+          type: "subagent.updated",
+          driver: CODEX_DRIVER,
+          subagent: {
+            id: NodeId.make("node:locked-subagent"),
+            threadId: root.threadId,
+            runId: null,
+            parentNodeId: NodeId.make("node:root"),
+            origin: "provider_native",
+            createdBy: "agent",
+            driver: CODEX_DRIVER,
+            providerInstanceId: modelSelection.instanceId,
+            providerThreadId: null,
+            childThreadId: null,
+            nativeTaskRef: null,
+            prompt: "Review the design",
+            title: null,
+            model: null,
+            status,
+            result: null,
+            startedAt: now,
+            completedAt: status === "completed" ? now : null,
+            updatedAt: now,
+          },
+        },
+      });
+      assert.deepEqual(
+        stored.map((event) => event.event.type),
+        ["subagent.updated"],
+      );
+      assert.deepEqual(lockedThreads, locked ? [root.threadId] : []);
+    }),
   );
 
   it.effect("moves a native subagent's thread to its later model through a database lock", () =>

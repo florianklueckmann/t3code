@@ -31,6 +31,7 @@ export type SettingsPath =
   | "/settings/devices"
   | "/settings/scheduled-tasks"
   | "/settings/bots"
+  | "/settings/mcp-connections"
   | "/settings/source-control"
   | "/settings/worktrees"
   | "/settings/connections"
@@ -102,6 +103,7 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/devices": "Devices",
   "/settings/scheduled-tasks": "Scheduled tasks",
   "/settings/bots": "Bots",
+  "/settings/mcp-connections": "MCP connections",
   "/settings/source-control": "Source control",
   "/settings/worktrees": "Worktrees",
   "/settings/connections": "Environments",
@@ -140,6 +142,7 @@ export const SETTINGS_NAV_GROUPS: ReadonlyArray<{
       "/settings/devices",
       "/settings/scheduled-tasks",
       "/settings/bots",
+      "/settings/mcp-connections",
     ],
   },
   {
@@ -1302,6 +1305,19 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["assistant agent instructions project conversation preferred sources learning"],
   },
   {
+    id: "mcp-connections",
+    title: "MCP connections",
+    to: "/settings/mcp-connections",
+    searchTerms: ["mcp server tool account credentials header token stdio http bindings"],
+  },
+  {
+    id: "mcp-connections-add",
+    title: "Add MCP connection",
+    to: "/settings/mcp-connections",
+    targetId: "mcp-connections",
+    searchTerms: ["new mcp server tool account"],
+  },
+  {
     id: "archive",
     title: "Archived threads",
     to: "/settings/archived",
@@ -1334,6 +1350,7 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   "/settings/secrets": null,
   "/settings/scheduled-tasks": null,
   "/settings/bots": null,
+  "/settings/mcp-connections": null,
   "/settings/maintenance": null,
   "/settings/labs": null,
   "/settings/about": null,

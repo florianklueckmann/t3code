@@ -57,6 +57,7 @@ export const SETTINGS_DEVICE_ONLY_PATHS: ReadonlySet<string> = new Set([
 /** Pages whose records belong to one environment, mapped to the label before its picker. */
 export const SETTINGS_ENVIRONMENT_ONLY_PATHS: ReadonlyMap<string, string> = new Map([
   ["/settings/bots", "Bots on"],
+  ["/settings/mcp-connections", "MCP connections on"],
 ]);
 
 interface SettingsScopeMenuProps {

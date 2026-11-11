@@ -50,6 +50,7 @@ import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
+import { layerCallerChangesAllowed } from "./McpToolAccess.testkit.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import * as PeerLinkRequests from "../peer/PeerLinkRequests.ts";
@@ -236,6 +237,7 @@ describe("orchestrator MCP toolkit", () => {
         ]);
         const layerTest = layerOrchestratorToolkit.pipe(
           Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+          Layer.provideMerge(layerCallerChangesAllowed),
           Layer.provideMerge(layerOrchestration),
           Layer.provide(
             CodexOrchestratorReplayHarness.makeProviderAdapterRegistryLayer(transcript).pipe(
@@ -678,6 +680,24 @@ describe("orchestrator MCP toolkit", () => {
           expect(
             afterParentlessRead.subagents.find((task) => task.id === queuedFollowup.taskId)
               ?.completionDelivery?.state,
+          ).toBe("claimed");
+
+          // A restricted Bot run reads the result without taking it from its Home.
+          const sealedRead = yield* invoke(
+            "t3_thread_read",
+            {
+              threadId: delegated.childThreadId,
+              limit: 100,
+              maxCharsPerItem: result === "😀" ? 1 : 20_000,
+            },
+            { ...invocation, thread: { ...invocation.thread!, sealedLoad: true } },
+          );
+          expect(sealedRead.isError).not.toBe(true);
+          expect(sealedRead.structuredContent).toEqual(parentlessRead.structuredContent);
+          expect(
+            (yield* orchestrator.getThreadProjection(parentThreadId)).subagents.find(
+              (task) => task.id === queuedFollowup.taskId,
+            )?.completionDelivery?.state,
           ).toBe("claimed");
 
           const read = yield* invoke("t3_thread_read", {

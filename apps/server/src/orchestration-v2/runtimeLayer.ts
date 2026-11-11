@@ -4,6 +4,10 @@ import * as UsageLimitRecoveryWorker from "./UsageLimitRecoveryWorker.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as BotProjectGuard from "../bots/BotProjectGuard.ts";
 import * as BotContinuation from "../bots/BotContinuation.ts";
+import * as BotHomeCheck from "../bots/BotHomeCheck.ts";
+import * as BotMaintenance from "../bots/BotMaintenance.ts";
+import * as BotExecutionConstraint from "../bots/BotExecutionConstraint.ts";
+import * as BotHomes from "../bots/BotHomes.ts";
 import * as BotService from "../bots/BotService.ts";
 import * as BotRuntimePolicy from "../bots/BotRuntimePolicy.ts";
 import * as BotTaskService from "../bots/BotTaskService.ts";
@@ -71,9 +75,10 @@ export const layerEventInfrastructure = Layer.mergeAll(
 
 const layerRuntimePolicyProvided = BotRuntimePolicy.layer.pipe(
   Layer.provide(
-    Layer.merge(
+    Layer.mergeAll(
       RuntimePolicy.layerFromProjectStore.pipe(Layer.provide(ProjectStore.layer)),
       BotTurnContext.layer,
+      BotExecutionConstraint.layer,
     ),
   ),
 );
@@ -122,6 +127,7 @@ const layerProviderEventIngestorProvided = ProviderEventIngestor.layer.pipe(
       IdAllocator.layer,
       ProjectionStore.layer,
       ThreadCommandExecutor.layer,
+      BotHomes.layer,
       GitVcsDriver.layer,
     ),
   ),
@@ -407,6 +413,26 @@ export const layerProduction = Layer.mergeAll(
   layerScheduledTaskProvided,
   layerBotServiceProvided,
   BotContinuation.layer,
+  // The Orchestrator's executor reference, so the baseline snapshot takes the same Home lock.
+  BotMaintenance.layer.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        layerEventStoreProvided,
+        layerEventSink,
+        ThreadCommandExecutor.layer,
+        layerProviderSessionManagerProvided,
+        layerThreadManagementProvided,
+        layerBotServiceProvided,
+        layerBotTaskProvided,
+        BotContinuation.layer,
+        // The same memoized outbox as the effect worker, so a settle wakes the refresh loop.
+        EffectOutbox.layer,
+      ),
+    ),
+  ),
+  BotHomeCheck.layer.pipe(
+    Layer.provide(Layer.merge(layerThreadManagementProvided, layerBotTaskProvided)),
+  ),
   layerBotTaskProvided,
   // The MCP schedule tool reads it to set up routines on a Bot's model.
   BotTaskService.layerRoutineTarget.pipe(Layer.provide(layerBotTaskProvided)),

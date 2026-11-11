@@ -24,6 +24,7 @@ import { UsageLimitSourceId } from "./usageLimitSourceId.ts";
 import { UsageModelFilter } from "./usage.ts";
 import { SecretProviderId, SecretProviderSlug } from "./secretReference.ts";
 import { SettingsSecretValue } from "./settingsSecretValue.ts";
+import { McpConnectionDefinition, McpConnectionId } from "./mcpConnection.ts";
 import { EnvironmentMachineKind, ThreadEnvMode, WorktreeSubmodules } from "./environment.ts";
 import { KeybindingShortcut } from "./keybindings.ts";
 import {
@@ -1466,6 +1467,14 @@ export const ServerSettings = Schema.Struct({
   ),
   secretProviders: Schema.Record(SecretProviderId, SecretProviderConfig).pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
+  ),
+  /** Written only through the MCP connections service, never through a settings patch. */
+  mcpConnections: Schema.Record(McpConnectionId, McpConnectionDefinition).pipe(
+    Schema.withDecodingDefault(Effect.succeed({})),
+  ),
+  /** Removed connection ids, kept so a retried or replayed create cannot reuse one. */
+  retiredMcpConnectionIds: Schema.Array(McpConnectionId).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
   ),
 
   usagePriceOverrides: Schema.Record(TrimmedNonEmptyString, UsageModelPriceOverride).pipe(

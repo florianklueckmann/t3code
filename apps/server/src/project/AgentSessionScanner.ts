@@ -1473,16 +1473,10 @@ export const make = Effect.gen(function* () {
         } else {
           const config = decodeCodexSettings(instance.config ?? {});
           if (Option.isNone(config)) continue;
-          const codexHome = environmentHome("CODEX_HOME");
-          const codexSettings =
-            config.value.homePath.trim().length === 0 &&
-            config.value.shadowHomePath.trim().length === 0 &&
-            codexHome?.trim()
-              ? { ...config.value, homePath: codexHome }
-              : config.value;
-          const layout = yield* resolveCodexHomeLayout(codexSettings).pipe(
-            Effect.provideService(Path.Path, path),
-          );
+          const layout = yield* resolveCodexHomeLayout(
+            config.value,
+            environmentHome("CODEX_HOME"),
+          ).pipe(Effect.provideService(Path.Path, path));
           homePath = layout.sharedHomePath;
         }
 

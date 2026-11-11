@@ -55,8 +55,9 @@ it("stamps authoritative provenance on commands that create threads or messages"
     interactionMode: "default",
     branch: null,
     worktreePath: null,
-    // A client cannot claim a linked environment's origin, or a parent there.
+    // A client cannot claim a linked environment's origin, a parent there, or a creator thread.
     linkOrigin: { sessionId: "forged", label: "Somewhere else" },
+    createdByThreadId: ThreadId.make("thread:bot-home"),
     delegatedFrom: {
       environmentId: EnvironmentId.make("environment:elsewhere"),
       threadId: ThreadId.make("thread:elsewhere"),
@@ -74,6 +75,25 @@ it("stamps authoritative provenance on commands that create threads or messages"
   });
   expect(stamped).not.toHaveProperty("linkOrigin");
   expect(stamped).not.toHaveProperty("delegatedFrom");
+  expect(stamped).not.toHaveProperty("createdByThreadId");
+
+  // Only server maintenance sends a message that waits for an idle Home.
+  const message = ThreadManagementService.withCreationProvenance(
+    {
+      type: "message.dispatch",
+      createdBy: "user",
+      creationSource: "web",
+      commandId: CommandId.make("command:thread-management:message"),
+      threadId: ThreadId.make("thread:thread-management:create"),
+      messageId: MessageId.make("message:thread-management"),
+      text: "/compact",
+      attachments: [],
+      dispatchMode: { type: "start_immediately" },
+      ifIdleAtSequence: 3,
+    },
+    { createdBy: "user", creationSource: "web" },
+  );
+  expect(message).not.toHaveProperty("ifIdleAtSequence");
 });
 
 const layerReceiptsTest = CommandReceiptStore.layer.pipe(
@@ -110,7 +130,7 @@ const layerDispatchChokepointTest =
     );
 
 it.effect(
-  "the dispatch chokepoint refuses a continuation message.dispatch on a project-disabled instance before reaching the orchestrator",
+  "the dispatch chokepoint refuses a continuation message.dispatch or a scoped Home turn on a project-disabled instance before reaching the orchestrator",
   () => {
     const projectId = ProjectId.make("project:thread-management:chokepoint");
     const threadId = ThreadId.make("thread:thread-management:chokepoint");
@@ -146,6 +166,20 @@ it.effect(
         ThreadManagementService.ThreadManagementProviderInstanceDisabledError,
       );
       expect(error).toMatchObject({ projectId, instanceId });
+      const scoped = yield* Effect.flip(
+        threads.dispatch({
+          type: "restricted_run.start",
+          commandId: CommandId.make("command:thread-management:chokepoint-scoped"),
+          threadId,
+          messageId: MessageId.make("message:thread-management:chokepoint-scoped"),
+          text: "Refresh your working note.",
+          restriction: "botNote",
+          ifIdleAtSequence: 1,
+        }),
+      );
+      expect(scoped).toBeInstanceOf(
+        ThreadManagementService.ThreadManagementProviderInstanceDisabledError,
+      );
       expect(dispatched).toEqual([]);
     }).pipe(Effect.provide(layerTest));
   },

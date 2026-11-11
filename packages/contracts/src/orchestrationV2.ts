@@ -460,6 +460,8 @@ export const OrchestrationV2AppThread = Schema.Struct({
   historyOrigin: Schema.optional(OrchestrationV2ThreadHistoryOrigin),
   linkOrigin: Schema.optional(OrchestrationV2LinkOrigin),
   delegatedFrom: Schema.optional(OrchestrationV2DelegatedFrom),
+  /** The thread whose agent created this one with T3 Code's tools, unlike `lineage` a top-level thread. */
+  createdByThreadId: Schema.optional(ThreadId),
   lineage: OrchestrationV2AppThreadLineage,
   forkedFrom: Schema.NullOr(
     Schema.Union([
@@ -681,6 +683,10 @@ export type OrchestrationV2ThreadLaunchWorkspaceStrategy =
 
 export const ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE = "workspace_preparation_failed";
 
+/** A server-started Bot Home run that may only save its own note, or only append Waiting items. */
+export const OrchestrationV2RunRestriction = Schema.Literals(["botNote", "botWaiting"]);
+export type OrchestrationV2RunRestriction = typeof OrchestrationV2RunRestriction.Type;
+
 export const OrchestrationV2Run = Schema.Struct({
   id: RunId,
   threadId: ThreadId,
@@ -716,6 +722,7 @@ export const OrchestrationV2Run = Schema.Struct({
   workspacePreparation: Schema.optional(OrchestrationV2ThreadLaunchWorkspaceStrategy),
   /** Starts a new provider conversation; earlier runs stay visible but never reach the provider. */
   freshContext: Schema.optional(Schema.Boolean),
+  restriction: Schema.optional(OrchestrationV2RunRestriction),
 });
 export type OrchestrationV2Run = typeof OrchestrationV2Run.Type;
 
@@ -1635,6 +1642,8 @@ export const OrchestrationV2TurnItem = Schema.Union([
     context: Schema.optional(OrchestrationMessageContext),
     attachments: Schema.Array(ChatAttachment),
     modelSwitch: Schema.optional(OrchestrationV2ModelSwitch),
+    /** Set once the provider took this message into its running turn; unset for turn-start input. */
+    steerAcceptedAt: Schema.optionalKey(Schema.DateTimeUtc),
   }),
   Schema.Struct({
     ...OrchestrationV2TurnItemBaseFields,
@@ -2478,6 +2487,7 @@ export const OrchestrationV2TurnItemJson = Schema.Union([
     context: Schema.optional(OrchestrationMessageContext),
     attachments: Schema.Array(ChatAttachment),
     modelSwitch: Schema.optional(OrchestrationV2ModelSwitch),
+    steerAcceptedAt: Schema.optionalKey(Schema.DateTimeUtcFromString),
   }),
   Schema.Struct({
     ...OrchestrationV2TurnItemJsonBaseFields,
@@ -2951,6 +2961,8 @@ export const OrchestrationV2Command = Schema.Union([
     linkOrigin: Schema.optional(OrchestrationV2LinkOrigin),
     /** Only the server sets this, with `linkOrigin`, for a linked environment's delegated task. */
     delegatedFrom: Schema.optional(OrchestrationV2DelegatedFrom),
+    /** Only the server sets this, for a thread an agent's T3 Code tool created. */
+    createdByThreadId: Schema.optional(ThreadId),
     importedNativeThread: Schema.optional(
       Schema.Struct({
         ref: Schema.Struct({
@@ -3186,6 +3198,8 @@ export const OrchestrationV2Command = Schema.Union([
     idleCompaction: Schema.optional(OrchestrationV2IdleCompaction),
     /** Start a new provider session without the thread's earlier context. Never steers. */
     freshContext: Schema.optional(Schema.Boolean),
+    /** Server only: starts while the Bot Home is idle at this event sequence, else defers. */
+    ifIdleAtSequence: Schema.optional(NonNegativeInt),
     commandId: CommandId,
     threadId: ThreadId,
     messageId: MessageId,
@@ -3422,6 +3436,16 @@ const OrchestrationV2InternalCommand = Schema.Union([
     messageId: MessageId,
     text: Schema.String,
   }),
+  /** Starts only while the Bot Home is idle and its event sequence is still `ifIdleAtSequence`. */
+  Schema.Struct({
+    type: Schema.Literal("restricted_run.start"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    messageId: MessageId,
+    text: Schema.String,
+    restriction: OrchestrationV2RunRestriction,
+    ifIdleAtSequence: NonNegativeInt,
+  }),
   // Guest share commands the server issues after checking T3 Connect and the guest token.
   Schema.Struct({
     type: Schema.Literal("thread.guest-share.open"),
@@ -3537,6 +3561,13 @@ const OrchestrationV2InternalCommand = Schema.Union([
     commandId: CommandId,
     threadId: ThreadId,
     requestId: RuntimeRequestId,
+  }),
+  /** The provider took a steering message into its running turn. */
+  Schema.Struct({
+    type: Schema.Literal("message.steer.accept"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    messageId: MessageId,
   }),
   /** Message `messageId` could not be delivered and will not be retried. */
   Schema.Struct({

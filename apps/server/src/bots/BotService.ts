@@ -2,6 +2,7 @@ import {
   BOT_HOME_THREAD_ID_PREFIX,
   BOT_TASK_TERMINAL_STATUSES,
   type BotAttachProjectInput,
+  type BotContinuationScope,
   type BotCreateInput,
   type BotDecideLearningInput,
   type BotDetachProjectInput,
@@ -15,11 +16,13 @@ import {
   type BotRestoreLearningInput,
   type BotRetireLearningInput,
   type BotSetArchivedInput,
+  type BotSetMcpGrantsInput,
   type BotTaskId,
   type BotUpdateInput,
   type BotUpdateProjectContextInput,
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
+  type McpConnectionId,
   type ModelSelection,
   ProjectId,
   ThreadId,
@@ -34,6 +37,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Schema from "effect/Schema";
+import type * as SqlError from "effect/sql/SqlError";
 import * as Stream from "effect/Stream";
 import * as BotDatabase from "./persistence/BotDatabase.ts";
 
@@ -51,7 +55,6 @@ import * as BotTaskService from "./BotTaskService.ts";
 import * as BotTurnContext from "./BotTurnContext.ts";
 
 /** The only driver whose adapter delivers Bot instructions on every turn so far. */
-const BOT_SUPPORTED_DRIVER = "codex";
 
 export class BotService extends Context.Service<
   BotService,
@@ -62,6 +65,9 @@ export class BotService extends Context.Service<
     readonly create: (input: BotCreateInput) => Effect.Effect<BotDetail, BotError>;
     readonly update: (input: BotUpdateInput) => Effect.Effect<BotDetail, BotError>;
     readonly setArchived: (input: BotSetArchivedInput) => Effect.Effect<BotDetail, BotError>;
+    readonly setMcpGrants: (input: BotSetMcpGrantsInput) => Effect.Effect<BotDetail, BotError>;
+    /** Drops a removed catalog connection from every Bot's grants, advancing their revisions. */
+    readonly forgetMcpConnection: (connectionId: McpConnectionId) => Effect.Effect<void, BotError>;
     readonly attachProject: (input: BotAttachProjectInput) => Effect.Effect<BotDetail, BotError>;
     readonly updateProjectContext: (
       input: BotUpdateProjectContextInput,
@@ -89,6 +95,23 @@ export class BotService extends Context.Service<
     ) => Effect.Effect<BotDetail, BotError>;
     /** Settles lessons whose proposing task has finished, by that task's derived status. */
     readonly reconcileTaskLearning: Effect.Effect<void, BotError>;
+    /**
+     * Maintenance's learning change: the same per-Bot lock and Bot transaction as user changes.
+     * `change` may write only the Bot database; it commits or rolls back with its lessons.
+     */
+    readonly maintainLearning: <A>(
+      scope: BotContinuationScope,
+      change: (current: {
+        readonly policy: BotLearningPolicy;
+        readonly bot: BotStore.BotRow;
+        readonly context: BotStore.BotContextRow;
+        readonly rows: ReadonlyArray<BotStore.BotLearningRow>;
+        readonly record: (
+          policy: BotLearningPolicy,
+          input: BotLearning.RecordLearningInput,
+        ) => Effect.Effect<BotLearning.RecordLearningResult, BotError | BotStore.BotStoreError>;
+      }) => Effect.Effect<A, BotError | BotStore.BotStoreError | SqlError.SqlError>,
+    ) => Effect.Effect<A, BotError>;
     /**
      * The attached project to use when a caller names none: the only one, or an
      * error listing the choices so the caller can ask the user.
@@ -148,7 +171,8 @@ const make = Effect.gen(function* () {
     if (bot === undefined) return yield* botError("Bot not found.", botId)();
     const contexts = yield* store.listContexts(botId).pipe(Effect.mapError(storeError(botId)));
     const learning = yield* store.listLearning(botId).pipe(Effect.mapError(storeError(botId)));
-    return yield* BotStore.toDetail(bot, contexts, learning).pipe(
+    const grants = yield* store.listMcpGrants(botId).pipe(Effect.mapError(storeError(botId)));
+    return yield* BotStore.toDetail(bot, contexts, learning, grants.get(botId)).pipe(
       Effect.mapError(storeError(botId)),
     );
   });
@@ -173,7 +197,7 @@ const make = Effect.gen(function* () {
         botId,
       )();
     }
-    if (instance.driverKind !== BOT_SUPPORTED_DRIVER) {
+    if (instance.driverKind !== BotTaskService.BOT_SUPPORTED_DRIVER) {
       return yield* botError("Bots currently support Codex providers only.", botId)();
     }
   });
@@ -245,11 +269,13 @@ const make = Effect.gen(function* () {
     const bots = yield* store.listBots;
     const contexts = yield* store.listContexts();
     const pendingLearning = yield* store.pendingLearningCounts;
+    const grants = yield* store.listMcpGrants();
     const details = yield* Effect.forEach(bots, (bot) =>
       BotStore.toDetail(
         bot,
         contexts.filter((context) => context.bot_id === bot.bot_id),
         [],
+        grants.get(bot.bot_id),
       ),
     );
     return {
@@ -399,6 +425,56 @@ const make = Effect.gen(function* () {
       return yield* readDetail(input.botId);
     },
   );
+
+  const setMcpGrants: BotService["Service"]["setMcpGrants"] = Effect.fn("BotService.setMcpGrants")(
+    function* (input) {
+      const catalog = (yield* serverSettings.getSettings.pipe(
+        Effect.mapError(botError("Could not read MCP connections.", input.botId)),
+      )).mcpConnections;
+      const connectionIds = [...new Set(input.connectionIds)];
+      // Removed connections are never granted anew; only a stale row left by removal survives.
+      if (connectionIds.some((id) => catalog[id] === undefined)) {
+        return yield* botError(
+          "One of these MCP connections no longer exists. Reload and try again.",
+          input.botId,
+        )();
+      }
+      yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            yield* requireActiveBot(input.botId);
+            const current = (yield* store.listMcpGrants(input.botId)).get(input.botId);
+            if (current?.revision !== input.expectedRevision) {
+              return yield* botError(
+                "This Bot's MCP connections changed since you opened them. Review them and try again.",
+                input.botId,
+              )();
+            }
+            yield* store.replaceMcpGrants({
+              botId: input.botId,
+              connectionIds,
+              ownCodexMcpServers: input.ownCodexMcpServers ?? current.ownCodexMcpServers === true,
+            });
+          }),
+        )
+        .pipe(
+          Effect.mapError((cause) =>
+            cause._tag === "BotError" ? cause : storeError(input.botId)(cause),
+          ),
+        );
+      yield* notifyChanged;
+      return yield* readDetail(input.botId);
+    },
+  );
+
+  const forgetMcpConnection: BotService["Service"]["forgetMcpConnection"] = Effect.fn(
+    "BotService.forgetMcpConnection",
+  )(function* (connectionId) {
+    const affected = yield* store
+      .forgetMcpConnection(connectionId)
+      .pipe(Effect.mapError(storeError()));
+    if (affected.length > 0) yield* notifyChanged;
+  });
 
   const attachProject: BotService["Service"]["attachProject"] = Effect.fn(
     "BotService.attachProject",
@@ -632,7 +708,9 @@ const make = Effect.gen(function* () {
 
   const changeLearning = <A>(
     botId: BotId,
-    change: (bot: BotStore.BotRow) => Effect.Effect<A, BotError | BotStore.BotStoreError>,
+    change: (
+      bot: BotStore.BotRow,
+    ) => Effect.Effect<A, BotError | BotStore.BotStoreError | SqlError.SqlError>,
   ) =>
     learningLocks
       .withLock(
@@ -667,6 +745,27 @@ const make = Effect.gen(function* () {
     );
     return { bot: yield* readDetail(input.botId), learned };
   });
+
+  const maintainLearning: BotService["Service"]["maintainLearning"] = (scope, change) =>
+    changeLearning(scope.botId, (bot) =>
+      Effect.gen(function* () {
+        const context = yield* store.getContext(scope.botId, scope.projectId);
+        if (context === undefined || context.detached_at !== null) {
+          return yield* botError("The Bot is not attached to this project.", scope.botId)();
+        }
+        if (!isLearningPolicy(bot.learning_policy)) {
+          return yield* botError("The Bot's learning policy is unreadable.", scope.botId)();
+        }
+        const rows = yield* store.listLearning(scope.botId);
+        return yield* change({
+          policy: bot.learning_policy,
+          bot,
+          context,
+          rows,
+          record: learning.record,
+        });
+      }),
+    ).pipe(Effect.withSpan("BotService.maintainLearning"));
 
   const decideLearning: BotService["Service"]["decideLearning"] = Effect.fn(
     "BotService.decideLearning",
@@ -765,6 +864,8 @@ const make = Effect.gen(function* () {
     create,
     update,
     setArchived,
+    setMcpGrants,
+    forgetMcpConnection,
     attachProject,
     updateProjectContext,
     detachProject,
@@ -775,6 +876,7 @@ const make = Effect.gen(function* () {
     retireLearning,
     restoreLearning,
     reconcileTaskLearning,
+    maintainLearning,
   });
 });
 

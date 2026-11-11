@@ -34,6 +34,7 @@ import { McpSchema, McpServer, Tool, Toolkit } from "effect/ai";
 
 import * as ServerConfig from "../config.ts";
 import * as McpHttpServer from "../mcp/McpHttpServer.ts";
+import { layerCallerChangesAllowed } from "../mcp/McpToolAccess.testkit.ts";
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 import * as McpToolAccess from "../mcp/McpToolAccess.ts";
 import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
@@ -153,6 +154,7 @@ const makeLaptop = Effect.gen(function* () {
   );
   const layerHere = McpHttpServer.layerOrchestratorToolkit.pipe(
     Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+    Layer.provideMerge(layerCallerChangesAllowed),
     Layer.provideMerge(PeerLinkRequests.layer),
     Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
     Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),

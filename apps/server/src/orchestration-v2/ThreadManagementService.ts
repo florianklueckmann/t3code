@@ -81,10 +81,18 @@ export function withCreationProvenance(
   switch (command.type) {
     case "thread.create": {
       // Only the server stamps a link's origin, so a client cannot set one.
-      const { linkOrigin: _linkOrigin, delegatedFrom: _delegatedFrom, ...rest } = command;
+      const {
+        linkOrigin: _linkOrigin,
+        delegatedFrom: _delegatedFrom,
+        createdByThreadId: _createdByThreadId,
+        ...rest
+      } = command;
       return { ...rest, ...provenance };
     }
-    case "message.dispatch":
+    case "message.dispatch": {
+      const { ifIdleAtSequence: _ifIdleAtSequence, ...rest } = command;
+      return { ...rest, ...provenance };
+    }
     case "thread.fork":
     case "thread.merge_back":
     case "delegated_task.request":
@@ -725,6 +733,7 @@ const make = Effect.gen(function* () {
     switch (command.type) {
       case "message.dispatch":
       case "bot-task.result.deliver":
+      case "restricted_run.start":
         return orchestrator.getThreadRecords(command.threadId, []).pipe(
           Effect.flatMap((projection) =>
             assertProviderInstanceEnabled({

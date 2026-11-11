@@ -1,6 +1,7 @@
 import {
   NodeId,
   CommandId,
+  isOrchestrationV2WorkActive,
   OrchestrationV2DomainEvent,
   OrchestrationV2StoredEvent,
   type OrchestrationV2PlanArtifact,
@@ -31,6 +32,7 @@ import {
   ProviderTurnAnalytics,
   type ProviderTurnAnalyticsContext,
 } from "../telemetry/ProviderUsageAnalytics.ts";
+import * as BotHomes from "../bots/BotHomes.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as EventSink from "./EventSink.ts";
@@ -235,6 +237,32 @@ function compactUndefined<T extends Record<string, unknown>>(record: T): T {
 
 const decodeDomainEvent = Schema.decodeUnknownEffect(OrchestrationV2DomainEvent);
 
+/**
+ * The thread whose activity this control event starts. On a Bot Home it commits under the Home
+ * command lock, so Bot maintenance never applies learning while it lands. Streamed snapshots and
+ * events that only end work keep their unlocked path.
+ */
+const activityStartThread = (input: ProviderEventIngestInput): ThreadId | undefined => {
+  const event = input.event;
+  switch (event.type) {
+    case "subagent.updated":
+      return isOrchestrationV2WorkActive(event.subagent.status)
+        ? event.subagent.threadId
+        : undefined;
+    case "provider_thread.updated":
+      return event.providerThread.status === "active" ||
+        (event.providerThread.pendingBackgroundTasks?.length ?? 0) > 0
+        ? (event.providerThread.appThreadId ?? input.threadId)
+        : undefined;
+    case "runtime_request.updated":
+      return event.runtimeRequest.status === "pending"
+        ? (event.threadId ?? input.threadId)
+        : undefined;
+    default:
+      return undefined;
+  }
+};
+
 export const layer: Layer.Layer<
   ProviderEventIngestorV2,
   never,
@@ -243,6 +271,7 @@ export const layer: Layer.Layer<
   | IdAllocator.IdAllocatorV2
   | ProjectionStore.ProjectionStoreV2
   | ThreadCommandExecutor.ThreadCommandExecutor
+  | BotHomes.BotHomes
   | ProviderInstanceRegistry.ProviderInstanceRegistry
 > = Layer.effect(
   ProviderEventIngestorV2,
@@ -252,6 +281,7 @@ export const layer: Layer.Layer<
     const projections = yield* ProjectionStore.ProjectionStoreV2;
     const idAllocator = yield* IdAllocator.IdAllocatorV2;
     const threadCommands = yield* ThreadCommandExecutor.ThreadCommandExecutor;
+    const botHomes = yield* BotHomes.BotHomes;
     const analytics = yield* ProviderTurnAnalytics;
     const agentScope = yield* AgentScope;
     const instances = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
@@ -817,10 +847,19 @@ export const layer: Layer.Layer<
                   });
                 }),
               ),
-              (effect) =>
-                input.event.type === "app_thread.created"
-                  ? threadCommands.withLock(input.event.appThread.id, effect)
-                  : effect,
+              (effect) => {
+                if (input.event.type === "app_thread.created")
+                  return threadCommands.withLock(input.event.appThread.id, effect);
+                const started = activityStartThread(input);
+                if (started === undefined) return effect;
+                return botHomes
+                  .isHome(started)
+                  .pipe(
+                    Effect.flatMap((home) =>
+                      home ? threadCommands.withLock(started, effect) : effect,
+                    ),
+                  );
+              },
             ),
         ),
     });

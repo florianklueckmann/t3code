@@ -10,6 +10,7 @@ import { Tool, Toolkit } from "effect/ai";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as PreviewManager from "../../../preview/Manager.ts";
 import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
+import * as McpCallerChanges from "../../McpCallerChanges.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 
 const shared = {
@@ -18,6 +19,7 @@ const shared = {
   dependencies: [
     McpInvocationContext.McpInvocationContext,
     ThreadManagementService.ThreadManagementService,
+    McpCallerChanges.McpCallerChanges,
     PreviewManager.PreviewManager,
     PreviewAutomationBroker.PreviewAutomationBroker,
   ],

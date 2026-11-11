@@ -1,8 +1,12 @@
 import { RegistryContext, useAtomValue } from "@effect/atom-react";
 import {
   BOT_LEARNING_KIND_LABELS,
+  BOT_LEARNING_LEFT_OUT_EXPLANATION,
   BOT_LEARNING_STATUS_LABELS,
+  botLearningLeftOut,
   botLearningOriginLabel,
+  botLearningRevisionInput,
+  botLearningScopeChange,
   botLearningViews,
   botProjectContextChanges,
   botProjectContextDraft,
@@ -32,6 +36,7 @@ import {
   ProviderDriverKind,
   type BotAppearance,
   type BotDetail,
+  type BotLearningEntry,
   type BotLearningKind,
   type BotLearningPolicy,
   type BotProjectContext,
@@ -55,7 +60,7 @@ import {
   PlusIcon,
   Trash2Icon,
 } from "lucide-react";
-import { type ReactNode, useContext, useState } from "react";
+import { Fragment, type ReactNode, useContext, useState } from "react";
 
 import { useEnvironmentSettings } from "../../hooks/useSettings";
 import { randomUUID } from "../../lib/utils";
@@ -92,6 +97,9 @@ import { Textarea } from "../ui/textarea";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { BotAppearancePicker } from "./BotAppearancePicker";
 import { BotContinuationNotes } from "./BotContinuationNotes";
+import { BotHomeCheckSetting } from "./BotHomeCheckSetting";
+import { BotMcpGrantsSetting } from "./BotMcpGrantsSetting";
+import { BotMaintenanceSetting } from "./BotMaintenanceSetting";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import {
   ScheduledRelativeLabel,
@@ -503,6 +511,8 @@ function BotEditorForm({
   const environmentId = environment.environmentId;
   const appearanceSupported =
     environment.serverConfig?.environment.capabilities.botAppearance === true;
+  const maintenanceSupported =
+    environment.serverConfig?.environment.capabilities.botMaintenance === true;
   // Chosen once per form so a retried create stays idempotent.
   const [newBotId] = useState(() => BotId.make(randomUUID()));
   const savedAppearance = saved ? savedBotAppearance(saved) : null;
@@ -719,6 +729,13 @@ function BotEditorForm({
             </RadioGroup>
           </div>
           {current !== null ? (
+            <BotMcpGrantsSetting
+              environment={environment}
+              botId={current.id}
+              formLocked={saving || archived}
+            />
+          ) : null}
+          {current !== null ? (
             <BotProjectContexts
               environmentId={environmentId}
               bot={current}
@@ -729,6 +746,29 @@ function BotEditorForm({
             />
           ) : null}
         </fieldset>
+        {/* Outside the fieldset so pausing stays reachable for an archived Bot or a detached project. */}
+        {current !== null && maintenanceSupported ? (
+          <div className="mt-5 space-y-3">
+            {current.projects.map((context) => (
+              <Fragment key={context.projectId}>
+                <BotMaintenanceSetting
+                  environmentId={environmentId}
+                  botId={current.id}
+                  projectId={context.projectId}
+                  title={titleOf(context.projectId)}
+                  formLocked={saving || archived}
+                />
+                <BotHomeCheckSetting
+                  environmentId={environmentId}
+                  botId={current.id}
+                  projectId={context.projectId}
+                  title={titleOf(context.projectId)}
+                  formLocked={saving || archived}
+                />
+              </Fragment>
+            ))}
+          </div>
+        ) : null}
       </DialogPanel>
       <DialogFooter>
         <DialogClose render={<Button variant="outline" size="sm" disabled={saving} />}>
@@ -924,8 +964,10 @@ function BotLearningList({
   const [text, setText] = useState("");
   const [kind, setKind] = useState<BotLearningKind>("preference");
   const [shared, setShared] = useState(false);
+  const [editing, setEditing] = useState<{ entryId: string; text: string } | null>(null);
   const locked = disabled || busy || !canChange;
   const views = botLearningViews(bot.learning, projectId);
+  const leftOut = projectId === null ? [] : botLearningLeftOut(bot.learning, projectId);
 
   const run = async (
     title: string,
@@ -952,6 +994,16 @@ function BotLearningList({
       }),
     );
     if (added) setText("");
+  };
+  const revise = async (
+    title: string,
+    entry: BotLearningEntry,
+    change: Parameters<typeof botLearningRevisionInput>[2],
+  ) => {
+    const input = botLearningRevisionInput(bot, entry, change);
+    if (input === null) return;
+    const revised = await run(title, () => record({ environmentId, input }));
+    if (revised) setEditing(null);
   };
 
   if (projectId === null && views.length === 0) return null;
@@ -993,25 +1045,88 @@ function BotLearningList({
                 </p>
               </div>
               {view.current ? (
-                <Button
-                  size="xs"
-                  variant="ghost-muted"
-                  disabled={locked}
-                  onClick={() =>
-                    void run("Could not retire the entry", () =>
-                      retire({ environmentId, input: { botId: bot.id, entryId } }),
-                    )
-                  }
-                >
-                  Retire
-                </Button>
+                <div className="flex shrink-0 flex-wrap justify-end gap-1">
+                  <Button
+                    size="xs"
+                    variant="ghost-muted"
+                    disabled={locked}
+                    onClick={() => setEditing({ entryId, text: view.current?.text ?? "" })}
+                  >
+                    Edit
+                  </Button>
+                  {view.entry.projectId === null ? null : (
+                    <Button
+                      size="xs"
+                      variant="ghost-muted"
+                      disabled={locked}
+                      onClick={() =>
+                        void revise("Could not apply it to all projects", view.entry, {
+                          scope: "bot",
+                        })
+                      }
+                    >
+                      Apply to all projects
+                    </Button>
+                  )}
+                  <Button
+                    size="xs"
+                    variant="ghost-muted"
+                    disabled={locked}
+                    onClick={() =>
+                      void run("Could not retire the entry", () =>
+                        retire({ environmentId, input: { botId: bot.id, entryId } }),
+                      )
+                    }
+                  >
+                    Retire
+                  </Button>
+                </div>
               ) : null}
             </div>
+            {editing?.entryId === entryId && view.current ? (
+              <div className="space-y-2">
+                <Textarea
+                  aria-label="Edit lesson"
+                  className="max-h-32 overflow-y-auto"
+                  value={editing.text}
+                  disabled={locked}
+                  onChange={(event) => setEditing({ entryId, text: event.target.value })}
+                />
+                <div className="flex gap-2">
+                  <Button
+                    size="xs"
+                    disabled={
+                      locked ||
+                      editing.text.trim() === "" ||
+                      editing.text.trim() === view.current.text
+                    }
+                    onClick={() =>
+                      void revise("Could not save the change", view.entry, { text: editing.text })
+                    }
+                  >
+                    Save
+                  </Button>
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    disabled={busy}
+                    onClick={() => setEditing(null)}
+                  >
+                    Cancel
+                  </Button>
+                </div>
+              </div>
+            ) : null}
             {view.pending.map((revision) => (
               <div key={revision.revision} className="space-y-1 rounded-md bg-muted/40 p-2">
                 <p className="text-xs font-medium">
-                  {view.current ? "Proposed change" : "Proposed"}
-                  {revision.conflictsWithInstruction ? " · conflicts with your instruction" : ""}
+                  {[
+                    view.current ? "Proposed change" : "Proposed",
+                    botLearningScopeChange(view.entry, revision),
+                    revision.conflictsWithInstruction ? "conflicts with your instruction" : null,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
                 </p>
                 {/* The entry's own heading already shows the newest proposal's text and evidence. */}
                 {revision === shown ? null : <p className="wrap-anywhere">{revision.text}</p>}
@@ -1074,7 +1189,13 @@ function BotLearningList({
                     <li key={revision.revision} className="flex items-start justify-between gap-2">
                       <span className="min-w-0 wrap-anywhere">
                         <span className="text-muted-foreground">
-                          r{revision.revision} · {BOT_LEARNING_STATUS_LABELS[revision.status]}{" "}
+                          {[
+                            `r${revision.revision}`,
+                            BOT_LEARNING_STATUS_LABELS[revision.status],
+                            botLearningScopeChange(view.entry, revision),
+                          ]
+                            .filter(Boolean)
+                            .join(" · ")}{" "}
                           ·{" "}
                         </span>
                         {revision.text}
@@ -1102,6 +1223,20 @@ function BotLearningList({
           </div>
         );
       })}
+      {leftOut.length === 0 ? null : (
+        <div className="space-y-1 rounded-md border p-2 text-sm">
+          <p className="font-medium">Left out of the Bot's turns here ({leftOut.length})</p>
+          <p className="text-xs text-muted-foreground">{BOT_LEARNING_LEFT_OUT_EXPLANATION}</p>
+          <ul className="space-y-1">
+            {leftOut.map(({ entry, current }) => (
+              <li key={entry.id} className="wrap-anywhere text-muted-foreground">
+                {current.text}
+                {entry.projectId === null ? " · all projects" : ""}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       {projectId === null ? null : (
         <div className="space-y-2">
           <Textarea
@@ -1324,8 +1459,8 @@ function BotRoutines({
         <div className="min-w-0 space-y-1">
           <Label>Routines</Label>
           <p className="text-xs text-muted-foreground">
-            Each run starts a new work thread in Full access, without approval prompts. The change
-            mode controls the Bot's instructions, not its tool access.
+            Each run starts a new work thread without approval prompts. Changes allowed runs in Full
+            access; No changes can read and report but not change anything.
           </p>
         </div>
         <Button

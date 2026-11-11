@@ -5,7 +5,6 @@ import {
   CommandId,
   MessageId,
   NodeId,
-  type OrchestrationV2ServerCommand,
   ProjectId,
   ProviderInstanceId,
   ProviderSessionId,
@@ -22,15 +21,18 @@ import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as CheckpointRollbackService from "./CheckpointRollbackService.ts";
 import * as CheckpointService from "./CheckpointService.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EffectWorker from "./EffectWorker.ts";
+import * as Orchestrator from "./Orchestrator.ts";
 import * as RunFinalizationService from "./RunFinalizationService.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ProviderTurnControlService from "./ProviderTurnControlService.ts";
@@ -97,7 +99,7 @@ function layerExecutorFor(input: {
       ProviderTurnControlService.ProviderTurnControlServiceV2,
       ProviderTurnControlService.ProviderTurnControlServiceV2.of({
         interrupt: input.interrupt ?? (() => Effect.void),
-        steer: input.steer ?? (() => Effect.void),
+        steer: input.steer ?? (() => Effect.succeed(true)),
         interruptAndAwaitTerminal: (request) =>
           record(
             request.replacementProviderSessionId === undefined
@@ -224,72 +226,101 @@ it.effect.each([
   }),
 );
 
-it.effect("marks a steer not sent when its follow-up targets a disabled provider", () =>
+const steerControlFailure = (turnCompleted: boolean) =>
+  new ProviderTurnControlService.ProviderTurnControlError({
+    threadId,
+    operation: "steer",
+    providerTurnId,
+    turnCompleted,
+    cause: "The provider turn ended before the steering message was delivered.",
+  });
+
+it.effect.each([
+  {
+    name: "records acceptance once the provider takes a steer",
+    steer: () => Effect.succeed(true),
+    dispatched: ["message.steer.accept"],
+  },
+  {
+    name: "retries a lost acceptance record without steering again",
+    steer: () => Effect.succeed(true),
+    acceptFailures: 2,
+    dispatched: ["message.steer.accept", "message.steer.accept", "message.steer.accept"],
+  },
+  {
+    name: "records nothing when the control service attempted no delivery",
+    steer: () => Effect.succeed(false),
+    dispatched: [],
+  },
+  {
+    name: "records nothing when the steer fails",
+    steer: () => steerControlFailure(false),
+    dispatched: [],
+  },
+  {
+    name: "records nothing when the steer is cancelled",
+    steer: () => Effect.interrupt,
+    dispatched: [],
+  },
+  {
+    name: "marks the message not sent when the turn ended first and the follow-up is refused",
+    steer: () => steerControlFailure(true),
+    dispatched: ["message.dispatch", "message.delivery.fail"],
+  },
+])("$name", ({ steer, acceptFailures = 0, dispatched }) =>
   Effect.gen(function* () {
     const now = yield* DateTime.now;
-    const messageId = MessageId.make("message:effect-worker-late-steer");
-    const dispatched = yield* Ref.make<ReadonlyArray<OrchestrationV2ServerCommand>>([]);
+    const events = yield* Ref.make<ReadonlyArray<string>>([]);
+    const steers = yield* Ref.make(0);
+    const failures = yield* Ref.make(acceptFailures);
+    const messageId = MessageId.make("message:effect-worker-steer");
     const layer = layerExecutorFor({
-      events: yield* Ref.make<ReadonlyArray<string>>([]),
-      steer: () =>
-        new ProviderTurnControlService.ProviderTurnControlError({
-          threadId,
-          operation: "steer",
-          providerTurnId,
-          turnCompleted: true,
-          cause: "The provider turn ended before the steering message was delivered.",
-        }),
+      events,
+      steer: () => Ref.update(steers, (n) => n + 1).pipe(Effect.andThen(steer())),
       threads: {
         getThreadRecords: () =>
           Effect.succeed({
-            messages: [
-              {
-                id: messageId,
-                runId,
-                text: "also check the tests",
-                attachments: [],
-                createdBy: "user",
-                creationSource: "web",
-              },
-            ],
-            runs: [{ id: runId, status: "completed" }],
+            messages: [{ id: messageId, runId, text: "Also list the loot.", attachments: [] }],
+            runs: [{ id: runId }],
           } as never),
         dispatch: (command) =>
-          Ref.update(dispatched, (current) => [...current, command]).pipe(
-            Effect.andThen(
-              command.type === "message.dispatch"
-                ? new ThreadManagementService.ThreadManagementProviderInstanceDisabledError({
-                    projectId: ProjectId.make("project:effect-worker"),
-                    instanceId: ProviderInstanceId.make("codex"),
-                  })
-                : Effect.succeed({ sequence: 1, storedEvents: [] }),
-            ),
-          ),
+          Effect.gen(function* () {
+            yield* Ref.update(events, (current) => [...current, command.type]);
+            if (command.type === "message.dispatch")
+              return yield* new ThreadManagementService.ThreadManagementProviderInstanceDisabledError(
+                {
+                  projectId: ProjectId.make("project:effect-worker-steer"),
+                  instanceId: ProviderInstanceId.make("codex"),
+                },
+              );
+            if ((yield* Ref.getAndUpdate(failures, (n) => n - 1)) > 0)
+              return yield* new Orchestrator.OrchestratorDispatchError({
+                commandId: command.commandId,
+                commandType: command.type,
+              });
+            return { sequence: 1, storedEvents: [] };
+          }),
       },
     });
     yield* Effect.gen(function* () {
       const executor = yield* EffectWorker.OrchestrationEffectExecutorV2;
-      yield* executor.execute({
-        ...restartEffect(now, { type: "detach" }),
-        request: {
-          type: "provider-turn.steer",
-          providerSessionId: oldSessionId,
-          providerThreadId,
-          providerTurnId,
-          messageId,
-        },
-      });
+      const run = yield* executor
+        .execute({
+          ...restartEffect(now, { type: "detach" }),
+          request: {
+            type: "provider-turn.steer",
+            providerSessionId: oldSessionId,
+            providerThreadId,
+            providerTurnId,
+            messageId,
+          },
+        })
+        .pipe(Effect.exit, Effect.forkChild({ startImmediately: true }));
+      yield* TestClock.adjust("1 minute");
+      yield* Fiber.join(run);
     }).pipe(Effect.provide(layer));
-    const commands = yield* Ref.get(dispatched);
-    assert.deepEqual(
-      commands.map((command) => command.type),
-      ["message.dispatch", "message.delivery.fail"],
-    );
-    const failed = commands[1];
-    assert.equal(
-      failed?.type === "message.delivery.fail" ? failed.messageId : undefined,
-      messageId,
-    );
+    assert.deepEqual(yield* Ref.get(events), dispatched);
+    assert.equal(yield* Ref.get(steers), 1);
   }),
 );
 

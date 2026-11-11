@@ -31,6 +31,22 @@ const shell = (title: string, body: string) => `<!doctype html>
   </body>
 </html>`;
 
+/** Where an MCP connection's sign-in lands. `failure` is a fixed sentence, never the service's text. */
+export function renderConnectionSignInPage(failure: string | undefined): string {
+  return failure === undefined
+    ? shell(
+        "Signed in",
+        `<h1>Signed in</h1>
+    <p>Return to T3 Code. This page can be closed.</p>`,
+      )
+    : shell(
+        "Sign-in failed",
+        `<h1>Sign-in did not finish</h1>
+    <p>${escapeHtml(failure)}</p>
+    <p>Return to T3 Code to try again.</p>`,
+      );
+}
+
 export function renderErrorPage(description: string): string {
   return shell(
     "Sign-in failed",

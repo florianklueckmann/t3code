@@ -2,6 +2,9 @@ import type { OrchestrationV2HistoricalMessage } from "@t3tools/contracts";
 import {
   ChatAttachment,
   CheckpointId,
+  McpConnectionId,
+  McpConnectionProblem,
+  mcpConnectionProblemMessage,
   MessageId,
   ModelSelection,
   NodeId,
@@ -45,6 +48,8 @@ import type {
   ProviderSelectionTransitionPlan,
 } from "./selectionTransition.ts";
 
+const ProviderAdapterNativeTools = Schema.Literals(["t3BotOnly", "readOnly"]);
+
 export const ProviderAdapterV2RuntimePolicy = Schema.Struct({
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
@@ -61,6 +66,21 @@ export const ProviderAdapterV2RuntimePolicy = Schema.Struct({
    * and the thread is not used to build it. Bot conversations use T3 Code's scoped learning instead.
    */
   nativeMemory: Schema.optional(Schema.Literal("disabled")),
+  /**
+   * Both mean a read-only, approval-never turn with no user MCP servers, hooks or notify.
+   * "t3BotOnly" also removes every native side-effect tool and keeps only T3 Code's `t3_bot`.
+   * "readOnly" keeps the shell for reading, without network, and T3 Code's tools, whose writes
+   * the caller's task refuses. An adapter enforces it or refuses the run, and never widens it.
+   */
+  nativeTools: Schema.optional(ProviderAdapterNativeTools),
+  /**
+   * Set for a Bot's threads: the only external MCP servers the load may have, each resolved with
+   * its credentials at load time. The provider's own MCP servers, apps and plugins stay off; empty
+   * means none. Ids only, never credentials. An adapter that cannot enforce it refuses the run.
+   */
+  mcpConnections: Schema.optional(Schema.Array(McpConnectionId)),
+  /** With `mcpConnections`: the user's own MCP servers load too. Apps and plugins stay off. */
+  userMcpServers: Schema.optional(Schema.Literal("enabled")),
 });
 export type ProviderAdapterV2RuntimePolicy = typeof ProviderAdapterV2RuntimePolicy.Type;
 
@@ -218,6 +238,74 @@ export class ProviderAdapterOpenSessionError extends Schema.TaggedError<Provider
 ) {
   override get message(): string {
     return `Failed to open ${this.driver} provider session ${this.providerSessionId}.`;
+  }
+}
+
+const sealRefusalText = {
+  version: "this Codex version's tools have not been verified",
+  platform: "it is only verified on macOS",
+  children: "this conversation already has agents it could reach",
+  seal: "the conversation's current tool setup could not be confirmed",
+  unavailable: "it needs an existing conversation with T3 Code's tools connected",
+} as const;
+
+/** A `nativeTools` load or turn the adapter could not enforce. Nothing ran. */
+export class ProviderAdapterSealRefusedError extends Schema.TaggedError<ProviderAdapterSealRefusedError>()(
+  "ProviderAdapterSealRefusedError",
+  {
+    driver: ProviderDriverKind,
+    seal: ProviderAdapterNativeTools,
+    reason: Schema.Literals(["version", "platform", "children", "seal", "unavailable"]),
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    return this.seal === "readOnly"
+      ? `This routine task is set to No changes, which its provider can't enforce here because ${sealRefusalText[this.reason]}, so nothing ran. Start a new routine task once that is fixed, or ask the Bot directly.`
+      : `This Bot maintenance turn can't be restricted here because ${sealRefusalText[this.reason]}, so nothing ran.`;
+  }
+}
+
+const mcpConnectionsRefusalText = {
+  version: "this Codex version has not been verified with them",
+  platform: "they are only verified on macOS",
+  children: "this conversation has agents still running with its earlier connections",
+  load: "the conversation's MCP setup could not be confirmed",
+  unavailable: "this server cannot read its MCP connections",
+} as const;
+
+/**
+ * A Bot thread's granted MCP connections could not be loaded as granted. Nothing ran. Names a
+ * connection and its problem, never a credential.
+ */
+export class ProviderAdapterMcpConnectionsRefusedError extends Schema.TaggedError<ProviderAdapterMcpConnectionsRefusedError>()(
+  "ProviderAdapterMcpConnectionsRefusedError",
+  {
+    driver: ProviderDriverKind,
+    reason: Schema.Literals([
+      "version",
+      "platform",
+      "children",
+      "load",
+      "unavailable",
+      "connection",
+      "missing",
+    ]),
+    connectionId: Schema.optional(McpConnectionId),
+    connectionLabel: Schema.optional(Schema.String),
+    problem: Schema.optional(McpConnectionProblem),
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    switch (this.reason) {
+      case "connection":
+        return `"${this.connectionLabel}" can't be used: ${this.problem === undefined ? "it is not valid." : mcpConnectionProblemMessage(this.problem)} Fix it in Settings → MCP connections, or remove it from this Bot. Nothing ran.`;
+      case "missing":
+        return "An MCP connection granted to this Bot no longer exists. Review the Bot's MCP connections in Settings → Bots. Nothing ran.";
+      default:
+        return `This Bot's MCP connections can't be loaded because ${mcpConnectionsRefusalText[this.reason]}, so nothing ran.`;
+    }
   }
 }
 
@@ -449,6 +537,8 @@ export class ProviderAdapterSessionStoppedError extends Schema.TaggedError<Provi
 export const ProviderAdapterV2Error = Schema.Union([
   ProviderAdapterCapabilitiesError,
   ProviderAdapterOpenSessionError,
+  ProviderAdapterSealRefusedError,
+  ProviderAdapterMcpConnectionsRefusedError,
   ProviderAdapterCloseSessionError,
   ProviderAdapterResumeThreadError,
   ProviderAdapterThreadInUseError,
@@ -564,6 +654,8 @@ export interface ProviderAdapterV2RollbackThreadInput {
   readonly providerThread: OrchestrationV2ProviderThread;
   readonly target: ProviderAdapterV2RollbackTarget;
   readonly providerThreadTurns: ReadonlyArray<OrchestrationV2ProviderTurn>;
+  /** The rolled-back thread's own policy, which a reload must use instead of the session's. */
+  readonly runtimePolicy?: ProviderAdapterV2RuntimePolicy;
 }
 
 export interface ProviderAdapterV2ForkThreadInput {
@@ -641,6 +733,13 @@ export interface ProviderAdapterV2SessionRuntime {
     providerThread: OrchestrationV2ProviderThread,
     options?: { readonly includeSubagents?: boolean },
   ) => Effect.Effect<boolean>;
+  /**
+   * Runs `effect` while no background work can start in this runtime, so a probe inside it that
+   * finds none stays right until `effect` ends. A start waits for it. Not reentrant.
+   */
+  readonly holdBackgroundStarts?: <A, E, R>(
+    effect: Effect.Effect<A, E, R>,
+  ) => Effect.Effect<A, E, R>;
   /** Set only if all session background tasks end with its process; otherwise threads must keep Waiting. */
   readonly backgroundTasksEndWithProcess?: true;
   readonly getModelContextWindow?: (

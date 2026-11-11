@@ -46,6 +46,7 @@ import * as ThreadManagementService from "../../../orchestration-v2/ThreadManage
 import * as PeerForwarding from "../../../peer/PeerForwarding.ts";
 import * as PeerLinkRequests from "../../../peer/PeerLinkRequests.ts";
 import * as PeerLinks from "../../../peer/PeerLinks.ts";
+import * as McpCallerChanges from "../../McpCallerChanges.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as OrchestratorMcpService from "../../OrchestratorMcpService.ts";
 import * as ThreadMetadataMcpService from "../../ThreadMetadataMcpService.ts";
@@ -53,6 +54,7 @@ import * as ThreadMetadataMcpService from "../../ThreadMetadataMcpService.ts";
 const dependencies = [
   McpInvocationContext.McpInvocationContext,
   ThreadManagementService.ThreadManagementService,
+  McpCallerChanges.McpCallerChanges,
   OrchestratorMcpService.OrchestratorMcpService,
 ];
 /** Listing this environment's links. */
@@ -66,6 +68,7 @@ const linkingDependencies = [
 const threadMetadataDependencies = [
   McpInvocationContext.McpInvocationContext,
   ThreadManagementService.ThreadManagementService,
+  McpCallerChanges.McpCallerChanges,
   ThreadMetadataMcpService.ThreadMetadataMcpService,
 ];
 

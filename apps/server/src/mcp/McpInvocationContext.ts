@@ -29,7 +29,15 @@ export interface McpThreadCaller {
   readonly providerInstanceId: ProviderInstanceId;
   /** A delegated child task; its parent owns the work it hands back. */
   readonly subagent?: boolean;
+  /**
+   * Sent from a load sealed for a restricted run (`SEALED_LOAD_HEADER`). Its native children keep
+   * that load's headers after the run ends, so its calls never get more than a restricted run.
+   */
+  readonly sealedLoad?: true;
 }
+
+/** Only narrows what a thread credential may do, so a caller gains nothing by sending it. */
+export const SEALED_LOAD_HEADER = "t3-sealed-load";
 
 export interface McpClientCaller {
   readonly sessionId: string;

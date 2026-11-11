@@ -1,5 +1,6 @@
 import { expect, it } from "@effect/vitest";
 import { CASES } from "./cases.ts";
+import { readToolCalls } from "./observe.ts";
 import {
   gradeSample,
   isMissingContinuationApi,
@@ -133,6 +134,58 @@ it("rejects section promotion, missing refs, restored resolved work and hidden m
   expect(passes({ ...observation(), answer: "Lantern date is pending" })).toBe(false);
   expect(passes(observation(), 1)).toBe(false);
 });
+it("requires every submitted draft to fit the budget, not only the final persisted note", () => {
+  const budget = { items: 2, totalTextUnits: 90, maxTextUnits: 50, maxQuoteUnits: 7 };
+  const run = {
+    ...observation(),
+    calls: observation().calls.map((call) => ({ ...call, noteBudget: budget })),
+  };
+  expect(passes(run, 3)).toBe(true);
+  for (const exceeded of [
+    { items: 21 },
+    { totalTextUnits: 4001 },
+    { maxTextUnits: 401 },
+    { maxQuoteUnits: 401 },
+  ]) {
+    const rejectedThenCorrected = {
+      ...run,
+      calls: [{ ...run.calls[0]!, noteBudget: { ...budget, ...exceeded } }, ...run.calls],
+    };
+    expect(passes(rejectedThenCorrected, 3)).toBe(false);
+  }
+  expect(passes(observation(), 3)).toBe(false);
+});
+
+it("keeps malformed save attempts visible when a later draft is valid", () => {
+  const draft = { requests: [{ text: "Lantern" }], waiting: [], decided: [], context: [] };
+  const activity = (continuation: unknown) => ({
+    type: "tool_call",
+    runId: "run-1",
+    text: JSON.stringify({
+      toolName: "t3_bot",
+      input: { action: "save_continuation", botId: "bot", projectId: "project", continuation },
+    }),
+  });
+  for (const malformed of [
+    undefined,
+    { note: "not an object" },
+    { note: { requests: [], waiting: [], decided: [] } },
+    { note: { ...draft, context: "not an array" } },
+    { note: { ...draft, requests: [{ text: 123 }] } },
+  ]) {
+    const calls = readToolCalls([activity(malformed), activity({ note: draft })]);
+    expect(calls).toHaveLength(2);
+    expect(calls[0]?.noteBudget).toBeUndefined();
+    expect(passes({ ...observation(), calls }, 3)).toBe(false);
+    expect(
+      passes(
+        { ...observation(), capture: null, resumed: null, answer: "17", calls: calls.slice(0, 1) },
+        2,
+      ),
+    ).toBe(false);
+  }
+});
+
 it("ordinary answers cannot invent work or perform an acknowledgement save", () => {
   const empty: ObservedNote = {
     ...note(),

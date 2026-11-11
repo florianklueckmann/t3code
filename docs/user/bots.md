@@ -74,6 +74,20 @@ were interrupted or cancelled, or were skipped. **Hide** removes a finished card
 from the conversation on this device only, and **Show hidden** brings it back;
 the task and its result stay in **Settings → Bots**.
 
+On iOS and Android, completed direct tasks and routines use the same notifications
+as agent work. Notifications require [T3 Connect](mobile-notifications.md). Enable them
+for the environment in **Settings → Notifications** and allow them in the phone's
+settings. Tapping a result notification opens its saved result in the task's work
+thread. Result alerts use a generic title and do not include the prompt or answer text.
+If the Bot continues in its conversation after a result, that follow-up may notify separately.
+
+Cancelled and skipped tasks do not alert. Work-thread failures follow the existing failure
+notification preference. If delivery is unavailable, the result card and unread
+conversation remain; reconnecting can deliver a recent result, but results older
+than two minutes do not trigger a delayed alert. Each registered device follows
+its own notification settings. A missing saved result shows an unavailable notice
+when opened; follow-up answers do not replace the saved task result.
+
 For a direct task, you can ask the Bot to return its result here automatically
 and continue the work you already authorized. This is off by default and allows
 one pending return per conversation input turn. It waits for active work and
@@ -81,6 +95,12 @@ children to finish; newer direct input cancels the pending return. Failed or
 cancelled tasks keep their status on the card without starting a result turn.
 Detach, archive, and cancelling the task revoke a pending return. Routines and
 older tasks do not gain automatic returns.
+
+A direct task runs on the Bot's model unless you ask the Bot to use another
+Codex model or reasoning level for that task. Only that task uses it; the Bot
+and its conversations keep their model. A model or option the provider does not
+offer, or a provider turned off for the project, is refused before the task
+starts. Routines always follow the Bot's current model.
 
 A **routine** runs a task on a schedule. In **Settings → Bots**, edit
 the Bot and choose **Add routine** under the project. Describe what the Bot should do,
@@ -91,14 +111,27 @@ then pick a timing:
 - **Recurring**: a time of day on chosen weekdays, in the environment's time
   zone, which the form shows.
 
-Choose **No changes** to instruct the Bot to report results and propose changes
+Choose **No changes** to have the Bot report results and propose changes
 without editing files or data or sending messages. Choose **Changes allowed**
 to authorize the edits or messages requested in the brief. New and existing routines
 default to **No changes** until you choose otherwise. The brief determines
 the result's content and format.
 
-Both modes run in **Full access** without approval prompts. The change mode
-controls the Bot's instructions, not its tool access. Tasks you ask for directly
+**Changes allowed** runs in **Full access** without approval prompts. **No changes**
+is enforced, not only requested: the routine's task runs with a read-only
+sandbox, no network for its commands, and no approval prompts. It can read files
+and search the web, but it cannot write files, reach other machines from the
+shell, run subagents, use your MCP servers, apps, plugins or hooks, or use T3
+Code actions that change something, such as sending to threads, scheduling,
+delegating or saving what the Bot learned. It uses the provider account you
+selected for the Bot, including a ChatGPT sign-in. The task's result is saved
+as usual.
+
+No changes currently works only on macOS, with Codex 0.166.0 or later.
+Anywhere else the routine's task fails with the reason instead of running with
+more access. Follow-up messages in a routine's task stay No changes, and its
+work thread shows No changes as its fixed permission; to have the
+Bot make the changes it proposed, ask it directly. Tasks you ask for directly
 run in the conversation's mode.
 
 If the environment was off when a routine was due, it runs the latest missed
@@ -152,13 +185,45 @@ codebase does not leak into another. You see it under each project in
   projects only when you say so, or when you adopt a lesson the Bot proposed
   for all projects. You can explicitly ask the Bot to remember a fact across
   all its projects too. The Bot tells you where the learning applies; shared
-  entries appear under **Learning for all projects** in settings.
+  entries appear under **Learning for all projects** in settings. **Apply to
+  all projects** moves a project's entry there; restore its earlier version to
+  move it back. If all projects already have the same entry, that one stays
+  and the project's copy is retired. A proposal that would move an entry says
+  so, and the entry stays in its project until you adopt it.
+- **Edit** rewords an entry as a new version, so its earlier wording stays in
+  its history.
 - **Retire** stops an entry, and **Restore** brings back an earlier version.
   A proposal made against a version that has since changed is marked outdated
   instead of being applied. The same lesson is not recorded twice.
 
+**Maintenance**, under each project in **Settings → Bots**, reviews that
+project's new messages and newly finished tasks once a night at 03:00 server
+time and records lessons by the same **Learning** option. It needs the Bot on a
+signed-in Codex model, and starts with what comes after you turn it on. A night
+is skipped while the Bot's conversation or its tasks are still busy, while the
+conversation is snoozed or archived, while maintenance is paused, or
+while its model can't run.
+
+Once the lessons and the Bot's working notes are saved, maintenance compacts a
+long Bot conversation's context, so the next day starts small. The conversation
+and its history stay as they were. A message you send before compaction starts
+skips it for that night.
+
+**Daily Home check**, next to Maintenance, has the Bot look over that
+project's conversation once a day at the time you choose (08:00 server time by
+default). It adds to **Waiting on you** what needs your decision or preparation
+before the next check, each item quoting your message or naming its task, and
+does nothing else: it starts no task and sends nothing. When it adds something,
+the conversation turns unread; when there is nothing to add, you notice
+nothing. A check waits until the conversation has been quiet for ten minutes,
+skips while it is snoozed or archived, and runs only once after days the server
+was off. It needs a Codex model on a Mac server.
+
 The Bot gets its current learning at the start of each turn, not its whole
-history. Learning does not add preferred sources, settle project decisions or
+history: at most 40 entries or 8,000 characters, your instructions first and
+then the newest. When a project has more, its **Learning** section lists what
+is left out, so you can retire or merge entries to make room. Learning does
+not add preferred sources, settle project decisions or
 give the Bot more access. Research it did for one task stays in the
 conversation but does not become a standing preference.
 
@@ -166,12 +231,68 @@ Bot conversations do not use Codex's own memories: nothing from them is added
 to a Bot's turns, and Bot conversations are not used to build them. Your other
 Codex threads keep your Codex memory settings.
 
+## MCP connections
+
+**Settings → MCP connections** stores an environment's MCP servers: one
+connection per account, with its credentials as header or environment variable
+values or secret-provider references. **Refresh** checks that those credentials
+can be read; it does not start or contact the server. To change a connection's
+URL or command, add a new connection.
+
+In a Bot's settings, **MCP connections** lists them, and you choose which ones
+this Bot may use. **Add connection** there adds a new one and gives it to this
+Bot in one step. The Bot's conversations, tasks, routines, forks and subagents
+load exactly those connections. So do threads the Bot starts with T3 Code's
+tools, such as a new thread or a delegated task on this environment. Turn on
+**Use my own Codex MCP servers** to load the MCP servers in your Codex config
+as well; the switch lists them by name. A change applies from the Bot's next
+turn. A disabled connection stays granted but does not load until you enable it
+again. Removing a connection takes it away from every Bot that uses it; the
+catalog shows which Bots those are and asks first.
+
+These grants choose the connections loaded in the Bot's threads. They do not
+limit which T3 Code features you can ask the Bot to use. Work a Bot delegates to
+another environment runs with that environment's own setup, and a message the
+Bot sends to one of your existing threads leaves that thread's setup unchanged.
+
+A No changes routine uses only the tools a connection's server marks as
+read-only. T3 Code cannot check that mark.
+
+### Signing in with OAuth
+
+For a service that signs you in with your account, such as a mail or calendar
+server, choose **Add connection**, enter its URL, keep **Sign in with OAuth**
+and choose **Connect**. Your browser opens the service's sign-in, and the
+connection shows **Connected** once you finish. T3 Code keeps the tokens on the
+environment and renews them on its own. For a second account of the same
+service, add a second connection and sign in with the other account.
+
+- **Use your own OAuth app** is for services that do not let T3 Code register
+  itself. Enter the client ID and, if the app has one, its secret, and add the
+  redirect URI shown there to the app in the service's developer settings.
+- When the browser cannot reach the environment, for example a remote
+  environment on plain http, the browser ends on a page that cannot load. Copy
+  that page's address and paste it into the field T3 Code shows. The desktop
+  app catches it for you.
+- A **Signed out** connection, because you disconnected it or the service ended
+  access, stays granted. Bots run without it until you choose **Reconnect**, in
+  the catalog or in the Bot's settings.
+- When you reconnect, sign in with the same account as before. T3 Code cannot
+  tell which account you chose, and every Bot granted the connection gets the
+  account you sign in with. If your browser is already signed in to another
+  account of that service, switch accounts on the sign-in page.
+- A sign-in that expires in the middle of a long turn fails that connection's
+  later calls in that turn. The next turn renews it.
+
 ## Current limits
 
-- Bots run on Codex models only. If you switch a Bot conversation to another
-  provider, its turns fail until you switch back.
-- Results appear in T3 Code only. Routines don't send push notifications or
-  emails, or read your calendar.
+- MCP connections apply only to Codex 0.166.0 or later on a Mac server.
+  Elsewhere, a Bot without connections uses the provider's own MCP setup, and a
+  Bot with connections does not run.
+- Bots turn off Claude's automatic memory and Grok's cross-session memory.
+  Providers without a per-session memory switch, such as Kiro and Antigravity,
+  may still use their own memories in Bot conversations.
+- Built-in email and calendar connections are not available.
 
 ## Detach and archive
 

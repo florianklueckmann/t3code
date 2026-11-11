@@ -1,6 +1,8 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import {
+  BotId,
+  BotTaskId,
   EnvironmentId,
   EventId,
   MessageId,
@@ -28,6 +30,7 @@ import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 
+import * as BotTaskService from "../bots/BotTaskService.ts";
 import * as EnvironmentKeys from "../cloud/environmentKeys.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import {
@@ -140,6 +143,8 @@ describe("startup agent activity", () => {
 
 const makeTestRelay = Effect.fnUntraced(function* (
   options: {
+    readonly taskChanges?: Stream.Stream<BotTaskId>;
+    readonly botTasks?: ReadonlyArray<BotTaskService.BotTaskAwareness>;
     readonly respond?: (attempt: number) => Response;
     readonly failSecretRead?: (name: string) => boolean;
     readonly linked?: boolean;
@@ -280,6 +285,47 @@ const makeTestRelay = Effect.fnUntraced(function* (
     deletedAt: null,
   };
   const relay = yield* AgentAwarenessRelay.make.pipe(
+    Effect.provideService(BotTaskService.BotTaskService, {
+      start: unused,
+      admitRoutine: unused,
+      requireRunnable: unused,
+      get: (taskId) => {
+        const task = options.botTasks?.find((task) => task.taskId === taskId);
+        return task === undefined
+          ? unused()
+          : Effect.succeed({
+              id: task.taskId,
+              botId: BotId.make("bot"),
+              projectId: task.projectId,
+              homeThreadId: ThreadId.make("home"),
+              workThreadId: task.workThreadId,
+              origin: "direct",
+              title: "Private task prompt",
+              status: task.status,
+              scheduledTaskId: null,
+              occurrenceDueAt: null,
+              sessionAt: null,
+              runtimeMode: "full-access",
+              detail: null,
+              createdAt: NOW,
+              updatedAt: NOW,
+              completedAt: task.completedAt,
+            });
+      },
+      getResult: unused,
+      list: unused,
+      subscribeList: () => Stream.empty,
+      cancel: unused,
+      cancelForContext: unused,
+      reconcile: Effect.void,
+      changes: Effect.succeed(options.taskChanges ?? Stream.empty),
+      getAwarenessTasks: (threadId) =>
+        Effect.succeed(
+          (options.botTasks ?? []).filter(
+            (task) => threadId === undefined || task.workThreadId === threadId,
+          ),
+        ),
+    }),
     Effect.provide(EnvironmentKeys.layer),
     Effect.provideService(ServerSecretStore.ServerSecretStore, secrets),
     Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
@@ -306,6 +352,232 @@ const makeTestRelay = Effect.fnUntraced(function* (
 });
 
 describe("AgentAwarenessRelay", () => {
+  it.effect(
+    "publishes one saved Bot result through the work-thread identity after reconciliation",
+    () =>
+      Effect.gen(function* () {
+        const botTasks: BotTaskService.BotTaskAwareness[] = [
+          {
+            taskId: BotTaskId.make("bot-task:saved"),
+            projectId: PROJECT_ID,
+            workThreadId: THREAD_ID,
+            status: "running",
+            resultRunId: null as RunId | null,
+            completedAt: null as string | null,
+          },
+        ];
+        const { relay, currentShell, publications } = yield* makeTestRelay({ botTasks });
+        yield* relay.publishThread(THREAD_ID);
+        yield* Ref.set(
+          currentShell,
+          shell({
+            status: "completed",
+            latestRunId: RunId.make("saved"),
+            latestRunCompletedAt: DateTime.makeUnsafe(NOW),
+          }),
+        );
+        yield* relay.publishThread(THREAD_ID);
+        yield* TestClock.adjust("5 seconds");
+        yield* relay.drain;
+        assert.isFalse(publications.some((p) => p.state?.phase === "completed"));
+        Object.assign(botTasks[0]!, {
+          status: "completed",
+          resultRunId: RunId.make("saved"),
+          completedAt: NOW,
+        });
+        yield* relay.publishThread(THREAD_ID);
+        yield* TestClock.adjust("5 seconds");
+        yield* relay.drain;
+        const completed = publications.filter((p) => p.state?.phase === "completed");
+        assert.lengthOf(completed, 1);
+        assert.equal(completed[0]?.state?.threadId, THREAD_ID);
+        assert.equal(
+          completed[0]?.state?.deepLink,
+          "/threads/relay-environment/relay-thread?botTaskId=bot-task%3Asaved",
+        );
+        assert.equal(completed[0]?.state?.threadTitle, "Bot task result");
+        assert.equal(completed[0]?.state?.updatedAt, NOW);
+        yield* relay.publishThread(THREAD_ID);
+        assert.lengthOf(
+          publications.filter((p) => p.state?.phase === "completed"),
+          1,
+        );
+      }),
+  );
+
+  it.effect("publishes persisted task completion without another work-thread event", () =>
+    Effect.gen(function* () {
+      const changes = yield* Queue.unbounded<BotTaskId>();
+      const pulls = yield* Queue.unbounded<void>();
+      const botTasks: BotTaskService.BotTaskAwareness[] = [
+        {
+          taskId: BotTaskId.make("bot-task:changed"),
+          projectId: PROJECT_ID,
+          workThreadId: THREAD_ID,
+          status: "running",
+          resultRunId: null,
+          completedAt: null,
+        },
+      ];
+      const { relay, currentShell, publications } = yield* makeTestRelay({
+        botTasks,
+        taskChanges: Stream.fromEffectRepeat(
+          Queue.offer(pulls, undefined).pipe(Effect.andThen(Queue.take(changes))),
+        ),
+      });
+      yield* relay.start();
+      yield* Queue.take(pulls);
+      yield* relay.publishThread(THREAD_ID);
+      yield* Ref.set(
+        currentShell,
+        shell({ status: "completed", latestRunId: RunId.make("saved") }),
+      );
+      Object.assign(botTasks[0]!, {
+        status: "completed",
+        resultRunId: RunId.make("saved"),
+        completedAt: NOW,
+      });
+      yield* Queue.offer(changes, botTasks[0]!.taskId);
+      yield* Queue.take(pulls);
+      yield* relay.drain;
+      yield* TestClock.adjust("5 seconds");
+      yield* relay.drain;
+      assert.deepEqual(
+        publications.map((p) => p.state?.phase),
+        ["running", "completed"],
+      );
+      assert.equal(publications[1]?.state?.threadTitle, "Bot task result");
+      assert.notInclude(publications[1]?.state?.detail ?? "", "Private task prompt");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect.each([
+    { completedAt: "2026-09-04T11:59:30.000Z", expectedPublications: 1 },
+    { completedAt: "2026-09-04T11:57:00.000Z", expectedPublications: 0 },
+  ])(
+    "only catches up fresh saved results and reuses their identity: $completedAt",
+    ({ completedAt, expectedPublications }) =>
+      Effect.gen(function* () {
+        yield* TestClock.setTime(DateTime.toEpochMillis(DateTime.makeUnsafe(NOW)));
+        const botTasks: BotTaskService.BotTaskAwareness[] = [
+          {
+            taskId: BotTaskId.make("bot-task:restart"),
+            projectId: PROJECT_ID,
+            workThreadId: THREAD_ID,
+            status: "completed",
+            resultRunId: RunId.make("saved"),
+            completedAt,
+          },
+        ];
+        const { relay, secrets, currentShell, publications } = yield* makeTestRelay({ botTasks });
+        yield* Ref.set(
+          currentShell,
+          shell({
+            status: "completed",
+            latestRunId: RunId.make("saved"),
+            latestRunCompletedAt: DateTime.makeUnsafe(completedAt),
+          }),
+        );
+        yield* secrets.set(PUBLISH_AGENT_ACTIVITY_SECRET, new TextEncoder().encode("false"));
+        yield* relay.publishThread(THREAD_ID);
+        assert.lengthOf(publications, 0);
+        yield* relay.start();
+        yield* secrets.set(PUBLISH_AGENT_ACTIVITY_SECRET, new TextEncoder().encode("true"));
+        yield* TestClock.adjust("1 second");
+        yield* relay.drain;
+        yield* TestClock.adjust("5 seconds");
+        yield* relay.drain;
+        assert.lengthOf(publications, expectedPublications);
+        if (expectedPublications > 0) {
+          assert.equal(publications[0]?.state?.updatedAt, botTasks[0]?.completedAt);
+          assert.include(publications[0]?.state?.deepLink ?? "", "botTaskId=bot-task%3Arestart");
+        }
+        yield* relay.publishThread(THREAD_ID);
+        yield* relay.requestCatchUp();
+        yield* TestClock.adjust("1 second");
+        yield* relay.drain;
+        assert.lengthOf(publications, expectedPublications);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect.each([
+    {
+      status: "cancelled" as const,
+      sameRun: true,
+      sameProject: true,
+      phase: null,
+      savedLink: false,
+    },
+    {
+      status: "cancelled" as const,
+      sameRun: false,
+      sameProject: true,
+      phase: "completed",
+      savedLink: false,
+    },
+    {
+      status: "completed" as const,
+      sameRun: false,
+      sameProject: true,
+      phase: "completed",
+      savedLink: false,
+    },
+    {
+      status: "completed" as const,
+      sameRun: true,
+      sameProject: false,
+      phase: "completed",
+      savedLink: false,
+    },
+    {
+      status: "completed" as const,
+      sameRun: true,
+      sameProject: true,
+      phase: "completed",
+      savedLink: true,
+    },
+    {
+      status: "failed" as const,
+      sameRun: true,
+      sameProject: true,
+      phase: "failed",
+      savedLink: false,
+    },
+  ])(
+    "keeps Bot $status awareness scoped to the saved run and project ($sameRun/$sameProject)",
+    ({ status, sameRun, sameProject, phase, savedLink }) =>
+      Effect.gen(function* () {
+        const { relay, currentShell, publications } = yield* makeTestRelay({
+          botTasks: [
+            {
+              taskId: BotTaskId.make("bot-task:scope"),
+              projectId: sameProject ? PROJECT_ID : ProjectId.make("other"),
+              workThreadId: THREAD_ID,
+              status,
+              resultRunId: RunId.make("saved"),
+              completedAt: NOW,
+            },
+          ],
+        });
+        yield* relay.publishThread(THREAD_ID);
+        yield* Ref.set(
+          currentShell,
+          shell({
+            status: status === "failed" ? "failed" : "completed",
+            latestRunId: RunId.make(sameRun ? "saved" : "follow-up"),
+            latestRunCompletedAt: DateTime.makeUnsafe(NOW),
+          }),
+        );
+        yield* relay.publishThread(THREAD_ID);
+        yield* TestClock.adjust("5 seconds");
+        yield* relay.drain;
+        const terminal = publications.at(-1)?.state ?? null;
+        assert.equal(terminal?.phase ?? null, phase);
+        assert.equal(terminal?.deepLink.includes("botTaskId=") ?? false, savedLink);
+        if (terminal !== null) assert.equal(terminal.projectTitle, "Project");
+      }),
+  );
+
   it.effect("coalesces queued updates and reruns a thread dirtied during publishing", () =>
     Effect.gen(function* () {
       const started = yield* Deferred.make<void>();

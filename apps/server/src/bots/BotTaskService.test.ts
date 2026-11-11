@@ -2,11 +2,13 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
+  BOT_WORK_THREAD_ID_PREFIX,
   BotId,
   BotTaskId,
   BotTaskListInput,
   type BotTaskStatus,
   CommandId,
+  type ModelSelection,
   type OrchestrationV2ServerCommand,
   type OrchestrationV2ThreadShell,
   type Project,
@@ -23,6 +25,7 @@ import {
   type ScheduledTaskUpsertInput,
   ScheduledTaskId,
   ScheduledTaskError,
+  type ServerProvider,
   ThreadId,
 } from "@t3tools/contracts";
 import { makeSubagentConversationArtifacts } from "@t3tools/provider-core/server/subagentProjection";
@@ -51,11 +54,13 @@ import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import { ServerActivation } from "../serverActivation.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as BotExecutionConstraint from "./BotExecutionConstraint.ts";
 import * as BotProjectGuard from "./BotProjectGuard.ts";
 import * as BotService from "./BotService.ts";
 import * as BotTaskService from "./BotTaskService.ts";
@@ -69,9 +74,59 @@ const codex = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" };
 const START = Date.parse("2026-11-02T12:00:00.000Z");
 const HOUR = 3_600_000;
 
+const catalogModel = (slug: string): ServerProvider["models"][number] => ({
+  slug,
+  name: slug,
+  isCustom: false,
+  capabilities: {
+    optionDescriptors: [
+      {
+        id: "reasoningEffort",
+        label: "Reasoning",
+        type: "select",
+        options: [
+          { id: "low", label: "Low" },
+          { id: "high", label: "High", isDefault: true },
+        ],
+      },
+      { id: "fastMode", label: "Fast", type: "boolean" },
+    ],
+  },
+});
+const catalogProvider = (instanceId: string, driver: string, enabled = true): ServerProvider => ({
+  instanceId: ProviderInstanceId.make(instanceId),
+  driver: ProviderDriverKind.make(driver),
+  enabled,
+  installed: true,
+  version: "test",
+  status: enabled ? "ready" : "disabled",
+  auth: { status: "authenticated" },
+  checkedAt: "2026-11-02T00:00:00.000Z",
+  models: [catalogModel("gpt-5"), catalogModel("gpt-5.1")],
+  slashCommands: [],
+  skills: [],
+});
+const CATALOG = [
+  catalogProvider("codex", "codex"),
+  catalogProvider("codex-blocked", "codex"),
+  catalogProvider("codex-off", "codex", false),
+  catalogProvider("claude", "claudeAgent"),
+  { ...catalogProvider("codex-no-catalog", "codex"), models: [] },
+  {
+    ...catalogProvider("codex-no-options", "codex"),
+    models: [{ ...catalogModel("gpt-5"), capabilities: {} }],
+  },
+  {
+    ...catalogProvider("codex-null-capabilities", "codex"),
+    models: [{ ...catalogModel("gpt-5"), capabilities: null }],
+  },
+];
+
 interface FakeThread {
   readonly projectId: ProjectId;
   readonly archived: boolean;
+  /** What the thread was launched with. */
+  readonly modelSelection: ModelSelection;
   readonly runtimeMode: RuntimeMode;
   readonly status: OrchestrationV2ThreadShell["status"];
   readonly blockingRequest: boolean;
@@ -211,6 +266,7 @@ const makeThreadWorld = Effect.gen(function* () {
         new Map(current).set(threadId, {
           projectId: input.projectId,
           archived: false,
+          modelSelection: input.modelSelection,
           runtimeMode: input.runtimeMode,
           status: "idle",
           blockingRequest: false,
@@ -238,6 +294,8 @@ const makeThreadWorld = Effect.gen(function* () {
       withBotResultDelivery: (command, use) =>
         beforeDeliveryLock.pipe(Effect.andThen(use(dispatchLocked(command)))),
       getThreadShell,
+      isProviderInstanceEnabledForProject: (input) =>
+        Effect.succeed(input.instanceId !== "codex-blocked"),
       getProjectThreadRecords: (input, fields, filter) =>
         Effect.gen(function* () {
           yield* Ref.update(reads, (all) => [...all, { input, fields, filter }]);
@@ -291,6 +349,7 @@ const layerSupport = Layer.mergeAll(
         driverKind: ProviderDriverKind.make("codex"),
       } as ProviderInstance),
   }),
+  Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed(CATALOG) }),
   Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
     namedProjectsRoot: "/projects",
     isScratchProject: () => Effect.succeed(false),
@@ -313,6 +372,7 @@ interface Services {
   readonly tasks: BotTaskService.BotTaskService["Service"];
   readonly routines: ScheduledTaskService.ScheduledTaskService["Service"];
   readonly turnContext: BotTurnContext.BotTurnContext["Service"];
+  readonly constraint: BotExecutionConstraint.BotExecutionConstraint["Service"];
 }
 
 /**
@@ -330,10 +390,11 @@ const withServices = <A, E>(
       tasks: yield* BotTaskService.BotTaskService,
       routines: yield* ScheduledTaskService.ScheduledTaskService,
       turnContext: yield* BotTurnContext.BotTurnContext,
+      constraint: yield* BotExecutionConstraint.BotExecutionConstraint,
     });
   }).pipe(
     Effect.provide(
-      Layer.mergeAll(BotService.layer, BotTurnContext.layer).pipe(
+      Layer.mergeAll(BotService.layer, BotTurnContext.layer, BotExecutionConstraint.layer).pipe(
         Layer.provideMerge(
           ScheduledTaskService.layer.pipe(Layer.provide(BotTaskService.layerRoutineTarget)),
         ),
@@ -468,6 +529,7 @@ it.effect("looks up an existing work thread outside the latest 50 environment ta
         assert.deepEqual((yield* lookup(ThreadId.make("bot-work:missing"))).tasks, []);
         yield* services.bots.setArchived({ botId, archived: true });
         assert.equal((yield* lookup(workThreadId)).tasks[0]?.botId, botId);
+        assert.equal((yield* services.tasks.getAwarenessTasks(workThreadId))[0]?.taskId, task.id);
       }),
     );
   }).pipe(Effect.provide(layerDatabase)),
@@ -549,6 +611,17 @@ it.effect(
           };
           yield* Ref.update(world.records, (all) => new Map(all).set(workThreadId, record));
           yield* world.update(workThreadId, { runId: laterRunId });
+          assert.deepEqual(yield* services.tasks.getAwarenessTasks(workThreadId), [
+            {
+              taskId: task.id,
+              projectId: campaign,
+              workThreadId,
+              status: "completed",
+              resultRunId: runId,
+              completedAt: (yield* services.tasks.get(task.id)).completedAt,
+            },
+          ]);
+          assert.deepEqual(yield* services.tasks.getAwarenessTasks(ThreadId.make("missing")), []);
           const saved = yield* services.tasks.getResult({ taskId: task.id });
           assert.equal(saved.task.id, task.id);
           assert.deepEqual(saved.result, { state: "available", runId, text: "The saved result." });
@@ -1092,20 +1165,52 @@ it.effect("keeps each routine run's change permission after edits and a restart"
         assert.isFalse(saved.task.bot?.allowChanges);
         yield* TestClock.adjust("1 second");
         const preparing = yield* services.routines.runNow({ id: task.id });
-        return { changingThread, preparingThread: preparing.threadId ?? assert.fail() };
+        const preparingThread = preparing.threadId ?? assert.fail();
+        // Allowing changes again applies to the next run, never to one already admitted.
+        yield* services.routines.upsert({ ...input, id: task.id });
+        // A direct task stores allow_changes = 0 too, and keeps its usual authority.
+        const direct = yield* services.tasks.start({
+          botId,
+          projectId: campaign,
+          prompt: "Fix the typo.",
+        });
+        return {
+          changingThread,
+          preparingThread,
+          directThread: direct.workThreadId ?? assert.fail(),
+        };
       }),
     );
     yield* withServices(world, (services) =>
       Effect.gen(function* () {
-        for (const [thread, permission] of [
-          [workThreads.changingThread, "Changes allowed"],
-          [workThreads.preparingThread, "No changes"],
+        for (const [thread, permission, constraint] of [
+          [workThreads.changingThread, "Changes allowed", "standard"],
+          [workThreads.preparingThread, "No changes", "no-changes"],
         ] as const) {
           const context = yield* services.turnContext.forThread(thread);
           if (context._tag !== "active") return assert.fail();
           assert.include(context.instructions, permission);
           assert.notInclude(context.instructions, "recorded play");
+          assert.equal(yield* services.constraint.forThread(thread), constraint);
         }
+        assert.equal(yield* services.constraint.forThread(workThreads.directThread), "standard");
+        assert.equal(
+          yield* services.constraint.forThread(ThreadId.make("thread:not-a-task")),
+          "standard",
+        );
+        // Clients read the same admitted answer from the task summary.
+        const changesOf = (workThreadId: ThreadId) =>
+          services.tasks
+            .list({ workThreadId })
+            .pipe(Effect.map(({ tasks }) => tasks.map((task) => task.changes)));
+        assert.deepEqual(
+          [
+            yield* changesOf(workThreads.changingThread),
+            yield* changesOf(workThreads.preparingThread),
+            yield* changesOf(workThreads.directThread),
+          ],
+          [[null], ["none"], [null]],
+        );
       }),
     );
   }).pipe(Effect.provide(layerDatabase)),
@@ -1134,6 +1239,7 @@ it.effect("runs a dated preparation once and publishes its result to the home co
         assert.equal(task?.origin, "routine");
         assert.equal(task?.workThreadId, workThreadId);
         assert.equal(task?.homeThreadId, home);
+        assert.equal((yield* services.tasks.getAwarenessTasks(workThreadId))[0]?.taskId, task?.id);
         assert.equal(task?.runtimeMode, "full-access");
         assert.equal(task?.sessionAt, iso(sessionAt));
 
@@ -1185,6 +1291,10 @@ it.effect("runs a dated preparation once and publishes its result to the home co
         const task = yield* services.tasks.get(taskId);
         assert.equal(task.status, "completed");
         assert.isNotNull(task.completedAt);
+        assert.equal((yield* services.tasks.getAwarenessTasks())[0]?.taskId, task.id);
+        yield* TestClock.adjust("3 minutes");
+        assert.deepEqual(yield* services.tasks.getAwarenessTasks(), []);
+        assert.equal((yield* services.tasks.getAwarenessTasks(workThreadId))[0]?.taskId, task.id);
         const routine = (yield* services.routines.list()).tasks[0];
         assert.isNull(routine?.nextRunAt);
       }),
@@ -1237,6 +1347,220 @@ it.effect("starts work a crash left admitted without launching it twice", () =>
         assert.equal(retried.status, "accepted");
         assert.lengthOf((yield* services.tasks.list({ botId })).tasks, 1);
         assert.lengthOf(yield* world.commandsMatching(`launch ${retried.workThreadId}`), 1);
+      }),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
+const ownModel = {
+  instanceId: ProviderInstanceId.make("codex"),
+  model: "gpt-5.1",
+  options: [{ id: "reasoningEffort", value: "low" }],
+} satisfies ModelSelection;
+
+const launchedSelection = (world: ThreadWorld, workThreadId: ThreadId | null) =>
+  Ref.get(world.threads).pipe(
+    Effect.map((threads) => threads.get(workThreadId ?? assert.fail("no work thread"))),
+    Effect.map((thread) => thread?.modelSelection),
+  );
+
+it.effect("runs a direct task on its own model without changing the Bot or its Home", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(START);
+    yield* seedProject;
+    const world = yield* makeThreadWorld;
+    yield* withServices(world, (services) =>
+      Effect.gen(function* () {
+        const homeThreadId = yield* attachBot(services);
+        const request = {
+          botId,
+          projectId: campaign,
+          prompt: "Recap the last session carefully.",
+          modelSelection: ownModel,
+          commandId: CommandId.make("own-model"),
+        };
+        const task = yield* services.tasks.start(request);
+        assert.deepEqual(yield* launchedSelection(world, task.workThreadId), ownModel);
+        assert.deepEqual(task.modelSelection, ownModel);
+        assert.equal(task.homeThreadId, homeThreadId);
+        assert.isTrue(task.workThreadId?.startsWith(BOT_WORK_THREAD_ID_PREFIX));
+        // A retry returns the same task without launching it again.
+        assert.deepEqual(yield* services.tasks.start(request), task);
+        assert.lengthOf(yield* world.commandsMatching(`launch ${task.workThreadId}`), 1);
+
+        const inherited = yield* services.tasks.start({
+          botId,
+          projectId: campaign,
+          prompt: "Recap the last session.",
+        });
+        assert.deepEqual(yield* launchedSelection(world, inherited.workThreadId), codex);
+        assert.deepEqual(inherited.modelSelection, codex);
+        const withoutOptions = {
+          instanceId: ProviderInstanceId.make("codex-no-options"),
+          model: "gpt-5",
+        };
+        const plain = yield* services.tasks.start({
+          botId,
+          projectId: campaign,
+          prompt: "Recap without model options.",
+          modelSelection: withoutOptions,
+        });
+        assert.deepEqual(yield* launchedSelection(world, plain.workThreadId), withoutOptions);
+        assert.deepEqual((yield* services.bots.get({ botId })).modelSelection, codex);
+        assert.deepEqual(yield* launchedSelection(world, homeThreadId), codex);
+        assert.lengthOf(yield* world.commandsMatching("thread.model-selection.set"), 0);
+      }),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect("keeps each task's model when a restart comes before its launch", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(START);
+    yield* seedProject;
+    const world = yield* makeThreadWorld;
+    const sql = yield* BotDatabase.BotDatabase;
+    const taskId = BotTaskId.make("bot-task:restart-before-launch");
+    yield* withServices(world, (services) =>
+      Effect.gen(function* () {
+        const homeThreadId = yield* attachBot(services);
+        // Admitted before task selections were recorded, so it follows the Bot.
+        yield* sql`
+          INSERT INTO bot_tasks (
+            task_id, bot_id, project_id, home_thread_id, work_thread_id, origin,
+            title, prompt, runtime_mode, status, created_at, updated_at
+          ) VALUES (
+            'bot-task:before-010', ${botId}, ${campaign}, ${homeThreadId},
+            'bot-work:bot-task:before-010', 'direct', 'Older task', 'Recap.', 'full-access',
+            'accepted', ${iso(START)}, ${iso(START)}
+          )
+        `;
+        const gate = {
+          stage: "before-thread" as const,
+          entered: yield* Deferred.make<void>(),
+          release: yield* Deferred.make<void>(),
+        };
+        yield* Ref.set(world.launchGate, gate);
+        yield* Effect.forkScoped(
+          services.tasks.start({
+            botId,
+            projectId: campaign,
+            prompt: "Recap the last session.",
+            modelSelection: ownModel,
+            commandId: CommandId.make("restart-before-launch"),
+          }),
+        );
+        // The server stops while the task is admitted and its work thread not yet created.
+        yield* Deferred.await(gate.entered);
+      }),
+    );
+    yield* withServices(world, (services) =>
+      Effect.gen(function* () {
+        assert.deepEqual((yield* services.tasks.get(taskId)).modelSelection, ownModel);
+        yield* services.tasks.reconcile;
+        const task = yield* services.tasks.get(taskId);
+        assert.deepEqual(yield* launchedSelection(world, task.workThreadId), ownModel);
+        const older = yield* services.tasks.get(BotTaskId.make("bot-task:before-010"));
+        assert.isUndefined(older.modelSelection);
+        assert.deepEqual(yield* launchedSelection(world, older.workThreadId), codex);
+        assert.deepEqual((yield* services.bots.get({ botId })).modelSelection, codex);
+      }),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect.each<{
+  readonly name: string;
+  readonly modelSelection: ModelSelection;
+  readonly error: string;
+}>([
+  {
+    name: "an unknown provider",
+    modelSelection: { instanceId: ProviderInstanceId.make("missing"), model: "gpt-5" },
+    error: "Provider instance missing is not configured.",
+  },
+  {
+    name: "a provider Bots do not support",
+    modelSelection: { instanceId: ProviderInstanceId.make("claude"), model: "gpt-5" },
+    error: "Bots currently support Codex providers only.",
+  },
+  {
+    name: "a disabled provider",
+    modelSelection: { instanceId: ProviderInstanceId.make("codex-off"), model: "gpt-5" },
+    error: "Provider instance codex-off is disabled.",
+  },
+  {
+    name: "a provider the project turned off",
+    modelSelection: { instanceId: ProviderInstanceId.make("codex-blocked"), model: "gpt-5" },
+    error: "Provider instance codex-blocked is turned off for this project.",
+  },
+  {
+    name: "a model the provider does not offer",
+    modelSelection: { ...codex, model: "gpt-9" },
+    error: "Model gpt-9 is not offered by provider codex.",
+  },
+  {
+    name: "an unavailable model catalog",
+    modelSelection: {
+      instanceId: ProviderInstanceId.make("codex-no-catalog"),
+      model: "invented-model",
+    },
+    error:
+      "Provider instance codex-no-catalog has no model catalog. Refresh the provider before choosing a task model.",
+  },
+  {
+    name: "missing option metadata",
+    modelSelection: {
+      instanceId: ProviderInstanceId.make("codex-no-options"),
+      model: "gpt-5",
+      options: [{ id: "reasoningEffort", value: "low" }],
+    },
+    error: "Unknown option reasoningEffort; supported options: none.",
+  },
+  {
+    name: "unavailable model capabilities",
+    modelSelection: {
+      instanceId: ProviderInstanceId.make("codex-null-capabilities"),
+      model: "gpt-5",
+      options: [{ id: "fastMode", value: true }],
+    },
+    error: "Unknown option fastMode; supported options: none.",
+  },
+  {
+    name: "an unknown option",
+    modelSelection: { ...codex, options: [{ id: "verbosity", value: "high" }] },
+    error: "Unknown option verbosity; supported options: reasoningEffort, fastMode.",
+  },
+  {
+    name: "an option value the model does not have",
+    modelSelection: { ...codex, options: [{ id: "reasoningEffort", value: "max" }] },
+    error: "Option reasoningEffort must be one of: low, high.",
+  },
+  {
+    name: "an option given twice",
+    modelSelection: {
+      ...codex,
+      options: [
+        { id: "reasoningEffort", value: "low" },
+        { id: "reasoningEffort", value: "high" },
+      ],
+    },
+    error: "Option reasoningEffort was specified more than once.",
+  },
+])("refuses a task on $name before admitting it", ({ modelSelection, error }) =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(START);
+    yield* seedProject;
+    const world = yield* makeThreadWorld;
+    yield* withServices(world, (services) =>
+      Effect.gen(function* () {
+        yield* attachBot(services);
+        const refused = yield* services.tasks
+          .start({ botId, projectId: campaign, prompt: "Recap.", modelSelection })
+          .pipe(Effect.flip);
+        assert.include(refused.message, error);
+        assert.lengthOf((yield* services.tasks.list({ botId })).tasks, 0);
+        assert.lengthOf(yield* world.commandsMatching(`launch ${BOT_WORK_THREAD_ID_PREFIX}`), 0);
       }),
     );
   }).pipe(Effect.provide(layerDatabase)),
@@ -1450,6 +1774,8 @@ it.effect("detach and archive pause routines and stop their work until resumed",
         const [task] = (yield* services.tasks.list({ botId })).tasks;
         assert.equal(task?.status, "cancelled");
         assert.equal((yield* services.turnContext.forThread(workThreadId))._tag, "inactive");
+        // A detached project's task keeps No changes: its row, not the Bot, decides.
+        assert.equal(yield* services.constraint.forThread(workThreadId), "no-changes");
         // A cancelled task is not announced as a result.
         assert.lengthOf(yield* world.commandsMatching("thread.mark-unread"), 0);
 
