@@ -15,7 +15,6 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
-import * as McpCallerBot from "../mcp/McpCallerBot.ts";
 import * as BotDatabase from "./persistence/BotDatabase.ts";
 
 import * as BotLearning from "./BotLearning.ts";
@@ -365,35 +364,6 @@ export const layer = Layer.effect(
     return BotTurnContext.of({ forThread, mcpAccessForThread });
   }),
 ).pipe(Layer.provide(Layer.merge(BotStore.layer, BotContinuation.layer)));
-
-/** MCP tools refuse work a Bot's thread would start outside its own tasks and routines. */
-export const layerMcpCallerBot = Layer.effect(
-  McpCallerBot.McpCallerBot,
-  Effect.gen(function* () {
-    const context = yield* BotTurnContext;
-    return {
-      forThread: Effect.fn("BotTurnContext.mcpCallerBot")(function* (thread: {
-        readonly id: ThreadId;
-        readonly lineage: OrchestrationV2AppThreadLineage;
-      }) {
-        const access = yield* context.mcpAccessForThread(thread).pipe(
-          Effect.catchTags({
-            BotStoreError: (cause) =>
-              Effect.logWarning("Treating an MCP caller's Bot as unknown: unreadable.", {
-                threadId: thread.id,
-                cause,
-              }).pipe(Effect.as({ _tag: "refused", message: "" } as const)),
-          }),
-        );
-        return access._tag === "bot"
-          ? ({ _tag: "bot", botId: access.botId } as const)
-          : access._tag === "none"
-            ? ({ _tag: "none" } as const)
-            : ({ _tag: "unknown" } as const);
-      }),
-    };
-  }),
-).pipe(Layer.provide(layer));
 
 /** A fork or subagent follows its parent; null ends the line. */
 function lineageParent(parentThreadId: string | null, relationship: string | null) {

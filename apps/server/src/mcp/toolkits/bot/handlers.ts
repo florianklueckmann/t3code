@@ -169,18 +169,9 @@ const write = Effect.fn("mcp.bot.write")(function* (input: BotToolInput) {
         message: "`cancel_task` needs `taskId`.",
       });
     }
-    yield* McpToolAccess.requireOwnBot(
-      tasks.get(input.taskId).pipe(
-        Effect.map((task) => task.botId),
-        Effect.mapError(botFailure),
-      ),
-      "this task",
-    );
     const cancelled = tasks.cancel({ taskId: input.taskId });
     return { task: yield* cancelled.pipe(Effect.mapError(botFailure)) };
   }
-  // A Bot's work loads its own grants, so a Bot's thread changes only its own Bot.
-  yield* McpToolAccess.requireOwnBot(requireBotId(input), "this Bot");
   if (
     input.action === "learn" ||
     input.action === "adopt" ||

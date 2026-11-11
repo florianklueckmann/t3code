@@ -1,6 +1,5 @@
 import { expect, it } from "@effect/vitest";
 import {
-  BotId,
   EnvironmentId,
   OrchestratorMcpEnvironmentTarget,
   OrchestratorMcpFailure,
@@ -19,12 +18,11 @@ import { McpSchema, McpServer, Tool, Toolkit } from "effect/ai";
 import { OrchestratorProjectionError } from "../orchestration-v2/Orchestrator.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
-import * as McpCallerBot from "./McpCallerBot.ts";
 import * as McpCallerChanges from "./McpCallerChanges.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpToolAccess from "./McpToolAccess.ts";
-import { layerNoBots, liveThreadShell } from "./McpToolAccess.testkit.ts";
+import { liveThreadShell } from "./McpToolAccess.testkit.ts";
 
 const supervisedThreadId = ThreadId.make("thread:supervised");
 const planThreadId = ThreadId.make("thread:plan");
@@ -244,7 +242,6 @@ const probeServer = (threads: Layer.Layer<ThreadManagement.ThreadManagementServi
     Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
     Layer.provideMerge(threads),
     Layer.provideMerge(layerCallerChanges),
-    Layer.provideMerge(layerNoBots),
   );
 
 const decodeOutcome = Schema.decodeUnknownEffect(
@@ -484,17 +481,6 @@ const linkedProbeServer = McpHttpServer.toolkitRegistration(
     }),
   ),
   Layer.provideMerge(layerCallerChanges),
-  // Lineage itself is followed by the Bot side; here each thread's answer stands for it.
-  Layer.provideMerge(
-    Layer.succeed(McpCallerBot.McpCallerBot, {
-      forThread: (thread) =>
-        Effect.succeed(
-          thread.id === botHomeThreadId || thread.id === botSubagentThreadId
-            ? { _tag: "bot", botId: BotId.make("mail-bot") }
-            : { _tag: "none" },
-        ),
-    }),
-  ),
   // Stands in for the linked environment, answering with where the call went.
   Layer.provide(
     Layer.mock(PeerForwarding.PeerForwarding)({
@@ -529,12 +515,11 @@ it.effect.each([
     "writes_environment in environment-box",
   ],
   ["writes_environment", fullAccess, { environmentId: here }, "here"],
-  // A Bot's grants are this environment's, so its line may read a linked one but not work there.
   ["reads", botHome, { environmentId: box }, "reads in environment-box"],
-  ["writes", botHome, { environmentId: box }, "capability_denied"],
-  ["writes_environment", botHome, { environmentId: box }, "capability_denied"],
+  ["writes", botHome, { environmentId: box }, "writes in environment-box"],
+  ["writes_environment", botHome, { environmentId: box }, "writes_environment in environment-box"],
   ["writes_environment", botHome, { environmentId: here }, "here"],
-  ["starts_threads", botSubagent, { environmentId: box }, "capability_denied"],
+  ["starts_threads", botSubagent, { environmentId: box }, "starts_threads in environment-box"],
   // A No changes task cannot reach a linked environment's tools either.
   ["reads", noChanges, { environmentId: box }, "reads in environment-box"],
   ["writes", noChanges, { environmentId: box }, "capability_denied"],

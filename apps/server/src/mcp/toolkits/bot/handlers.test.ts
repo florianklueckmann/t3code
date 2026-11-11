@@ -22,8 +22,6 @@ import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementSer
 import { advertisedJsonSchema } from "../../advertisedJsonSchema.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
-import * as McpCallerBot from "../../McpCallerBot.ts";
-import type { McpCallerBotValue } from "../../McpCallerBot.ts";
 import * as McpCallerChanges from "../../McpCallerChanges.ts";
 import type { McpCallerChangesValue } from "../../McpCallerChanges.ts";
 import { layerCallerChangesAllowed, liveThreadShell } from "../../McpToolAccess.testkit.ts";
@@ -53,11 +51,6 @@ const detail = {
 const otherBot = BotId.make("work-companion");
 const ownTask = BotTaskId.make("bot-task:1");
 const otherTask = BotTaskId.make("bot-task:work");
-const taskOwners = new Map([
-  [ownTask, botId],
-  [otherTask, otherBot],
-]);
-
 const taskSummary = {
   id: ownTask,
   botId,
@@ -106,8 +99,6 @@ const callTool = (
     readonly changes?: McpCallerChangesValue;
     readonly subagent?: boolean;
     readonly sealedLoad?: boolean;
-    /** The Bot whose access the caller's line runs under. */
-    readonly accessOf?: McpCallerBotValue;
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -156,9 +147,6 @@ const callTool = (
                 : Layer.succeed(McpCallerChanges.McpCallerChanges, {
                     forThread: () => Effect.succeed(caller.changes!),
                   }),
-              Layer.succeed(McpCallerBot.McpCallerBot, {
-                forThread: () => Effect.succeed(caller.accessOf ?? { _tag: "none" }),
-              }),
               Layer.mock(BotContinuation.BotContinuation)({
                 save: (input) =>
                   record("save_continuation").pipe(
@@ -216,12 +204,6 @@ const callTool = (
                   Ref.update(calls, (current) => [...current, "list_tasks"]).pipe(
                     Effect.as({ tasks: [] }),
                   ),
-                get: (taskId) => {
-                  const owner = taskOwners.get(taskId);
-                  return owner === undefined
-                    ? Effect.fail(new BotError({ message: "Bot task not found." }))
-                    : Effect.succeed({ ...taskSummary, id: taskId, botId: owner });
-                },
                 cancel: () =>
                   Ref.update(calls, (current) => [...current, "cancel"]).pipe(
                     Effect.as(taskSummary),
@@ -410,27 +392,24 @@ const ordinaryCallerReaches: Record<string, string> = {
   reinstate: "reinstate",
 };
 
-// Its Home, a subagent or a fork: the same Bot, whichever thread the line reaches. Another Bot's
-// work runs with that Bot's grants, so a Bot's line starts and changes only its own.
 it.effect.each(
   botChanges.flatMap(([params, ownCall]) => {
     const own = params(botId);
     const other = params(otherBot);
     return [
-      [own, { _tag: "bot", botId }, ownCall],
-      [other, { _tag: "bot", botId }, "capability_denied"],
-      [other, { _tag: "none" }, ordinaryCallerReaches[other.action] ?? ownCall],
-      [own, { _tag: "unknown" }, "capability_denied"],
+      [own, { botId, projectId: campaignA }, ownCall],
+      [
+        other,
+        { botId, projectId: campaignA },
+        other.action === "learn"
+          ? "invalid_request"
+          : (ordinaryCallerReaches[other.action] ?? ownCall),
+      ],
+      [other, undefined, ordinaryCallerReaches[other.action] ?? ownCall],
     ] as const;
   }),
-)("t3_bot %o from %o: %s", ([params, accessOf, expected]) =>
-  callTool(
-    params,
-    undefined,
-    accessOf._tag === "bot" ? { botId: accessOf.botId, projectId: campaignA } : undefined,
-    false,
-    { accessOf },
-  ).pipe(
+)("t3_bot %o from %o: %s", ([params, scope, expected]) =>
+  callTool(params, undefined, scope).pipe(
     Effect.map(({ calls, result }) =>
       expect(calls[0] ?? (result as { readonly code?: string } | undefined)?.code).toBe(expected),
     ),
