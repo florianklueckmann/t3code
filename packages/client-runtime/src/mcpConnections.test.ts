@@ -196,10 +196,12 @@ describe("botMcpGrantsSection", () => {
     ]);
   });
 
-  it("points to the catalog when it is empty", () => {
-    expect(noteTexts(section({ catalog: [], granted: [] }))).toEqual([
+  it.each([
+    ["without grants", []],
+    ["with only a removed grant", [GONE]],
+  ] as const)("points only to the catalog when it is empty, %s", (_, granted) => {
+    expect(noteTexts(section({ catalog: [], granted: [...granted] }))).toEqual([
       "No connections yet. Add one to grant it to this Bot.",
-      EMPTY,
       "Changes apply from the Bot's next turn.",
     ]);
   });
