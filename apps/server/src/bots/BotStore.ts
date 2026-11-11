@@ -134,10 +134,11 @@ export class BotStore extends Context.Service<
     readonly listMcpGrants: (
       botId?: string,
     ) => Effect.Effect<ReadonlyMap<string, BotMcpGrants>, BotStoreError>;
-    /** Replaces the set and advances its revision; run it in the caller's transaction. */
+    /** Replaces the set and the switch and advances the revision; run it in the caller's transaction. */
     readonly replaceMcpGrants: (input: {
       readonly botId: string;
       readonly connectionIds: ReadonlyArray<McpConnectionId>;
+      readonly ownCodexMcpServers: boolean;
     }) => Effect.Effect<void, BotStoreError>;
     /** Removes a connection from every Bot that has it and returns those Bots. */
     readonly forgetMcpConnection: (
@@ -441,18 +442,28 @@ export const layer = Layer.effect(
         const rows = yield* sql<{
           readonly bot_id: string;
           readonly mcp_grant_revision: number;
+          readonly mcp_own_codex_servers: number;
           readonly connection_id: string | null;
         }>`
-          SELECT bots.bot_id, bots.mcp_grant_revision, bot_mcp_grants.connection_id
+          SELECT
+            bots.bot_id, bots.mcp_grant_revision, bots.mcp_own_codex_servers,
+            bot_mcp_grants.connection_id
           FROM bots LEFT JOIN bot_mcp_grants ON bot_mcp_grants.bot_id = bots.bot_id
           WHERE ${botId ?? null} IS NULL OR bots.bot_id = ${botId ?? null}
           ORDER BY bots.bot_id, bot_mcp_grants.connection_id
         `;
-        const grants = new Map<string, { revision: number; connectionIds: McpConnectionId[] }>();
+        const grants = new Map<
+          string,
+          { revision: number; connectionIds: McpConnectionId[]; ownCodexMcpServers: boolean }
+        >();
         for (const row of rows) {
           let entry = grants.get(row.bot_id);
           if (entry === undefined) {
-            entry = { revision: row.mcp_grant_revision, connectionIds: [] };
+            entry = {
+              revision: row.mcp_grant_revision,
+              connectionIds: [],
+              ownCodexMcpServers: row.mcp_own_codex_servers === 1,
+            };
             grants.set(row.bot_id, entry);
           }
           if (row.connection_id !== null) {
@@ -468,6 +479,7 @@ export const layer = Layer.effect(
       function* (input: {
         readonly botId: string;
         readonly connectionIds: ReadonlyArray<McpConnectionId>;
+        readonly ownCodexMcpServers: boolean;
       }) {
         yield* sql`DELETE FROM bot_mcp_grants WHERE bot_id = ${input.botId}`;
         for (const connectionId of input.connectionIds) {
@@ -476,7 +488,10 @@ export const layer = Layer.effect(
           `;
         }
         yield* sql`
-          UPDATE bots SET mcp_grant_revision = mcp_grant_revision + 1 WHERE bot_id = ${input.botId}
+          UPDATE bots SET
+            mcp_grant_revision = mcp_grant_revision + 1,
+            mcp_own_codex_servers = ${input.ownCodexMcpServers ? 1 : 0}
+          WHERE bot_id = ${input.botId}
         `;
       },
       Effect.mapError(fail("replace-mcp-grants")),

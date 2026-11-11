@@ -209,13 +209,15 @@ export const BotLearningEntry = Schema.Struct({
 export type BotLearningEntry = typeof BotLearningEntry.Type;
 
 /**
- * The environment's MCP connections a Bot's threads may use, and nothing else. Only these load,
- * with their credentials resolved at each load; the provider's own MCP servers stay off.
+ * The environment's MCP connections a Bot's threads may use. Only these load, with their
+ * credentials resolved at each load; the user's own Codex MCP servers load only when switched on.
  */
 export const BotMcpGrants = Schema.Struct({
-  /** Advances on every change to the set. */
+  /** Advances on every change to the set or the switch. */
   revision: NonNegativeInt,
   connectionIds: Schema.Array(McpConnectionId),
+  /** Absent on servers without the switch. */
+  ownCodexMcpServers: Schema.optionalKey(Schema.Boolean),
 });
 export type BotMcpGrants = typeof BotMcpGrants.Type;
 
@@ -283,6 +285,8 @@ export const BotSetMcpGrantsInput = Schema.Struct({
   botId: BotId,
   expectedRevision: NonNegativeInt,
   connectionIds: Schema.Array(McpConnectionId).check(Schema.isMaxLength(MCP_CONNECTIONS_MAX)),
+  /** Absent keeps the saved choice. */
+  ownCodexMcpServers: Schema.optionalKey(Schema.Boolean),
 });
 export type BotSetMcpGrantsInput = typeof BotSetMcpGrantsInput.Type;
 

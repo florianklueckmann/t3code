@@ -93,6 +93,7 @@ export interface CodexAppServerProviderSnapshot {
   readonly version: string | undefined;
   readonly models: ReadonlyArray<ServerProviderModel> | undefined;
   readonly serviceTier?: string | undefined;
+  readonly mcpServerNames?: ReadonlyArray<string> | undefined;
   readonly skills: ReadonlyArray<ServerProviderSkill>;
 }
 
@@ -309,6 +310,16 @@ function applyConfiguredCodexServiceTier(
       },
     };
   });
+}
+
+/** Names only: a server's settings can hold credentials. T3 Code's own server is not the user's. */
+export function codexUserMcpServerNames(config: object): ReadonlyArray<string> {
+  const servers = "mcp_servers" in config ? config.mcp_servers : undefined;
+  return typeof servers === "object" && servers !== null
+    ? Object.keys(servers)
+        .filter((name) => name !== "t3-code")
+        .toSorted()
+    : [];
 }
 
 /**
@@ -551,7 +562,7 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
 
   // Optional discovery must finish before the outer timeout can discard the account result.
   const deadlineMs = spawnedAtMs + CODEX_AUTH_PROBE_TIMEOUT_MS - CODEX_DISCOVERY_MARGIN_MS;
-  const [skillsResponse, models, serviceTier, rateLimits] = yield* Effect.all(
+  const [skillsResponse, models, config, rateLimits] = yield* Effect.all(
     [
       withCodexDiscoveryDeadline(client.request("skills/list", { cwds: [input.cwd] }), deadlineMs),
       accountResponse.account?.type === "chatgpt"
@@ -568,7 +579,14 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
         deadlineMs,
         CODEX_CONFIG_PROBE_TIMEOUT_MS,
       ).pipe(
-        Effect.map((response) => response?.config.service_tier ?? undefined),
+        Effect.map((response) =>
+          response === undefined
+            ? undefined
+            : {
+                serviceTier: response.config.service_tier ?? undefined,
+                mcpServerNames: codexUserMcpServerNames(response.config),
+              },
+        ),
         Effect.catch(() => Effect.logDebug("Codex config read failed.").pipe(Effect.as(undefined))),
       ),
       // Usage is an enrichment: a failure or a slow answer degrades to "no
@@ -605,7 +623,8 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
     ...(rateLimits ? { rateLimits } : {}),
     version,
     models,
-    serviceTier,
+    serviceTier: config?.serviceTier,
+    mcpServerNames: config?.mcpServerNames,
     skills: skillsResponse ? parseCodexSkillsListResponse(skillsResponse, input.cwd) : [],
   } satisfies CodexAppServerProviderSnapshot;
 });
@@ -868,6 +887,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
       (models) => applyConfiguredCodexServiceTier(models, snapshot.serviceTier),
     ),
     skills: snapshot.skills,
+    ...(snapshot.mcpServerNames === undefined ? {} : { mcpServerNames: snapshot.mcpServerNames }),
     slashCommands: [
       COMPACT_SLASH_COMMAND,
       {

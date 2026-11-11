@@ -29,8 +29,9 @@ export const restrictionUnenforceable = Effect.fn("BotRuntimePolicy.restrictionU
 );
 
 /**
- * Bot threads, forks and subagents included, run without provider memory and with only the Bot's
- * granted MCP connections where enforceable. Elsewhere, only Bots with grants are refused.
+ * Bot threads, and the forks, subagents and threads their agents create, run without provider
+ * memory and with only the Bot's granted MCP connections where enforceable, plus the user's own
+ * Codex MCP servers when the Bot is switched to them. Elsewhere, only Bots with grants are refused.
  * A No changes routine task also runs restricted. Other threads keep their settings.
  */
 export const layer: Layer.Layer<
@@ -132,11 +133,15 @@ export const layer: Layer.Layer<
                 : `${botName} uses only the MCP connections granted to it, which is only verified on macOS, so nothing ran.`,
           });
         }
+        const userMcpServers =
+          access._tag === "bot" && access.ownCodexMcpServers && !noChanges
+            ? { userMcpServers: "enabled" as const }
+            : {};
         return ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
           ...policy,
           nativeMemory: "disabled",
           ...(noChanges ? { nativeTools: "readOnly" as const } : {}),
-          ...(mcpReason === undefined ? { mcpConnections } : {}),
+          ...(mcpReason === undefined ? { mcpConnections, ...userMcpServers } : {}),
         });
       }),
     });

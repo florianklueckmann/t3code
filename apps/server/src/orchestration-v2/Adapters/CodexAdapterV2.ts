@@ -1480,8 +1480,9 @@ const codexThreadSealOf = (
 ): CodexThreadSeal => policy?.nativeTools ?? "ordinary";
 
 /**
- * What a native thread was loaded with. `mcp` is the identity of its granted MCP connections, or
- * null where the user's own MCP servers apply. It derives from credentials: memory only, never logged.
+ * What a native thread was loaded with. `mcp` is the identity of its granted MCP connections and of
+ * whether the user's own servers stay on beside them, or null where only the user's own MCP servers
+ * apply. It derives from credentials: memory only, never logged.
  */
 interface CodexThreadLoad {
   readonly seal: CodexThreadSeal;
@@ -1533,7 +1534,7 @@ function codexThreadRuntimeParams(input: {
   readonly mcpSession: McpProviderSession.McpProviderSessionConfig | undefined;
   readonly modelSelection?: { readonly model: string };
   readonly runtimePolicy?: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
-  /** The user's own MCP servers, which a sealed or grant load turns off. */
+  /** The user's own MCP servers, which a sealed or grant load turns off unless the Bot keeps them. */
   readonly userMcpServers?: Readonly<Record<string, CodexMcpTransport>>;
   /** Set for a grant load: these are the only external MCP servers it gets. */
   readonly grantedConnections?: ReadonlyArray<McpConnectionDelivery.DeliveredMcpConnection>;
@@ -2288,7 +2289,12 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
         ) {
           const seal = codexThreadSealOf(policy);
           const ids = policy?.mcpConnections;
-          if (ids === undefined) return { load: { seal, mcp: null }, granted: undefined };
+          if (ids === undefined)
+            return {
+              load: { seal, mcp: null },
+              granted: undefined,
+              turnsOffUserServers: seal !== "ordinary",
+            };
           if (mcpConnectionDelivery === undefined) return yield* refuseMcp("unavailable");
           if ((yield* HostProcess.Platform) !== "darwin") return yield* refuseMcp("platform");
           if (!codexSealVersionSupported(yield* Ref.get(codexVersion)))
@@ -2308,9 +2314,15 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 : refuseMcp(error.reason === "missing" ? "missing" : "unavailable"),
             ),
           );
+          // The switch is part of the identity, so turning it either way reloads the thread.
+          const keepsUserServers = seal === "ordinary" && policy?.userMcpServers === "enabled";
           return {
-            load: { seal, mcp: delivered.identity },
+            load: {
+              seal,
+              mcp: keepsUserServers ? `${delivered.identity}+user-servers` : delivered.identity,
+            },
             granted: delivered.connections,
+            turnsOffUserServers: !keepsUserServers,
           };
         });
         /** A turn runs only on a thread loaded with exactly its run's seal and grants. */
@@ -7454,7 +7466,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             Effect.gen(function* () {
               yield* ensureInitialized;
               if (seal !== "ordinary") yield* prepareSeal(seal, load.providerThread, mcpSession);
-              const { load: wanted, granted } = yield* resolveLoad(load.runtimePolicy);
+              const {
+                load: wanted,
+                granted,
+                turnsOffUserServers,
+              } = yield* resolveLoad(load.runtimePolicy);
               // Codex ignores a resume's config while the thread is loaded, so a seal or grant
               // change releases it first. Unknown state is released before any exclusive load.
               const current = threadLoads.get(nativeThreadId) ?? ORDINARY_LOAD;
@@ -7466,8 +7482,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 yield* client.request("thread/unsubscribe", { threadId: nativeThreadId });
               }
               const cwd = load.runtimePolicy?.cwd ?? null;
-              const exclusive = !isOrdinaryLoad(wanted);
-              const userMcpServers = exclusive ? yield* readUserMcpServers(wanted, cwd) : {};
+              const userMcpServers = turnsOffUserServers
+                ? yield* readUserMcpServers(wanted, cwd)
+                : {};
               failedGrantedServers.delete(nativeThreadId);
               rememberGrantedServers(nativeThreadId, granted);
               const resumed = yield* resumeNativeThread(nativeThreadId, {
@@ -7486,7 +7503,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 }),
               });
               threadLoads.set(nativeThreadId, wanted);
-              if (exclusive)
+              if (turnsOffUserServers)
                 yield* requireUnchangedUserMcpServers(wanted, nativeThreadId, cwd, userMcpServers);
               return resumed;
             }),
@@ -7822,10 +7839,13 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               yield* ensureInitialized;
               const mcpSession = yield* mcpSessions.read(threadInput.threadId);
               if (seal !== "ordinary") yield* refuseUnmeasuredSeal(seal, mcpSession);
-              const { load, granted } = yield* resolveLoad(threadInput.runtimePolicy);
+              const { load, granted, turnsOffUserServers } = yield* resolveLoad(
+                threadInput.runtimePolicy,
+              );
               const { cwd } = threadInput.runtimePolicy;
-              const exclusive = !isOrdinaryLoad(load);
-              const userMcpServers = exclusive ? yield* readUserMcpServers(load, cwd) : {};
+              const userMcpServers = turnsOffUserServers
+                ? yield* readUserMcpServers(load, cwd)
+                : {};
               const response = yield* client.request(
                 "thread/start",
                 codexThreadRuntimeParams({
@@ -7838,15 +7858,14 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 }),
               );
               rememberGrantedServers(response.thread.id, granted);
-              if (exclusive) {
-                threadLoads.set(response.thread.id, load);
+              if (!isOrdinaryLoad(load)) threadLoads.set(response.thread.id, load);
+              if (turnsOffUserServers)
                 yield* requireUnchangedUserMcpServers(
                   load,
                   response.thread.id,
                   cwd,
                   userMcpServers,
                 );
-              }
               return providerThreadFromCodexThread({
                 appThreadId: threadInput.threadId,
                 idAllocator,
@@ -8743,10 +8762,13 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               const seal = codexThreadSealOf(threadInput.runtimePolicy);
               if (seal !== "ordinary") yield* refuseUnmeasuredSeal(seal, mcpSession);
               // A fork starts loaded, so it gets its own policy's load like any other start.
-              const { load, granted } = yield* resolveLoad(threadInput.runtimePolicy);
+              const { load, granted, turnsOffUserServers } = yield* resolveLoad(
+                threadInput.runtimePolicy,
+              );
               const cwd = threadInput.runtimePolicy?.cwd ?? null;
-              const exclusive = !isOrdinaryLoad(load);
-              const userMcpServers = exclusive ? yield* readUserMcpServers(load, cwd) : {};
+              const userMcpServers = turnsOffUserServers
+                ? yield* readUserMcpServers(load, cwd)
+                : {};
               const fork = client.request("thread/fork", {
                 threadId,
                 ...(boundary.lastTurnId === undefined ? {} : { lastTurnId: boundary.lastTurnId }),
@@ -8786,15 +8808,14 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 ),
               );
               rememberGrantedServers(response.thread.id, granted);
-              if (exclusive) {
-                threadLoads.set(response.thread.id, load);
+              if (!isOrdinaryLoad(load)) threadLoads.set(response.thread.id, load);
+              if (turnsOffUserServers)
                 yield* requireUnchangedUserMcpServers(
                   load,
                   response.thread.id,
                   cwd,
                   userMcpServers,
                 );
-              }
               let forkedThread = response.thread;
               if (boundary.rollbackTurnCount > 0) {
                 const { historyMode } = yield* ensureInitialized.pipe(

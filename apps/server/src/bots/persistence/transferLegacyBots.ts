@@ -129,7 +129,10 @@ export const transferLegacyBots = Effect.fn("BotDatabase.transferLegacyBots")(fu
               (row) =>
                 !(table === "bots" && head < 79 && row.name === "appearance_json") &&
                 // Legacy Bots had no MCP grants.
-                !(table === "bots" && row.name === "mcp_grant_revision") &&
+                !(
+                  table === "bots" &&
+                  (row.name === "mcp_grant_revision" || row.name === "mcp_own_codex_servers")
+                ) &&
                 !(table === "bot_tasks" && head < 83 && row.name === "allow_changes") &&
                 !(
                   table === "bot_tasks" &&
@@ -168,7 +171,10 @@ export const transferLegacyBots = Effect.fn("BotDatabase.transferLegacyBots")(fu
             for (const source of rows) {
               const row = { ...source };
               if (table === "bots" && head < 79) row.appearance_json = null;
-              if (table === "bots") row.mcp_grant_revision = 0;
+              if (table === "bots") {
+                row.mcp_grant_revision = 0;
+                row.mcp_own_codex_servers = 0;
+              }
               if (table === "bot_tasks" && head < 83) row.allow_changes = 0;
               if (table === "bot_tasks") {
                 row.return_home_run_id = null;

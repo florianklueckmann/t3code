@@ -218,6 +218,7 @@ it.effect("a Home thread launches top-level work on its current model", () =>
       projectId: harness.projectId,
       modelSelection: liveThreadShell(callerId).modelSelection,
       initialMessage: { senderThreadId: callerId },
+      createdByThreadId: callerId,
     });
   }),
 );
@@ -273,6 +274,7 @@ it.effect(
       });
       expect(belowCeiling.launched[0]?.runtimeMode).toBe("approval-required");
       expect(belowCeiling.launched[0]?.initialMessage?.senderThreadId).toBeUndefined();
+      expect(belowCeiling.launched[0]?.createdByThreadId).toBeUndefined();
 
       const aboveCeiling = yield* launchWith("auto-accept-edits", "full-access", {
         title: "Fix",
