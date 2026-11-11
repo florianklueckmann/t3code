@@ -2,6 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import {
+  botMcpGrantsChange,
   EMPTY_MCP_CONNECTION_DRAFT,
   MCP_CONNECTIONS_NOTICE,
   mcpConnectionDraft,
@@ -22,6 +23,7 @@ import {
   MCP_CONNECTION_LABEL_MAX_LENGTH,
   McpConnectionId,
   resolveEnvironmentMachineKind,
+  type BotId,
   type EnvironmentId,
   type McpConnectionDefinition,
   type SecretProviderId,
@@ -51,10 +53,12 @@ import { SettingsScreen } from "./components/SettingsScreen";
 import { SettingsSection } from "./components/SettingsSection";
 import { useSettingsEnvironmentFilter, type SettingsTarget } from "./settings-environment-filter";
 
-type McpConnectionRoutes = {
+export type McpConnectionRoutes = {
   SettingsMcpConnectionEdit: {
     readonly environmentId: EnvironmentId;
     readonly connectionId?: McpConnectionId;
+    /** Opened from a Bot's settings: a new connection is granted to that Bot. */
+    readonly grantToBotId?: BotId;
   };
 };
 
@@ -209,7 +213,7 @@ interface BindingRow {
 export function SettingsMcpConnectionEditRouteScreen({
   route,
 }: StaticScreenProps<McpConnectionRoutes["SettingsMcpConnectionEdit"]>) {
-  const { environmentId, connectionId } = route.params;
+  const { environmentId, connectionId, grantToBotId } = route.params;
   const catalog = useEnvironmentServerConfig(environmentId)?.settings.mcpConnections;
   const saved = connectionId === undefined ? undefined : catalog?.[connectionId];
   // The revision this form opened on; a concurrent edit makes the save fail instead of losing it.
@@ -233,6 +237,7 @@ export function SettingsMcpConnectionEditRouteScreen({
           : { kind: "create", connectionId: newId }
       }
       current={saved}
+      {...(grantToBotId === undefined ? {} : { grantToBotId })}
     />
   );
 }
@@ -241,6 +246,7 @@ function McpConnectionEditor({
   environmentId,
   target,
   current,
+  grantToBotId,
 }: {
   readonly environmentId: EnvironmentId;
   readonly target:
@@ -251,6 +257,7 @@ function McpConnectionEditor({
         readonly saved: McpConnectionDefinition;
       };
   readonly current: McpConnectionDefinition | undefined;
+  readonly grantToBotId?: BotId;
 }) {
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
@@ -278,6 +285,13 @@ function McpConnectionEditor({
     label: "mcp connection refresh",
   });
   const statuses = useEnvironmentQuery(serverEnvironment.mcpConnections(environmentId));
+  const grantBots = useEnvironmentQuery(
+    grantToBotId === undefined ? null : serverEnvironment.botsLive({ environmentId, input: {} }),
+  );
+  const grantBot = grantBots.data?.bots.find((bot) => bot.id === grantToBotId);
+  const setGrants = useAtomCommand(serverEnvironment.setBotMcpGrants, {
+    label: "bot set mcp grants",
+  });
   const editing = target.kind === "update";
   const initial = editing ? mcpConnectionDraft(target.saved) : EMPTY_MCP_CONNECTION_DRAFT;
   const [draft, setDraft] = useState<Omit<McpConnectionDraft, "bindings">>(initial);
@@ -328,6 +342,18 @@ function McpConnectionEditor({
       setError(failure instanceof Error ? failure.message : "The request failed.");
       return;
     }
+    if (plan.kind === "create" && grantToBotId !== undefined && grantBot?.mcpGrants !== undefined) {
+      const granted = await setGrants({
+        environmentId,
+        input: botMcpGrantsChange(
+          grantToBotId,
+          grantBot.mcpGrants,
+          statuses.data?.connections ?? [],
+          { connectionId: plan.input.connectionId, granted: true },
+        ),
+      });
+      reportFailure(`Could not give ${grantBot.name} this connection`, granted);
+    }
     navigation.goBack();
   };
 
@@ -340,7 +366,11 @@ function McpConnectionEditor({
         contentContainerClassName="gap-5 px-5 pt-4"
         contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 18) + 18 }}
       >
-        <Text className="px-2 text-sm text-foreground-muted">{MCP_CONNECTIONS_NOTICE}</Text>
+        <Text className="px-2 text-sm text-foreground-muted">
+          {grantBot === undefined
+            ? MCP_CONNECTIONS_NOTICE
+            : `${grantBot.name} can use it as soon as you add it.`}
+        </Text>
         {editing ? (
           <Text className="px-2 text-sm text-foreground-muted">
             {mcpConnectionStatusText(status).text}
@@ -518,7 +548,8 @@ function McpConnectionEditor({
         ) : null}
         <Button
           label={editing ? "Save changes" : "Add connection"}
-          disabled={!canEdit}
+          // A connection added for a Bot waits for that Bot's grants, so it can be granted.
+          disabled={!canEdit || (grantToBotId !== undefined && grantBot?.mcpGrants === undefined)}
           loading={busy}
           onPress={() => void save()}
         />

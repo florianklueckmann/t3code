@@ -1,15 +1,19 @@
 import { useAtomValue } from "@effect/atom-react";
+import { useNavigation } from "@react-navigation/native";
+import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import {
   botMcpGrantsChange,
   botMcpGrantsSection,
+  codexMcpServerNames,
   latestBotMcpGrants,
   type McpConnectionStatusText,
 } from "@t3tools/client-runtime/mcp-connections";
-import type { BotId, BotMcpGrants, EnvironmentId, McpConnectionId } from "@t3tools/contracts";
+import type { BotId, BotMcpGrants, EnvironmentId } from "@t3tools/contracts";
 import { useState } from "react";
 import { View } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";
+import { ListActionRow } from "../../components/ui/ListActionRow";
 import { ThemedSwitch } from "../../components/ui/ThemedSwitch";
 import { useEnvironmentServerConfig } from "../../state/entities";
 import { useEnvironmentQuery } from "../../state/query";
@@ -17,6 +21,7 @@ import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { reportBotFailure } from "../bots/reportBotFailure";
 import { SettingsSection } from "./components/SettingsSection";
+import type { McpConnectionRoutes } from "./SettingsMcpConnectionsRouteScreen";
 
 const TONE_CLASS: Record<McpConnectionStatusText["tone"], string> = {
   ok: "text-foreground-muted",
@@ -33,6 +38,7 @@ export function BotMcpGrantsSection(props: {
   readonly formLocked: boolean;
 }) {
   const { environmentId, botId } = props;
+  const navigation = useNavigation<NativeStackNavigationProp<McpConnectionRoutes>>();
   const config = useEnvironmentServerConfig(environmentId);
   const bots = useEnvironmentQuery(serverEnvironment.botsLive({ environmentId, input: {} }));
   const catalog = useEnvironmentQuery(serverEnvironment.mcpConnections(environmentId));
@@ -42,6 +48,7 @@ export function BotMcpGrantsSection(props: {
       : null,
   );
   const canChange = useAtomValue(serverEnvironment.setBotMcpGrants.permissionAtom(environmentId));
+  const canAdd = useAtomValue(serverEnvironment.createMcpConnection.permissionAtom(environmentId));
   // Failures surface in this section's own alert.
   const setGrants = useAtomCommand(serverEnvironment.setBotMcpGrants, { reportFailure: false });
   const [busy, setBusy] = useState(false);
@@ -60,6 +67,7 @@ export function BotMcpGrantsSection(props: {
   const view = botMcpGrantsSection({
     botId,
     grants,
+    codexMcpServerNames: codexMcpServerNames(config.providers),
     catalog: connections,
     providerDriver: config.providers.find(
       (provider) => provider.instanceId === bot.modelSelection.instanceId,
@@ -70,12 +78,13 @@ export function BotMcpGrantsSection(props: {
     canChange,
     archived: bot.archivedAt !== null,
   });
+  const disabled = busy || props.formLocked || !view.editable;
 
-  const change = async (connectionId: McpConnectionId, granted: boolean) => {
+  const change = async (next: Parameters<typeof botMcpGrantsChange>[3]) => {
     setBusy(true);
     const result = await setGrants({
       environmentId,
-      input: botMcpGrantsChange(botId, grants, connections, { connectionId, granted }),
+      input: botMcpGrantsChange(botId, grants, connections, next),
     });
     setBusy(false);
     if (result._tag === "Success") setAcknowledged(result.value.mcpGrants ?? null);
@@ -107,18 +116,44 @@ export function BotMcpGrantsSection(props: {
           <ThemedSwitch
             accessibilityLabel={row.label}
             value={row.granted}
-            disabled={busy || props.formLocked || !view.editable}
-            onValueChange={(granted) => void change(row.id, granted)}
+            disabled={disabled}
+            onValueChange={(granted) => void change({ connectionId: row.id, granted })}
           />
         </View>
       ))}
-      {view.notes.map((note, index) => (
+      <View className={view.rows.length === 0 ? "" : "border-t border-border-subtle"}>
+        <ListActionRow
+          label="Add connection"
+          disabled={disabled || !canAdd}
+          onPress={() =>
+            navigation.navigate("SettingsMcpConnectionEdit", { environmentId, grantToBotId: botId })
+          }
+        />
+      </View>
+      {view.ownServers === null ? null : (
+        <View className="min-h-14 flex-row items-center gap-3 border-t border-border-subtle px-4 py-3">
+          <View className="min-w-0 flex-1 gap-1">
+            <Text textRole="body" className="text-foreground">
+              {view.ownServers.label}
+            </Text>
+            <Text textRole="footnote" className="text-foreground-muted">
+              {view.ownServers.description}
+            </Text>
+          </View>
+          <ThemedSwitch
+            accessibilityLabel={view.ownServers.label}
+            accessibilityHint={view.ownServers.description}
+            value={view.ownServers.on}
+            disabled={disabled}
+            onValueChange={(on) => void change({ ownCodexMcpServers: on })}
+          />
+        </View>
+      )}
+      {view.notes.map((note) => (
         <Text
           key={note.text}
           textRole="footnote"
-          className={`px-4 py-3 ${TONE_CLASS[note.tone]}${
-            view.rows.length + index === 0 ? "" : " border-t border-border-subtle"
-          }`}
+          className={`border-t border-border-subtle px-4 py-3 ${TONE_CLASS[note.tone]}`}
         >
           {note.text}
         </Text>

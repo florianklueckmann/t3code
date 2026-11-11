@@ -392,10 +392,11 @@ interface BindingRow {
 }
 
 /** Mounted per open, so each open starts from the saved definition. */
-function McpConnectionDialog({
+export function McpConnectionDialog({
   environmentId,
   environmentLabel,
   target: liveTarget,
+  grant,
   onClose,
 }: {
   readonly environmentId: EnvironmentId;
@@ -407,6 +408,11 @@ function McpConnectionDialog({
         readonly connectionId: McpConnectionId;
         readonly saved: McpConnectionDefinition;
       };
+  /** Opened from a Bot's settings: the new connection is granted to that Bot. */
+  grant?: {
+    readonly botName: string;
+    readonly onCreated: (connectionId: McpConnectionId) => void;
+  };
   onClose: () => void;
 }) {
   // The revision this form opened on; a concurrent edit makes the save fail instead of losing it.
@@ -457,6 +463,7 @@ function McpConnectionDialog({
       setError(failureMessage(result));
       return;
     }
+    if (plan.kind === "create") grant?.onCreated(plan.input.connectionId);
     onClose();
   };
 
@@ -473,7 +480,10 @@ function McpConnectionDialog({
             {editing ? `Edit ${target.saved.label}` : "Add an MCP connection"}
           </DialogTitle>
           <DialogDescription>
-            Saved on {environmentLabel}. {MCP_CONNECTIONS_NOTICE}
+            Saved on {environmentLabel}.{" "}
+            {grant === undefined
+              ? MCP_CONNECTIONS_NOTICE
+              : `${grant.botName} can use it as soon as you add it.`}
           </DialogDescription>
         </DialogHeader>
         <DialogPanel>
