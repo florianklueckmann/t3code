@@ -2,6 +2,9 @@ import type { OrchestrationV2HistoricalMessage } from "@t3tools/contracts";
 import {
   ChatAttachment,
   CheckpointId,
+  McpConnectionId,
+  McpConnectionProblem,
+  mcpConnectionProblemMessage,
   MessageId,
   ModelSelection,
   NodeId,
@@ -70,6 +73,12 @@ export const ProviderAdapterV2RuntimePolicy = Schema.Struct({
    * the caller's task refuses. An adapter enforces it or refuses the run, and never widens it.
    */
   nativeTools: Schema.optional(ProviderAdapterNativeTools),
+  /**
+   * Set for a Bot's threads: the only external MCP servers the load may have, each resolved with
+   * its credentials at load time. The provider's own MCP servers, apps and plugins stay off; empty
+   * means none. Ids only, never credentials. An adapter that cannot enforce it refuses the run.
+   */
+  mcpConnections: Schema.optional(Schema.Array(McpConnectionId)),
 });
 export type ProviderAdapterV2RuntimePolicy = typeof ProviderAdapterV2RuntimePolicy.Type;
 
@@ -252,6 +261,49 @@ export class ProviderAdapterSealRefusedError extends Schema.TaggedError<Provider
     return this.seal === "readOnly"
       ? `This routine task is set to No changes, which its provider can't enforce here because ${sealRefusalText[this.reason]}, so nothing ran. Start a new routine task once that is fixed, or ask the Bot directly.`
       : `This Bot maintenance turn can't be restricted here because ${sealRefusalText[this.reason]}, so nothing ran.`;
+  }
+}
+
+const mcpConnectionsRefusalText = {
+  version: "this Codex version has not been verified with them",
+  platform: "they are only verified on macOS",
+  children: "this conversation has agents still running with its earlier connections",
+  load: "the conversation's MCP setup could not be confirmed",
+  unavailable: "this server cannot read its MCP connections",
+} as const;
+
+/**
+ * A Bot thread's granted MCP connections could not be loaded as granted. Nothing ran. Names a
+ * connection and its problem, never a credential.
+ */
+export class ProviderAdapterMcpConnectionsRefusedError extends Schema.TaggedError<ProviderAdapterMcpConnectionsRefusedError>()(
+  "ProviderAdapterMcpConnectionsRefusedError",
+  {
+    driver: ProviderDriverKind,
+    reason: Schema.Literals([
+      "version",
+      "platform",
+      "children",
+      "load",
+      "unavailable",
+      "connection",
+      "missing",
+    ]),
+    connectionId: Schema.optional(McpConnectionId),
+    connectionLabel: Schema.optional(Schema.String),
+    problem: Schema.optional(McpConnectionProblem),
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    switch (this.reason) {
+      case "connection":
+        return `"${this.connectionLabel}" can't be used: ${this.problem === undefined ? "it is not valid." : mcpConnectionProblemMessage(this.problem)} Fix it in Settings → MCP connections, or remove it from this Bot. Nothing ran.`;
+      case "missing":
+        return "An MCP connection granted to this Bot no longer exists. Review the Bot's MCP connections in Settings → Bots. Nothing ran.";
+      default:
+        return `This Bot's MCP connections can't be loaded because ${mcpConnectionsRefusalText[this.reason]}, so nothing ran.`;
+    }
   }
 }
 
@@ -484,6 +536,7 @@ export const ProviderAdapterV2Error = Schema.Union([
   ProviderAdapterCapabilitiesError,
   ProviderAdapterOpenSessionError,
   ProviderAdapterSealRefusedError,
+  ProviderAdapterMcpConnectionsRefusedError,
   ProviderAdapterCloseSessionError,
   ProviderAdapterResumeThreadError,
   ProviderAdapterThreadInUseError,

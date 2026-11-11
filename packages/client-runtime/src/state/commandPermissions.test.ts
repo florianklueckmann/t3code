@@ -165,6 +165,7 @@ describe("command permissions", () => {
     { method: WS_METHODS.mcpConnectionsUpdate, scope: AuthSettingsWriteScope },
     { method: WS_METHODS.mcpConnectionsRemove, scope: AuthSettingsWriteScope },
     { method: WS_METHODS.mcpConnectionsRefresh, scope: AuthSettingsWriteScope },
+    { method: WS_METHODS.botsSetMcpGrants, scope: AuthSettingsWriteScope },
   ])("requires the destination $scope grant for $method", ({ method, scope }) =>
     Effect.scoped(
       Effect.gen(function* () {

@@ -2014,7 +2014,11 @@ export const layerWithOptions = (
                 }),
               ),
               Effect.andThen(
-                isProviderThreadLoaded({ providerSessionId, threadId, providerThreadKey }),
+                // Granted connections can change without their ids: the adapter compares what
+                // they resolve to now, and releases the thread only when that changed.
+                input.runtimePolicy?.mcpConnections === undefined
+                  ? isProviderThreadLoaded({ providerSessionId, threadId, providerThreadKey })
+                  : Effect.succeed(false),
               ),
               Effect.flatMap((loaded) =>
                 loaded

@@ -76,6 +76,7 @@ describe("RPC authorization scopes", () => {
       WS_METHODS.mcpConnectionsUpdate,
       WS_METHODS.mcpConnectionsRemove,
       WS_METHODS.mcpConnectionsRefresh,
+      WS_METHODS.botsSetMcpGrants,
     ]) {
       expect(requiredScopeForRpcMethod(method)).toBe(AuthSettingsWriteScope);
     }

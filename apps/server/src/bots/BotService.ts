@@ -16,11 +16,13 @@ import {
   type BotRestoreLearningInput,
   type BotRetireLearningInput,
   type BotSetArchivedInput,
+  type BotSetMcpGrantsInput,
   type BotTaskId,
   type BotUpdateInput,
   type BotUpdateProjectContextInput,
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
+  type McpConnectionId,
   type ModelSelection,
   ProjectId,
   ThreadId,
@@ -63,6 +65,9 @@ export class BotService extends Context.Service<
     readonly create: (input: BotCreateInput) => Effect.Effect<BotDetail, BotError>;
     readonly update: (input: BotUpdateInput) => Effect.Effect<BotDetail, BotError>;
     readonly setArchived: (input: BotSetArchivedInput) => Effect.Effect<BotDetail, BotError>;
+    readonly setMcpGrants: (input: BotSetMcpGrantsInput) => Effect.Effect<BotDetail, BotError>;
+    /** Drops a removed catalog connection from every Bot's grants, advancing their revisions. */
+    readonly forgetMcpConnection: (connectionId: McpConnectionId) => Effect.Effect<void, BotError>;
     readonly attachProject: (input: BotAttachProjectInput) => Effect.Effect<BotDetail, BotError>;
     readonly updateProjectContext: (
       input: BotUpdateProjectContextInput,
@@ -166,7 +171,8 @@ const make = Effect.gen(function* () {
     if (bot === undefined) return yield* botError("Bot not found.", botId)();
     const contexts = yield* store.listContexts(botId).pipe(Effect.mapError(storeError(botId)));
     const learning = yield* store.listLearning(botId).pipe(Effect.mapError(storeError(botId)));
-    return yield* BotStore.toDetail(bot, contexts, learning).pipe(
+    const grants = yield* store.listMcpGrants(botId).pipe(Effect.mapError(storeError(botId)));
+    return yield* BotStore.toDetail(bot, contexts, learning, grants.get(botId)).pipe(
       Effect.mapError(storeError(botId)),
     );
   });
@@ -263,11 +269,13 @@ const make = Effect.gen(function* () {
     const bots = yield* store.listBots;
     const contexts = yield* store.listContexts();
     const pendingLearning = yield* store.pendingLearningCounts;
+    const grants = yield* store.listMcpGrants();
     const details = yield* Effect.forEach(bots, (bot) =>
       BotStore.toDetail(
         bot,
         contexts.filter((context) => context.bot_id === bot.bot_id),
         [],
+        grants.get(bot.bot_id),
       ),
     );
     return {
@@ -417,6 +425,52 @@ const make = Effect.gen(function* () {
       return yield* readDetail(input.botId);
     },
   );
+
+  const setMcpGrants: BotService["Service"]["setMcpGrants"] = Effect.fn("BotService.setMcpGrants")(
+    function* (input) {
+      const catalog = (yield* serverSettings.getSettings.pipe(
+        Effect.mapError(botError("Could not read MCP connections.", input.botId)),
+      )).mcpConnections;
+      const connectionIds = [...new Set(input.connectionIds)];
+      // Removed connections are never granted anew; only a stale row left by removal survives.
+      if (connectionIds.some((id) => catalog[id] === undefined)) {
+        return yield* botError(
+          "One of these MCP connections no longer exists. Reload and try again.",
+          input.botId,
+        )();
+      }
+      yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            yield* requireActiveBot(input.botId);
+            const current = (yield* store.listMcpGrants(input.botId)).get(input.botId);
+            if (current?.revision !== input.expectedRevision) {
+              return yield* botError(
+                "This Bot's MCP connections changed since you opened them. Review them and try again.",
+                input.botId,
+              )();
+            }
+            yield* store.replaceMcpGrants({ botId: input.botId, connectionIds });
+          }),
+        )
+        .pipe(
+          Effect.mapError((cause) =>
+            cause._tag === "BotError" ? cause : storeError(input.botId)(cause),
+          ),
+        );
+      yield* notifyChanged;
+      return yield* readDetail(input.botId);
+    },
+  );
+
+  const forgetMcpConnection: BotService["Service"]["forgetMcpConnection"] = Effect.fn(
+    "BotService.forgetMcpConnection",
+  )(function* (connectionId) {
+    const affected = yield* store
+      .forgetMcpConnection(connectionId)
+      .pipe(Effect.mapError(storeError()));
+    if (affected.length > 0) yield* notifyChanged;
+  });
 
   const attachProject: BotService["Service"]["attachProject"] = Effect.fn(
     "BotService.attachProject",
@@ -806,6 +860,8 @@ const make = Effect.gen(function* () {
     create,
     update,
     setArchived,
+    setMcpGrants,
+    forgetMcpConnection,
     attachProject,
     updateProjectContext,
     detachProject,

@@ -22,6 +22,8 @@ import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementSer
 import { advertisedJsonSchema } from "../../advertisedJsonSchema.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
+import * as McpCallerBot from "../../McpCallerBot.ts";
+import type { McpCallerBotValue } from "../../McpCallerBot.ts";
 import * as McpCallerChanges from "../../McpCallerChanges.ts";
 import type { McpCallerChangesValue } from "../../McpCallerChanges.ts";
 import { layerCallerChangesAllowed, liveThreadShell } from "../../McpToolAccess.testkit.ts";
@@ -47,6 +49,34 @@ const detail = {
   learning: [],
   pendingLearning: 0,
 } satisfies BotDetail;
+
+const otherBot = BotId.make("work-companion");
+const ownTask = BotTaskId.make("bot-task:1");
+const otherTask = BotTaskId.make("bot-task:work");
+const taskOwners = new Map([
+  [ownTask, botId],
+  [otherTask, otherBot],
+]);
+
+const taskSummary = {
+  id: ownTask,
+  botId,
+  projectId: campaignA,
+  homeThreadId: threadId,
+  workThreadId: ThreadId.make("bot-work:bot-task:1"),
+  origin: "direct" as const,
+  title: "Recap",
+  scheduledTaskId: null,
+  occurrenceDueAt: null,
+  sessionAt: null,
+  runtimeMode: "full-access" as const,
+  status: "accepted" as const,
+  detail: null,
+  createdAt: "2026-11-02T00:00:00.000Z",
+  updatedAt: "2026-11-02T00:00:00.000Z",
+  completedAt: null,
+  modelSelection: detail.modelSelection,
+};
 
 const continuationView = (input: { readonly botId: BotId; readonly projectId: ProjectId }) => ({
   ...input,
@@ -76,6 +106,8 @@ const callTool = (
     readonly changes?: McpCallerChangesValue;
     readonly subagent?: boolean;
     readonly sealedLoad?: boolean;
+    /** The Bot whose access the caller's line runs under. */
+    readonly accessOf?: McpCallerBotValue;
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -124,6 +156,9 @@ const callTool = (
                 : Layer.succeed(McpCallerChanges.McpCallerChanges, {
                     forThread: () => Effect.succeed(caller.changes!),
                   }),
+              Layer.succeed(McpCallerBot.McpCallerBot, {
+                forThread: () => Effect.succeed(caller.accessOf ?? { _tag: "none" }),
+              }),
               Layer.mock(BotContinuation.BotContinuation)({
                 save: (input) =>
                   record("save_continuation").pipe(
@@ -141,7 +176,15 @@ const callTool = (
                 attachProject: (input) => record(`attach:${input.projectId}`),
                 updateProjectContext: (input) =>
                   record(`project:${input.projectId}:${input.guidance}:${input.sources?.length}`),
-                update: () => Effect.fail(new BotError({ message: "This Bot is archived." })),
+                update: () =>
+                  record("update").pipe(
+                    Effect.andThen(Effect.fail(new BotError({ message: "This Bot is archived." }))),
+                  ),
+                create: () => record("create"),
+                setArchived: (input) => record(input.archived ? "archive" : "restore"),
+                detachProject: () => record("detach"),
+                retireLearning: () => record("retire"),
+                restoreLearning: () => record("reinstate"),
                 scopeOfThread: () =>
                   Effect.succeed(
                     callerBot === undefined
@@ -173,28 +216,24 @@ const callTool = (
                   Ref.update(calls, (current) => [...current, "list_tasks"]).pipe(
                     Effect.as({ tasks: [] }),
                   ),
+                get: (taskId) => {
+                  const owner = taskOwners.get(taskId);
+                  return owner === undefined
+                    ? Effect.fail(new BotError({ message: "Bot task not found." }))
+                    : Effect.succeed({ ...taskSummary, id: taskId, botId: owner });
+                },
+                cancel: () =>
+                  Ref.update(calls, (current) => [...current, "cancel"]).pipe(
+                    Effect.as(taskSummary),
+                  ),
                 start: (input) =>
                   Ref.update(calls, (current) => [
                     ...current,
                     `start:${JSON.stringify(input.modelSelection ?? null)}`,
                   ]).pipe(
                     Effect.as({
-                      id: BotTaskId.make("bot-task:1"),
-                      botId,
+                      ...taskSummary,
                       projectId: input.projectId,
-                      homeThreadId: threadId,
-                      workThreadId: ThreadId.make("bot-work:bot-task:1"),
-                      origin: "direct" as const,
-                      title: "Recap",
-                      scheduledTaskId: null,
-                      occurrenceDueAt: null,
-                      sessionAt: null,
-                      runtimeMode: "full-access" as const,
-                      status: "accepted" as const,
-                      detail: null,
-                      createdAt: "2026-11-02T00:00:00.000Z",
-                      updatedAt: "2026-11-02T00:00:00.000Z",
-                      completedAt: null,
                       modelSelection: input.modelSelection ?? detail.modelSelection,
                     }),
                   ),
@@ -328,6 +367,74 @@ it.effect("starts a task on its own model without updating the Bot", () =>
       },
     });
   }),
+);
+
+const learning = { origin: "correction", kind: "preference", text: "Always recap." } as const;
+const entry = { entryId: BotLearningEntryId.make("entry-1"), revision: 1 };
+const botChanges: ReadonlyArray<readonly [(bot: BotId) => BotToolInput, string]> = [
+  [(bot) => ({ action: "start_task", botId: bot, task: "Check mail." }), "start:null"],
+  [(bot) => ({ action: "cancel_task", taskId: bot === botId ? ownTask : otherTask }), "cancel"],
+  [(bot) => ({ action: "update", botId: bot, instructions: "Process work mail." }), "update"],
+  [
+    (bot) => ({ action: "update", botId: bot, projectId: campaignA, guidance: "Changed." }),
+    `project:${campaignA}:Changed.:undefined`,
+  ],
+  [(bot) => ({ action: "archive", botId: bot }), "archive"],
+  [(bot) => ({ action: "restore", botId: bot }), "restore"],
+  [(bot) => ({ action: "attach", botId: bot, projectId: campaignA }), `attach:${campaignA}`],
+  [(bot) => ({ action: "detach", botId: bot, projectId: campaignA }), "detach"],
+  [
+    (bot) => ({
+      action: "create",
+      botId: bot,
+      name: "Work Companion",
+      modelSelection: detail.modelSelection,
+      learningPolicy: "automatic",
+    }),
+    "create",
+  ],
+  [
+    (bot) => ({ action: "learn", botId: bot, projectId: campaignA, learning }),
+    `learn:${campaignA}:correction:${threadId}`,
+  ],
+  // A Bot never decides its own learning; the user does, in Settings.
+  [(bot) => ({ action: "adopt", botId: bot, ...entry }), "invalid_request"],
+  [(bot) => ({ action: "reject", botId: bot, ...entry }), "invalid_request"],
+  [(bot) => ({ action: "retire", botId: bot, ...entry }), "invalid_request"],
+  [(bot) => ({ action: "reinstate", botId: bot, ...entry }), "invalid_request"],
+];
+const ordinaryCallerReaches: Record<string, string> = {
+  adopt: "decide:adopt",
+  reject: "decide:reject",
+  retire: "retire",
+  reinstate: "reinstate",
+};
+
+// Its Home, a subagent or a fork: the same Bot, whichever thread the line reaches. Another Bot's
+// work runs with that Bot's grants, so a Bot's line starts and changes only its own.
+it.effect.each(
+  botChanges.flatMap(([params, ownCall]) => {
+    const own = params(botId);
+    const other = params(otherBot);
+    return [
+      [own, { _tag: "bot", botId }, ownCall],
+      [other, { _tag: "bot", botId }, "capability_denied"],
+      [other, { _tag: "none" }, ordinaryCallerReaches[other.action] ?? ownCall],
+      [own, { _tag: "unknown" }, "capability_denied"],
+    ] as const;
+  }),
+)("t3_bot %o from %o: %s", ([params, accessOf, expected]) =>
+  callTool(
+    params,
+    undefined,
+    accessOf._tag === "bot" ? { botId: accessOf.botId, projectId: campaignA } : undefined,
+    false,
+    { accessOf },
+  ).pipe(
+    Effect.map(({ calls, result }) =>
+      expect(calls[0] ?? (result as { readonly code?: string } | undefined)?.code).toBe(expected),
+    ),
+  ),
 );
 
 it.effect("lets read-only clients read Bots but not change them", () =>

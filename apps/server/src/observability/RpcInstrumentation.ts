@@ -113,6 +113,7 @@ const RPC_AGGREGATES = {
   [WS_METHODS.botsCreate]: "bots",
   [WS_METHODS.botsUpdate]: "bots",
   [WS_METHODS.botsSetArchived]: "bots",
+  [WS_METHODS.botsSetMcpGrants]: "bots",
   [WS_METHODS.botsAttachProject]: "bots",
   [WS_METHODS.botsUpdateProjectContext]: "bots",
   [WS_METHODS.botsDetachProject]: "bots",

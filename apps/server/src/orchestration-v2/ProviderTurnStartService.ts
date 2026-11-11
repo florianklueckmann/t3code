@@ -724,15 +724,22 @@ export const layer: Layer.Layer<
                 error,
                 message: error.message,
               }
-            : {
-                signal: "runtime-no-changes-unsupported",
-                title:
-                  run.restriction === undefined
-                    ? "No changes can't be enforced"
-                    : "Bot maintenance can't be restricted",
-                error,
-                message: error.message,
-              },
+            : error._tag === "RuntimePolicyMcpUnsupportedError"
+              ? {
+                  signal: "runtime-mcp-connections-unsupported",
+                  title: "MCP connections can't be enforced",
+                  error,
+                  message: error.message,
+                }
+              : {
+                  signal: "runtime-no-changes-unsupported",
+                  title:
+                    run.restriction === undefined
+                      ? "No changes can't be enforced"
+                      : "Bot maintenance can't be restricted",
+                  error,
+                  message: error.message,
+                },
         );
         return;
       }
@@ -1371,7 +1378,8 @@ export const layer: Layer.Layer<
         if (
           resumed._tag === "Failure" &&
           (resumed.failure._tag === "ProviderAdapterThreadInUseError" ||
-            resumed.failure._tag === "ProviderAdapterSealRefusedError")
+            resumed.failure._tag === "ProviderAdapterSealRefusedError" ||
+            resumed.failure._tag === "ProviderAdapterMcpConnectionsRefusedError")
         ) {
           return yield* loadFromProvider(Effect.fail(resumed.failure));
         }

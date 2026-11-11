@@ -198,11 +198,14 @@ const botError = (message: string, botId?: BotId) => (cause?: unknown) =>
 const errorMessage = (cause: unknown): string =>
   cause instanceof Error && cause.message !== "" ? cause.message : String(cause);
 
-/** A launch refused because No changes can't be enforced says why, under its launch wrappers. */
+const isMcpUnsupported = Schema.is(RuntimePolicy.RuntimePolicyMcpUnsupportedError);
+
+/** A launch refused because its policy can't be enforced says why, under its launch wrappers. */
 const launchFailureMessage = (error: unknown): string => {
   let current = error;
   for (let depth = 0; depth < 8; depth++) {
-    if (RuntimePolicy.isRuntimePolicyUnsupportedError(current)) return current.message;
+    if (RuntimePolicy.isRuntimePolicyUnsupportedError(current) || isMcpUnsupported(current))
+      return current.message;
     if (!Predicate.hasProperty(current, "cause")) break;
     current = current.cause;
   }

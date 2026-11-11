@@ -412,6 +412,7 @@ import {
   BotRestoreLearningInput,
   BotRetireLearningInput,
   BotSetArchivedInput,
+  BotSetMcpGrantsInput,
   BotUpdateInput,
   BotUpdateProjectContextInput,
   BotCancelTaskInput,
@@ -620,6 +621,7 @@ export const WS_METHODS = {
   botsCreate: "bots.create",
   botsUpdate: "bots.update",
   botsSetArchived: "bots.setArchived",
+  botsSetMcpGrants: "bots.setMcpGrants",
   botsAttachProject: "bots.attachProject",
   botsUpdateProjectContext: "bots.updateProjectContext",
   botsDetachProject: "bots.detachProject",
@@ -2182,6 +2184,12 @@ const WsBotsSetArchivedRpc = Rpc.make(WS_METHODS.botsSetArchived, {
   error: BotRpcError,
 });
 
+const WsBotsSetMcpGrantsRpc = Rpc.make(WS_METHODS.botsSetMcpGrants, {
+  payload: BotSetMcpGrantsInput,
+  success: BotDetail,
+  error: BotRpcError,
+});
+
 const WsBotsAttachProjectRpc = Rpc.make(WS_METHODS.botsAttachProject, {
   payload: BotAttachProjectInput,
   success: BotDetail,
@@ -2376,6 +2384,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsBotsCreateRpc,
   WsBotsUpdateRpc,
   WsBotsSetArchivedRpc,
+  WsBotsSetMcpGrantsRpc,
   WsBotsAttachProjectRpc,
   WsBotsUpdateProjectContextRpc,
   WsBotsDetachProjectRpc,

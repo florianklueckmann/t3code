@@ -2,6 +2,7 @@ import { assert, it } from "@effect/vitest";
 import {
   BotId,
   BotTaskId,
+  McpConnectionId,
   type OrchestrationV2AppThread,
   type OrchestrationV2RunRestriction,
   ProjectId,
@@ -28,6 +29,22 @@ const brokenThread = ThreadId.make("bot-home:broken:campaign");
 const noChangesThread = ThreadId.make("bot-work:bot-task:no-changes");
 const archivedNoChangesThread = ThreadId.make("bot-work:bot-task:archived-no-changes");
 const unreadableTaskThread = ThreadId.make("bot-work:bot-task:unreadable");
+// Forks and subagents are not Bot conversations, but their MCP access follows their Bot.
+const botForkThread = ThreadId.make("fork-of-bot-home");
+const ungrantedBotThread = ThreadId.make("bot-home:ungranted:campaign");
+const orphanThread = ThreadId.make("subagent-of-lost-parent");
+const privateMail = McpConnectionId.make("2a2a2a2a-0000-4000-8000-00000000002a");
+
+const mcpAccessOf = (id: ThreadId): BotTurnContext.BotMcpAccess => {
+  const bot = (connectionIds: ReadonlyArray<McpConnectionId>) =>
+    ({ _tag: "bot", botId: BotId.make("companion"), botName: "Mail Bot", connectionIds }) as const;
+  if ([botThread, workThread, noChangesThread, botForkThread].includes(id))
+    return bot([privateMail]);
+  if (id === ungrantedBotThread) return bot([]);
+  if (id === archivedBotThread || id === archivedNoChangesThread || id === orphanThread)
+    return { _tag: "refused", message: "parent lost" };
+  return { _tag: "none" };
+};
 
 const activeScope = (id: ThreadId) =>
   ({
@@ -90,8 +107,12 @@ const usePolicy = <A, E>(
                 ),
             }),
             Layer.mock(BotTurnContext.BotTurnContext)({
+              mcpAccessForThread: (thread) => Effect.succeed(mcpAccessOf(thread.id)),
               forThread: (id) =>
-                id === botThread || id === workThread || id === noChangesThread
+                id === botThread ||
+                id === workThread ||
+                id === noChangesThread ||
+                id === ungrantedBotThread
                   ? Effect.succeed(activeScope(id))
                   : id === archivedBotThread || id === archivedNoChangesThread
                     ? Effect.succeed({ _tag: "inactive", message: "archived" } as const)
@@ -156,6 +177,45 @@ it.effect("never resolves a No changes task to a policy that can change things",
       assert.isUndefined((yield* resolveFor(threadId)).nativeTools);
     }
   }),
+);
+
+it.effect(
+  "loads only the Bot's granted MCP connections in every thread its work derives from",
+  () =>
+    Effect.gen(function* () {
+      for (const threadId of [botThread, workThread, botForkThread]) {
+        const policy = yield* resolveFor(threadId);
+        assert.deepEqual(policy.mcpConnections, [privateMail], threadId);
+        assert.equal(policy.nativeMemory, "disabled");
+        assert.isUndefined(policy.nativeTools);
+      }
+      assert.deepEqual((yield* resolveFor(ungrantedBotThread)).mcpConnections, []);
+      // No changes keeps the grants under its seal; the scoped Home turn needs no external account.
+      const noChanges = yield* resolveFor(noChangesThread);
+      assert.equal(noChanges.nativeTools, "readOnly");
+      assert.deepEqual(noChanges.mcpConnections, [privateMail]);
+      assert.deepEqual(
+        (yield* resolveFor(botThread, { restriction: "botNote" })).mcpConnections,
+        [],
+      );
+      assert.isUndefined((yield* resolveFor(ThreadId.make("plain"))).mcpConnections);
+
+      // A provider that keeps its own MCP servers never runs a Bot's thread, granted or not.
+      for (const [threadId, options] of [
+        [botThread, { instanceId: "codex" }],
+        [ungrantedBotThread, { instanceId: "codex" }],
+        [botForkThread, { instanceId: "codex" }],
+        [botForkThread, { instanceId: "missing" }],
+        [botThread, { platform: "linux" }],
+      ] as const) {
+        const refused = yield* resolveFor(threadId, options).pipe(Effect.flip);
+        assert.equal(refused._tag, "RuntimePolicyMcpUnsupportedError", threadId);
+        assert.include(refused.message, "Mail Bot uses only the MCP connections granted to it");
+      }
+      const orphan = yield* resolveFor(orphanThread).pipe(Effect.flip);
+      assert.equal(orphan._tag, "RuntimePolicyMcpUnsupportedError");
+      assert.equal(orphan.message, "parent lost");
+    }),
 );
 
 it.effect("seals a restricted run only in an active Bot Home on Codex and macOS", () =>

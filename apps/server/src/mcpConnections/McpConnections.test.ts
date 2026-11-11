@@ -1,6 +1,7 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
+  BotError,
   McpConnectionId,
   type McpConnectionTransport,
   SecretProviderId,
@@ -12,13 +13,16 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
+import * as BotService from "../bots/BotService.ts";
 import * as ServerConfig from "../config.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as McpConnectionDelivery from "./McpConnectionDelivery.ts";
 import * as McpConnections from "./McpConnections.ts";
 
 const decodeServerSettingsPatch = Schema.decodeUnknownEffect(ServerSettingsPatch);
@@ -57,14 +61,33 @@ const harness = Effect.gen(function* () {
       }),
     label: (provider) => Effect.succeed(provider),
   });
+  // Grants live in the Bot database; the catalog only asks it to forget a removed connection.
+  const grantCleanup = { forgotten: [] as string[], failNext: false };
+  const bots = Layer.mock(BotService.BotService)({
+    forgetMcpConnection: (connectionId) =>
+      Effect.suspend(() => {
+        if (!grantCleanup.failNext)
+          return Effect.sync(() => grantCleanup.forgotten.push(connectionId));
+        grantCleanup.failNext = false;
+        return Effect.fail(new BotError({ message: "injected Bot database failure" }));
+      }),
+  });
   const connections = yield* McpConnections.McpConnections.pipe(
     Effect.provide(
       McpConnections.layer.pipe(
         Layer.provide(Layer.succeed(SecretResolver.SecretResolver, resolver)),
+        Layer.provide(bots),
       ),
     ),
   );
-  return { connections, secrets, reads, invalidated, holds };
+  const delivery = yield* McpConnectionDelivery.McpConnectionDelivery.pipe(
+    Effect.provide(
+      McpConnectionDelivery.layer.pipe(
+        Layer.provide(Layer.succeed(SecretResolver.SecretResolver, resolver)),
+      ),
+    ),
+  );
+  return { connections, delivery, secrets, reads, invalidated, holds, grantCleanup };
 });
 
 const accountA = McpConnectionId.make("1a1a1a1a-0000-4000-8000-00000000001a");
@@ -84,7 +107,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("MCP connections"
     "keeps same-URL accounts distinct and saves only valid edits of the current revision",
     () =>
       Effect.gen(function* () {
-        const { connections, reads } = yield* harness;
+        const { connections, reads, grantCleanup } = yield* harness;
         const created = yield* connections.create({
           connectionId: accountA,
           label: "Work",
@@ -249,8 +272,18 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("MCP connections"
             .pipe(Effect.flip)).reason,
           "revision-conflict",
         );
+        // A lost grant cleanup fails the removal after retiring the id; the retry repeats it.
+        grantCleanup.failNext = true;
+        assert.equal(
+          (yield* connections
+            .remove({ connectionId: accountA, expectedRevision: 2 })
+            .pipe(Effect.flip)).reason,
+          "settings-unavailable",
+        );
+        assert.deepEqual(grantCleanup.forgotten, []);
         yield* connections.remove({ connectionId: accountA, expectedRevision: 2 });
         yield* connections.remove({ connectionId: accountA, expectedRevision: 2 });
+        assert.deepEqual(grantCleanup.forgotten, [accountA, accountA]);
         assert.equal(
           (yield* connections
             .create({
@@ -261,6 +294,102 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("MCP connections"
             })
             .pipe(Effect.flip)).reason,
           "id-unavailable",
+        );
+      }).pipe(Effect.provide(layerSettings)),
+  );
+
+  it.effect(
+    "delivers granted connections with credentials read now, and nothing to fall back on",
+    () =>
+      Effect.gen(function* () {
+        const { connections, delivery, secrets, reads } = yield* harness;
+        const settings = yield* ServerSettings.ServerSettingsService;
+        yield* decodeServerSettingsPatch({
+          secretProviders: {
+            personal: { kind: "one_password", label: "Personal", config: { account: "my" } },
+          },
+        }).pipe(Effect.flatMap(settings.updateSettings));
+        yield* connections.create({
+          connectionId: accountA,
+          label: "Work mail",
+          enabled: true,
+          transport: http("Bearer account-a"),
+        });
+        yield* connections.create({
+          connectionId: accountB,
+          label: "Private mail",
+          enabled: true,
+          transport: {
+            type: "stdio",
+            command: "mail-mcp",
+            args: ["--stdio"],
+            env: { TOKEN: tokenB },
+          },
+        });
+        const retired = McpConnectionId.make("1e1e1e1e-0000-4000-8000-00000000001e");
+        yield* connections.create({
+          connectionId: retired,
+          label: "Old",
+          enabled: true,
+          transport: http("Bearer old"),
+        });
+        yield* connections.remove({ connectionId: retired, expectedRevision: 1 });
+        yield* connections.create({
+          connectionId: local,
+          label: "Off",
+          enabled: false,
+          transport: {
+            type: "stdio",
+            command: "off-mcp",
+            args: [],
+            env: { TOKEN: { provider: personal, reference: "op://Private/Off/token" } },
+          },
+        });
+
+        // An unreadable secret fails the whole load, naming the connection and binding only.
+        const unreadable = yield* delivery.resolve([accountA, accountB]).pipe(Effect.flip);
+        assert.deepEqual(
+          [unreadable.reason, unreadable.connectionId, unreadable.label, unreadable.problem],
+          ["invalid", accountB, "Private mail", { reason: "binding-unresolved", binding: "TOKEN" }],
+        );
+
+        secrets.set(tokenB.reference, "token-b-1");
+        // Disabled and removed connections are left out; the disabled one's secret is never read.
+        const first = yield* delivery.resolve([accountB, retired, local, accountA, accountB]);
+        assert.notInclude(reads, "op://Private/Off/token");
+        assert.deepEqual(
+          first.connections.map(({ id, label, transport }) =>
+            transport.type === "stdio"
+              ? [id, label, transport.command, transport.args, Redacted.value(transport.env)]
+              : [id, label, transport.url, Redacted.value(transport.headers)],
+          ),
+          [
+            [
+              accountA,
+              "Work mail",
+              "https://mcp.example.test/mcp",
+              { Authorization: "Bearer account-a" },
+            ],
+            [accountB, "Private mail", "mail-mcp", ["--stdio"], { TOKEN: "token-b-1" }],
+          ],
+        );
+        assert.notInclude(first.identity, "token-b-1");
+        assert.equal((yield* delivery.resolve([accountA, accountB])).identity, first.identity);
+        // A rotated secret or a rename changes the identity, so the next load reloads.
+        secrets.set(tokenB.reference, "token-b-2");
+        const rotated = yield* delivery.resolve([accountA, accountB]);
+        assert.notEqual(rotated.identity, first.identity);
+        yield* connections.update({
+          connectionId: accountA,
+          expectedRevision: 1,
+          label: "Job mail",
+        });
+        assert.notEqual((yield* delivery.resolve([accountA, accountB])).identity, rotated.identity);
+
+        const unknown = McpConnectionId.make("1f1f1f1f-0000-4000-8000-00000000001f");
+        assert.equal(
+          (yield* delivery.resolve([accountA, unknown]).pipe(Effect.flip)).reason,
+          "missing",
         );
       }).pipe(Effect.provide(layerSettings)),
   );

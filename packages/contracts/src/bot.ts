@@ -12,6 +12,7 @@ import {
   TrimmedNonEmptyString,
   TrimmedString,
 } from "./baseSchemas.ts";
+import { MCP_CONNECTIONS_MAX, McpConnectionId } from "./mcpConnection.ts";
 import { ModelSelection, ModelSelectionInput } from "./modelSelection.ts";
 import { RuntimeMode } from "./providerPolicy.ts";
 
@@ -207,6 +208,17 @@ export const BotLearningEntry = Schema.Struct({
 });
 export type BotLearningEntry = typeof BotLearningEntry.Type;
 
+/**
+ * The environment's MCP connections a Bot's threads may use, and nothing else. Only these load,
+ * with their credentials resolved at each load; the provider's own MCP servers stay off.
+ */
+export const BotMcpGrants = Schema.Struct({
+  /** Advances on every change to the set. */
+  revision: NonNegativeInt,
+  connectionIds: Schema.Array(McpConnectionId),
+});
+export type BotMcpGrants = typeof BotMcpGrants.Type;
+
 export const BotSummary = Schema.Struct({
   id: BotId,
   name: BotName,
@@ -214,6 +226,8 @@ export const BotSummary = Schema.Struct({
   learningPolicy: BotLearningPolicy,
   /** Null uses the default derived from the Bot id; absent on servers without appearance. */
   appearance: Schema.optionalKey(Schema.NullOr(ReceivedBotAppearance)),
+  /** Absent on servers without grants: the feature is unavailable, not an empty grant set. */
+  mcpGrants: Schema.optionalKey(BotMcpGrants),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   archivedAt: Schema.NullOr(IsoDateTime),
@@ -263,6 +277,14 @@ export const BotUpdateInput = Schema.Struct({
   appearance: Schema.optional(Schema.NullOr(BotAppearance)),
 });
 export type BotUpdateInput = typeof BotUpdateInput.Type;
+
+/** Replaces the whole grant set. Only connections currently in the catalog can be granted. */
+export const BotSetMcpGrantsInput = Schema.Struct({
+  botId: BotId,
+  expectedRevision: NonNegativeInt,
+  connectionIds: Schema.Array(McpConnectionId).check(Schema.isMaxLength(MCP_CONNECTIONS_MAX)),
+});
+export type BotSetMcpGrantsInput = typeof BotSetMcpGrantsInput.Type;
 
 export const BotSetArchivedInput = Schema.Struct({
   botId: BotId,

@@ -24,6 +24,7 @@ import * as SecretResolver from "../secrets/SecretResolver.ts";
 import { BUILT_IN_DRIVERS, type BuiltInDriversEnv } from "./builtInDrivers.ts";
 import * as ProviderInstanceRegistry from "./ProviderInstanceRegistry.ts";
 import * as ProviderInstanceRegistryMutator from "./ProviderInstanceRegistryMutator.ts";
+import * as McpConnectionDelivery from "../mcpConnections/McpConnectionDelivery.ts";
 import * as ProviderOrchestrationAdapterInfrastructure from "./ProviderOrchestrationAdapterInfrastructure.ts";
 import * as AcpRegistrySupport from "@t3tools/provider-acp-registry/server/AcpRegistrySupport";
 import * as ProviderHostLive from "./ProviderHostLive.ts";
@@ -203,6 +204,8 @@ export const layer: Layer.Layer<
       Layer.provide(AcpRegistrySupport.layerFromHost),
       Layer.provide(ProviderHostLive.layer),
       Layer.provide(Layer.succeed(HostProcess.Environment, hostEnvironment)),
+      // Codex reads it at each grant load; the same resolver keeps a catalog refresh effective.
+      Layer.provide(McpConnectionDelivery.layer),
       Layer.provide(SecretResolver.layer),
     );
 

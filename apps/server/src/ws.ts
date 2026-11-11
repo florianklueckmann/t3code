@@ -2391,6 +2391,7 @@ export const layerWsRpc = (
         [WS_METHODS.botsCreate]: (input) => bots.create(input),
         [WS_METHODS.botsUpdate]: (input) => bots.update(input),
         [WS_METHODS.botsSetArchived]: (input) => bots.setArchived(input),
+        [WS_METHODS.botsSetMcpGrants]: (input) => bots.setMcpGrants(input),
         [WS_METHODS.botsAttachProject]: (input) => bots.attachProject(input),
         [WS_METHODS.botsUpdateProjectContext]: (input) => bots.updateProjectContext(input),
         [WS_METHODS.botsDetachProject]: (input) => bots.detachProject(input),

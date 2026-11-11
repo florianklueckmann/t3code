@@ -87,10 +87,26 @@ export class RuntimePolicyUnsupportedError extends Schema.TaggedError<RuntimePol
 
 export const isRuntimePolicyUnsupportedError = Schema.is(RuntimePolicyUnsupportedError);
 
+/** A Bot's thread whose MCP access cannot be limited to its grants here. Never retried. */
+export class RuntimePolicyMcpUnsupportedError extends Schema.TaggedError<RuntimePolicyMcpUnsupportedError>()(
+  "RuntimePolicyMcpUnsupportedError",
+  {
+    threadId: ThreadId,
+    providerInstanceId: ProviderInstanceId,
+    /** The whole user-facing message; it names a Bot or an ancestor, never a credential. */
+    detail: Schema.String,
+  },
+) {
+  override get message(): string {
+    return this.detail;
+  }
+}
+
 export const RuntimePolicyV2Error = Schema.Union([
   RuntimePolicyResolveError,
   RuntimePolicyAboveCeilingError,
   RuntimePolicyUnsupportedError,
+  RuntimePolicyMcpUnsupportedError,
 ]);
 export type RuntimePolicyV2Error = typeof RuntimePolicyV2Error.Type;
 
