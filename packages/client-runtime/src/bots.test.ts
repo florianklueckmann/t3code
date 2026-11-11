@@ -25,6 +25,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   botLearningLeftOut,
   botLearningRevisionInput,
+  botLearningScopeChange,
   botOfHomeThread,
   botProjectContextChanges,
   botProjectContextDraft,
@@ -442,27 +443,31 @@ describe("bot learning", () => {
       readonly text?: string;
       readonly learnedInProjectId?: ProjectId;
     } = {},
-  ): BotLearningEntry => ({
-    id: BotLearningEntryId.make(id),
-    projectId: options.projectId === undefined ? projectA : options.projectId,
-    kind: "preference",
-    revisions: [
-      {
-        revision: 1,
-        text: options.text ?? `Lesson ${id}.`,
-        rationale: `Why ${id}.`,
-        evidence: `Quote ${id}.`,
-        origin: options.origin ?? "correction",
-        source: { kind: "user" },
-        learnedInProjectId: options.learnedInProjectId ?? projectA,
-        status: options.status ?? "active",
-        baseRevision: null,
-        conflictsWithInstruction: false,
-        createdAt: `2026-01-01T00:${String(minute).padStart(2, "0")}:00.000Z`,
-        decidedAt: null,
-      },
-    ],
-  });
+  ): BotLearningEntry => {
+    const projectId = options.projectId === undefined ? projectA : options.projectId;
+    return {
+      id: BotLearningEntryId.make(id),
+      projectId,
+      kind: "preference",
+      revisions: [
+        {
+          revision: 1,
+          projectId,
+          text: options.text ?? `Lesson ${id}.`,
+          rationale: `Why ${id}.`,
+          evidence: `Quote ${id}.`,
+          origin: options.origin ?? "correction",
+          source: { kind: "user" },
+          learnedInProjectId: options.learnedInProjectId ?? projectA,
+          status: options.status ?? "active",
+          baseRevision: null,
+          conflictsWithInstruction: false,
+          createdAt: `2026-01-01T00:${String(minute).padStart(2, "0")}:00.000Z`,
+          decidedAt: null,
+        },
+      ],
+    };
+  };
   const many = (count: number, options: Parameters<typeof lesson>[2] = {}) =>
     Array.from({ length: count }, (_, index) =>
       lesson(`e${String(index + 1).padStart(2, "0")}`, index + 1, options),
@@ -551,6 +556,41 @@ describe("bot learning", () => {
     expect(
       botLearningRevisionInput(detached, lesson("shared", 0, { projectId: null }), { text: "x" }),
     ).toBeNull();
+  });
+
+  it("labels the revisions that change which projects a lesson applies to", () => {
+    const [first] = lesson("moving", 0).revisions;
+    const revision = (
+      number: number,
+      projectId: ProjectId | null,
+      baseRevision: number | null,
+      status: BotLearningRevision["status"],
+    ): BotLearningRevision => ({
+      ...(first ?? expect.unreachable()),
+      revision: number,
+      projectId,
+      baseRevision,
+      status,
+    });
+    const entry: BotLearningEntry = {
+      ...lesson("moving", 0),
+      revisions: [
+        revision(1, projectA, null, "superseded"),
+        revision(2, null, 1, "superseded"),
+        revision(3, null, 2, "superseded"),
+        revision(4, projectA, 3, "active"),
+        revision(5, projectA, 4, "pending"),
+        revision(6, null, 4, "pending"),
+      ],
+    };
+    expect(entry.revisions.map((each) => botLearningScopeChange(entry, each))).toEqual([
+      null,
+      "moves to all projects",
+      null,
+      "moves to one project",
+      null,
+      "moves to all projects",
+    ]);
   });
 });
 

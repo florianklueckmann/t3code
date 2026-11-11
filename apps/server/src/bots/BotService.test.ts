@@ -1179,11 +1179,15 @@ it.effect("keeps facts in their project by default and shares them when explicit
         const editedEntry = entryOf(edited.bot, local.learned.entryId);
         assert.isNull(editedEntry.projectId);
         assert.deepEqual(
-          editedEntry.revisions.map((revision) => [revision.text, revision.status]),
+          editedEntry.revisions.map((revision) => [
+            revision.text,
+            revision.status,
+            revision.projectId,
+          ]),
           [
-            ["Strahd fled to the Amber Temple.", "superseded"],
-            ["Strahd fled to the Amber Temple.", "superseded"],
-            ["Strahd fled to the Amber Temple with the Abbot.", "active"],
+            ["Strahd fled to the Amber Temple.", "superseded", campaignA],
+            ["Strahd fled to the Amber Temple.", "superseded", null],
+            ["Strahd fled to the Amber Temple with the Abbot.", "active", null],
           ],
         );
         const restored = yield* bots.restoreLearning({
@@ -1207,15 +1211,57 @@ it.effect("keeps facts in their project by default and shares them when explicit
           replaces: { entryId: explicitLocal.learned.entryId, revision: 1 },
         });
         assert.equal(proposedMove.learned.status, "pending");
-        assert.equal(entryOf(proposedMove.bot, explicitLocal.learned.entryId).projectId, campaignA);
+        const proposedMoveEntry = entryOf(proposedMove.bot, explicitLocal.learned.entryId);
+        assert.equal(proposedMoveEntry.projectId, campaignA);
+        assert.deepEqual(
+          proposedMoveEntry.revisions.map((revision) => [revision.status, revision.projectId]),
+          [
+            ["active", campaignA],
+            ["pending", null],
+          ],
+        );
         assert.notInclude(yield* instructionsFor(turnContext, homeB ?? assert.fail()), "Vallaki");
+
+        // Moving a lesson every project already has keeps the shared one and retires this copy.
+        const localCopy = yield* bots.recordLearning({
+          ...user,
+          botId,
+          projectId: campaignA,
+          kind: "fact",
+          text: "The user's name is Rowan.",
+        });
+        const merged = yield* bots.recordLearning({
+          ...user,
+          botId,
+          projectId: campaignA,
+          scope: "bot",
+          kind: "fact",
+          text: "The user's name is Rowan.",
+          replaces: { entryId: localCopy.learned.entryId, revision: 1 },
+        });
+        assert.deepEqual(merged.learned, {
+          entryId: sharedFact.learned.entryId,
+          revision: 1,
+          status: "active",
+          duplicate: true,
+        });
+        assert.deepEqual(
+          entryOf(merged.bot, localCopy.learned.entryId).revisions.map(
+            (revision) => revision.status,
+          ),
+          ["retired"],
+        );
+        for (const home of [homeA, homeB]) {
+          const instructions = yield* instructionsFor(turnContext, home ?? assert.fail());
+          assert.lengthOf(instructions.split("The user's name is Rowan.").slice(1), 1);
+        }
 
         const detached = yield* bots.detachProject({ botId, projectId: campaignB });
         const refused = yield* bots
           .recordLearning({ ...correction, botId, projectId: campaignB })
           .pipe(Effect.flip);
         assert.include(refused.message, "not attached");
-        assert.lengthOf(detached.learning, 6);
+        assert.lengthOf(detached.learning, 7);
       }),
     );
   }).pipe(Effect.provide(layerDatabase)),

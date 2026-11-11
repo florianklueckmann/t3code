@@ -175,6 +175,7 @@ const toLearningEntries = Effect.fn("BotStore.toLearningEntries")(function* (
   for (const row of rows) {
     const revision = {
       revision: row.revision,
+      projectId: row.project_id,
       text: row.text,
       rationale: row.rationale,
       evidence: row.evidence,

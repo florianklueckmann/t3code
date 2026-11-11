@@ -187,7 +187,9 @@ codebase does not leak into another. You see it under each project in
   all its projects too. The Bot tells you where the learning applies; shared
   entries appear under **Learning for all projects** in settings. **Apply to
   all projects** moves a project's entry there; restore its earlier version to
-  move it back.
+  move it back. If all projects already have the same entry, that one stays
+  and the project's copy is retired. A proposal that would move an entry says
+  so, and the entry stays in its project until you adopt it.
 - **Edit** rewords an entry as a new version, so its earlier wording stays in
   its history.
 - **Retire** stops an entry, and **Restore** brings back an earlier version.

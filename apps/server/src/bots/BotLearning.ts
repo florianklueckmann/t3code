@@ -171,6 +171,32 @@ export const make = (deps: {
       const projectId = input.scope === "bot" ? null : scope;
       const head = activeOf(revisions);
       const stale = head === undefined || head.revision !== input.replaces.revision;
+      // Moving into a scope that already has this lesson keeps that entry; a move that applies
+      // at once retires this copy, which stays restorable.
+      const existing =
+        stale || projectId === scope
+          ? undefined
+          : rows.find(
+              (row) =>
+                row.entry_id !== first.entry_id &&
+                row.project_id === projectId &&
+                row.status === "active" &&
+                row.kind === first.kind &&
+                row.normalized_text === normalized,
+            );
+      if (existing !== undefined) {
+        const kept = yield* record(policy, {
+          ...input,
+          replaces: {
+            entryId: BotLearningEntryId.make(existing.entry_id),
+            revision: existing.revision,
+          },
+        });
+        if (input.origin === "instruction") {
+          yield* retire({ botId: input.botId, entryId: input.replaces.entryId });
+        }
+        return kept;
+      }
       // The user restating an inferred lesson makes it their instruction, which later
       // inferred lessons cannot override, so it gets its own revision.
       if (

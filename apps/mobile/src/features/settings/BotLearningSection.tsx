@@ -6,6 +6,7 @@ import {
   botLearningLeftOut,
   botLearningOriginLabel,
   botLearningRevisionInput,
+  botLearningScopeChange,
   botLearningViews,
 } from "@t3tools/client-runtime/bots";
 import {
@@ -153,8 +154,13 @@ export function BotLearningSection({
             {view.pending.map((revision) => (
               <View key={revision.revision} className="gap-1 pt-2">
                 <Text textRole="footnote" className="text-foreground-muted">
-                  {view.current ? "Proposed change" : "Proposed"}
-                  {revision.conflictsWithInstruction ? " · conflicts with your instruction" : ""}
+                  {[
+                    view.current ? "Proposed change" : "Proposed",
+                    botLearningScopeChange(view.entry, revision),
+                    revision.conflictsWithInstruction ? "conflicts with your instruction" : null,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
                 </Text>
                 {revision === shown ? null : (
                   <Text textRole="body" className="text-foreground">
@@ -251,8 +257,14 @@ export function BotLearningSection({
             {view.restorable.map((revision) => (
               <View key={revision.revision} className="flex-row items-start gap-3 pt-2">
                 <Text textRole="footnote" className="min-w-0 flex-1 text-foreground-muted">
-                  r{revision.revision} · {BOT_LEARNING_STATUS_LABELS[revision.status]} ·{" "}
-                  {revision.text}
+                  {[
+                    `r${revision.revision}`,
+                    BOT_LEARNING_STATUS_LABELS[revision.status],
+                    botLearningScopeChange(view.entry, revision),
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}{" "}
+                  · {revision.text}
                 </Text>
                 <ActionText
                   label="Restore"

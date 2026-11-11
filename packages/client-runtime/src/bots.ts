@@ -172,6 +172,16 @@ export function botLearningViews(
   return [...views].sort((a, b) => rank(a) - rank(b));
 }
 
+/** How a revision changes the projects its entry applies to, against the revision it replaces. */
+export function botLearningScopeChange(
+  entry: BotLearningEntry,
+  revision: BotLearningRevision,
+): "moves to all projects" | "moves to one project" | null {
+  const base = entry.revisions.find((each) => each.revision === revision.baseRevision);
+  if (base === undefined || base.projectId === revision.projectId) return null;
+  return revision.projectId === null ? "moves to all projects" : "moves to one project";
+}
+
 export const BOT_LEARNING_LEFT_OUT_EXPLANATION = `Each turn includes at most ${
   BOT_TURN_LEARNING_LIMITS.entries
 } lessons or ${BOT_TURN_LEARNING_LIMITS.chars.toLocaleString(

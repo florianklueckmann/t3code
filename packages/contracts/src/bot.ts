@@ -182,6 +182,8 @@ const BotLearningNote = TrimmedString.check(Schema.isMaxLength(2_000));
 
 export const BotLearningRevision = Schema.Struct({
   revision: PositiveInt,
+  /** The scope this revision gives its entry once in use; null for all projects. */
+  projectId: Schema.NullOr(ProjectId),
   text: BotLearningText,
   rationale: BotLearningNote,
   evidence: BotLearningNote,

@@ -6,6 +6,7 @@ import {
   botLearningLeftOut,
   botLearningOriginLabel,
   botLearningRevisionInput,
+  botLearningScopeChange,
   botLearningViews,
   botProjectContextChanges,
   botProjectContextDraft,
@@ -1119,8 +1120,13 @@ function BotLearningList({
             {view.pending.map((revision) => (
               <div key={revision.revision} className="space-y-1 rounded-md bg-muted/40 p-2">
                 <p className="text-xs font-medium">
-                  {view.current ? "Proposed change" : "Proposed"}
-                  {revision.conflictsWithInstruction ? " · conflicts with your instruction" : ""}
+                  {[
+                    view.current ? "Proposed change" : "Proposed",
+                    botLearningScopeChange(view.entry, revision),
+                    revision.conflictsWithInstruction ? "conflicts with your instruction" : null,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
                 </p>
                 {/* The entry's own heading already shows the newest proposal's text and evidence. */}
                 {revision === shown ? null : <p className="wrap-anywhere">{revision.text}</p>}
@@ -1183,7 +1189,13 @@ function BotLearningList({
                     <li key={revision.revision} className="flex items-start justify-between gap-2">
                       <span className="min-w-0 wrap-anywhere">
                         <span className="text-muted-foreground">
-                          r{revision.revision} · {BOT_LEARNING_STATUS_LABELS[revision.status]}{" "}
+                          {[
+                            `r${revision.revision}`,
+                            BOT_LEARNING_STATUS_LABELS[revision.status],
+                            botLearningScopeChange(view.entry, revision),
+                          ]
+                            .filter(Boolean)
+                            .join(" · ")}{" "}
                           ·{" "}
                         </span>
                         {revision.text}
