@@ -3,6 +3,9 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
   BotId,
+  BotError,
+  RunId,
+  ProviderInstanceId,
   type OrchestrationV2ServerCommand,
   ProjectId,
   ProviderDriverKind,
@@ -18,6 +21,8 @@ import * as Ref from "effect/Ref";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 import * as ServerConfig from "../config.ts";
+import * as OrchestratorV2 from "../orchestration-v2/Orchestrator.ts";
+import * as BotTaskService from "./BotTaskService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as Sqlite from "../persistence/Sqlite.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
@@ -145,19 +150,25 @@ const orchestrator = Effect.gen(function* () {
     readonly run_id: string;
     readonly status: string;
   }>`SELECT run_id, status FROM orchestration_v2_projection_runs WHERE run_id LIKE 'check-run-%' ORDER BY ordinal`;
-  return { dispatch, commands, busy, crashAfter, sent, runs };
+  return { dispatch, commands, busy, crashAfter, sent, runs, receipts };
 });
 type Orchestrator = Effect.Success<typeof orchestrator>;
 
 /** A fresh service over the same databases, as a server restart builds it, in UTC. */
-const startService = Effect.fn("fixture.startService")(function* (homeTurns: Orchestrator) {
+const startService = Effect.fn("fixture.startService")(function* (
+  homeTurns: Pick<Orchestrator, "dispatch" | "receipts">,
+  results: BotTaskService.BotTaskService["Service"]["getResult"] = () =>
+    Effect.die("unexpected result read"),
+) {
   const scheduled = yield* Ref.make<Effect.Effect<void> | null>(null);
   const check = yield* BotHomeCheck.make.pipe(
     Effect.provideService(ThreadManagementService.ThreadManagementService, {
       dispatch: homeTurns.dispatch,
+      hasReceipt: (id) => Ref.get(homeTurns.receipts).pipe(Effect.map((all) => all.has(id))),
     } as ThreadManagementService.ThreadManagementService["Service"]),
     Effect.provide(
       Layer.mergeAll(
+        Layer.mock(BotTaskService.BotTaskService)({ getResult: results }),
         Layer.mock(Scheduler.Scheduler)({
           register: <E, R>(_: string, run: Effect.Effect<void, E, R>) =>
             Effect.context<R>().pipe(
@@ -557,5 +568,142 @@ it.effect("counts only the Waiting items the check's own run appended", () =>
     yield* endCheck("completed");
     yield* tick();
     assert.deepInclude(yield* outcomeOf(check), { outcome: "proposed", added: 2 });
+  }).pipe(Effect.provide(services)),
+);
+
+it.effect.each([
+  { name: "temporary provider refusal", kind: "disabled", receipt: false, retry: true },
+  { name: "receipted provider refusal", kind: "disabled", receipt: true, retry: false },
+  { name: "permanent dispatch refusal", kind: "permanent", receipt: false, retry: false },
+  { name: "replayed rejection", kind: "replayed", receipt: true, retry: false },
+] as const)(
+  "handles $name without losing or repeatedly retrying the slot",
+  ({ kind, receipt, retry }) =>
+    Effect.gen(function* () {
+      yield* seed();
+      const turns = yield* orchestrator;
+      const refused = yield* Ref.make(true);
+      const attempts = yield* Ref.make(0);
+      const dispatch: Orchestrator["dispatch"] = (command) =>
+        Effect.gen(function* () {
+          if (command.type === "restricted_run.start") {
+            yield* Ref.update(attempts, (count) => count + 1);
+            if (yield* Ref.get(refused)) {
+              if (receipt)
+                yield* Ref.update(turns.receipts, (all) => new Set([...all, command.commandId]));
+              if (kind === "disabled")
+                return yield* new ThreadManagementService.ThreadManagementProviderInstanceDisabledError(
+                  { projectId: scope.projectId, instanceId: ProviderInstanceId.make("codex") },
+                );
+              if (kind === "replayed")
+                return yield* new OrchestratorV2.OrchestratorCommandPreviouslyRejectedError({
+                  commandId: command.commandId,
+                  commandType: command.type,
+                  detail: "permanent rejection",
+                });
+              return yield* new OrchestratorV2.OrchestratorDispatchError({
+                commandId: command.commandId,
+                commandType: command.type,
+              });
+            }
+          }
+          return yield* turns.dispatch(command);
+        });
+      const { check, tick } = yield* startService({ ...turns, dispatch });
+      yield* at("2026-11-09T07:00:00.000Z");
+      yield* enable(check);
+      yield* at("2026-11-09T08:00:00.000Z");
+      yield* tick();
+      const bots = yield* BotDatabase.BotDatabase;
+      assert.equal(
+        (yield* bots<{
+          readonly done_through: string;
+        }>`SELECT done_through FROM bot_home_checks`)[0]?.done_through,
+        retry ? "2026-11-09T07:00:00.000Z" : "2026-11-09T08:00:00.000Z",
+      );
+      assert.equal((yield* outcomeOf(check))?.outcome ?? null, retry ? null : "failed");
+      yield* Ref.set(refused, false);
+      yield* at("2026-11-09T08:04:59.000Z");
+      yield* tick();
+      assert.equal(yield* Ref.get(attempts), 1);
+      yield* at("2026-11-09T08:05:00.000Z");
+      yield* tick();
+      assert.equal(yield* Ref.get(attempts), retry ? 2 : 1);
+      assert.deepEqual(
+        yield* turns.sent("restricted_run.start"),
+        retry ? [`bot-home-check:${home}:2026-11-09T07:00:00.000Z`] : [],
+      );
+    }).pipe(Effect.provide(services)),
+);
+
+it.effect("provides bounded finished-task results only from this Home", () =>
+  Effect.gen(function* () {
+    yield* seed();
+    const bots = yield* BotDatabase.BotDatabase;
+    for (let index = 0; index < 13; index += 1) {
+      yield* bots`INSERT INTO bot_tasks (task_id, bot_id, project_id, home_thread_id, origin, title, prompt, runtime_mode, status, created_at, updated_at)
+        VALUES (${`result-${String(index).padStart(2, "0")}`}, 'bot', 'project', ${index === 12 ? "another-home" : home}, 'direct', 'Compare venues', 'Compare', 'full-access', ${index === 11 ? "running" : "completed"}, ${created}, ${created})`;
+    }
+    const reads: string[] = [];
+    const turns = yield* orchestrator;
+    const { check, tick } = yield* startService(turns, (input) => {
+      reads.push(input.taskId);
+      if (input.taskId === "result-09")
+        return Effect.fail(new BotError({ message: "result unavailable" }));
+      return Effect.succeed({
+        task: {
+          id: input.taskId,
+          ...scope,
+          homeThreadId: home,
+          workThreadId: ThreadId.make("work"),
+          origin: "direct",
+          title: "Compare venues",
+          scheduledTaskId: null,
+          occurrenceDueAt: null,
+          sessionAt: null,
+          runtimeMode: "full-access",
+          status: "completed",
+          detail: null,
+          createdAt: created,
+          updatedAt: created,
+          completedAt: created,
+        },
+        result:
+          input.taskId === "result-08"
+            ? { state: "unavailable" }
+            : {
+                state: "available",
+                runId: RunId.make("result-run"),
+                text: "Choose Harbor Hall or Lantern Loft?" + "x".repeat(3000) + "hidden-tail",
+              },
+      });
+    });
+    yield* at("2026-11-09T07:00:00.000Z");
+    yield* enable(check);
+    yield* at("2026-11-09T08:00:00.000Z");
+    yield* tick();
+    const command = (yield* Ref.get(turns.commands)).find(
+      (item) => item.type === "restricted_run.start",
+    );
+    assert.isDefined(command);
+    if (command?.type !== "restricted_run.start") return assert.fail();
+    assert.include(command.text, "Choose Harbor Hall or Lantern Loft?");
+    assert.include(command.text, '"taskId":"result-10"');
+    assert.notInclude(command.text, '"taskId":"result-09"');
+    assert.notInclude(command.text, '"taskId":"result-08"');
+    assert.notInclude(command.text, "hidden-tail");
+    assert.include(
+      command.text,
+      JSON.stringify({
+        taskId: "result-10",
+        text: ("Choose Harbor Hall or Lantern Loft?" + "x".repeat(3000)).slice(0, 2000),
+      }),
+    );
+    assert.notInclude(command.text, '"taskId":"result-00"');
+    assert.lengthOf(reads, 10);
+    assert.notInclude(reads, "result-12");
+    assert.notInclude(reads, "result-11");
+    assert.notInclude(reads, "result-00");
+    assert.isBelow(command.text.length, BotHomeCheck.HOME_CHECK_PROMPT.length + 22_000);
   }).pipe(Effect.provide(services)),
 );

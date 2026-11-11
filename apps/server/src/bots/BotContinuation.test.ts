@@ -723,6 +723,60 @@ it.effect("a Waiting-only run appends Waiting items and changes nothing else", (
   }).pipe(Effect.provide(services.pipe(Layer.provideMerge(database)))),
 );
 
+it.effect(
+  "task-only Waiting items need no Home message and still enforce task ownership and user decisions",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* task(1, "completed");
+      yield* task(2, "completed");
+      const main = yield* SqlClient.SqlClient;
+      const bots = yield* BotDatabase.BotDatabase;
+      yield* bots`UPDATE bot_tasks SET home_thread_id = 'another-home' WHERE task_id = 'task-2'`;
+      yield* main`INSERT INTO orchestration_v2_projection_runs (run_id, thread_id, ordinal, provider, status, requested_at, payload_json) VALUES ('run-1', ${home}, 1, 'codex', 'running', ${now}, '{"restriction":"botWaiting"}')`;
+      const notes = yield* BotContinuation.BotContinuation;
+      const view = yield* notes.get(scope);
+      const saved = yield* notes.save(
+        {
+          ...userSave("task-only", null, {
+            ...empty(),
+            waiting: [{ text: "Choose a venue", taskIds: [BotTaskId.make("task-1")] }],
+          }),
+          basis: view.basis!,
+        },
+        { kind: "bot", threadId: home },
+      );
+      if (saved._tag !== "saved") return assert.fail();
+      const save = (id: string, note: BotContinuationNoteInput) =>
+        notes.save(
+          { ...userSave(id, saved.view.revision, note), basis: view.basis! },
+          { kind: "bot", threadId: home },
+        );
+      for (const taskId of ["task-2", "missing-task"]) {
+        const error = yield* save(taskId, {
+          ...empty(),
+          waiting: [{ text: "Choose a venue", taskIds: [BotTaskId.make(taskId)] }],
+        }).pipe(Effect.flip);
+        assert.include(error.message, "belong to this Home");
+      }
+      yield* main`UPDATE orchestration_v2_projection_runs SET payload_json = '{}' WHERE run_id = 'run-1'`;
+      const decided = yield* save("decision", {
+        ...empty(),
+        decided: [{ text: "Choose a venue", taskIds: [BotTaskId.make("task-1")] }],
+      }).pipe(Effect.flip);
+      assert.include(decided.message, "direct user input");
+      assert.deepEqual(saved.view.note.waiting[0]?.refs, [
+        {
+          kind: "task",
+          taskId: BotTaskId.make("task-1"),
+          status: "completed",
+          resultRunId: null,
+          availability: "available",
+        },
+      ]);
+    }).pipe(Effect.provide(services.pipe(Layer.provideMerge(database)))),
+);
+
 const homeRun = Effect.fn("fixture.homeRun")(function* (id: string, ordinal: number) {
   const main = yield* SqlClient.SqlClient;
   yield* main`UPDATE orchestration_v2_projection_runs SET status = 'completed' WHERE thread_id = ${home}`;
