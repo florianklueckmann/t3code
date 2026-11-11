@@ -430,7 +430,9 @@ export const layerProduction = Layer.mergeAll(
       ),
     ),
   ),
-  BotHomeCheck.layer.pipe(Layer.provide(layerThreadManagementProvided)),
+  BotHomeCheck.layer.pipe(
+    Layer.provide(Layer.merge(layerThreadManagementProvided, layerBotTaskProvided)),
+  ),
   layerBotTaskProvided,
   // The MCP schedule tool reads it to set up routines on a Bot's model.
   BotTaskService.layerRoutineTarget.pipe(Layer.provide(layerBotTaskProvided)),

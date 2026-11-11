@@ -234,11 +234,44 @@ const untilTasksSettled = Effect.fn("botHomeCheckEval.untilTasksSettled")(functi
   return yield* new SampleError({ message: "the case's task did not finish" });
 });
 
+export const homeIsEligible = (state: NodeSqlite.DatabaseSync, home: string) =>
+  state
+    .prepare(`SELECT 1 AS eligible
+    FROM orchestration_v2_projection_threads t
+    JOIN orchestration_v2_projection_provider_threads p ON p.provider_thread_id = t.active_provider_thread_id
+      AND p.thread_id = t.thread_id AND p.provider_instance_id = t.provider_instance_id
+    WHERE t.thread_id = ? AND t.archived_at IS NULL AND t.deleted_at IS NULL
+      AND json_extract(p.payload_json, '$.nativeThreadRef.nativeId') IS NOT NULL
+      AND EXISTS (SELECT 1 FROM orchestration_v2_projection_runs r WHERE r.thread_id = t.thread_id AND r.status = 'completed')
+      AND NOT EXISTS (SELECT 1 FROM orchestration_v2_projection_runs r WHERE r.thread_id = t.thread_id AND r.status IN ('preparing', 'queued', 'starting', 'running', 'waiting'))
+    LIMIT 1`)
+    .get(home)?.eligible === 1;
+
 /** Makes one check owed on every Home, then waits until each has an outcome. */
 const runChecks = Effect.fn("botHomeCheckEval.runChecks")(function* (
   db: BotDatabase,
   homes: ReadonlyArray<string>,
+  statePath: string,
 ) {
+  yield* Effect.try({
+    try: () => {
+      const state = new NodeSqlite.DatabaseSync(statePath, { readOnly: true });
+      try {
+        for (const home of homes)
+          if (!homeIsEligible(state, home))
+            throw new Error(
+              "The fixture Home needs an idle, completed ordinary turn and its native provider conversation.",
+            );
+      } finally {
+        state.close();
+      }
+    },
+    catch: () =>
+      new SampleError({
+        message:
+          "Home fixture is ineligible for its restricted check; no quiet-period wait was started.",
+      }),
+  });
   yield* Effect.sleep(QUIET_WAIT);
   const slot = yield* passedSlot;
   for (const home of homes) db.owe(home, slot);
@@ -360,6 +393,7 @@ const main = Effect.gen(function* () {
         yield* runChecks(
           db,
           twice.map((fixture) => fixture.homeThreadId),
+          config.dbPath,
         );
         for (const fixture of twice) {
           if ((yield* noteOf(call, fixture)).waiting.length <= before.get(fixture)!)
@@ -388,6 +422,7 @@ const main = Effect.gen(function* () {
       yield* runChecks(
         db,
         fixtures.map((fixture) => fixture.homeThreadId),
+        config.dbPath,
       );
       for (const fixture of fixtures) {
         const { note, tasks } = baselines.get(fixture)!;

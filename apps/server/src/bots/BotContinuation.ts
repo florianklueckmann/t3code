@@ -853,8 +853,6 @@ const make = Effect.gen(function* () {
               return yield* invalid(
                 "The quote was not found in the supplied source window. Read the Home history and reconcile it first.",
               );
-            if (refs.length === 0)
-              return yield* invalid("New Bot note items need a source in the supplied Home basis.");
           }
           for (const taskId of item.taskIds ?? []) {
             const task = (yield* sql<{
@@ -874,6 +872,8 @@ const make = Effect.gen(function* () {
               },
             ];
           }
+          if (refs.length === 0)
+            return yield* invalid("New Bot note items need a source in the supplied Home basis.");
           items.push({ text: item.text, refs });
         }
         note = { ...note, [section]: items };

@@ -2065,7 +2065,7 @@ it.effect("never learns a steer whose turn ended first and whose follow-up was r
               ),
             ),
         });
-        assert.deepEqual(yield* Ref.get(dispatched), ["message.dispatch"]);
+        assert.deepEqual(yield* Ref.get(dispatched), ["message.dispatch", "message.delivery.fail"]);
 
         const result = yield* maintenance.runNow(scope);
         assert.deepEqual(

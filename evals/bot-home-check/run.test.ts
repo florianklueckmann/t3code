@@ -1,4 +1,7 @@
+// @effect-diagnostics nodeBuiltinImport:off - isolated SQLite fixture for eval eligibility.
+import * as NodeSqlite from "node:sqlite";
 import { expect, it } from "@effect/vitest";
+import { homeIsEligible } from "./run.ts";
 import { CASES } from "./cases.ts";
 import { gradeSample, type Observation, type ObservedNote } from "./grade.ts";
 
@@ -64,13 +67,25 @@ it.each([
     [],
   ],
   [
+    "a task title without the result's choice",
+    "decision-needed-to-waiting",
+    proposed({ text: "Pick a venue", refs: [{ kind: "task", taskId: "task-1" }] }),
+    ["names what needs the user"],
+  ],
+  [
+    "only half the result's choice",
+    "decision-needed-to-waiting",
+    proposed({ text: "Book Harbor Hall", refs: [{ kind: "task", taskId: "task-1" }] }),
+    ["names what needs the user"],
+  ],
+  [
     "an item without the task",
     "decision-needed-to-waiting",
     proposed({
       text: "Pick a venue",
       refs: [{ kind: "message", messageId: "message-1", quote: "venue" }],
     }),
-    ["names the task"],
+    ["names what needs the user", "names the task"],
   ],
   [
     "an item quoting the user",
@@ -125,4 +140,31 @@ it.each([
   ],
 ] as const)("grades %s", (_, id, observation, failures) => {
   expect(failed(gradeSample(caseOf(id), observation))).toEqual(failures);
+});
+
+it("requires an idle Home's completed turn and matching native conversation before the eval waits", () => {
+  const db = new NodeSqlite.DatabaseSync(":memory:");
+  try {
+    db.exec(`CREATE TABLE orchestration_v2_projection_threads (thread_id TEXT, active_provider_thread_id TEXT, provider_instance_id TEXT, archived_at TEXT, deleted_at TEXT);
+      CREATE TABLE orchestration_v2_projection_provider_threads (provider_thread_id TEXT, thread_id TEXT, provider_instance_id TEXT, payload_json TEXT);
+      CREATE TABLE orchestration_v2_projection_runs (thread_id TEXT, status TEXT);
+      INSERT INTO orchestration_v2_projection_threads VALUES ('home', NULL, 'codex', NULL, NULL);`);
+    expect(homeIsEligible(db, "home")).toBe(false);
+    db.exec(`INSERT INTO orchestration_v2_projection_runs VALUES ('work', 'completed');`);
+    expect(homeIsEligible(db, "home")).toBe(false);
+    db.exec(`INSERT INTO orchestration_v2_projection_runs VALUES ('home', 'completed');
+      INSERT INTO orchestration_v2_projection_provider_threads VALUES ('native', 'home', 'codex', '{"nativeThreadRef":{"nativeId":"synthetic"}}');
+      UPDATE orchestration_v2_projection_threads SET active_provider_thread_id = 'native';`);
+    expect(homeIsEligible(db, "home")).toBe(true);
+    db.exec(`UPDATE orchestration_v2_projection_threads SET provider_instance_id = 'other';`);
+    expect(homeIsEligible(db, "home")).toBe(false);
+    db.exec(`UPDATE orchestration_v2_projection_threads SET provider_instance_id = 'codex';`);
+    for (const status of ["preparing", "queued", "starting", "running", "waiting"]) {
+      db.prepare("INSERT INTO orchestration_v2_projection_runs VALUES ('home', ?)").run(status);
+      expect(homeIsEligible(db, "home"), status).toBe(false);
+      db.prepare("DELETE FROM orchestration_v2_projection_runs WHERE status = ?").run(status);
+    }
+  } finally {
+    db.close();
+  }
 });

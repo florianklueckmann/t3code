@@ -29,15 +29,15 @@ export const CASES: readonly HomeCheckCase[] = [
   {
     id: "decision-needed-to-waiting",
     source: "T3B-24 scenario: a finished task needs the user's choice",
-    seed: [],
+    seed: [`Hello. ${acknowledge}`],
     task: {
-      title: "Venue choice for the Acme offsite: Harbor Hall or Lantern Loft",
+      title: "Compare venues",
       prompt:
         "Use no tools and change no files. Reply with exactly this sentence: Both venues fit the Acme offsite; Harbor Hall costs less and Lantern Loft is closer, so which one should I book?",
     },
     between: null,
     waitingBefore: null,
-    expect: { pattern: "venue|harbor|lantern", source: "task" },
+    expect: { pattern: "(?=.*harbor\\s+hall)(?=.*lantern\\s+loft)", source: "task" },
   },
   {
     id: "upcoming-event-preparation",
