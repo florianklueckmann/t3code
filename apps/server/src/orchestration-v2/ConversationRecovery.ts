@@ -51,6 +51,7 @@ export function rewindHandoffItems(
   const finalReplies = new Map<string, OrchestrationV2TurnItem>();
   for (const item of items) {
     if (item.type !== "assistant_message" || item.runId === null) continue;
+    if (item.responseKind === "intermediate") continue;
     const current = finalReplies.get(item.runId);
     if (current === undefined || item.ordinal > current.ordinal) finalReplies.set(item.runId, item);
   }

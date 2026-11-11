@@ -1047,6 +1047,20 @@ const countTerminalTurnsAfterBoundary = (
   ).length;
 };
 
+const nativeTurnIdsThrough = (
+  input: ProviderAdapter.ProviderAdapterV2RollbackThreadInput,
+  targetNativeId: string,
+): ReadonlySet<string> => {
+  const ids = new Set([targetNativeId]);
+  if (input.target.type !== "provider_turn") return ids;
+  const targetOrdinal = input.target.providerTurn.ordinal;
+  for (const turn of input.providerThreadTurns) {
+    const nativeId = turn.nativeTurnRef?.nativeId;
+    if (turn.ordinal <= targetOrdinal && nativeId != null) ids.add(nativeId);
+  }
+  return ids;
+};
+
 const resolveCodexForkRollbackTurnCount = Effect.fn("CodexAdapterV2.resolveForkRollbackTurnCount")(
   function* (input: ProviderAdapter.ProviderAdapterV2ForkThreadInput) {
     if (input.providerTurnId === undefined || input.sourceProviderTurns === undefined) {
@@ -8804,7 +8818,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 Effect.andThen(
                   nativeConversationHeadRef?.nativeId == null
                     ? revertCodexThread(client, threadId, numTurns)
-                    : revertCodexThreadAfter(client, threadId, nativeConversationHeadRef.nativeId),
+                    : revertCodexThreadAfter(
+                        client,
+                        threadId,
+                        nativeTurnIdsThrough(threadInput, nativeConversationHeadRef.nativeId),
+                      ),
                 ),
               );
               turnTokenUsageByThread.delete(threadId);

@@ -115,6 +115,11 @@ describe("rewindHandoffItems", () => {
       assistant("run-150", "The controller stopped before any Quit."),
       user("run-152", "What was blocked?"),
       item("run-152", {
+        type: "assistant_message",
+        text: "Running the activation check.",
+        responseKind: "intermediate",
+      } as never),
+      item("run-152", {
         type: "error",
         status: "failed",
         failure: { class: "provider_error", message: "Blocked", code: null, retryable: null },

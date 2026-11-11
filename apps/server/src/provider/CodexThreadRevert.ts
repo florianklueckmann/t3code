@@ -69,26 +69,21 @@ export const revertCodexThread = Effect.fn("revertCodexThread")(function* (
 });
 
 /**
- * Reverts every turn newer than `keepTurnId`. Codex can hold turns T3 never recorded, so counting
- * T3's turns can stop short; the native id cannot.
+ * Reverts every native turn newer than the newest one in `keepTurnIds` (the target turn and the
+ * turns T3 recorded before it). Codex can hold turns T3 never recorded, so counting T3's turns can
+ * stop short; native ids cannot. A conversation recovery can drop the target itself, so the newest
+ * surviving earlier turn is kept, and a conversation with none of them is reverted entirely.
  */
 export const revertCodexThreadAfter = Effect.fn("revertCodexThreadAfter")(function* (
   client: RevertClient,
   threadId: string,
-  keepTurnId: string,
+  keepTurnIds: ReadonlySet<string>,
 ) {
-  const { beforeTurnId, reached } = yield* findRevertBoundary(
+  const { beforeTurnId } = yield* findRevertBoundary(
     client,
     threadId,
     () => 100,
-    (turnId) => (turnId === keepTurnId ? "keep" : "revert"),
+    (turnId) => (keepTurnIds.has(turnId) ? "keep" : "revert"),
   );
-  if (!reached) {
-    return yield* CodexErrors.CodexAppServerRequestError.internalError(
-      `Turn ${keepTurnId} is not in Codex thread ${threadId}.`,
-      undefined,
-      { method: "thread/turns/list", operation: "decode-payload" },
-    );
-  }
   return yield* revertBefore(client, threadId, beforeTurnId);
 });
