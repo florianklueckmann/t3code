@@ -52,7 +52,10 @@ import { useAtomValue } from "@effect/atom-react";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { environmentThreadDetails, threadEnvironment } from "../../state/threads";
 import { serverEnvironment } from "../../state/server";
-import { conversationRecoveryOffer } from "@t3tools/shared/conversationRecovery";
+import {
+  conversationRecoveryOffer,
+  isSafetyBlockFailure,
+} from "@t3tools/shared/conversationRecovery";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { toolActivityFaviconUrl } from "@t3tools/shared/favicon";
 import { isJavaScriptReplTool } from "@t3tools/shared/toolActivity";
@@ -1038,7 +1041,7 @@ const ThreadWorkLogRow = function ThreadWorkLogRow(
               runId={failureItem.runId}
             />
           ) : null}
-          {failureItem.failure.safetyBlock && failureItem.runId !== null ? (
+          {isSafetyBlockFailure(failureItem.failure) && failureItem.runId !== null ? (
             <ConversationRecoveryButton
               environmentId={props.environmentId}
               threadId={failureItem.threadId}

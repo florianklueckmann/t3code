@@ -24,6 +24,7 @@ import {
   turnItemNeedsDetailFetch,
 } from "@t3tools/client-runtime/work-log/item-detail";
 import { claudeSkillInvocation } from "@t3tools/shared/toolActivity";
+import { isSafetyBlockFailure } from "@t3tools/shared/conversationRecovery";
 import { memo, use, useState, type KeyboardEvent } from "react";
 import {
   workEntryDisplayIndicatesToolFailure,
@@ -225,7 +226,8 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
         ? failureItem.runId
         : null;
     const recovery =
-      failureItem.failure.safetyBlock && ctx.conversationRecovery?.runId === failureItem.runId
+      isSafetyBlockFailure(failureItem.failure) &&
+      ctx.conversationRecovery?.runId === failureItem.runId
         ? ctx.conversationRecovery
         : null;
     return (

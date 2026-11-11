@@ -41,6 +41,7 @@ import {
   isDelegatedAppThread,
 } from "@t3tools/contracts";
 import { SKILL_MENTION_PATTERN } from "@t3tools/shared/composerInlineTokens";
+import { CODEX_SAFETY_BLOCK_CODES } from "@t3tools/shared/conversationRecovery";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import {
@@ -1223,9 +1224,6 @@ function withCodexManagedFailure(
         ...(managed.usageLimit ? { class: "usage_limit" } : {}),
       };
 }
-
-/** Codex's names for a refusal by OpenAI's safety systems; resuming the same conversation repeats it. */
-const CODEX_SAFETY_BLOCK_CODES = new Set(["misalignmentPolicyViolation", "cyberPolicy"]);
 
 function withCodexSafetyBlock(
   failure: OrchestrationV2ProviderFailure,

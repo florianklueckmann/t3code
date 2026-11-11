@@ -56,6 +56,18 @@ const refusal = (ordinal: number): OrchestrationV2TurnItem => ({
   },
 });
 
+const earlierRefusal = (ordinal: number): OrchestrationV2TurnItem => ({
+  ...base(ordinal, "error"),
+  status: "failed",
+  type: "error",
+  failure: {
+    class: "provider_error",
+    message: "This request was blocked by our safety systems.",
+    code: "misalignmentPolicyViolation",
+    retryable: null,
+  },
+});
+
 const otherFailure = (ordinal: number): OrchestrationV2TurnItem => ({
   ...base(ordinal, "error"),
   status: "failed",
@@ -101,6 +113,13 @@ describe("conversationRecoveryOffer", () => {
       150,
     ],
     ["a refusal before any accepted run", [run(1, "failed")], [refusal(1)], "rewind", undefined],
+    [
+      "a refusal recorded before safetyBlock existed",
+      refusedHome,
+      [earlierRefusal(156)],
+      "rewind",
+      150,
+    ],
   ] as const)("offers the next step for %s", (_case, runs, items, mode, lastAccepted) => {
     expect(conversationRecoveryOffer(runs, items)).toMatchObject({
       refusedRun: { ordinal: runs.at(-1)!.ordinal },

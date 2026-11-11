@@ -1,8 +1,25 @@
 import type {
   OrchestrationV2ConversationRecoveryMode,
+  OrchestrationV2ProviderFailure,
   OrchestrationV2Run,
   OrchestrationV2TurnItem,
 } from "@t3tools/contracts";
+
+/** Codex's names for a refusal by OpenAI's safety systems; resuming the same conversation repeats it. */
+export const CODEX_SAFETY_BLOCK_CODES: ReadonlySet<string> = new Set([
+  "misalignmentPolicyViolation",
+  "cyberPolicy",
+]);
+
+/** Errors recorded before `safetyBlock` existed carry only Codex's code. */
+export function isSafetyBlockFailure(
+  failure: Pick<OrchestrationV2ProviderFailure, "safetyBlock" | "code">,
+): boolean {
+  return (
+    failure.safetyBlock === true ||
+    (failure.code !== null && CODEX_SAFETY_BLOCK_CODES.has(failure.code))
+  );
+}
 
 type RecoveryRun = Pick<OrchestrationV2Run, "id" | "ordinal" | "status" | "providerThreadId">;
 type RecoveryItemType = "error" | "system_notice";
@@ -52,7 +69,11 @@ export function conversationRecoveryOffer<Run extends RecoveryRun>(
   let recovered = false;
   for (const item of items) {
     if (item.runId === null) continue;
-    if (item.type === "error" && item.runId === refusedRun.id && item.failure.safetyBlock) {
+    if (
+      item.type === "error" &&
+      item.runId === refusedRun.id &&
+      isSafetyBlockFailure(item.failure)
+    ) {
       refused = true;
     }
     if (item.type === "system_notice" && item.conversationRecovery !== undefined) {
