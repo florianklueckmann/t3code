@@ -2053,7 +2053,10 @@ const make = Effect.gen(function* () {
             }),
       };
       const { task } = yield* scheduledTasks
-        .upsert(upsertInput)
+        .upsert(
+          upsertInput,
+          parent === undefined ? undefined : { createdByThreadId: parent.thread.id },
+        )
         .pipe(
           Effect.mapError((error) =>
             failure("orchestration_error", `Could not schedule task: ${error.message}`),
