@@ -38,6 +38,7 @@ import * as EventSink from "./EventSink.ts";
 import * as ProviderUsageAnalytics from "../telemetry/ProviderUsageAnalytics.ts";
 import * as ContextHandoffService from "./ContextHandoffService.ts";
 import { isActiveRun } from "./CommandPolicy.ts";
+import { conversationRecoveryHandoffItems } from "./ConversationRecovery.ts";
 import {
   DEFAULT_HANDOFF_TOKEN_CAP,
   handoffTokenCapConfig,
@@ -1119,6 +1120,13 @@ export const layer: Layer.Layer<
             type: "provider_resume_fallback",
           });
           const createdAt = yield* DateTime.now;
+          const items = (yield* projectionStore.getTurnStartHistory(input.threadId)).filter(
+            (item) =>
+              item.runId === null ||
+              projection.runs.some(
+                (source) => source.id === item.runId && source.ordinal < run.ordinal,
+              ),
+          );
           const handoff = yield* contextHandoffService.prepareProviderHandoff({
             threadId: projection.thread.id,
             targetRunId: run.id,
@@ -1130,13 +1138,10 @@ export const layer: Layer.Layer<
             coveredRunOrdinals: { from: 1, to: Math.max(1, run.ordinal - 1) },
             strategy: "full_thread_summary",
             runs: projection.runs,
-            items: (yield* projectionStore.getTurnStartHistory(input.threadId)).filter(
-              (item) =>
-                item.runId === null ||
-                projection.runs.some(
-                  (source) => source.id === item.runId && source.ordinal < run.ordinal,
-                ),
-            ),
+            items:
+              providerThread.conversationRecovery === undefined
+                ? items
+                : conversationRecoveryHandoffItems(items),
             createdAt,
           });
           return { handoff, transferId, createdAt };

@@ -19,7 +19,9 @@ import {
   RunId,
   ThreadId,
   ProjectId,
+  TurnItemId,
   type OrchestrationV2ThreadProjection,
+  type OrchestrationV2TurnItem,
   OrchestrationV2DomainEvent,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -654,8 +656,34 @@ function makeLocalCommandHarness(input: {
     };
   }
   const keptTurnId = ProviderTurnId.make("kept-provider-turn");
+  const keptRunId = RunId.make("kept-run");
+  const recoveryHistory = (
+    [
+      { type: "user_message", text: "Stop the controller.", attachments: [] },
+      { type: "command_execution", input: "kill -TERM 4242", output: "REFUSED_OUTPUT" },
+      { type: "assistant_message", text: "The controller stopped." },
+    ] as const
+  ).map(
+    (fields, index) =>
+      ({
+        id: TurnItemId.make(`recovery-history-${index}`),
+        threadId,
+        runId: keptRunId,
+        nodeId: rootNodeId,
+        providerThreadId,
+        providerTurnId: null,
+        nativeItemRef: null,
+        parentItemId: null,
+        ordinal: index + 1,
+        status: "completed",
+        title: null,
+        startedAt: now,
+        completedAt: now,
+        updatedAt: now,
+        ...fields,
+      }) as OrchestrationV2TurnItem,
+  );
   if (input.recovery !== undefined) {
-    const keptRunId = RunId.make("kept-run");
     const keptAttemptId = RunAttemptId.make("kept-attempt");
     projection = {
       ...projection,
@@ -1026,28 +1054,30 @@ function makeLocalCommandHarness(input: {
       ),
     }),
   );
+  const prepareProviderHandoff = vi.fn<
+    ContextHandoffService.ContextHandoffServiceV2["Service"]["prepareProviderHandoff"]
+  >((handoff) =>
+    input.sideChat?.nativeForkFrom === undefined &&
+    input.resumeFailure === undefined &&
+    input.recovery === undefined
+      ? Effect.die("history read must fail first")
+      : Effect.succeed({
+          ...handoff,
+          id: ContextHandoffId.make(
+            input.resumeFailure === undefined ? "side-chat-fork-context" : "resume-recovery",
+          ),
+          createdByProviderInstanceId: handoff.toProviderInstanceId,
+          status: "ready",
+          summaryMessageId: null,
+          summaryText: "PARENT_HISTORY",
+          updatedAt: handoff.createdAt,
+        }),
+  );
   const layer = ProviderTurnStart.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({
-          prepareProviderHandoff: (handoff) =>
-            input.sideChat?.nativeForkFrom === undefined &&
-            input.resumeFailure === undefined &&
-            input.recovery === undefined
-              ? Effect.die("history read must fail first")
-              : Effect.succeed({
-                  ...handoff,
-                  id: ContextHandoffId.make(
-                    input.resumeFailure === undefined
-                      ? "side-chat-fork-context"
-                      : "resume-recovery",
-                  ),
-                  createdByProviderInstanceId: handoff.toProviderInstanceId,
-                  status: "ready",
-                  summaryMessageId: null,
-                  summaryText: "PARENT_HISTORY",
-                  updatedAt: handoff.createdAt,
-                }),
+          prepareProviderHandoff,
         }),
         Layer.mock(EventSink.EventSinkV2)({
           writeIfRunCurrent,
@@ -1101,16 +1131,16 @@ function makeLocalCommandHarness(input: {
             }),
           getNextTurnItemOrdinal: () => Effect.succeed(100),
           getTurnStartHistory: () =>
-            input.sideChat !== undefined ||
-            input.resumeFailure !== undefined ||
             input.recovery !== undefined
-              ? Effect.succeed([])
-              : Effect.fail(
-                  new ProjectionStore.ProjectionStoreReadError({
-                    threadId,
-                    cause: input.historyReadFailureAfterFallback,
-                  }),
-                ),
+              ? Effect.succeed(recoveryHistory)
+              : input.sideChat !== undefined || input.resumeFailure !== undefined
+                ? Effect.succeed([])
+                : Effect.fail(
+                    new ProjectionStore.ProjectionStoreReadError({
+                      threadId,
+                      cause: input.historyReadFailureAfterFallback,
+                    }),
+                  ),
         }),
         Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
           open,
@@ -1151,6 +1181,7 @@ function makeLocalCommandHarness(input: {
     fallbackEnsureThread,
     resumeThread,
     rollbackThread,
+    prepareProviderHandoff,
     compactThread,
     writeIfRunCurrent,
     startRootRun,
@@ -2010,6 +2041,11 @@ effectIt.effect.each([
       expect(projection.contextHandoffs.map((handoff) => handoff.strategy)).toEqual(
         nativeId === "replacement-native" ? ["full_thread_summary"] : [],
       );
+      expect(
+        harness.prepareProviderHandoff.mock.calls.map(([handoff]) =>
+          handoff.items.map((item) => item.type),
+        ),
+      ).toEqual(nativeId === "replacement-native" ? [["user_message", "assistant_message"]] : []);
       expect(projection.turnItems.filter((item) => item.type === "system_notice")).toMatchObject(
         freshFallback ? [{ conversationRecovery: "fresh" }] : [],
       );

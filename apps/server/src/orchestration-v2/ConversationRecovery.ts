@@ -42,10 +42,11 @@ export function rewindKeptProviderTurn(
 }
 
 /**
- * What the rewound runs said: each user message and each run's final assistant reply. Tool calls,
- * commands and their output stay behind, since the refused trajectory lives in them.
+ * What a recovered conversation hands over: each user message and each run's final assistant
+ * reply. Tool calls, commands and their output stay behind, since the refused trajectory lives
+ * in them.
  */
-export function rewindHandoffItems(
+export function conversationRecoveryHandoffItems(
   items: ReadonlyArray<OrchestrationV2TurnItem>,
 ): ReadonlyArray<OrchestrationV2TurnItem> {
   const finalReplies = new Map<string, OrchestrationV2TurnItem>();
