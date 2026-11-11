@@ -8,7 +8,13 @@ import {
   latestBotMcpGrants,
   type McpConnectionStatusText,
 } from "@t3tools/client-runtime/mcp-connections";
-import type { BotId, BotMcpGrants, EnvironmentId } from "@t3tools/contracts";
+import type {
+  BotId,
+  BotMcpGrants,
+  EnvironmentId,
+  McpConnectionId,
+  McpConnectionOAuthState,
+} from "@t3tools/contracts";
 import { useState } from "react";
 import { View } from "react-native";
 
@@ -20,7 +26,9 @@ import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { reportBotFailure } from "../bots/reportBotFailure";
+import { useNowAfter } from "../../lib/clock";
 import { SettingsSection } from "./components/SettingsSection";
+import { McpConnectionSignInRows, useMcpConnectionSignIn } from "./McpConnectionSignIn";
 import type { McpConnectionRoutes } from "./SettingsMcpConnectionsRouteScreen";
 
 const TONE_CLASS: Record<McpConnectionStatusText["tone"], string> = {
@@ -53,6 +61,7 @@ export function BotMcpGrantsSection(props: {
   const setGrants = useAtomCommand(serverEnvironment.setBotMcpGrants, { reportFailure: false });
   const [busy, setBusy] = useState(false);
   const [acknowledged, setAcknowledged] = useState<BotMcpGrants | null>(null);
+  const now = useNowAfter(null);
   const bot = bots.data?.bots.find((entry) => entry.id === botId);
   if (bot?.mcpGrants === undefined || config === null) return null;
   const grants = latestBotMcpGrants(bot.mcpGrants, acknowledged);
@@ -77,7 +86,9 @@ export function BotMcpGrantsSection(props: {
     routines: routines.data?.tasks ?? null,
     canChange,
     archived: bot.archivedAt !== null,
+    now,
   });
+  const oauthSupported = config.environment.capabilities.mcpConnectionsOAuth === true;
   const disabled = busy || props.formLocked || !view.editable;
 
   const change = async (next: Parameters<typeof botMcpGrantsChange>[3]) => {
@@ -94,33 +105,45 @@ export function BotMcpGrantsSection(props: {
 
   return (
     <SettingsSection title="MCP connections">
-      {view.rows.map((row, index) => (
-        <View
-          key={row.id}
-          className={
-            index === 0
-              ? "min-h-14 flex-row items-center gap-3 px-4 py-3"
-              : "min-h-14 flex-row items-center gap-3 border-t border-border-subtle px-4 py-3"
-          }
-        >
-          <View className="min-w-0 flex-1 gap-1">
-            <Text textRole="body" className="text-foreground">
-              {row.label}
-            </Text>
-            <Text textRole="footnote" className={TONE_CLASS[row.status.tone]}>
-              {row.transport === null
-                ? row.status.text
-                : `${row.transport === "http" ? "HTTP" : "stdio"} · ${row.status.text}`}
-            </Text>
+      {view.rows.map((row, index) => {
+        const oauth = oauthSupported ? row.oauth : null;
+        return (
+          <View key={row.id} className={index === 0 ? "" : "border-t border-border-subtle"}>
+            <View className="min-h-14 flex-row items-center gap-3 px-4 py-3">
+              <View className="min-w-0 flex-1 gap-1">
+                <Text textRole="body" className="text-foreground">
+                  {row.label}
+                </Text>
+                <Text
+                  textRole="footnote"
+                  className={oauth === null ? TONE_CLASS[row.status.tone] : "text-foreground-muted"}
+                >
+                  {row.transport === null
+                    ? row.status.text
+                    : oauth !== null
+                      ? "HTTP · OAuth"
+                      : `${row.transport === "http" ? "HTTP" : "stdio"} · ${row.status.text}`}
+                </Text>
+              </View>
+              <ThemedSwitch
+                accessibilityLabel={row.label}
+                value={row.granted}
+                disabled={disabled}
+                onValueChange={(granted) => void change({ connectionId: row.id, granted })}
+              />
+            </View>
+            {oauth === null ? null : (
+              <BotMcpGrantSignIn
+                environmentId={environmentId}
+                connectionId={row.id}
+                label={row.label}
+                fallback={oauth}
+                disabled={props.formLocked}
+              />
+            )}
           </View>
-          <ThemedSwitch
-            accessibilityLabel={row.label}
-            value={row.granted}
-            disabled={disabled}
-            onValueChange={(granted) => void change({ connectionId: row.id, granted })}
-          />
-        </View>
-      ))}
+        );
+      })}
       {view.ownServers === null ? null : (
         <View
           className={
@@ -170,4 +193,21 @@ export function BotMcpGrantsSection(props: {
       ))}
     </SettingsSection>
   );
+}
+
+/** An OAuth connection's live state in a Bot's settings, with a way back in when signed out. */
+function BotMcpGrantSignIn(props: {
+  readonly environmentId: EnvironmentId;
+  readonly connectionId: McpConnectionId;
+  readonly label: string;
+  readonly fallback: McpConnectionOAuthState;
+  readonly disabled: boolean;
+}) {
+  const signIn = useMcpConnectionSignIn({
+    environmentId: props.environmentId,
+    connectionId: props.connectionId,
+    fallback: props.fallback,
+    audience: "bot",
+  });
+  return <McpConnectionSignInRows signIn={signIn} label={props.label} disabled={props.disabled} />;
 }

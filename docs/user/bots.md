@@ -258,6 +258,28 @@ Bot sends to one of your existing threads leaves that thread's setup unchanged.
 A No changes routine uses only the tools a connection's server marks as
 read-only. T3 Code cannot check that mark.
 
+### Signing in with OAuth
+
+For a service that signs you in with your account, such as a mail or calendar
+server, choose **Add connection**, enter its URL, keep **Sign in with OAuth**
+and choose **Connect**. Your browser opens the service's sign-in, and the
+connection shows **Connected** once you finish. T3 Code keeps the tokens on the
+environment and renews them on its own. For a second account of the same
+service, add a second connection and sign in with the other account.
+
+- **Use your own OAuth app** is for services that do not let T3 Code register
+  itself. Enter the client ID and, if the app has one, its secret, and add the
+  redirect URI shown there to the app in the service's developer settings.
+- When the browser cannot reach the environment, for example a remote
+  environment on plain http, the browser ends on a page that cannot load. Copy
+  that page's address and paste it into the field T3 Code shows. The desktop
+  app catches it for you.
+- A **Signed out** connection, because you disconnected it or the service ended
+  access, stays granted. Bots run without it until you choose **Reconnect**, in
+  the catalog or in the Bot's settings.
+- A sign-in that expires in the middle of a long turn fails that connection's
+  later calls in that turn. The next turn renews it.
+
 ## Current limits
 
 - MCP connections apply only to Codex 0.166.0 or later on a Mac server.

@@ -447,6 +447,10 @@
       "types": "./src/codexAuthCallback.ts",
       "import": "./src/codexAuthCallback.ts"
     },
+    "./loopbackAuthCallback": {
+      "types": "./src/loopbackAuthCallback.ts",
+      "import": "./src/loopbackAuthCallback.ts"
+    },
     "./codexAuthHandoff": {
       "types": "./src/codexAuthHandoff.ts",
       "import": "./src/codexAuthHandoff.ts"

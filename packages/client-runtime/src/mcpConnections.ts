@@ -1,5 +1,6 @@
 import {
   mcpConnectionDefinitionProblem,
+  mcpConnectionOAuthFailureMessage,
   mcpConnectionProblemMessage,
   type BotId,
   type BotMcpGrants,
@@ -9,6 +10,7 @@ import {
   type McpConnectionCreateInput,
   type McpConnectionDefinition,
   type McpConnectionId,
+  type McpConnectionOAuthState,
   type McpConnectionStatus,
   type McpConnectionSummary,
   type McpConnectionTransport,
@@ -18,6 +20,8 @@ import {
   type ServerProvider,
   type SettingsSecretValue,
 } from "@t3tools/contracts";
+import { isLocalLoopbackHost } from "@t3tools/shared/hostClassification";
+import * as DateTime from "effect/DateTime";
 
 /** What a create or edit form holds. Endpoint fields are fixed once a connection exists. */
 export interface McpConnectionDraft {
@@ -28,23 +32,36 @@ export interface McpConnectionDraft {
   /** One argument per line. */
   readonly args: string;
   readonly url: string;
+  /** HTTP only: sign in with OAuth, or send the header bindings as they are. */
+  readonly auth: "oauth" | "headers";
+  /** A preregistered OAuth app; an empty client ID lets T3 Code register itself. */
+  readonly oauthClientId: string;
+  /** Empty for a public client. */
+  readonly oauthClientSecret: SettingsSecretValue;
   readonly bindings: ReadonlyArray<{ readonly name: string; readonly value: SettingsSecretValue }>;
 }
 
-export const EMPTY_MCP_CONNECTION_DRAFT: McpConnectionDraft = {
-  label: "",
-  enabled: true,
-  transport: "http",
-  command: "",
-  args: "",
-  url: "",
-  bindings: [],
-};
+/** New HTTP connections sign in with OAuth wherever the server supports it. */
+export function emptyMcpConnectionDraft(oauthSupported: boolean): McpConnectionDraft {
+  return {
+    label: "",
+    enabled: true,
+    transport: "http",
+    command: "",
+    args: "",
+    url: "",
+    auth: oauthSupported ? "oauth" : "headers",
+    oauthClientId: "",
+    oauthClientSecret: "",
+    bindings: [],
+  };
+}
 
 /** A draft of a saved definition, as the redacted settings snapshot shows it. */
 export function mcpConnectionDraft(definition: McpConnectionDefinition): McpConnectionDraft {
   const transport = definition.transport;
   const bindings = transport.type === "stdio" ? transport.env : transport.httpHeaders;
+  const oauth = transport.type === "http" ? transport.oauth : undefined;
   return {
     label: definition.label,
     enabled: definition.enabled,
@@ -52,6 +69,9 @@ export function mcpConnectionDraft(definition: McpConnectionDefinition): McpConn
     command: transport.type === "stdio" ? transport.command : "",
     args: transport.type === "stdio" ? transport.args.join("\n") : "",
     url: transport.type === "http" ? transport.url : "",
+    auth: oauth === undefined ? "headers" : "oauth",
+    oauthClientId: oauth?.client?.id ?? "",
+    oauthClientSecret: oauth?.client?.secret ?? "",
     bindings: Object.entries(bindings).map(([name, value]) => ({ name, value })),
   };
 }
@@ -60,14 +80,27 @@ function draftTransport(draft: McpConnectionDraft): McpConnectionTransport {
   const bindings = Object.fromEntries(
     draft.bindings.map(({ name, value }) => [name.trim(), value]),
   );
-  return draft.transport === "stdio"
-    ? {
-        type: "stdio",
-        command: draft.command.trim(),
-        args: draft.args.split("\n").filter((argument) => argument.trim() !== ""),
-        env: bindings,
-      }
-    : { type: "http", url: draft.url.trim(), httpHeaders: bindings };
+  if (draft.transport === "stdio") {
+    return {
+      type: "stdio",
+      command: draft.command.trim(),
+      args: draft.args.split("\n").filter((argument) => argument.trim() !== ""),
+      env: bindings,
+    };
+  }
+  const transport = { type: "http" as const, url: draft.url.trim(), httpHeaders: bindings };
+  if (draft.auth === "headers") return transport;
+  const clientId = draft.oauthClientId.trim();
+  const secret = draft.oauthClientSecret;
+  return {
+    ...transport,
+    oauth: {
+      scopes: [],
+      ...(clientId === ""
+        ? {}
+        : { client: { id: clientId, ...(secret === "" ? {} : { secret }) } }),
+    },
+  };
 }
 
 export type McpConnectionSavePlan =
@@ -100,6 +133,15 @@ export function planMcpConnectionSave(
       };
     }
     names.add(key);
+  }
+  if (
+    target.kind === "create" &&
+    draft.transport === "http" &&
+    draft.auth === "oauth" &&
+    draft.oauthClientId.trim() === "" &&
+    draft.oauthClientSecret !== ""
+  ) {
+    return { kind: "invalid", message: "Enter your OAuth app's client ID, or clear its secret." };
   }
   const transport =
     target.kind === "create"
@@ -150,8 +192,112 @@ export function mcpConnectionStatusText(
   }
 }
 
+/**
+ * The loopback origin a sign-in returns to when the browser cannot reach the environment. Fixed,
+ * so a preregistered OAuth app can list it, and the desktop listener and paste fallback share it.
+ */
+export const MCP_CONNECTION_OAUTH_LOOPBACK_ORIGIN = "http://127.0.0.1:1457";
+
+/** Where the browser lands after sign-in, and how the response then reaches the environment. */
+export type McpConnectionOAuthCallback =
+  /** The browser opens the environment's own callback route: same machine, or an https origin. */
+  | { readonly mode: "environment"; readonly redirectOrigin: string }
+  /** This desktop app listens on the loopback origin and forwards the response. */
+  | { readonly mode: "listener"; readonly redirectOrigin: string }
+  /** The browser cannot open the loopback page; the user pastes its address back. */
+  | { readonly mode: "paste"; readonly redirectOrigin: string };
+
+/**
+ * `httpBaseUrl` is the address this client uses for the environment. Authorization servers accept
+ * only https or loopback http redirects, so a plain-http remote needs the loopback origin.
+ */
+export function mcpConnectionOAuthCallback(input: {
+  readonly httpBaseUrl: string | null;
+  readonly canListenOnLoopback: boolean;
+}): McpConnectionOAuthCallback {
+  let url: URL | null = null;
+  try {
+    url = input.httpBaseUrl === null ? null : new URL(input.httpBaseUrl);
+  } catch {
+    url = null;
+  }
+  if (
+    url !== null &&
+    (url.protocol === "https:" || (url.protocol === "http:" && isLocalLoopbackHost(url.hostname)))
+  ) {
+    return { mode: "environment", redirectOrigin: url.origin };
+  }
+  return {
+    mode: input.canListenOnLoopback ? "listener" : "paste",
+    redirectOrigin: MCP_CONNECTION_OAUTH_LOOPBACK_ORIGIN,
+  };
+}
+
+export interface McpConnectionOAuthView {
+  readonly tone: McpConnectionStatusText["tone"];
+  readonly text: string;
+  /** The last sign-in's failure, as a fixed sentence. */
+  readonly failure: string | null;
+  /** The sign-in under way, which Cancel ends. */
+  readonly pendingFlowId: string | null;
+  /** The button that starts a sign-in; null while one runs or the account is connected. */
+  readonly signIn: "Connect" | "Reconnect" | "Try again" | null;
+  readonly connected: boolean;
+}
+
+const SIGNED_OUT_REASON = {
+  never: "Not connected.",
+  disconnected: "Signed out. You disconnected it.",
+  expired: "Signed out. The sign-in expired.",
+  revoked: "Signed out. The service ended access.",
+} as const;
+
+/**
+ * How an OAuth connection reads and what it offers. `audience` is where it shows: a Bot's settings
+ * say what a signed-out account means for that Bot's runs, which go on without it.
+ */
+export function mcpConnectionOAuthView(
+  state: McpConnectionOAuthState,
+  now: number,
+  audience: "catalog" | "bot",
+): McpConnectionOAuthView {
+  const signIn = state.signIn;
+  const pending =
+    signIn?.state === "pending" && Date.parse(signIn.expiresAt) > now ? signIn.flowId : null;
+  const failure =
+    signIn === undefined || pending !== null
+      ? null
+      : mcpConnectionOAuthFailureMessage(
+          signIn.state === "failed" ? signIn.reason : "sign-in-ended",
+        );
+  const credential = state.credential;
+  const connected = credential.state === "connected";
+  const base = { failure, pendingFlowId: pending, connected };
+  if (pending !== null) {
+    return { ...base, tone: "muted", text: "Waiting for sign-in in the browser…", signIn: null };
+  }
+  if (credential.state === "connected") {
+    return {
+      ...base,
+      tone: "ok",
+      text: `Connected since ${DateTime.formatLocal(DateTime.makeUnsafe(credential.connectedAt), { dateStyle: "medium", locale: "en-US" })}`,
+      signIn: null,
+    };
+  }
+  const never = credential.reason === "never";
+  return {
+    ...base,
+    tone: "warning",
+    text:
+      audience === "bot"
+        ? `${never ? "Not connected." : "Signed out."} This Bot runs without it until you ${never ? "connect" : "reconnect"} it.`
+        : SIGNED_OUT_REASON[credential.reason],
+    signIn: failure !== null ? "Try again" : never ? "Connect" : "Reconnect",
+  };
+}
+
 export const MCP_CONNECTIONS_NOTICE =
-  "A Bot uses the connections you grant it in its settings, and so does work it starts. Your own threads use none of them. This page checks that credentials resolve; it does not start or contact the servers.";
+  "A Bot uses the connections you grant it in its settings, and so does work it starts. Your own threads use none of them. Refresh checks that credentials resolve; it does not start or contact the servers.";
 
 /** A catalog connection, or a granted one the catalog no longer has, as a Bot's settings list it. */
 export interface BotMcpGrantRow {
@@ -161,6 +307,8 @@ export interface BotMcpGrantRow {
   readonly transport: McpConnectionSummary["transport"] | null;
   readonly granted: boolean;
   readonly status: McpConnectionStatusText;
+  /** An enabled OAuth connection's sign-in state, which the row can reconnect. */
+  readonly oauth: McpConnectionOAuthState | null;
 }
 
 export interface BotMcpGrantsNote {
@@ -219,22 +367,30 @@ export function botMcpGrantsSection(input: {
   readonly routines: ReadonlyArray<ScheduledTask> | null;
   readonly canChange: boolean;
   readonly archived: boolean;
+  readonly now: number;
 }): BotMcpGrantsSection {
   const granted = new Set(input.grants.connectionIds);
   const listed = new Set(input.catalog.map((connection) => connection.id));
   const rows: ReadonlyArray<BotMcpGrantRow> = [
-    ...input.catalog.map((connection) => ({
-      id: connection.id,
-      label: connection.label,
-      transport: connection.transport,
-      granted: granted.has(connection.id),
-      status: connection.enabled
-        ? mcpConnectionStatusText(connection.status)
-        : {
-            tone: "muted" as const,
-            text: "Disabled. The Bot doesn't load it until you enable it.",
-          },
-    })),
+    ...input.catalog.map((connection) => {
+      const oauth = connection.enabled ? (connection.oauth ?? null) : null;
+      const view = oauth === null ? null : mcpConnectionOAuthView(oauth, input.now, "bot");
+      return {
+        id: connection.id,
+        label: connection.label,
+        transport: connection.transport,
+        granted: granted.has(connection.id),
+        status: !connection.enabled
+          ? {
+              tone: "muted" as const,
+              text: "Disabled. The Bot doesn't load it until you enable it.",
+            }
+          : view !== null
+            ? { tone: view.tone, text: view.text }
+            : mcpConnectionStatusText(connection.status),
+        oauth,
+      };
+    }),
     ...input.grants.connectionIds
       .filter((id) => !listed.has(id))
       .map((id) => ({
@@ -243,6 +399,7 @@ export function botMcpGrantsSection(input: {
         transport: null,
         granted: true,
         status: { tone: "muted" as const, text: "Removed. The Bot no longer loads it." },
+        oauth: null,
       })),
   ];
   const usable = rows.some((row) => row.granted && row.transport !== null);
@@ -385,6 +542,18 @@ export function mcpConnectionUsedByText(
 ): string | null {
   const names = usage.state === "known" ? usage.users.get(connectionId) : undefined;
   return names === undefined ? null : `Used by ${listNames(names)}`;
+}
+
+export function mcpConnectionDisconnectMessage(
+  usage: McpConnectionUsage,
+  connectionId: McpConnectionId,
+): string {
+  const names = usage.state === "known" ? usage.users.get(connectionId) : undefined;
+  const runs =
+    names === undefined
+      ? "Bots granted it run"
+      : `${listNames(names)} ${names.length === 1 ? "runs" : "run"}`;
+  return `${runs} without this account until you reconnect it. T3 Code also asks the service to end the sign-in.`;
 }
 
 /** Null until the client knows which Bots lose the connection, so removal cannot be confirmed. */

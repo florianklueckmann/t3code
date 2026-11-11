@@ -1609,6 +1609,27 @@ export function createServerEnvironmentAtoms<R, E>(
       tag: WS_METHODS.mcpConnectionsRefresh,
       onSuccess: refreshMcpConnections,
     }),
+    mcpConnectionOAuthState: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "environment-data:server:mcp-connections:oauth-state",
+      tag: WS_METHODS.mcpConnectionsOAuthSubscribe,
+      idleTtlMs: 0,
+    }),
+    startMcpConnectionOAuth: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:mcp-connections:oauth-start",
+      tag: WS_METHODS.mcpConnectionsOAuthStart,
+    }),
+    completeMcpConnectionOAuth: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:mcp-connections:oauth-complete",
+      tag: WS_METHODS.mcpConnectionsOAuthComplete,
+    }),
+    cancelMcpConnectionOAuth: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:mcp-connections:oauth-cancel",
+      tag: WS_METHODS.mcpConnectionsOAuthCancel,
+    }),
+    disconnectMcpConnectionOAuth: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:mcp-connections:oauth-disconnect",
+      tag: WS_METHODS.mcpConnectionsOAuthDisconnect,
+    }),
     botMaintenance: (target: {
       readonly environmentId: EnvironmentId;
       readonly input: BotContinuationScope;
