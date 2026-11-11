@@ -25,7 +25,12 @@ import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
-import { HttpClient, HttpClientRequest, type HttpClientResponse } from "effect/http";
+import {
+  FetchHttpClient,
+  HttpClient,
+  HttpClientRequest,
+  type HttpClientResponse,
+} from "effect/http";
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import { requireSettingsSecret } from "../secrets/settingsSecretValue.ts";
@@ -258,6 +263,8 @@ const make = Effect.gen(function* () {
     { readonly flowId: string; readonly reason: McpConnectionOAuthFailure }
   >();
   const stale = new Map<McpConnectionId, number>();
+  /** Counts each connection's sign-outs: a start that saw an earlier count never installs. */
+  const signOuts = new Map<McpConnectionId, number>();
   const locks = new Map<McpConnectionId, Semaphore.Semaphore>();
   const locked =
     (id: McpConnectionId) =>
@@ -293,9 +300,13 @@ const make = Effect.gen(function* () {
       Effect.mapError((cause) => new McpConnectionOAuthError({ reason: "unavailable", cause })),
     );
 
-  /** Requests to the service. Errors keep only the host: requests can carry codes and tokens. */
+  /**
+   * Requests to the service. Errors keep only the host: requests can carry codes and tokens, which
+   * is also why a redirect fails instead of resending them to a URL nothing here checked.
+   */
   const send = (request: HttpClientRequest.HttpClientRequest) =>
     http.execute(request).pipe(
+      Effect.provideService(FetchHttpClient.RequestInit, { redirect: "error" }),
       Effect.timeout(REQUEST_TIMEOUT),
       Effect.tapError((error) =>
         Effect.logWarning("MCP connection OAuth request failed.", {
@@ -563,6 +574,7 @@ const make = Effect.gen(function* () {
     input: McpConnectionOAuthStartInput,
   ) {
     const id = input.connectionId;
+    const signOutsAtStart = signOuts.get(id) ?? 0;
     const { url, oauth } = yield* oauthSetup(id);
     const origin = parseUrl(input.redirectOrigin);
     if (
@@ -613,6 +625,9 @@ const make = Effect.gen(function* () {
     })) {
       authorizationUrl.searchParams.set(name, value);
     }
+    // Discovery and registration can outlast a disconnect or removal, which then wins.
+    yield* oauthSetup(id);
+    if ((signOuts.get(id) ?? 0) !== signOutsAtStart) return yield* fail("sign-in-ended", id);
     // One sign-in per connection: a new start ends the previous one.
     flows.set(id, flow);
     failures.delete(id);
@@ -759,6 +774,7 @@ const make = Effect.gen(function* () {
     id: McpConnectionId,
     outcome: "disconnected" | "forget",
   ) {
+    signOuts.set(id, (signOuts.get(id) ?? 0) + 1);
     flows.delete(id);
     failures.delete(id);
     yield* locked(id)(
@@ -820,6 +836,8 @@ const make = Effect.gen(function* () {
     if (!isStale && !halfLife) return Option.some(grant.accessToken);
     if (grant.refreshToken === undefined) {
       if (!isStale && !expired) return Option.some(grant.accessToken);
+      // Given back now: once signed out, nothing holds the token to revoke it later.
+      yield* revoke(id, grant);
       yield* signOutAs(id, "expired");
       return Option.none<string>();
     }

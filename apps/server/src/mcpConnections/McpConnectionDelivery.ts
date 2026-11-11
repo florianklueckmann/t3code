@@ -38,25 +38,19 @@ const grantedToolNamespace = (id: McpConnectionId) =>
 
 /**
  * Tells the model which granted account each namespace is. Labels and ids only: two accounts of
- * one service look alike otherwise. Disabled and removed connections are not loaded, so not listed.
+ * one service look alike otherwise. Only what a load delivered, so an account left out is unnamed.
  */
 export const grantedConnectionsInstructions = (
-  ids: ReadonlyArray<McpConnectionId>,
-  catalog: Readonly<Record<string, { readonly label: string; readonly enabled: boolean }>>,
-): string | undefined => {
-  const lines = ids.flatMap((id) => {
-    const definition = catalog[id];
-    return definition?.enabled === true
-      ? [`- "${definition.label}": tools in the ${grantedToolNamespace(id)} namespace`]
-      : [];
-  });
-  return lines.length === 0
+  delivered: ReadonlyArray<Pick<DeliveredMcpConnection, "id" | "label">>,
+): string | undefined =>
+  delivered.length === 0
     ? undefined
     : [
         "MCP connections granted to you, each a separate account. Use the one the request is about:",
-        ...lines,
+        ...delivered.map(
+          ({ id, label }) => `- "${label}": tools in the ${grantedToolNamespace(id)} namespace`,
+        ),
       ].join("\n");
-};
 
 export interface DeliveredMcpConnection {
   readonly id: McpConnectionId;

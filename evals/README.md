@@ -19,6 +19,8 @@ Write or run an eval when a change affects what a model sees or does: agent inst
 
 | [bot-maintenance](bot-maintenance/) | Whether nightly Bot maintenance learns durable, evidenced lessons through the sealed Codex call. |
 
+| [bot-grants](bot-grants/) | Whether a Bot with two accounts of one MCP service calls the account the user names. |
+
 | [bot-home-check](bot-home-check/) | Whether the daily Bot Home check adds to Waiting only what needs the user, and nothing on a quiet day. |
 
 | [bot-note-refresh](bot-note-refresh/) | Whether the nightly note refresh records unrecorded Home input, keeps the note, and acknowledges only what it saw. |

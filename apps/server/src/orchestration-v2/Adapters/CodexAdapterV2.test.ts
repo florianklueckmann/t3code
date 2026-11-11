@@ -1046,6 +1046,7 @@ function codexReplayPreamble(input: {
   readonly prompt: string;
   readonly sentPrompt?: string;
   readonly effort?: string;
+  readonly additionalContext?: Readonly<Record<string, { readonly kind: string; value: string }>>;
 }): Array<CodexReplay.CodexAppServerReplayEntry> {
   return [
     {
@@ -1145,6 +1146,9 @@ function codexReplayPreamble(input: {
           sandboxPolicy: { type: "dangerFullAccess" },
           summary: "detailed",
           ...(input.effort === undefined ? {} : { effort: input.effort }),
+          ...(input.additionalContext === undefined
+            ? {}
+            : { additionalContext: input.additionalContext }),
           collaborationMode: {
             mode: "default",
             settings: {
@@ -4211,7 +4215,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       }),
   );
 
-  it.effect("names a granted connection that failed to start, never Codex's error text", () => {
+  it.effect("names the accounts a turn loaded, and a failed one without its error", () => {
     const refused: Array<readonly [McpConnectionId, "startup" | "call"]> = [];
     return Effect.scoped(
       Effect.gen(function* () {
@@ -4220,8 +4224,26 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         const nativeTurnId = `native-${scenario}-turn`;
         const seal = codexHomeSealReplay(scenario, nativeThreadId);
         const { step, resumed, configRead } = seal;
+        // Granted but not delivered, as a signed-out OAuth account is: the model is not told of it.
+        const lapsedMail = McpConnectionId.make("2e2e2e2e-0000-4000-8000-00000000002e");
         const preamble = seal.onMeasuredVersion(
-          codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt: "check my mail" }),
+          codexReplayPreamble({
+            nativeThreadId,
+            nativeTurnId,
+            prompt: "check my mail",
+            additionalContext: {
+              t3_bot_01: {
+                kind: "application",
+                value: [
+                  "Mail Bot canon.",
+                  "",
+                  "MCP connections granted to you, each a separate account. Use the one the request is about:",
+                  '- "Private mail": tools in the mcp__t3c_2a2a2a2a_0000_4000_8000_00000000002a namespace',
+                  '- "Work mail": tools in the mcp__t3c_2b2b2b2b_0000_4000_8000_00000000002b namespace',
+                ].join("\n"),
+              },
+            },
+          }),
         );
         const secret = "MAIL_TOKEN=sk-live-51NativeLeak rejected by mail.example.test";
         const failed = (connection: McpConnectionId) =>
@@ -4351,7 +4373,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         const grantPolicy = {
           ...CODEX_TEST_RUNTIME_POLICY,
           nativeMemory: "disabled",
-          mcpConnections: [privateMail, workMail],
+          mcpConnections: [privateMail, workMail, lapsedMail],
         } as const;
         yield* harness.runtime.resumeThread({
           providerThread: harness.providerThread,
@@ -4365,7 +4387,11 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           attemptId: RunAttemptId.make("grant-startup-failed"),
           text: "check my mail",
         });
-        yield* harness.runtime.startTurn({ ...turn, runtimePolicy: grantPolicy });
+        yield* harness.runtime.startTurn({
+          ...turn,
+          runtimePolicy: grantPolicy,
+          applicationInstructions: "Mail Bot canon.",
+        });
         yield* harness.awaitTerminal(1);
 
         const notices = harness.events.flatMap((event) =>
