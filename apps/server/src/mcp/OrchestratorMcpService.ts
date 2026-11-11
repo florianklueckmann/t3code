@@ -3113,9 +3113,11 @@ const make = Effect.gen(function* () {
               target,
               returnedRunIds,
             );
+      // A restricted Bot run reads a result without taking it from its Home.
       if (
         parent !== undefined &&
         scope.thread !== undefined &&
+        scope.thread.sealedLoad !== true &&
         tasks.length > 0 &&
         (input.textOffset ?? 0) === 0
       ) {

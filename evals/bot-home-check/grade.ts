@@ -1,18 +1,5 @@
+import type { ObservedNote } from "../shared/botHome.ts";
 import type { HomeCheckCase } from "./cases.ts";
-
-export interface ObservedRef {
-  readonly kind: string;
-  readonly taskId?: string | undefined;
-  readonly messageId?: string | undefined;
-  readonly quote?: string | undefined;
-}
-export interface ObservedItem {
-  readonly text: string;
-  readonly refs: readonly ObservedRef[];
-}
-export type ObservedNote = Readonly<
-  Record<"requests" | "waiting" | "decided" | "context", readonly ObservedItem[]>
->;
 
 export interface Observation {
   /** The check's stored outcome, or null when it never finished. */

@@ -1471,7 +1471,23 @@ const CODEX_SEAL_THREAD_CONFIG = {
   // The shell stays for reading; the read-only, no-network turn sandbox bounds it.
   readOnly: codexFeaturesOff(CODEX_SEALED_FEATURES),
 } satisfies Record<CodexSeal, Readonly<Record<string, Schema.Json>>>;
-const CODEX_HOME_SEAL_T3_TOOL = "t3_bot";
+/**
+ * t3_bot plus T3 Code's reads; the server refuses a sealed load every other change. Leaves out
+ * task_status (it acknowledges results) and t3_thread_wait (it would hold the Home's next message).
+ */
+const CODEX_HOME_SEAL_T3_TOOLS = [
+  "t3_bot",
+  "t3_thread_read",
+  "t3_thread_list",
+  "t3_thread_search",
+  "list_scheduled_tasks",
+  "t3_project_list",
+  "t3_project_read",
+  "t3_environment_read",
+  "t3_environment_links",
+  "t3_worktree_list",
+  "list_thread_pull_requests",
+];
 
 type CodexSeal = NonNullable<ProviderAdapter.ProviderAdapterV2RuntimePolicy["nativeTools"]>;
 type CodexThreadSeal = "ordinary" | CodexSeal;
@@ -1611,10 +1627,12 @@ function codexThreadRuntimeParams(input: {
                     ...t3Server.http_headers,
                     [McpInvocationContext.SEALED_LOAD_HEADER]: "1",
                   },
-                  enabled_tools: [CODEX_HOME_SEAL_T3_TOOL],
+                  enabled_tools: CODEX_HOME_SEAL_T3_TOOLS,
                   // Approval "never" in a read-only sandbox refuses an MCP write Codex can't see
                   // is safe.
-                  tools: { [CODEX_HOME_SEAL_T3_TOOL]: { approval_mode: "approve" } },
+                  tools: Object.fromEntries(
+                    CODEX_HOME_SEAL_T3_TOOLS.map((name) => [name, { approval_mode: "approve" }]),
+                  ),
                 },
               }),
         },

@@ -682,6 +682,24 @@ describe("orchestrator MCP toolkit", () => {
               ?.completionDelivery?.state,
           ).toBe("claimed");
 
+          // A restricted Bot run reads the result without taking it from its Home.
+          const sealedRead = yield* invoke(
+            "t3_thread_read",
+            {
+              threadId: delegated.childThreadId,
+              limit: 100,
+              maxCharsPerItem: result === "😀" ? 1 : 20_000,
+            },
+            { ...invocation, thread: { ...invocation.thread!, sealedLoad: true } },
+          );
+          expect(sealedRead.isError).not.toBe(true);
+          expect(sealedRead.structuredContent).toEqual(parentlessRead.structuredContent);
+          expect(
+            (yield* orchestrator.getThreadProjection(parentThreadId)).subagents.find(
+              (task) => task.id === queuedFollowup.taskId,
+            )?.completionDelivery?.state,
+          ).toBe("claimed");
+
           const read = yield* invoke("t3_thread_read", {
             threadId: delegated.childThreadId,
             limit: 100,

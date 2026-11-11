@@ -3887,17 +3887,32 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         );
         yield* resume(CODEX_TEST_RUNTIME_POLICY);
 
-        // The sealed load keeps only t3_bot on T3 Code's server and turns the user's servers off.
+        // The sealed load keeps t3_bot and T3 Code's reads and turns the user's servers off.
         const sealedServers = (resumeParams[0] as { config: { mcp_servers: unknown } }).config
           .mcp_servers;
+        const sealedTools = [
+          "t3_bot",
+          "t3_thread_read",
+          "t3_thread_list",
+          "t3_thread_search",
+          "list_scheduled_tasks",
+          "t3_project_list",
+          "t3_project_read",
+          "t3_environment_read",
+          "t3_environment_links",
+          "t3_worktree_list",
+          "list_thread_pull_requests",
+        ];
         assert.deepEqual(sealedServers, {
           ...seal.disabledUserServers,
           "t3-code": {
             url: "http://127.0.0.1:43123/mcp",
             tool_timeout_sec: 65 * 60,
             http_headers: { Authorization: "Bearer home-seal-token", "t3-sealed-load": "1" },
-            enabled_tools: ["t3_bot"],
-            tools: { t3_bot: { approval_mode: "approve" } },
+            enabled_tools: sealedTools,
+            tools: Object.fromEntries(
+              sealedTools.map((name) => [name, { approval_mode: "approve" }]),
+            ),
           },
         });
         assert.deepEqual(

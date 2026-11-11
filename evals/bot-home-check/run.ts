@@ -9,7 +9,6 @@ import * as NodeUtil from "node:util";
 import * as NodePlatformCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { BotDetail, Project } from "@t3tools/contracts";
 import * as Net from "@t3tools/shared/Net";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -18,6 +17,15 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { HOME_CHECK_PROMPT } from "../../apps/server/src/bots/BotHomeCheck.ts";
 import { resolveCliAuthConfig } from "../../apps/server/src/cli/config.ts";
+import {
+  createBotHome,
+  files,
+  homeIsEligible,
+  noteOf,
+  type ObservedNote,
+  TERMINAL_TASK,
+  taskList,
+} from "../shared/botHome.ts";
 import {
   type Call,
   encodeJson,
@@ -28,54 +36,16 @@ import {
   withTools,
 } from "../shared/devServerTools.ts";
 import { CASES, type HomeCheckCase } from "./cases.ts";
-import { gradeSample, type Observation, type ObservedNote } from "./grade.ts";
+import { gradeSample, type Observation } from "./grade.ts";
 
 /** The server starts a check only after the Home has been quiet this long; a little margin on top. */
 const QUIET_WAIT = "11 minutes";
 const POLL = "15 seconds";
 const POLLS = 80;
 
-const Ref = Schema.Struct({
-  kind: Schema.String,
-  taskId: Schema.optional(Schema.String),
-  messageId: Schema.optional(Schema.String),
-  quote: Schema.optional(Schema.String),
-});
-const Item = Schema.Struct({ text: Schema.String, refs: Schema.Array(Ref) });
-const Continuation = Schema.Struct({
-  continuation: Schema.Struct({
-    note: Schema.Struct({
-      requests: Schema.Array(Item),
-      waiting: Schema.Array(Item),
-      decided: Schema.Array(Item),
-      context: Schema.Array(Item),
-    }),
-  }),
-});
-const Tasks = Schema.Struct({
-  tasks: Schema.Array(Schema.Struct({ id: Schema.String, status: Schema.String })),
-});
 const Outcome = Schema.Struct({ kind: Schema.String, added: Schema.optional(Schema.Number) });
 const decodeOutcome = Schema.decodeUnknownSync(Schema.fromJsonString(Outcome));
-const TERMINAL_TASK = ["completed", "failed", "cancelled", "interrupted", "skipped"];
 
-const files = (root: string): string =>
-  encodeJson(
-    NodeFS.readdirSync(root, { recursive: true, withFileTypes: true })
-      .flatMap((entry) => {
-        const path = NodePath.relative(root, NodePath.join(entry.parentPath, entry.name));
-        if (path.split(NodePath.sep).includes(".git") || entry.isDirectory()) return [];
-        return [
-          [
-            path,
-            NodeCrypto.createHash("sha256")
-              .update(NodeFS.readFileSync(NodePath.join(root, path)))
-              .digest("hex"),
-          ],
-        ];
-      })
-      .sort((left, right) => left[0]!.localeCompare(right[0]!)),
-  );
 const inThreeWeeks = DateTime.now.pipe(
   Effect.map((now) =>
     DateTime.formatLocal(DateTime.add(now, { days: 21 }), {
@@ -129,16 +99,6 @@ const botDatabase = (path: string) => {
 };
 type BotDatabase = ReturnType<typeof botDatabase>;
 
-const noteOf = Effect.fn("botHomeCheckEval.note")(function* (
-  call: Call,
-  home: { readonly botId: string; readonly projectId: string },
-) {
-  const read = yield* call("t3_bot", { action: "read_continuation", ...home }, Continuation);
-  return read.continuation.note satisfies ObservedNote;
-});
-const taskList = (call: Call, botId: string) =>
-  call("t3_bot", { action: "list_tasks", botId }, Tasks).pipe(Effect.map((result) => result.tasks));
-
 const setUp = Effect.fn("botHomeCheckEval.setUp")(function* (
   call: Call,
   testCase: HomeCheckCase,
@@ -148,38 +108,8 @@ const setUp = Effect.fn("botHomeCheckEval.setUp")(function* (
   effort: string,
 ) {
   const tag = `bhc-${testCase.id}-${sample}-${NodeCrypto.randomBytes(3).toString("hex")}`;
-  const root = NodePath.join(work, tag);
-  NodeFS.mkdirSync(root, { recursive: true });
-  NodeChildProcess.execFileSync("git", ["init", "--quiet", root]);
-  const project = yield* call(
-    "t3_project_create",
-    { title: "Acme planning", workspaceRoot: root },
-    Project,
-  );
-  yield* call(
-    "t3_bot",
-    {
-      action: "create",
-      botId: tag,
-      name: "Acme planning assistant",
-      instructions: "Help plan synthetic Acme work.",
-      learningPolicy: "after_adoption",
-      modelSelection: {
-        instanceId: "codex",
-        model,
-        options: [{ id: "reasoningEffort", value: effort }],
-      },
-    },
-    Schema.Unknown,
-  );
-  const attached = yield* call(
-    "t3_bot",
-    { action: "attach", botId: tag, projectId: project.id },
-    Schema.Struct({ bot: BotDetail }),
-  );
-  const homeThreadId = attached.bot.projects[0]?.homeThreadId;
-  if (homeThreadId === undefined)
-    return yield* new SampleError({ message: "fixture Home missing" });
+  const home = yield* createBotHome(call, { tag, work, model, effort });
+  const { homeThreadId } = home;
   const userMessageIds: string[] = [];
   for (const text of testCase.seed) {
     const runId = yield* runTurn(
@@ -199,7 +129,7 @@ const setUp = Effect.fn("botHomeCheckEval.setUp")(function* (
       {
         action: "start_task",
         botId: tag,
-        projectId: project.id,
+        projectId: home.projectId,
         title: testCase.task.title,
         task: testCase.task.prompt,
       },
@@ -211,13 +141,10 @@ const setUp = Effect.fn("botHomeCheckEval.setUp")(function* (
   return {
     id: testCase.id,
     sample,
-    root,
-    botId: tag,
-    projectId: project.id,
-    homeThreadId,
+    ...home,
     userMessageIds,
     taskId,
-    filesBefore: files(root),
+    filesBefore: files(home.root),
   };
 });
 type Fixture = Effect.Success<ReturnType<typeof setUp>>;
@@ -233,19 +160,6 @@ const untilTasksSettled = Effect.fn("botHomeCheckEval.untilTasksSettled")(functi
   }
   return yield* new SampleError({ message: "the case's task did not finish" });
 });
-
-export const homeIsEligible = (state: NodeSqlite.DatabaseSync, home: string) =>
-  state
-    .prepare(`SELECT 1 AS eligible
-    FROM orchestration_v2_projection_threads t
-    JOIN orchestration_v2_projection_provider_threads p ON p.provider_thread_id = t.active_provider_thread_id
-      AND p.thread_id = t.thread_id AND p.provider_instance_id = t.provider_instance_id
-    WHERE t.thread_id = ? AND t.archived_at IS NULL AND t.deleted_at IS NULL
-      AND json_extract(p.payload_json, '$.nativeThreadRef.nativeId') IS NOT NULL
-      AND EXISTS (SELECT 1 FROM orchestration_v2_projection_runs r WHERE r.thread_id = t.thread_id AND r.status = 'completed')
-      AND NOT EXISTS (SELECT 1 FROM orchestration_v2_projection_runs r WHERE r.thread_id = t.thread_id AND r.status IN ('preparing', 'queued', 'starting', 'running', 'waiting'))
-    LIMIT 1`)
-    .get(home)?.eligible === 1;
 
 /** Makes one check owed on every Home, then waits until each has an outcome. */
 const runChecks = Effect.fn("botHomeCheckEval.runChecks")(function* (

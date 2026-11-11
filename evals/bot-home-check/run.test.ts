@@ -1,9 +1,9 @@
 // @effect-diagnostics nodeBuiltinImport:off - isolated SQLite fixture for eval eligibility.
 import * as NodeSqlite from "node:sqlite";
 import { expect, it } from "@effect/vitest";
-import { homeIsEligible } from "./run.ts";
+import { homeIsEligible, type ObservedNote } from "../shared/botHome.ts";
 import { CASES } from "./cases.ts";
-import { gradeSample, type Observation, type ObservedNote } from "./grade.ts";
+import { gradeSample, type Observation } from "./grade.ts";
 
 const caseOf = (id: string) => CASES.find((testCase) => testCase.id === id)!;
 const note = (waiting: ObservedNote["waiting"] = []): ObservedNote => ({

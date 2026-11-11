@@ -137,6 +137,13 @@ const textParts = (text: string) => {
 };
 type Ack = (part: number, text: string) => string;
 const sizingAck: Ack = () => "0".repeat(ACK_CHARS);
+/** A shown text's parts. A preview's last part ends at the server's cut, so it has no ack. */
+const shownParts = (text: string, preview: boolean, ack: Ack) =>
+  textParts(text).map((part, index, parts) =>
+    preview && index === parts.length - 1
+      ? { text: part, cut: "The preview stops here. The full text stays in T3 history." }
+      : { text: part, ack: ack(index, part) },
+  );
 const pageEntry = (source: Shown, ack: Ack) => ({
   messageId: source.message.id,
   ordinal: source.ordinal,
@@ -150,7 +157,7 @@ const pageEntry = (source: Shown, ack: Ack) => ({
           createdAt: DateTime.formatIso(source.message.createdAt),
         },
       }),
-  parts: textParts(source.text).map((text, part) => ({ text, ack: ack(part, text) })),
+  parts: shownParts(source.text, source.preview !== null, ack),
 });
 const jsonBytes = (value: unknown) => utf8.encode(encodeJson(value)).byteLength;
 /**
@@ -760,10 +767,13 @@ const make = Effect.gen(function* () {
         });
         // The page counts as read up to its first item with a part the run did not acknowledge.
         const acked = new Set(input.acks ?? []);
-        const unread = shown.findIndex((source) => {
-          const ack = acksFor(page, source.message.id);
-          return textParts(source.text).some((text, part) => !acked.has(ack(part, text)));
-        });
+        const unread = shown.findIndex((source) =>
+          shownParts(
+            source.text,
+            previews.has(source.message.id),
+            acksFor(page, source.message.id),
+          ).some((part) => "ack" in part && !acked.has(part.ack)),
+        );
         certified = unread === -1 ? shown : shown.slice(0, unread);
         tooLarge = certified.flatMap((source) =>
           previews.has(source.message.id) ? [source.message.id] : [],
@@ -834,6 +844,17 @@ const make = Effect.gen(function* () {
             const named = evidence.find(
               ({ message }) => tooLarge.includes(message.id) && item.text.includes(message.id),
             );
+            // A maintenance turn reads a whole page, so its newest input says nothing of a source.
+            if (
+              runRestriction !== null &&
+              carried === undefined &&
+              item.quote === undefined &&
+              named === undefined &&
+              (item.taskIds ?? []).length === 0
+            )
+              return yield* invalid(
+                `"${item.text}" is new: give it a quote copied exactly from the message it comes from, or the taskIds of the task it is about. Keep an existing item's text exactly as it is.`,
+              );
             const source = quoted ?? (carried === undefined ? (named ?? evidence[0]) : undefined);
             refs =
               source === undefined
@@ -906,11 +927,6 @@ const make = Effect.gen(function* () {
           "This maintenance turn may only append Waiting items; every other item must stay exactly as it is.",
         );
       const added = input.note.waiting.slice(before.waiting.length);
-      // Without a quote the item would be attributed to the user's newest message.
-      if (added.some((item) => item.quote === undefined && (item.taskIds ?? []).length === 0))
-        return yield* invalid(
-          "Each new Waiting item needs a quote from the user's message or the id of the task it is about.",
-        );
       const seen = new Set(
         BOT_CONTINUATION_SECTIONS.flatMap((section) => before[section]).map((item) =>
           item.text.trim().toLowerCase(),
