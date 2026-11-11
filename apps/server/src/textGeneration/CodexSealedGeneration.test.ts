@@ -650,6 +650,12 @@ it.layer(NodeServices.layer)("CodexSealedGeneration", (it) => {
       expected: "codex_version_unsupported",
     },
     {
+      label: "a Codex version that is not semver",
+      snapshot: { ...baseSnapshot, version: "dev" },
+      chosen: selection,
+      expected: "codex_version_unsupported",
+    },
+    {
       label: "an unlisted model",
       snapshot: baseSnapshot,
       chosen: { ...selection, model: "gpt-other" },
