@@ -115,7 +115,10 @@ import {
   resolveMessageDispatchIntent,
 } from "./CommandPolicy.ts";
 import { CommandReceiptStoreV2, type CommandReceiptV2 } from "./CommandReceiptStore.ts";
-import { rewindHandoffItems, rewindKeptProviderTurn } from "./ConversationRecovery.ts";
+import {
+  conversationRecoveryHandoffItems,
+  rewindKeptProviderTurn,
+} from "./ConversationRecovery.ts";
 import { conversationRecoveryOffer } from "@t3tools/shared/conversationRecovery";
 import {
   ContextHandoffServiceV2,
@@ -12865,7 +12868,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             run.status !== "queued" &&
             run.status !== "rolled_back",
         );
-        const items = rewindHandoffItems(
+        const items = conversationRecoveryHandoffItems(
           yield* readHandoffItems(
             command.threadId,
             droppedRuns.map((run) => run.id),
