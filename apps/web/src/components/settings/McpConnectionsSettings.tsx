@@ -1,11 +1,15 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
   EMPTY_MCP_CONNECTION_DRAFT,
-  MCP_CONNECTIONS_FOUNDATION_NOTICE,
+  MCP_CONNECTIONS_NOTICE,
   mcpConnectionDraft,
+  mcpConnectionRemovalMessage,
   mcpConnectionStatusText,
+  mcpConnectionUsage,
+  mcpConnectionUsedByText,
   planMcpConnectionSave,
   type McpConnectionDraft,
+  type McpConnectionUsage,
 } from "@t3tools/client-runtime/mcp-connections";
 import {
   type AtomCommandResult,
@@ -120,10 +124,19 @@ function EnvironmentMcpConnections({
   const refresh = useAtomCommand(serverEnvironment.refreshMcpConnections, {
     label: "mcp connections refresh",
   });
+  const botsSupported = environment.serverConfig?.environment.capabilities.bots === true;
+  const bots = useEnvironmentQuery(
+    botsSupported ? serverEnvironment.botsLive({ environmentId, input: {} }) : null,
+  );
   const [refreshing, setRefreshing] = useState(false);
   const [editor, setEditor] = useState<Editor | null>(null);
   const entries = Object.entries(definitions) as Array<[McpConnectionId, McpConnectionDefinition]>;
   const summaries = new Map(statuses.data?.connections.map((summary) => [summary.id, summary]));
+  const usage = mcpConnectionUsage({
+    botsSupported,
+    bots: bots.data?.bots ?? null,
+    error: bots.error,
+  });
   const refreshAll = async (connectionIds: ReadonlyArray<McpConnectionId>) => {
     setRefreshing(true);
     const result = await refresh({ environmentId, input: { connectionIds } });
@@ -162,9 +175,7 @@ function EnvironmentMcpConnections({
           </div>
         }
       >
-        <p className="px-4 pt-3 text-xs text-muted-foreground">
-          {MCP_CONNECTIONS_FOUNDATION_NOTICE}
-        </p>
+        <p className="px-4 pt-3 text-xs text-muted-foreground">{MCP_CONNECTIONS_NOTICE}</p>
         {entries.length === 0 ? (
           <SettingsRow
             title="No MCP connections"
@@ -178,6 +189,8 @@ function EnvironmentMcpConnections({
               id={id}
               definition={definition}
               summary={summaries.get(id)}
+              usage={usage}
+              onRetryUsage={bots.refresh}
               statusError={statuses.error}
               canEdit={canEdit}
               canRefresh={canRefresh && !refreshing}
@@ -209,6 +222,8 @@ function McpConnectionRow({
   id,
   definition,
   summary,
+  usage,
+  onRetryUsage,
   statusError,
   canEdit,
   canRefresh,
@@ -219,6 +234,8 @@ function McpConnectionRow({
   readonly id: McpConnectionId;
   readonly definition: McpConnectionDefinition;
   readonly summary: McpConnectionSummary | undefined;
+  readonly usage: McpConnectionUsage;
+  readonly onRetryUsage: () => void;
   readonly statusError: string | null;
   readonly canEdit: boolean;
   readonly canRefresh: boolean;
@@ -234,6 +251,7 @@ function McpConnectionRow({
     summary?.revision === definition.revision ? summary.status : undefined,
   );
   const transport = definition.transport;
+  const usedBy = mcpConnectionUsedByText(usage, id);
   const toggleEnabled = async () => {
     setBusy(true);
     const result = await update({
@@ -260,11 +278,14 @@ function McpConnectionRow({
         </span>
       }
       description={
-        <span className="wrap-anywhere">
-          {transport.type === "http"
-            ? transport.url
-            : [transport.command, ...transport.args].join(" ")}
-        </span>
+        <>
+          <span className="block wrap-anywhere">
+            {transport.type === "http"
+              ? transport.url
+              : [transport.command, ...transport.args].join(" ")}
+          </span>
+          {usedBy === null ? null : <span className="block">{usedBy}</span>}
+        </>
       }
       status={
         statusError !== null ? (
@@ -288,6 +309,8 @@ function McpConnectionRow({
             environmentId={environmentId}
             id={id}
             definition={definition}
+            usage={usage}
+            onRetryUsage={onRetryUsage}
             disabled={!canEdit}
           />
         </div>
@@ -300,17 +323,22 @@ function RemoveMcpConnectionButton({
   environmentId,
   id,
   definition,
+  usage,
+  onRetryUsage,
   disabled,
 }: {
   readonly environmentId: EnvironmentId;
   readonly id: McpConnectionId;
   readonly definition: McpConnectionDefinition;
+  readonly usage: McpConnectionUsage;
+  readonly onRetryUsage: () => void;
   readonly disabled: boolean;
 }) {
   const remove = useAtomCommand(serverEnvironment.removeMcpConnection, {
     label: "mcp connection remove",
   });
   const [open, setOpen] = useState(false);
+  const message = mcpConnectionRemovalMessage(usage, id);
   return (
     <>
       <Button size="xs" variant="ghost" disabled={disabled} onClick={() => setOpen(true)}>
@@ -321,14 +349,22 @@ function RemoveMcpConnectionButton({
           <AlertDialogHeader>
             <AlertDialogTitle>Remove {definition.label}?</AlertDialogTitle>
             <AlertDialogDescription>
-              Its saved credentials are deleted from this environment. Secrets read from a secret
-              provider stay there. To use this account again, add a new connection.
+              {message ??
+                (usage.state === "failed"
+                  ? `Could not load which Bots use this connection. ${usage.error}`
+                  : "Checking which Bots use this connection…")}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogClose render={<Button variant="outline" />}>Cancel</AlertDialogClose>
+            {usage.state === "failed" ? (
+              <Button variant="outline" onClick={onRetryUsage}>
+                Retry
+              </Button>
+            ) : null}
             <Button
               variant="destructive"
+              disabled={message === null}
               onClick={async () => {
                 setOpen(false);
                 const result = await remove({
@@ -437,7 +473,7 @@ function McpConnectionDialog({
             {editing ? `Edit ${target.saved.label}` : "Add an MCP connection"}
           </DialogTitle>
           <DialogDescription>
-            Saved on {environmentLabel}. {MCP_CONNECTIONS_FOUNDATION_NOTICE}
+            Saved on {environmentLabel}. {MCP_CONNECTIONS_NOTICE}
           </DialogDescription>
         </DialogHeader>
         <DialogPanel>

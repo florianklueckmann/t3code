@@ -9,7 +9,7 @@ import {
   type SealedRefusalReason,
 } from "@t3tools/provider-core/server/sealedGeneration";
 import { toJsonSchemaObject } from "@t3tools/provider-core/server/textGenerationUtils";
-import { compareSemverVersions } from "@t3tools/shared/semver";
+import { compareSemverVersions, parseSemver } from "@t3tools/shared/semver";
 import * as CodexClient from "effect-codex-app-server/client";
 import * as CodexError from "effect-codex-app-server/errors";
 import type * as CodexSchema from "effect-codex-app-server/schema";
@@ -121,6 +121,7 @@ function admitSealedGeneration(
   if (snapshot.auth.status !== "authenticated") return refused("provider_signed_out");
   if (
     snapshot.version === null ||
+    parseSemver(snapshot.version) === null ||
     compareSemverVersions(snapshot.version, SEALED_GENERATION_MIN_CODEX_VERSION) < 0
   )
     return refused("codex_version_unsupported");

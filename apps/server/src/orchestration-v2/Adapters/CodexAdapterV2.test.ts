@@ -160,6 +160,20 @@ describe("CodexAdapterV2 assistant message streaming", () => {
 });
 
 describe("CodexAdapterV2 runtime policy", () => {
+  it.each([
+    ["0.166.0", true],
+    ["0.167.0", true],
+    ["0.167.1", true],
+    ["0.168.0", true],
+    ["1.0.0", true],
+    ["0.165.9", false],
+    ["0.166.0-alpha.1", false],
+    ["dev", false],
+    [undefined, false],
+  ] as const)("gates seals and grants on Codex %s: %s", (version, supported) => {
+    assert.equal(CodexAdapterV2.codexSealVersionSupported(version), supported);
+  });
+
   it.effect.each([undefined, false, true])(
     "selects native collaboration modes without prompt overrides with hasT3Mcp=%s",
     (hasT3Mcp) =>

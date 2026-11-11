@@ -30,6 +30,7 @@ import { useBotEditor, startBotEditor, startNewBotEditor } from "./bot-editor";
 import { BotContinuationSection } from "./BotContinuationSection";
 import { BotHomeCheckSection } from "./BotHomeCheckSection";
 import { BotMaintenanceSection } from "./BotMaintenanceSection";
+import { BotMcpGrantsSection } from "./BotMcpGrantsSection";
 import { BotLearningSection } from "./BotLearningSection";
 import { BotRoutinesSection } from "./BotRoutinesSection";
 import {
@@ -595,6 +596,14 @@ function BotForm({
             </Pressable>
           ))}
         </SettingsSection>
+        {baseline.created ? (
+          <BotMcpGrantsSection
+            environmentId={environmentId}
+            environmentLabel={environmentLabel ?? "this environment"}
+            botId={draft.botId}
+            formLocked={saving || archiving || environmentUnavailable}
+          />
+        ) : null}
         {draft.projects.map((project) => (
           <Fragment key={project.projectId}>
             <BotProjectSection

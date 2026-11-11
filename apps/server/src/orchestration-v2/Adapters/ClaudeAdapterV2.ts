@@ -10828,7 +10828,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               ? {}
               : { allowedTools: queryPolicy.allowedTools }),
           });
-          const queryPolicyKey = claudeEffectiveQueryPolicyKey(queryPolicy, mcpOverrides);
+          const queryPolicyKey = `${turnInput.runtimePolicy.nativeMemory ?? "default"}:${claudeEffectiveQueryPolicyKey(queryPolicy, mcpOverrides)}`;
           const compiledSelection = compileClaudeModelSelection(
             turnInput.modelSelection,
             modelCatalog,
@@ -10924,6 +10924,19 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             fileSystem,
             path,
           });
+          const sdkSettings =
+            launchArgSettings === undefined
+              ? undefined
+              : claudeSdkLaunchArgSettings(launchArgSettings);
+          // Flag-settings env outranks user settings env, which can otherwise force auto-memory on.
+          const querySettings =
+            turnInput.runtimePolicy.nativeMemory === "disabled"
+              ? {
+                  ...sdkSettings,
+                  autoMemoryEnabled: false,
+                  env: { ...sdkSettings?.env, CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1" },
+                }
+              : sdkSettings;
           const closedExistingNativeThreadId = existing !== null ? existing.nativeThreadId : null;
           if (existing !== null) {
             yield* existing.query.close.pipe(Effect.ignore);
@@ -10958,9 +10971,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             // Delegated threads have no one typing, so they never ask for suggestions.
             promptSuggestions:
               !isDelegatedAppThread(turnInput.appThread) && (yield* promptSuggestionsEnabled),
-            ...(launchArgSettings === undefined
-              ? {}
-              : { sdkSettings: claudeSdkLaunchArgSettings(launchArgSettings) }),
+            ...(querySettings === undefined ? {} : { sdkSettings: querySettings }),
             environment: claudeQueryEnvironment(
               adapterOptions.environment,
               turnInput.appThread,

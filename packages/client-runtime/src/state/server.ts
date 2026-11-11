@@ -1889,6 +1889,12 @@ export function createServerEnvironmentAtoms<R, E>(
       scheduler: configScheduler,
       concurrency: configConcurrency,
     }),
+    setBotMcpGrants: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bots:set-mcp-grants",
+      tag: WS_METHODS.botsSetMcpGrants,
+      scheduler: configScheduler,
+      concurrency: configConcurrency,
+    }),
     attachBotProject: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:bots:attach-project",
       tag: WS_METHODS.botsAttachProject,

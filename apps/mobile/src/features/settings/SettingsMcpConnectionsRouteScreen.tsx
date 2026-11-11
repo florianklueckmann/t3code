@@ -3,9 +3,12 @@ import { useNavigation, type StaticScreenProps } from "@react-navigation/native"
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import {
   EMPTY_MCP_CONNECTION_DRAFT,
-  MCP_CONNECTIONS_FOUNDATION_NOTICE,
+  MCP_CONNECTIONS_NOTICE,
   mcpConnectionDraft,
+  mcpConnectionRemovalMessage,
   mcpConnectionStatusText,
+  mcpConnectionUsage,
+  mcpConnectionUsedByText,
   planMcpConnectionSave,
   type McpConnectionDraft,
 } from "@t3tools/client-runtime/mcp-connections";
@@ -69,9 +72,7 @@ export function SettingsMcpConnectionsRouteScreen() {
         contentContainerClassName="gap-5 px-5 pt-4"
         contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 18) + 18 }}
       >
-        <Text className="px-2 text-sm text-foreground-muted">
-          {MCP_CONNECTIONS_FOUNDATION_NOTICE}
-        </Text>
+        <Text className="px-2 text-sm text-foreground-muted">{MCP_CONNECTIONS_NOTICE}</Text>
         {selectedTargets.length > 0 ? (
           selectedTargets.map((environment) => (
             <SettingsSection
@@ -120,6 +121,7 @@ function EnvironmentMcpConnections({ environment }: { readonly environment: Sett
   const refresh = useAtomCommand(serverEnvironment.refreshMcpConnections, {
     label: "mcp connections refresh",
   });
+  const { usage } = useMcpConnectionUsage(environmentId);
   const [refreshing, setRefreshing] = useState(false);
   const entries = Object.entries(definitions) as Array<[McpConnectionId, McpConnectionDefinition]>;
   const summaries = new Map(statuses.data?.connections.map((summary) => [summary.id, summary]));
@@ -143,6 +145,7 @@ function EnvironmentMcpConnections({ environment }: { readonly environment: Sett
                 definition.transport.type === "http" ? "HTTP" : "stdio",
                 definition.enabled ? null : "Disabled",
                 statuses.error ?? status.text,
+                mcpConnectionUsedByText(usage, id),
               ]
                 .filter((part) => part !== null)
                 .join(" · ")}
@@ -179,6 +182,18 @@ function EnvironmentMcpConnections({ environment }: { readonly environment: Sett
       />
     </>
   );
+}
+
+function useMcpConnectionUsage(environmentId: EnvironmentId) {
+  const config = useEnvironmentServerConfig(environmentId);
+  const botsSupported = config?.environment.capabilities.bots === true;
+  const bots = useEnvironmentQuery(
+    botsSupported ? serverEnvironment.botsLive({ environmentId, input: {} }) : null,
+  );
+  return {
+    usage: mcpConnectionUsage({ botsSupported, bots: bots.data?.bots ?? null, error: bots.error }),
+    retry: bots.refresh,
+  };
 }
 
 interface BindingRow {
@@ -244,6 +259,8 @@ function McpConnectionEditor({
     Constants.expoConfig?.extra?.secretsFeatureEnabled === true && config?.secretReferences
       ? configuredSecretSources(config.settings.secretProviders)
       : [];
+  const { usage, retry: retryUsage } = useMcpConnectionUsage(environmentId);
+  const removalMessage = mcpConnectionRemovalMessage(usage, target.connectionId);
   const canEdit = useAtomValue(serverEnvironment.createMcpConnection.permissionAtom(environmentId));
   const canRefresh = useAtomValue(
     serverEnvironment.refreshMcpConnections.permissionAtom(environmentId),
@@ -323,9 +340,7 @@ function McpConnectionEditor({
         contentContainerClassName="gap-5 px-5 pt-4"
         contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 18) + 18 }}
       >
-        <Text className="px-2 text-sm text-foreground-muted">
-          {MCP_CONNECTIONS_FOUNDATION_NOTICE}
-        </Text>
+        <Text className="px-2 text-sm text-foreground-muted">{MCP_CONNECTIONS_NOTICE}</Text>
         {editing ? (
           <Text className="px-2 text-sm text-foreground-muted">
             {mcpConnectionStatusText(status).text}
@@ -543,15 +558,23 @@ function McpConnectionEditor({
                 if (result._tag !== "Failure") navigation.goBack();
               }}
             />
+            {usage.state === "failed" ? (
+              <ListActionRow
+                label="Retry loading Bots"
+                description={`Removal names the Bots that lose this connection. ${usage.error}`}
+                onPress={retryUsage}
+              />
+            ) : null}
             <ListActionRow
               label="Remove connection"
               tone="danger"
-              disabled={!canEdit || busy}
-              onPress={() =>
+              loading={usage.state === "loading"}
+              disabled={!canEdit || busy || removalMessage === null}
+              onPress={() => {
+                if (removalMessage === null) return;
                 Dialog.confirm({
                   title: `Remove ${current.label}?`,
-                  message:
-                    "Its saved credentials are deleted from this environment. Secrets read from a secret provider stay there. To use this account again, add a new connection.",
+                  message: removalMessage,
                   confirmText: "Remove",
                   destructive: true,
                   onConfirm: () =>
@@ -565,8 +588,8 @@ function McpConnectionEditor({
                       reportFailure("Could not remove connection", result);
                       if (result._tag !== "Failure") navigation.goBack();
                     }),
-                })
-              }
+                });
+              }}
             />
           </SettingsSection>
         ) : null}
