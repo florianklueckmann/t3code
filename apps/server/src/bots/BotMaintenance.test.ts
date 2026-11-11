@@ -2526,14 +2526,22 @@ const saveNoteAsBot = Effect.fn("fixture.saveNoteAsBot")(function* (
 ) {
   const notes = yield* BotContinuation.BotContinuation;
   const view = yield* notes.get(scope, { page: read === "shown" });
+  const quote = (view.uncovered?.sources[0]?.parts[0]?.text ?? view.sources[0]?.text)?.slice(0, 20);
   return yield* notes.save(
     {
       ...scope,
       updateId,
       baseRevision: view.revision,
-      note: { requests: [{ text: "Harbor checklist" }], waiting: [], decided: [], context: [] },
+      note: {
+        requests: [{ text: "Harbor checklist", ...(quote === undefined ? {} : { quote }) }],
+        waiting: [],
+        decided: [],
+        context: [],
+      },
       basis: view.basis!,
-      acks: view.uncovered?.sources.flatMap((source) => source.parts.map((part) => part.ack)),
+      acks: view.uncovered?.sources.flatMap((source) =>
+        source.parts.flatMap((part) => ("ack" in part ? [part.ack] : [])),
+      ),
     },
     { kind: "bot", threadId: home },
   );

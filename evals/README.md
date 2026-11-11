@@ -21,6 +21,8 @@ Write or run an eval when a change affects what a model sees or does: agent inst
 
 | [bot-home-check](bot-home-check/) | Whether the daily Bot Home check adds to Waiting only what needs the user, and nothing on a quiet day. |
 
+| [bot-note-refresh](bot-note-refresh/) | Whether the nightly note refresh records unrecorded Home input, keeps the note, and acknowledges only what it saw. |
+
 ## Run an eval
 
 1. Run `vp i` at the repo root.

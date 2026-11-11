@@ -23,6 +23,8 @@ const appointment =
   "the notary appointment for the Acme lease, and I must bring my passport and the signed lease";
 const acknowledge =
   'Reply only "Noted." Do not start tasks and do not change your working notes for this.';
+/** Binds only the seed turn, so a check is free to propose the appointment. */
+const noteThisTurnOnly = 'Reply only "Noted." to this message and do nothing else in this turn.';
 
 // Source: T3B-24 U5 plan, eval cases (design/round2-u5-plan.md). All people and places are synthetic.
 export const CASES: readonly HomeCheckCase[] = [
@@ -42,7 +44,7 @@ export const CASES: readonly HomeCheckCase[] = [
   {
     id: "upcoming-event-preparation",
     source: "T3B-24 scenario: an upcoming event the user must prepare for",
-    seed: [`Heads-up: tomorrow at 10:00 I have ${appointment}. ${acknowledge}`],
+    seed: [`Heads-up: tomorrow at 10:00 I have ${appointment}. ${noteThisTurnOnly}`],
     task: null,
     between: null,
     waitingBefore: null,
@@ -62,7 +64,7 @@ export const CASES: readonly HomeCheckCase[] = [
   {
     id: "event-after-next-check",
     source: "Control: the same appointment, but after the next check",
-    seed: [`Heads-up: on {inThreeWeeks} at 10:00 I have ${appointment}. ${acknowledge}`],
+    seed: [`Heads-up: on {inThreeWeeks} at 10:00 I have ${appointment}. ${noteThisTurnOnly}`],
     task: null,
     between: null,
     waitingBefore: null,
@@ -82,7 +84,7 @@ export const CASES: readonly HomeCheckCase[] = [
   {
     id: "removed-not-repeated",
     source: "Control: the user removed what an earlier check proposed",
-    seed: [`Heads-up: tomorrow at 10:00 I have ${appointment}. ${acknowledge}`],
+    seed: [`Heads-up: tomorrow at 10:00 I have ${appointment}. ${noteThisTurnOnly}`],
     task: null,
     between:
       'I have packed my passport and the signed lease, so that is handled. Remove that item from Waiting in your working notes and reply only "Done." Start no tasks.',
