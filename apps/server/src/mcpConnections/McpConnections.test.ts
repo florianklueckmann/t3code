@@ -3,6 +3,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   BotError,
   McpConnectionId,
+  type McpConnectionOAuth,
   type McpConnectionTransport,
   SecretProviderId,
   ServerSettingsPatch,
@@ -93,6 +94,7 @@ const harness = Effect.gen(function* () {
 const accountA = McpConnectionId.make("1a1a1a1a-0000-4000-8000-00000000001a");
 const accountB = McpConnectionId.make("1b1b1b1b-0000-4000-8000-00000000001b");
 const local = McpConnectionId.make("1c1c1c1c-0000-4000-8000-00000000001c");
+const oauthMail = McpConnectionId.make("2a2a2a2a-0000-4000-8000-00000000002a");
 const personal = SecretProviderId.make("personal");
 const tokenB = { provider: personal, reference: "op://Private/Docs/token-b" };
 const http = (authorization: string | typeof tokenB): McpConnectionTransport => ({
@@ -101,6 +103,14 @@ const http = (authorization: string | typeof tokenB): McpConnectionTransport => 
   httpHeaders: { Authorization: authorization },
 });
 const SENTINEL = "sk-sentinel-never-echoed";
+const oauthHttp = (
+  oauth: McpConnectionOAuth = { scopes: ["mail.read"] },
+): McpConnectionTransport & { readonly type: "http" } => ({
+  type: "http",
+  url: "https://mail.example.test/mcp",
+  httpHeaders: { "X-Tenant": "home" },
+  oauth,
+});
 
 it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("MCP connections", (it) => {
   it.effect(
@@ -248,6 +258,16 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("MCP connections"
             { type: "stdio", command: "mcp-server", args: [], env: { "BAD-NAME": "x" } },
             "binding-name-invalid",
           ],
+          [
+            { ...oauthHttp(), httpHeaders: { authorization: SENTINEL } },
+            "oauth-authorization-binding",
+          ],
+          [oauthHttp({ scopes: ["mail.read", "two words"] }), "oauth-scope-invalid"],
+          [oauthHttp({ scopes: [], client: { id: "" } }), "oauth-client-invalid"],
+          [
+            oauthHttp({ scopes: [], client: { id: "app", secret: `${SENTINEL}\nx` } }),
+            "oauth-client-invalid",
+          ],
         ] as const) {
           const error = yield* connections
             .create({
@@ -295,6 +315,44 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("MCP connections"
             .pipe(Effect.flip)).reason,
           "id-unavailable",
         );
+
+        // The OAuth setup is part of what a retried create must match, and stays fixed after.
+        const mail = { connectionId: oauthMail, label: "Mail", enabled: true } as const;
+        const oauthCreated = yield* connections.create({ ...mail, transport: oauthHttp() });
+        assert.deepEqual(
+          yield* connections.create({ ...mail, transport: oauthHttp() }),
+          oauthCreated,
+        );
+        for (const oauth of [
+          { scopes: ["mail.send"] },
+          { scopes: ["mail.read"], client: { id: "app-id" } },
+        ]) {
+          assert.equal(
+            (yield* connections.create({ ...mail, transport: oauthHttp(oauth) }).pipe(Effect.flip))
+              .reason,
+            "id-unavailable",
+          );
+        }
+        assert.deepEqual(
+          (yield* connections
+            .update({
+              connectionId: oauthMail,
+              expectedRevision: 1,
+              bindings: { AUTHORIZATION: SENTINEL },
+            })
+            .pipe(Effect.flip)).problem,
+          { reason: "oauth-authorization-binding", binding: "AUTHORIZATION" },
+        );
+        yield* connections.update({
+          connectionId: oauthMail,
+          expectedRevision: 1,
+          bindings: { "X-Tenant": "work" },
+        });
+        const settings = yield* ServerSettings.ServerSettingsService;
+        assert.deepEqual((yield* settings.getSettings).mcpConnections[oauthMail]?.transport, {
+          ...oauthHttp(),
+          httpHeaders: { "X-Tenant": "work" },
+        });
       }).pipe(Effect.provide(layerSettings)),
   );
 

@@ -78,6 +78,7 @@ const creationShape = (definition: {
         : [definition.transport.url],
     slot,
     bindings: Object.entries(bindings),
+    oauth: definition.transport.type === "http" ? definition.transport.oauth : undefined,
   });
 };
 
