@@ -14,7 +14,10 @@ import {
 import { describe, expect, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
 
-import { rewindHandoffItems, rewindKeptProviderTurn } from "./ConversationRecovery.ts";
+import {
+  conversationRecoveryHandoffItems,
+  rewindKeptProviderTurn,
+} from "./ConversationRecovery.ts";
 
 const now = DateTime.makeUnsafe("2026-11-11T12:00:00Z");
 const codex = ProviderThreadId.make("codex-thread");
@@ -73,7 +76,7 @@ describe("rewindKeptProviderTurn", () => {
   });
 });
 
-describe("rewindHandoffItems", () => {
+describe("conversationRecoveryHandoffItems", () => {
   let ordinal = 0;
   const item = <Item extends Partial<OrchestrationV2TurnItem>>(runId: string, fields: Item) =>
     ({
@@ -128,7 +131,7 @@ describe("rewindHandoffItems", () => {
     ];
 
     expect(
-      rewindHandoffItems(items).map((kept) =>
+      conversationRecoveryHandoffItems(items).map((kept) =>
         kept.type === "user_message" || kept.type === "assistant_message"
           ? `${kept.type}: ${kept.text}`
           : kept.type,
