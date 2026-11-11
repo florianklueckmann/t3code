@@ -2208,19 +2208,25 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           const load = threadLoads.get(nativeThreadId);
           return load === undefined || load === "unknown" ? load : load.seal;
         };
-        /** Each native thread's granted server names and their labels, to name a failed start. */
-        const grantedServerLabels = new Map<string, ReadonlyMap<string, string>>();
+        /**
+         * The granted connections each native thread was loaded with: the accounts its turns name
+         * to the model, and the labels a failed start is named by.
+         */
+        const grantedConnectionsByThread = new Map<
+          string,
+          ReadonlyArray<Pick<McpConnectionDelivery.DeliveredMcpConnection, "id" | "label">>
+        >();
         /** Granted servers that failed to start before their thread had a turn to report it in. */
         const failedGrantedServers = new Map<string, Set<string>>();
         const rememberGrantedServers = (
           nativeThreadId: string,
           granted: ReadonlyArray<McpConnectionDelivery.DeliveredMcpConnection> | undefined,
         ) => {
-          if (granted === undefined) grantedServerLabels.delete(nativeThreadId);
+          if (granted === undefined) grantedConnectionsByThread.delete(nativeThreadId);
           else
-            grantedServerLabels.set(
+            grantedConnectionsByThread.set(
               nativeThreadId,
-              new Map(granted.map(({ id, label }) => [codexGrantedServerName(id), label])),
+              granted.map(({ id, label }) => ({ id, label })),
             );
         };
         /** A sealed child turn's stop, true once its turn ended. Its root turn waits for it. */
@@ -2717,7 +2723,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
         const noticeGrantedServerFailure = Effect.fn("CodexAdapterV2.noticeGrantedServerFailure")(
           function* (context: ActiveCodexTurnContext, server: string) {
             const nativeThreadId = context.providerThread.nativeThreadRef?.nativeId ?? "";
-            const label = grantedServerLabels.get(nativeThreadId)?.get(server);
+            const label = grantedConnectionsByThread
+              .get(nativeThreadId)
+              ?.find(({ id }) => codexGrantedServerName(id) === server)?.label;
             const message = `${label === undefined ? "A granted MCP connection" : `"${label}"`} could not start, so its tools are unavailable in this conversation. Check it in Settings → MCP connections.`;
             const nativeItemId = `mcp-startup-failed:${context.nativeTurnId}:${server}`;
             const now = yield* DateTime.now;
@@ -7576,6 +7584,14 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           ) {
             const threadId = yield* getNativeThreadId(turnInput.providerThread);
             const mcpSession = yield* mcpSessions.read(turnInput.threadId);
+            // From the thread's load, so an account left out of it is never named to the model.
+            const accounts = McpConnectionDelivery.grantedConnectionsInstructions(
+              grantedConnectionsByThread.get(threadId) ?? [],
+            );
+            const applicationInstructions =
+              turnInput.applicationInstructions === undefined || accounts === undefined
+                ? (turnInput.applicationInstructions ?? accounts)
+                : `${turnInput.applicationInstructions}\n\n${accounts}`;
             const turnStartParams = yield* buildCodexTurnStartParams({
               nativeThreadId: threadId,
               codexInput,
@@ -7586,9 +7602,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               deviceToolsAvailable: mcpSession?.capabilities?.has("device") ?? false,
               omitServiceTier: adapterOptions.resolveRuntime !== undefined,
               ...(turnInput.appContext === undefined ? {} : { appContext: turnInput.appContext }),
-              ...(turnInput.applicationInstructions === undefined
-                ? {}
-                : { applicationInstructions: turnInput.applicationInstructions }),
+              ...(applicationInstructions === undefined ? {} : { applicationInstructions }),
             });
             yield* Ref.update(pendingRootTurns, (current) => {
               const updated = new Map(current);

@@ -1,4 +1,4 @@
-// @effect-diagnostics nodeBuiltinImport:off -- The fixture authorization server checks PKCE synchronously.
+// @effect-diagnostics nodeBuiltinImport:off globalFetch:off -- The fixture checks PKCE synchronously; Node's fetch decides redirects.
 import * as NodeCrypto from "node:crypto";
 
 import * as NodeCryptoLayer from "@effect/platform-node/NodeCrypto";
@@ -17,7 +17,13 @@ import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
 import * as TestClock from "effect/testing/TestClock";
-import { HttpClient, type HttpClientRequest, HttpClientResponse } from "effect/http";
+import {
+  FetchHttpClient,
+  HttpClient,
+  type HttpClientRequest,
+  HttpClientResponse,
+} from "effect/http";
+import { MockAgent } from "undici";
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerConfig from "../config.ts";
@@ -50,6 +56,8 @@ interface FixtureOptions {
   /** The issuer's path; metadata is then only at the path-appended OpenID URI. */
   readonly tenant?: string;
   readonly registration?: boolean;
+  /** Issues access tokens only, as a service without offline access does. */
+  readonly refreshTokens?: false;
   readonly authMethods?: ReadonlyArray<string>;
   readonly preregistered?: {
     readonly id: string;
@@ -103,23 +111,25 @@ const makeFixture = (options: FixtureOptions = {}) =>
     const refreshTokens = new Map<string, { grantId: string; rotated: boolean }>();
     const accessTokens = new Map<string, string>();
     const issued: Array<string> = [];
-    // Holds the next token request until released, to order it against other operations.
-    let tokenGate:
-      | { readonly reached: Deferred.Deferred<void>; readonly release: Deferred.Deferred<void> }
+    // Holds the next request to a path until released, to order it against other operations.
+    let gate:
+      | {
+          readonly path: string;
+          readonly reached: Deferred.Deferred<void>;
+          readonly release: Deferred.Deferred<void>;
+        }
       | undefined;
 
     const issue = (grantId: string) => {
       const access = randomId("at");
-      const refresh = randomId("rt");
       accessTokens.set(access, grantId);
+      issued.push(access);
+      const tokens = { access_token: access, token_type: "Bearer", expires_in: 3600 };
+      if (options.refreshTokens === false) return tokens;
+      const refresh = randomId("rt");
       refreshTokens.set(refresh, { grantId, rotated: false });
-      issued.push(access, refresh);
-      return {
-        access_token: access,
-        refresh_token: refresh,
-        token_type: "Bearer",
-        expires_in: 3600,
-      };
+      issued.push(refresh);
+      return { ...tokens, refresh_token: refresh };
     };
     const clientOf = (request: HttpClientRequest.HttpClientRequest, form: URLSearchParams) => {
       const basic = request.headers.authorization;
@@ -208,6 +218,14 @@ const makeFixture = (options: FixtureOptions = {}) =>
               headers: { "content-type": "application/json", ...headers },
             }),
           );
+        // The service has acted; its answer waits, as a slow network would hold it.
+        const answerHeld = Effect.gen(function* () {
+          const held = gate;
+          if (held?.path !== url.pathname) return;
+          gate = undefined;
+          yield* Deferred.succeed(held.reached, undefined);
+          yield* Deferred.await(held.release);
+        });
         if (url.pathname === "/mcp") {
           return json(
             401,
@@ -244,17 +262,12 @@ const makeFixture = (options: FixtureOptions = {}) =>
           const registration = JSON.parse(text) as { redirect_uris: ReadonlyArray<string> };
           const clientId = randomId("client");
           clients.set(clientId, { redirectUris: registration.redirect_uris });
+          yield* answerHeld;
           return json(201, { client_id: clientId, token_endpoint_auth_method: "none" });
         }
         if (url.pathname === "/token") {
           const [status, body] = token(request, form);
-          // The service has acted; its answer waits, as a slow network would hold it.
-          const gate = tokenGate;
-          if (gate !== undefined) {
-            tokenGate = undefined;
-            yield* Deferred.succeed(gate.reached, undefined);
-            yield* Deferred.await(gate.release);
-          }
+          yield* answerHeld;
           return json(status, body);
         }
         if (url.pathname === "/revoke") {
@@ -311,14 +324,16 @@ const makeFixture = (options: FixtureOptions = {}) =>
       return target.toString();
     };
 
-    const holdNextTokenRequest = Effect.gen(function* () {
-      const gate = {
-        reached: yield* Deferred.make<void>(),
-        release: yield* Deferred.make<void>(),
-      };
-      tokenGate = gate;
-      return gate;
-    });
+    const holdNext = (path: "/register" | "/token") =>
+      Effect.gen(function* () {
+        const next = {
+          path,
+          reached: yield* Deferred.make<void>(),
+          release: yield* Deferred.make<void>(),
+        };
+        gate = next;
+        return next;
+      });
 
     const subjectOf = (accessToken: string) => {
       const grant = grants.get(accessTokens.get(accessToken) ?? "");
@@ -330,7 +345,7 @@ const makeFixture = (options: FixtureOptions = {}) =>
       requests,
       issued,
       authorize,
-      holdNextTokenRequest,
+      holdNext,
       subjectOf,
       revokeEverything: () => {
         for (const grant of grants.values()) grant.revoked = true;
@@ -669,6 +684,76 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCryptoLayer.layer))(
       }).pipe(Effect.provide(layerStores)),
     );
 
+    it.effect("never follows a redirect that would carry a code or secret elsewhere", () =>
+      Effect.gen(function* () {
+        // Node's own fetch, so its redirect handling is what is tested; no request leaves.
+        const agent = new MockAgent();
+        agent.disableNetConnect();
+        yield* Effect.addFinalizer(() => Effect.promise(() => agent.close()));
+        const service = agent.get(BASE);
+        const asJson = { headers: { "content-type": "application/json" } };
+        service.intercept({ path: "/mcp", method: "POST" }).reply(401, "", {
+          headers: { "www-authenticate": `Bearer resource_metadata="${BASE}/resource"` },
+        });
+        service
+          .intercept({ path: "/resource" })
+          .reply(200, { resource: MCP_URL, authorization_servers: [BASE] }, asJson);
+        service.intercept({ path: "/.well-known/oauth-authorization-server" }).reply(
+          200,
+          {
+            issuer: BASE,
+            authorization_endpoint: `${BASE}/authorize`,
+            token_endpoint: `${BASE}/token`,
+            code_challenge_methods_supported: ["S256"],
+            token_endpoint_auth_methods_supported: ["client_secret_post"],
+          },
+          asJson,
+        );
+        service.intercept({ path: "/token", method: "POST" }).reply(307, "", {
+          headers: { location: "http://collector.example.test/capture" },
+        });
+        const captured: Array<unknown> = [];
+        agent
+          .get("http://collector.example.test")
+          .intercept({ path: "/capture", method: "POST" })
+          .reply(200, ({ body }) => {
+            captured.push(body);
+            return { access_token: "collected", token_type: "Bearer" };
+          });
+        yield* defineConnection(connectionA, {
+          scopes: [],
+          client: { id: "mail-app", secret: "app-secret" },
+        });
+        const oauth = yield* McpConnectionOAuth.McpConnectionOAuth.pipe(
+          Effect.provide(
+            McpConnectionOAuth.layer.pipe(
+              Layer.provide(FetchHttpClient.layer),
+              Layer.provide(Layer.succeed(SecretResolver.SecretResolver, resolver)),
+            ),
+          ),
+          Effect.provideService(FetchHttpClient.Fetch, (input, init) =>
+            globalThis.fetch(input, Object.assign({}, init, { dispatcher: agent })),
+          ),
+        );
+        const started = yield* oauth.start({ connectionId: connectionA, redirectOrigin: ORIGIN });
+        const callback = new URL(REDIRECT);
+        callback.search = new URLSearchParams({
+          state: new URL(started.authorizationUrl).searchParams.get("state") ?? "",
+          code: "issued-code",
+        }).toString();
+        const failed = yield* oauth
+          .complete({
+            connectionId: connectionA,
+            flowId: started.flowId,
+            callbackUrl: callback.toString(),
+          })
+          .pipe(Effect.flip);
+        assert.equal(failed.reason, "unavailable");
+        assert.deepEqual(captured, []);
+        assert.equal((yield* oauth.state(connectionA)).credential.state, "signed-out");
+      }).pipe(Effect.provide(layerStores)),
+    );
+
     it.effect("refreshes once per due token and signs out when the service ends the grant", () =>
       Effect.gen(function* () {
         const fixture = yield* makeFixture();
@@ -707,6 +792,20 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCryptoLayer.layer))(
         });
         assert.isTrue(Option.isNone(yield* oauth.accessToken(connectionA)));
         assert.equal(fixture.tokenRequests("refresh_token").length, 3);
+
+        // A refused token that cannot be refreshed is given back before it is dropped.
+        const accessOnly = yield* makeFixture({ refreshTokens: false });
+        const withoutRefresh = yield* makeService(accessOnly);
+        yield* connect(withoutRefresh, accessOnly, connectionA, "alice");
+        const lone = tokenOf(yield* withoutRefresh.accessToken(connectionA));
+        assert.equal(accessOnly.subjectOf(lone ?? ""), "alice");
+        yield* withoutRefresh.markStale(connectionA, "startup");
+        assert.isTrue(Option.isNone(yield* withoutRefresh.accessToken(connectionA)));
+        assert.deepEqual((yield* withoutRefresh.state(connectionA)).credential, {
+          state: "signed-out",
+          reason: "expired",
+        });
+        assert.isUndefined(accessOnly.subjectOf(lone ?? ""));
       }).pipe(Effect.provide(layerStores)),
     );
 
@@ -719,7 +818,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCryptoLayer.layer))(
 
         // Disconnect while a load's refresh waits on the service.
         yield* TestClock.adjust("31 minutes");
-        const refreshGate = yield* fixture.holdNextTokenRequest;
+        const refreshGate = yield* fixture.holdNext("/token");
         const load = yield* Effect.forkChild(oauth.accessToken(connectionA));
         yield* Deferred.await(refreshGate.reached);
         const disconnect = yield* Effect.forkChild(oauth.disconnect(connectionA));
@@ -741,7 +840,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCryptoLayer.layer))(
         for (const interrupt of ["cancel", "disconnect", "restart"] as const) {
           const started = yield* oauth.start({ connectionId: connectionA, redirectOrigin: ORIGIN });
           const callbackUrl = fixture.authorize(started.authorizationUrl, "mallory");
-          const exchangeGate = yield* fixture.holdNextTokenRequest;
+          const exchangeGate = yield* fixture.holdNext("/token");
           const exchange = yield* Effect.forkChild(
             oauth.complete({ connectionId: connectionA, flowId: started.flowId, callbackUrl }),
           );
@@ -759,6 +858,21 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCryptoLayer.layer))(
           assert.isTrue(Option.isNone(yield* oauth.accessToken(connectionA)), interrupt);
           // The tokens that exchange got were given back.
           assert.equal(fixture.requests.at(-1)?.path, "/revoke", interrupt);
+        }
+
+        // A disconnect or removal while a start still registers: that sign-in never begins.
+        for (const signOut of ["disconnect", "forget"] as const) {
+          const registerGate = yield* fixture.holdNext("/register");
+          const starting = yield* Effect.forkChild(
+            oauth.start({ connectionId: connectionA, redirectOrigin: ORIGIN }),
+          );
+          yield* Deferred.await(registerGate.reached);
+          yield* signOut === "disconnect"
+            ? oauth.disconnect(connectionA)
+            : oauth.forget(connectionA);
+          yield* Deferred.succeed(registerGate.release, undefined);
+          assert.equal((yield* Fiber.join(starting).pipe(Effect.flip)).reason, "sign-in-ended");
+          assert.isUndefined((yield* oauth.state(connectionA)).signIn, signOut);
         }
       }).pipe(Effect.provide(layerStores)),
     );
