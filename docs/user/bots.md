@@ -127,7 +127,7 @@ delegating or saving what the Bot learned. It uses the provider account you
 selected for the Bot, including a ChatGPT sign-in. The task's result is saved
 as usual.
 
-No changes currently works only on macOS, with Codex 0.166.0 or 0.167.0.
+No changes currently works only on macOS, with Codex 0.166.0 or later.
 Anywhere else the routine's task fails with the reason instead of running with
 more access. Follow-up messages in a routine's task stay No changes, and its
 work thread shows No changes as its fixed permission; to have the

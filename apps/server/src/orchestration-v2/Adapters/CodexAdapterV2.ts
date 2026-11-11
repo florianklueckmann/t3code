@@ -50,6 +50,7 @@ import {
 } from "@t3tools/shared/toolActivity";
 import { getModelSelectionStringOptionValue, modelSelectionsEqual } from "@t3tools/shared/model";
 import { appendGeneratedImageEmbeds } from "@t3tools/shared/generatedImageMarkdown";
+import { compareSemverVersions, parseSemver } from "@t3tools/shared/semver";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import { mcpToolResultOutput } from "@t3tools/shared/toolOutput";
 import type {
@@ -1433,10 +1434,14 @@ const CODEX_NATIVE_MEMORY_DISABLED_CONFIG = {
 } as const;
 
 /**
- * The versions whose sealed tool inventory was measured natively. A later Codex can add a
- * default-on tool this seal does not know to turn off.
+ * The oldest Codex whose sealed tool inventory and grant loads were measured natively. A newer
+ * Codex is accepted, so a tool or MCP source it adds by default is not turned off by name.
  */
-const CODEX_SEAL_VERSIONS: ReadonlySet<string> = new Set(["0.166.0", "0.167.0"]);
+const CODEX_SEAL_MIN_VERSION = "0.166.0";
+export const codexSealVersionSupported = (version: string | undefined) =>
+  version !== undefined &&
+  parseSemver(version) !== null &&
+  compareSemverVersions(version, CODEX_SEAL_MIN_VERSION) >= 0;
 const codexFeaturesOff = (names: ReadonlyArray<string>) =>
   Object.fromEntries(names.map((name) => [`features.${name}`, false]));
 /** Each adds tools, or acts outside the read-only sandbox, so no seal keeps it. */
@@ -2210,7 +2215,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             (yield* awaitActiveTurn(nativeTurnId));
           return codexThreadSealOf(context?.input.runtimePolicy) !== "ordinary";
         });
-        /** What a seal needs before any thread loads with it: the measured version and platform. */
+        /** What a seal needs before any thread loads with it: a supported version and platform. */
         const refuseUnmeasuredSeal = Effect.fn("CodexAdapterV2.refuseUnmeasuredSeal")(function* (
           seal: CodexSeal,
           mcpSession: McpProviderSession.McpProviderSessionConfig | undefined,
@@ -2219,8 +2224,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             return yield* refuseSeal(seal, "unavailable");
           if ((yield* HostProcess.Platform) !== "darwin")
             return yield* refuseSeal(seal, "platform");
-          const version = yield* Ref.get(codexVersion);
-          if (version === undefined || !CODEX_SEAL_VERSIONS.has(version))
+          if (!codexSealVersionSupported(yield* Ref.get(codexVersion)))
             return yield* refuseSeal(seal, "version");
         });
         const refuseMcp = (
@@ -2287,8 +2291,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           if (ids === undefined) return { load: { seal, mcp: null }, granted: undefined };
           if (mcpConnectionDelivery === undefined) return yield* refuseMcp("unavailable");
           if ((yield* HostProcess.Platform) !== "darwin") return yield* refuseMcp("platform");
-          const version = yield* Ref.get(codexVersion);
-          if (version === undefined || !CODEX_SEAL_VERSIONS.has(version))
+          if (!codexSealVersionSupported(yield* Ref.get(codexVersion)))
             return yield* refuseMcp("version");
           const delivered = yield* mcpConnectionDelivery.resolve(ids).pipe(
             Effect.mapError((error) =>
