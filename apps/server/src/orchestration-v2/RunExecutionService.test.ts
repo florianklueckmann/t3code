@@ -54,6 +54,7 @@ import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderEventIngestor from "./ProviderEventIngestor.ts";
 import * as ProviderUsageAnalytics from "../telemetry/ProviderUsageAnalytics.ts";
 import * as McpAppModelContext from "../mcpApps/McpAppModelContext.ts";
+import * as McpConnectionOAuth from "../mcpConnections/McpConnectionOAuth.ts";
 import * as BotStore from "../bots/BotStore.ts";
 import * as BotTurnContext from "../bots/BotTurnContext.ts";
 import * as PreviewAgentActivity from "../preview/PreviewAgentActivity.ts";
@@ -3204,12 +3205,23 @@ it.effect("names each granted account's tool namespace in every Bot-derived turn
     const privateMail = McpConnectionId.make("2a2a2a2a-0000-4000-8000-00000000002a");
     const workMail = McpConnectionId.make("2b2b2b2b-0000-4000-8000-00000000002b");
     const offMail = McpConnectionId.make("2c2c2c2c-0000-4000-8000-00000000002c");
+    const calendar = McpConnectionId.make("2d2d2d2d-0000-4000-8000-00000000002d");
+    const signedOutMail = McpConnectionId.make("2e2e2e2e-0000-4000-8000-00000000002e");
     const mail = (label: string, enabled = true) => ({
       label,
       enabled,
       revision: 1,
       transport: { type: "stdio" as const, command: "mail-mcp", args: [], env: {} },
       authentication: { type: "bindings" as const },
+    });
+    const oauthMail = (label: string) => ({
+      ...mail(label),
+      transport: {
+        type: "http" as const,
+        url: "https://mail.example.test/mcp",
+        httpHeaders: {},
+        oauth: { scopes: [] },
+      },
     });
     const deliveredFor = (
       key: string,
@@ -3228,7 +3240,10 @@ it.effect("names each granted account's tool namespace in every Bot-derived turn
             [privateMail]: mail("Private mail"),
             [workMail]: mail("Work mail"),
             [offMail]: mail("Old mail", false),
+            [calendar]: oauthMail("Calendar"),
+            [signedOutMail]: oauthMail("Lapsed mail"),
           },
+          oauthConnected: [calendar],
           startTurn: (turnInput) =>
             Ref.update(delivered, (current) => [...current, turnInput.applicationInstructions]),
         });
@@ -3247,6 +3262,19 @@ it.effect("names each granted account's tool namespace in every Bot-derived turn
         offMail,
       ]),
       mapping,
+    );
+    // A signed-out OAuth account is not loaded, so it is left out; a connected one is named.
+    assert.equal(
+      yield* deliveredFor("grants:oauth", Effect.succeed({ _tag: "none" }), [
+        privateMail,
+        calendar,
+        signedOutMail,
+      ]),
+      [
+        "MCP connections granted to you, each a separate account. Use the one the request is about:",
+        '- "Private mail": tools in the mcp__t3c_2a2a2a2a_0000_4000_8000_00000000002a namespace',
+        '- "Calendar": tools in the mcp__t3c_2d2d2d2d_0000_4000_8000_00000000002d namespace',
+      ].join("\n"),
     );
     assert.equal(
       yield* deliveredFor(
@@ -3416,6 +3444,8 @@ function captureRootRunTermination(input: {
   /** The turn's granted connections, as its resolved policy carries them. */
   readonly mcpConnections?: ReadonlyArray<McpConnectionId>;
   readonly catalog?: ServerSettingsContract["mcpConnections"];
+  /** OAuth connections with a usable account; the others are signed out. */
+  readonly oauthConnected?: ReadonlyArray<McpConnectionId>;
   readonly ingestNormalized?: ProviderEventIngestor.ProviderEventIngestorV2["Service"]["ingestNormalized"];
   readonly beforeTerminalWrite?: (
     request: Parameters<EventSink.EventSinkV2["Service"]["writeIfRunCurrent"]>[0],
@@ -3505,6 +3535,14 @@ function captureRootRunTermination(input: {
           ServerSettings.layerTest(
             input.catalog === undefined ? {} : { mcpConnections: input.catalog },
           ),
+          Layer.mock(McpConnectionOAuth.McpConnectionOAuth)({
+            state: (id) =>
+              Effect.succeed({
+                credential: input.oauthConnected?.includes(id)
+                  ? { state: "connected", connectedAt: "2026-11-11T00:00:00.000Z" }
+                  : { state: "signed-out", reason: "revoked" },
+              }),
+          }),
           Layer.succeed(RunFinalizationService.RunFinalizationObserver, {
             refresh: () => Effect.void,
             refreshAfterTurn: () =>

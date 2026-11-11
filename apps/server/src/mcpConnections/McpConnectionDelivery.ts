@@ -12,16 +12,25 @@ import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretReso
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 
 import { requireSettingsSecret } from "../secrets/settingsSecretValue.ts";
 import * as Settings from "../serverSettings.ts";
+import * as McpConnectionOAuth from "./McpConnectionOAuth.ts";
 
-export const GRANTED_SERVER_PREFIX = "t3c-";
+const GRANTED_SERVER_PREFIX = "t3c-";
 
 /** A granted connection's server name, from its immutable id, never its label. */
 export const grantedServerName = (id: McpConnectionId) => `${GRANTED_SERVER_PREFIX}${id}`;
+
+const decodeConnectionId = Schema.decodeUnknownOption(McpConnectionId);
+/** The connection a native server name was granted for, or undefined for any other server. */
+export const grantedConnectionOf = (serverName: string): McpConnectionId | undefined =>
+  serverName.startsWith(GRANTED_SERVER_PREFIX)
+    ? Option.getOrUndefined(decodeConnectionId(serverName.slice(GRANTED_SERVER_PREFIX.length)))
+    : undefined;
 
 /** The tool namespace Codex shows the model for a granted server (measured on 0.166, 0.167). */
 const grantedToolNamespace = (id: McpConnectionId) =>
@@ -92,12 +101,15 @@ export class McpConnectionDelivery extends Context.Service<
   McpConnectionDelivery,
   {
     /**
-     * The granted connections a load gets, with credentials read now. A disabled or removed one is
-     * left out; any other that cannot be delivered fails the whole load, with no fallback.
+     * The granted connections a load gets, with credentials read now. A disabled, removed or
+     * signed-out OAuth one is left out; any other that cannot be delivered fails the whole load,
+     * with no fallback.
      */
     readonly resolve: (
       ids: ReadonlyArray<McpConnectionId>,
     ) => Effect.Effect<McpConnectionLoad, McpConnectionDeliveryError>;
+    /** The provider saw this connection refuse its credential; an OAuth one refreshes next load. */
+    readonly markRefused: (id: McpConnectionId, source: "startup" | "call") => Effect.Effect<void>;
   }
 >()("t3/mcpConnections/McpConnectionDelivery") {}
 
@@ -106,6 +118,7 @@ const encodeCanonical = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))
 const make = Effect.gen(function* () {
   const settings = yield* Settings.ServerSettingsService;
   const resolver = yield* SecretResolver.SecretResolver;
+  const oauth = yield* McpConnectionOAuth.McpConnectionOAuth;
 
   const resolve = Effect.fn("McpConnectionDelivery.resolve")(function* (
     ids: ReadonlyArray<McpConnectionId>,
@@ -133,6 +146,12 @@ const make = Effect.gen(function* () {
       if (problem !== undefined) return yield* invalid(problem);
       const { slot, bindings } = mcpConnectionBindings(definition.transport);
       const values: Record<string, string> = {};
+      if (definition.transport.type === "http" && definition.transport.oauth !== undefined) {
+        const token = yield* oauth.accessToken(id);
+        // Signed out: the Bot's work runs without this account, and the catalog shows why.
+        if (Option.isNone(token)) continue;
+        values.Authorization = `Bearer ${Redacted.value(token.value)}`;
+      }
       for (const [binding, value] of Object.entries(bindings)) {
         const resolved = yield* requireSettingsSecret(resolver, value).pipe(
           Effect.catchTags({ SettingsSecretUnresolvedError: () => Effect.undefined }),
@@ -170,7 +189,20 @@ const make = Effect.gen(function* () {
     } satisfies McpConnectionLoad;
   });
 
-  return McpConnectionDelivery.of({ resolve });
+  const markRefused = Effect.fn("McpConnectionDelivery.markRefused")(function* (
+    id: McpConnectionId,
+    source: "startup" | "call",
+  ) {
+    const current = yield* settings.getSettings.pipe(Effect.option);
+    const transport = Option.isSome(current)
+      ? current.value.mcpConnections[id]?.transport
+      : undefined;
+    if (transport?.type === "http" && transport.oauth !== undefined) {
+      yield* oauth.markStale(id, source);
+    }
+  });
+
+  return McpConnectionDelivery.of({ resolve, markRefused });
 });
 
 export const layer = Layer.effect(McpConnectionDelivery, make);

@@ -516,6 +516,36 @@ function codexMcpToolOutput(
     : { error: item.error.message, result: resultOutput };
 }
 
+/** Codex's result text when a server refused the call's token (measured on 0.167.0 and 0.167.1). */
+const CODEX_MCP_AUTH_REQUIRED = "Authentication required";
+
+/**
+ * The granted connection whose credential a failed call shows refused. Codex passes the server's
+ * `WWW-Authenticate` challenge in `_meta`, beside its fixed text; it starts no sign-in of its own.
+ */
+function refusedGrantedConnection(item: CodexSchema.V2ItemCompletedNotification__ThreadItem) {
+  if (item.type !== "mcpToolCall" || item.status !== "failed" || item.result == null) {
+    return undefined;
+  }
+  const meta = item.result._meta;
+  const challenged =
+    typeof meta === "object" &&
+    meta !== null &&
+    !Array.isArray(meta) &&
+    "mcp/www_authenticate" in meta;
+  const authRequired = item.result.content.some(
+    (content) =>
+      typeof content === "object" &&
+      content !== null &&
+      !Array.isArray(content) &&
+      "text" in content &&
+      content.text === CODEX_MCP_AUTH_REQUIRED,
+  );
+  return challenged || authRequired
+    ? McpConnectionDelivery.grantedConnectionOf(item.server)
+    : undefined;
+}
+
 // A hung MCP resource read must not hold run ingestion open.
 const MCP_APP_CAPTURE_TIMEOUT = "20 seconds";
 
@@ -5166,7 +5196,12 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             const nativeThreadId = payload.threadId;
             // A start's status can arrive before its thread id is known, so the name decides.
             if (payload.status !== "failed" || nativeThreadId == null) return;
-            if (!payload.name.startsWith(McpConnectionDelivery.GRANTED_SERVER_PREFIX)) return;
+            const connectionId = McpConnectionDelivery.grantedConnectionOf(payload.name);
+            if (connectionId === undefined) return;
+            // A refused token fails the start too; the next load refreshes it before reloading.
+            if (mcpConnectionDelivery !== undefined) {
+              yield* mcpConnectionDelivery.markRefused(connectionId, "startup");
+            }
             const context = yield* findActiveTurnByNativeThreadId(nativeThreadId);
             if (context !== undefined && context.subagent === null) {
               return yield* noticeGrantedServerFailure(context, payload.name);
@@ -5589,6 +5624,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
 
         yield* client.handleServerNotification("item/completed", (payload) =>
           Effect.gen(function* () {
+            // Any thread on this app-server, child work included: the raw item names the server.
+            const refused = refusedGrantedConnection(payload.item);
+            if (refused !== undefined && mcpConnectionDelivery !== undefined) {
+              yield* mcpConnectionDelivery.markRefused(refused, "call");
+            }
             if (payload.item.type === "contextCompaction")
               // Fork requests off the notification reader so it can read their responses.
               yield* restoreAdditionalContext(payload.threadId).pipe(

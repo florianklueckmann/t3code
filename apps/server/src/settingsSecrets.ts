@@ -137,7 +137,7 @@ export function mapSettingsSecrets(
 /** The secret store slot of one MCP connection binding: immutable id, slot and exact key. */
 export const mcpConnectionSecretName = (
   connectionId: string,
-  slot: "env" | "header",
+  slot: "env" | "header" | "oauth",
   key: string,
 ) => `mcp-connection-${encode(connectionId)}-${slot}-${encode(key)}`;
 
@@ -158,6 +158,12 @@ function mapMcpConnectionBindings(
           return [key, next];
         }),
       );
+      const client = transport.type === "http" ? transport.oauth?.client : undefined;
+      const clientSecret =
+        client?.secret === undefined
+          ? undefined
+          : map(client.secret, mcpConnectionSecretName(connectionId, "oauth", "client-secret"));
+      changed ||= clientSecret !== client?.secret;
       // Unchanged definitions keep their identity so callers can tell which ones a map touched.
       if (!changed) return [connectionId, definition];
       return [
@@ -167,7 +173,18 @@ function mapMcpConnectionBindings(
           transport:
             transport.type === "stdio"
               ? { ...transport, env: mapped }
-              : { ...transport, httpHeaders: mapped },
+              : {
+                  ...transport,
+                  httpHeaders: mapped,
+                  ...(transport.oauth?.client === undefined || clientSecret === undefined
+                    ? {}
+                    : {
+                        oauth: {
+                          ...transport.oauth,
+                          client: { ...transport.oauth.client, secret: clientSecret },
+                        },
+                      }),
+                },
         },
       ];
     }),
