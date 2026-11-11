@@ -91,7 +91,6 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
     (input, { runtimeMode, interactionMode, linkOrigin }) =>
       Effect.gen(function* () {
         const scope = yield* McpInvocationContext.McpInvocationContext;
-        yield* McpToolAccess.refuseBotCaller("a new top-level thread");
         const context = yield* readCaller();
         const { caller } = context;
         // A retry with the same key replays the first launch: the ids derive
@@ -249,6 +248,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
               }),
           createdBy: "agent",
           creationSource: "mcp",
+          ...(caller === undefined ? {} : { createdByThreadId: caller.id }),
           ...(linkOrigin === undefined ? {} : { linkOrigin }),
           // Kept only alongside linkOrigin: thread.create drops it otherwise.
           ...(input.delegatedFrom === undefined ? {} : { delegatedFrom: input.delegatedFrom }),
@@ -361,7 +361,6 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
   ),
   t3_project_update: McpToolAccess.writesEnvironment((input) =>
     Effect.gen(function* () {
-      yield* McpToolAccess.refuseBotCaller("project update");
       const projects = yield* Project.ProjectService;
       return yield* projects
         .update({ ...input, commandId: yield* newCommandId() })
@@ -370,7 +369,6 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
   ),
   t3_project_delete: McpToolAccess.writesEnvironment((input) =>
     Effect.gen(function* () {
-      yield* McpToolAccess.refuseBotCaller("project delete");
       const projects = yield* Project.ProjectService;
       const clones = yield* ProjectCloneTracker.ProjectCloneTracker;
       return yield* mutateProjectWithClone(projects, clones, {

@@ -1222,7 +1222,6 @@ it.effect("hides tools for links and refuses another environment while the beta 
         Layer.provide(Layer.succeedContext(settingsContext)),
         Layer.provide(McpToolAccessTestkit.liveThreadsLayer),
         Layer.provide(McpToolAccessTestkit.layerCallerChangesAllowed),
-        Layer.provide(McpToolAccessTestkit.layerNoBots),
         Layer.provide(
           Layer.mock(McpSessionRegistry.McpSessionRegistry)({
             resolve: (presented) => Effect.succeed(presented === token ? scope : undefined),

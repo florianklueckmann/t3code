@@ -508,7 +508,11 @@ it.effect("grants only catalog connections, as a whole set guarded by its revisi
         yield* seedCatalog(settings);
         const created = yield* createCampaignBot(bots);
         yield* createCampaignBot(bots, twinId);
-        assert.deepEqual(created.mcpGrants, { revision: 0, connectionIds: [] });
+        assert.deepEqual(created.mcpGrants, {
+          revision: 0,
+          connectionIds: [],
+          ownCodexMcpServers: false,
+        });
 
         const granted = yield* bots.setMcpGrants({
           botId,
@@ -518,6 +522,7 @@ it.effect("grants only catalog connections, as a whole set guarded by its revisi
         assert.deepEqual(granted.mcpGrants, {
           revision: 1,
           connectionIds: [privateMail, workMail],
+          ownCodexMcpServers: false,
         });
 
         const stale = yield* bots
@@ -533,7 +538,12 @@ it.effect("grants only catalog connections, as a whole set guarded by its revisi
             .pipe(Effect.flip);
           assert.include(refused.message, "no longer exists");
         }
-        yield* bots.setMcpGrants({ botId: twinId, expectedRevision: 0, connectionIds: [workMail] });
+        yield* bots.setMcpGrants({
+          botId: twinId,
+          expectedRevision: 0,
+          connectionIds: [workMail],
+          ownCodexMcpServers: true,
+        });
 
         // Removing a catalog connection drops it from every Bot that had it.
         const pull = yield* Stream.toPull(bots.subscribeList());
@@ -543,14 +553,37 @@ it.effect("grants only catalog connections, as a whole set guarded by its revisi
         assert.deepEqual(
           listed?.bots.map((bot) => [bot.id, bot.mcpGrants]),
           [
-            [botId, { revision: 2, connectionIds: [privateMail] }],
-            [twinId, { revision: 2, connectionIds: [] }],
+            [botId, { revision: 2, connectionIds: [privateMail], ownCodexMcpServers: false }],
+            [twinId, { revision: 2, connectionIds: [], ownCodexMcpServers: true }],
           ],
         );
 
+        // A save that leaves the switch out keeps it; switching it alone advances the revision.
+        const kept = yield* bots.setMcpGrants({
+          botId: twinId,
+          expectedRevision: 2,
+          connectionIds: [privateMail],
+        });
+        assert.deepEqual(kept.mcpGrants, {
+          revision: 3,
+          connectionIds: [privateMail],
+          ownCodexMcpServers: true,
+        });
+        const switchedOff = yield* bots.setMcpGrants({
+          botId: twinId,
+          expectedRevision: 3,
+          connectionIds: [privateMail],
+          ownCodexMcpServers: false,
+        });
+        assert.deepEqual(switchedOff.mcpGrants, {
+          revision: 4,
+          connectionIds: [privateMail],
+          ownCodexMcpServers: false,
+        });
+
         yield* bots.setArchived({ botId: twinId, archived: true });
         const archived = yield* bots
-          .setMcpGrants({ botId: twinId, expectedRevision: 2, connectionIds: [privateMail] })
+          .setMcpGrants({ botId: twinId, expectedRevision: 4, connectionIds: [privateMail] })
           .pipe(Effect.flip);
         assert.include(archived.message, "archived");
       }).pipe(Effect.scoped),
@@ -560,6 +593,7 @@ it.effect("grants only catalog connections, as a whole set guarded by its revisi
         assert.deepEqual((yield* bots.get({ botId })).mcpGrants, {
           revision: 2,
           connectionIds: [privateMail],
+          ownCodexMcpServers: false,
         });
       }),
     );
@@ -574,10 +608,12 @@ it.effect(
       const world = yield* makeThreadWorld;
       const sql = yield* SqlClient.SqlClient;
       const lineages = new Map<string, OrchestrationV2AppThreadLineage>();
+      const creators = new Map<string, ThreadId>();
       const thread = (
         id: string,
         parent: string | null,
         relationship: "fork" | "subagent" | null,
+        createdBy?: string,
       ) =>
         Effect.gen(function* () {
           const lineage = {
@@ -586,13 +622,15 @@ it.effect(
             rootThreadId: ThreadId.make(id),
           };
           lineages.set(id, lineage);
+          const createdByThreadId = createdBy === undefined ? undefined : ThreadId.make(createdBy);
+          if (createdByThreadId !== undefined) creators.set(id, createdByThreadId);
           yield* sql`
           INSERT INTO orchestration_v2_projection_threads (
             thread_id, project_id, title, default_provider, runtime_mode, interaction_mode,
             created_at, updated_at, payload_json
           ) VALUES (
             ${id}, ${campaignA}, ${id}, 'codex', 'full-access', 'default',
-            '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', ${JSON.stringify({ lineage })}
+            '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', ${JSON.stringify({ lineage, createdByThreadId })}
           )
         `;
         });
@@ -602,7 +640,12 @@ it.effect(
           yield* createCampaignBot(bots);
           const home = (yield* bots.attachProject({ botId, projectId: campaignA })).projects[0]!
             .homeThreadId;
-          yield* bots.setMcpGrants({ botId, expectedRevision: 0, connectionIds: [privateMail] });
+          yield* bots.setMcpGrants({
+            botId,
+            expectedRevision: 0,
+            connectionIds: [privateMail],
+            ownCodexMcpServers: true,
+          });
           yield* thread(home, null, null);
           yield* thread("helper", home, "subagent");
           yield* thread("helper-fork", "helper", "fork");
@@ -612,21 +655,42 @@ it.effect(
           yield* thread("orphan", "deleted-parent", "subagent");
           yield* thread("loop-a", "loop-b", "fork");
           yield* thread("loop-b", "loop-a", "fork");
-          const access = (id: string) =>
-            turnContext.mcpAccessForThread({ id: ThreadId.make(id), lineage: lineages.get(id)! });
+          // Top-level threads a Bot's line launched with t3_thread_launch or create_threads.
+          yield* thread("launched", null, null, home);
+          yield* thread("launched-by-helper", null, null, "helper");
+          yield* thread("launched-fork", "launched", "fork");
+          yield* thread("launched-by-plain", null, null, "plain");
+          yield* thread("launched-by-deleted", null, null, "deleted-parent");
+          const access = (id: string) => {
+            const createdByThreadId = creators.get(id);
+            return turnContext.mcpAccessForThread({
+              id: ThreadId.make(id),
+              lineage: lineages.get(id)!,
+              ...(createdByThreadId === undefined ? {} : { createdByThreadId }),
+            });
+          };
           const granted = {
             _tag: "bot",
             botId,
             botName: "Faerun Companion",
             connectionIds: [privateMail],
+            ownCodexMcpServers: true,
           } as const;
-          for (const id of [home, "helper", "helper-fork", "nested-helper"]) {
+          for (const id of [
+            home,
+            "helper",
+            "helper-fork",
+            "nested-helper",
+            "launched",
+            "launched-by-helper",
+            "launched-fork",
+          ]) {
             assert.deepEqual(yield* access(id), granted, id);
           }
-          for (const id of ["plain", "plain-fork"]) {
+          for (const id of ["plain", "plain-fork", "launched-by-plain"]) {
             assert.deepEqual(yield* access(id), { _tag: "none" }, id);
           }
-          for (const id of ["orphan", "loop-a"]) {
+          for (const id of ["orphan", "loop-a", "launched-by-deleted"]) {
             assert.equal((yield* access(id))._tag, "refused", id);
           }
           // Instructions and learning do not follow the line; only MCP access does.

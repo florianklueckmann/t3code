@@ -450,7 +450,11 @@ const make = Effect.gen(function* () {
                 input.botId,
               )();
             }
-            yield* store.replaceMcpGrants({ botId: input.botId, connectionIds });
+            yield* store.replaceMcpGrants({
+              botId: input.botId,
+              connectionIds,
+              ownCodexMcpServers: input.ownCodexMcpServers ?? current.ownCodexMcpServers === true,
+            });
           }),
         )
         .pipe(

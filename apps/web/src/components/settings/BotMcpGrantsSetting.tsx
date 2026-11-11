@@ -2,23 +2,29 @@ import { useAtomValue } from "@effect/atom-react";
 import {
   botMcpGrantsChange,
   botMcpGrantsSection,
+  codexMcpServerNames,
   latestBotMcpGrants,
 } from "@t3tools/client-runtime/mcp-connections";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import type { BotId, BotMcpGrants, McpConnectionId } from "@t3tools/contracts";
-import { useState } from "react";
+import { type BotId, type BotMcpGrants, McpConnectionId } from "@t3tools/contracts";
+import { PlusIcon } from "lucide-react";
+import { useId, useState } from "react";
 
+import { randomUUID } from "../../lib/utils";
 import type { EnvironmentPresentation } from "../../state/environments";
 import { useEnvironmentQuery } from "../../state/query";
 import { EMPTY_SERVER_PROVIDERS, serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { Badge } from "../ui/badge";
+import { Button } from "../ui/button";
 import { Checkbox } from "../ui/checkbox";
 import { Label } from "../ui/label";
+import { Switch } from "../ui/switch";
 import { stackedThreadToast, toastManager } from "../ui/toast";
+import { McpConnectionDialog } from "./McpConnectionsSettings";
 
 const STATUS_BADGE = {
   ok: "success",
@@ -39,6 +45,7 @@ export function BotMcpGrantsSetting({
 }) {
   const environmentId = environment.environmentId;
   const descriptor = environment.serverConfig?.environment;
+  const ownServersId = useId();
   const bots = useEnvironmentQuery(serverEnvironment.botsLive({ environmentId, input: {} }));
   const catalog = useEnvironmentQuery(serverEnvironment.mcpConnections(environmentId));
   const routines = useEnvironmentQuery(
@@ -49,11 +56,13 @@ export function BotMcpGrantsSetting({
   const providers =
     useAtomValue(serverEnvironment.providersValueAtom(environmentId)) ?? EMPTY_SERVER_PROVIDERS;
   const canChange = useAtomValue(serverEnvironment.setBotMcpGrants.permissionAtom(environmentId));
+  const canAdd = useAtomValue(serverEnvironment.createMcpConnection.permissionAtom(environmentId));
   const setGrants = useAtomCommand(serverEnvironment.setBotMcpGrants, {
     label: "bot set mcp grants",
   });
   const [busy, setBusy] = useState(false);
   const [acknowledged, setAcknowledged] = useState<BotMcpGrants | null>(null);
+  const [adding, setAdding] = useState<McpConnectionId | null>(null);
   const bot = bots.data?.bots.find((entry) => entry.id === botId);
   if (bot?.mcpGrants === undefined || descriptor === undefined) return null;
   const grants = latestBotMcpGrants(bot.mcpGrants, acknowledged);
@@ -66,6 +75,7 @@ export function BotMcpGrantsSetting({
   const view = botMcpGrantsSection({
     botId,
     grants,
+    codexMcpServerNames: codexMcpServerNames(providers),
     catalog: connections,
     providerDriver: providers.find(
       (provider) => provider.instanceId === bot.modelSelection.instanceId,
@@ -76,12 +86,13 @@ export function BotMcpGrantsSetting({
     canChange,
     archived: bot.archivedAt !== null,
   });
+  const disabled = busy || formLocked || !view.editable;
 
-  const change = async (connectionId: McpConnectionId, granted: boolean) => {
+  const change = async (next: Parameters<typeof botMcpGrantsChange>[3]) => {
     setBusy(true);
     const result = await setGrants({
       environmentId,
-      input: botMcpGrantsChange(botId, grants, connections, { connectionId, granted }),
+      input: botMcpGrantsChange(botId, grants, connections, next),
     });
     setBusy(false);
     if (result._tag === "Success") setAcknowledged(result.value.mcpGrants ?? null);
@@ -99,7 +110,18 @@ export function BotMcpGrantsSetting({
 
   return (
     <div className="space-y-2">
-      <Label>MCP connections</Label>
+      <div className="flex items-center justify-between gap-2">
+        <Label>MCP connections</Label>
+        <Button
+          size="xs"
+          variant="outline"
+          disabled={disabled || !canAdd}
+          onClick={() => setAdding(McpConnectionId.make(randomUUID()))}
+        >
+          <PlusIcon className="size-3" aria-hidden />
+          Add connection
+        </Button>
+      </div>
       {view.rows.length > 0 ? (
         <ul className="space-y-2">
           {view.rows.map((row) => (
@@ -107,8 +129,10 @@ export function BotMcpGrantsSetting({
               <label className="flex items-start gap-3 text-sm">
                 <Checkbox
                   checked={row.granted}
-                  disabled={busy || formLocked || !view.editable}
-                  onCheckedChange={(checked) => void change(row.id, checked === true)}
+                  disabled={disabled}
+                  onCheckedChange={(checked) =>
+                    void change({ connectionId: row.id, granted: checked === true })
+                  }
                 />
                 <span className="min-w-0 space-y-1">
                   <span className="flex flex-wrap items-center gap-2">
@@ -124,6 +148,23 @@ export function BotMcpGrantsSetting({
           ))}
         </ul>
       ) : null}
+      {view.ownServers === null ? null : (
+        <div className="flex items-start justify-between gap-3 text-sm">
+          <div className="min-w-0 space-y-1">
+            <Label htmlFor={ownServersId}>{view.ownServers.label}</Label>
+            <p id={`${ownServersId}-description`} className="text-xs text-muted-foreground">
+              {view.ownServers.description}
+            </p>
+          </div>
+          <Switch
+            id={ownServersId}
+            aria-describedby={`${ownServersId}-description`}
+            checked={view.ownServers.on}
+            disabled={disabled}
+            onCheckedChange={(on) => void change({ ownCodexMcpServers: on })}
+          />
+        </div>
+      )}
       {view.notes.map((note) => (
         <p
           key={note.text}
@@ -134,6 +175,19 @@ export function BotMcpGrantsSetting({
           {note.text}
         </p>
       ))}
+      {adding === null ? null : (
+        <McpConnectionDialog
+          key={adding}
+          environmentId={environmentId}
+          environmentLabel={environment.label}
+          target={{ kind: "create", connectionId: adding }}
+          grant={{
+            botName: bot.name,
+            onCreated: (connectionId) => void change({ connectionId, granted: true }),
+          }}
+          onClose={() => setAdding(null)}
+        />
+      )}
     </div>
   );
 }

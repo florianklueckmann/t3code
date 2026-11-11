@@ -13,6 +13,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   botMcpGrantsChange,
   botMcpGrantsSection,
+  codexMcpServerNames,
   latestBotMcpGrants,
   mcpConnectionRemovalMessage,
   mcpConnectionUsage,
@@ -53,11 +54,17 @@ const routine = (botId: BotId, allowChanges: boolean | undefined) =>
 const section = (
   patch: Partial<Parameters<typeof botMcpGrantsSection>[0]> & {
     readonly granted?: McpConnectionId[];
+    readonly ownServers?: boolean;
   },
 ) =>
   botMcpGrantsSection({
     botId: BOT,
-    grants: { revision: 3, connectionIds: patch.granted ?? [MAIL] },
+    grants: {
+      revision: 3,
+      connectionIds: patch.granted ?? [MAIL],
+      ...(patch.ownServers === undefined ? {} : { ownCodexMcpServers: patch.ownServers }),
+    },
+    codexMcpServerNames: ["docs", "probe"],
     catalog: CATALOG,
     providerDriver: ProviderDriverKind.make("codex"),
     platformOs: "darwin",
@@ -95,8 +102,7 @@ describe("botMcpGrantsSection", () => {
     ]);
   });
 
-  const EMPTY =
-    "This Bot has no MCP connections. Your Codex MCP servers are not available to Bots.";
+  const EMPTY = "This Bot has no MCP connections.";
   const PROVIDER_LIMIT =
     "MCP connections apply only to Codex on macOS. This Bot's model is not on a Codex provider, so without connections it uses that provider's own MCP setup. A Bot with connections does not run there.";
   const PLATFORM_LIMIT =
@@ -148,9 +154,51 @@ describe("botMcpGrantsSection", () => {
     ]);
   });
 
+  it.each([
+    ["a server without the switch", undefined, ["probe"], null],
+    [
+      "the switch off",
+      false,
+      ["docs", "probe"],
+      { on: false, description: "Also loads docs and probe from your Codex config." },
+    ],
+    [
+      "the switch on",
+      true,
+      ["probe"],
+      { on: true, description: "Also loads probe from your Codex config." },
+    ],
+    [
+      "no servers in the Codex config",
+      false,
+      [],
+      { on: false, description: "Your Codex config has no MCP servers." },
+    ],
+    [
+      "servers Codex has not reported",
+      true,
+      null,
+      { on: true, description: "Also loads the MCP servers in your Codex config." },
+    ],
+  ] as const)("shows the own-servers switch with %s", (_, ownServers, names, expected) => {
+    const result = section({
+      ...(ownServers === undefined ? {} : { ownServers }),
+      codexMcpServerNames: names === null ? null : [...names],
+    });
+    expect(result.ownServers).toEqual(
+      expected === null ? null : { label: "Use my own Codex MCP servers", ...expected },
+    );
+  });
+
+  it("drops the empty note while the Bot uses its own Codex MCP servers", () => {
+    expect(noteTexts(section({ granted: [], ownServers: true }))).toEqual([
+      "Changes apply from the Bot's next turn.",
+    ]);
+  });
+
   it("points to the catalog when it is empty", () => {
     expect(noteTexts(section({ catalog: [], granted: [] }))).toEqual([
-      "Add connections in Settings → MCP connections.",
+      "No connections yet. Add one to grant it to this Bot.",
       EMPTY,
       "Changes apply from the Bot's next turn.",
     ]);
@@ -177,20 +225,56 @@ describe("botMcpGrantsSection", () => {
 describe("botMcpGrantsChange", () => {
   const grants: BotMcpGrants = { revision: 7, connectionIds: [DOCS, GONE] };
 
+  const NEW = McpConnectionId.make("00000000-0000-4000-8000-000000000005");
+
   it.each([
-    ["grants one", { connectionId: MAIL, granted: true }, [MAIL, DOCS]],
-    ["ungrants one", { connectionId: DOCS, granted: false }, []],
-    ["ungrants a removed one", { connectionId: GONE, granted: false }, [DOCS]],
+    ["grants one", { connectionId: MAIL, granted: true }, [MAIL, DOCS], {}],
+    ["ungrants one", { connectionId: DOCS, granted: false }, [], {}],
+    ["ungrants a removed one", { connectionId: GONE, granted: false }, [DOCS], {}],
+    // Added from the Bot's section: this client's catalog has not caught up with it yet.
+    ["grants one just added", { connectionId: NEW, granted: true }, [DOCS, NEW], {}],
+    [
+      "switches its own Codex MCP servers on",
+      { ownCodexMcpServers: true },
+      [DOCS],
+      { ownCodexMcpServers: true },
+    ],
   ] as const)(
     "%s as the whole set in catalog order, on the revision it saw, without removed ids",
-    (_, change, connectionIds) => {
+    (_, change, connectionIds, switched) => {
       expect(botMcpGrantsChange(BOT, grants, CATALOG, change)).toEqual({
         botId: BOT,
         expectedRevision: 7,
         connectionIds,
+        ...switched,
       });
     },
   );
+});
+
+describe("codexMcpServerNames", () => {
+  const provider = (driver: string, enabled: boolean, mcpServerNames?: ReadonlyArray<string>) => ({
+    driver: ProviderDriverKind.make(driver),
+    enabled,
+    ...(mcpServerNames === undefined ? {} : { mcpServerNames }),
+  });
+
+  it.each([
+    ["no Codex provider reports them", [provider("codex", true)], null],
+    [
+      "enabled Codex providers report them",
+      [
+        provider("codex", true, ["probe", "docs"]),
+        provider("codex", true, ["docs", "mail"]),
+        provider("codex", false, ["off"]),
+        provider("claudeAgent", true, ["claude-only"]),
+      ],
+      ["docs", "mail", "probe"],
+    ],
+    ["the Codex config has none", [provider("codex", true, [])], []],
+  ] as const)("names each server once when %s", (_, providers, expected) => {
+    expect(codexMcpServerNames(providers)).toEqual(expected);
+  });
 });
 
 describe("latestBotMcpGrants", () => {

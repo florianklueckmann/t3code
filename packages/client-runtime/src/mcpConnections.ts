@@ -15,6 +15,7 @@ import {
   type McpConnectionUpdateInput,
   type ProviderDriverKind,
   type ScheduledTask,
+  type ServerProvider,
   type SettingsSecretValue,
 } from "@t3tools/contracts";
 
@@ -150,7 +151,7 @@ export function mcpConnectionStatusText(
 }
 
 export const MCP_CONNECTIONS_NOTICE =
-  "A Bot uses only the connections you grant it in its settings. Your own threads use none of them. This page checks that credentials resolve; it does not start or contact the servers.";
+  "A Bot uses the connections you grant it in its settings, and so does work it starts. Your own threads use none of them. This page checks that credentials resolve; it does not start or contact the servers.";
 
 /** A catalog connection, or a granted one the catalog no longer has, as a Bot's settings list it. */
 export interface BotMcpGrantRow {
@@ -167,10 +168,37 @@ export interface BotMcpGrantsNote {
   readonly text: string;
 }
 
+/** The switch that adds the user's own Codex MCP servers to a Bot's connections. */
+export interface BotOwnMcpServersSwitch {
+  readonly label: string;
+  readonly description: string;
+  readonly on: boolean;
+}
+
 export interface BotMcpGrantsSection {
   readonly rows: ReadonlyArray<BotMcpGrantRow>;
+  /** Null on servers without the switch. */
+  readonly ownServers: BotOwnMcpServersSwitch | null;
   readonly notes: ReadonlyArray<BotMcpGrantsNote>;
   readonly editable: boolean;
+}
+
+/** Each enabled Codex provider's own MCP servers, by name; null while none has reported them. */
+export function codexMcpServerNames(
+  providers: ReadonlyArray<Pick<ServerProvider, "driver" | "enabled" | "mcpServerNames">>,
+): ReadonlyArray<string> | null {
+  const reported = providers.filter(
+    (provider) =>
+      provider.driver === "codex" && provider.enabled && provider.mcpServerNames !== undefined,
+  );
+  if (reported.length === 0) return null;
+  return [...new Set(reported.flatMap((provider) => provider.mcpServerNames ?? []))].sort();
+}
+
+function ownMcpServersDescription(names: ReadonlyArray<string> | null): string {
+  if (names === null) return "Also loads the MCP servers in your Codex config.";
+  if (names.length === 0) return "Your Codex config has no MCP servers.";
+  return `Also loads ${listNames(names)} from your Codex config.`;
 }
 
 /**
@@ -181,6 +209,8 @@ export interface BotMcpGrantsSection {
 export function botMcpGrantsSection(input: {
   readonly botId: BotId;
   readonly grants: BotMcpGrants;
+  /** From `codexMcpServerNames`. */
+  readonly codexMcpServerNames: ReadonlyArray<string> | null;
   readonly catalog: ReadonlyArray<McpConnectionSummary>;
   readonly providerDriver: ProviderDriverKind | undefined;
   readonly platformOs: ExecutionEnvironmentPlatformOs;
@@ -230,14 +260,12 @@ export function botMcpGrantsSection(input: {
     });
   }
   if (input.catalog.length === 0) {
-    notes.push({ tone: "muted", text: "Add connections in Settings → MCP connections." });
+    notes.push({ tone: "muted", text: "No connections yet. Add one to grant it to this Bot." });
   }
+  const ownServersOn = input.grants.ownCodexMcpServers === true;
   if (!usable) {
-    if (unenforceable === null) {
-      notes.push({
-        tone: "muted",
-        text: "This Bot has no MCP connections. Your Codex MCP servers are not available to Bots.",
-      });
+    if (unenforceable === null && !ownServersOn) {
+      notes.push({ tone: "muted", text: "This Bot has no MCP connections." });
     }
   } else if (
     input.routines?.some(
@@ -256,28 +284,53 @@ export function botMcpGrantsSection(input: {
     });
   }
   notes.push({ tone: "muted", text: "Changes apply from the Bot's next turn." });
-  return { rows, notes, editable: input.canChange && !input.archived };
+  return {
+    rows,
+    ownServers:
+      input.grants.ownCodexMcpServers === undefined
+        ? null
+        : {
+            label: "Use my own Codex MCP servers",
+            description: ownMcpServersDescription(input.codexMcpServerNames),
+            on: ownServersOn,
+          },
+    notes,
+    editable: input.canChange && !input.archived,
+  };
 }
 
 /**
- * The whole set to save after granting or ungranting one connection, guarded by the revision the
- * change was made on. Granted ids the catalog no longer has drop out, since the server refuses them.
+ * The whole set to save after one change, guarded by the revision the change was made on. Granted
+ * ids the catalog no longer has drop out, since the server refuses them. A connection granted as
+ * soon as it was added stays, though this client's catalog may not list it yet.
  */
 export function botMcpGrantsChange(
   botId: BotId,
   grants: BotMcpGrants,
   catalog: ReadonlyArray<McpConnectionSummary>,
-  change: { readonly connectionId: McpConnectionId; readonly granted: boolean },
+  change:
+    | { readonly connectionId: McpConnectionId; readonly granted: boolean }
+    | { readonly ownCodexMcpServers: boolean },
 ): BotSetMcpGrantsInput {
   const next = new Set(grants.connectionIds);
-  if (change.granted) next.add(change.connectionId);
-  else next.delete(change.connectionId);
+  if ("connectionId" in change) {
+    if (change.granted) next.add(change.connectionId);
+    else next.delete(change.connectionId);
+  }
+  const added =
+    "connectionId" in change &&
+    change.granted &&
+    !catalog.some((connection) => connection.id === change.connectionId)
+      ? [change.connectionId]
+      : [];
   return {
     botId,
     expectedRevision: grants.revision,
-    connectionIds: catalog.flatMap((connection) =>
-      next.has(connection.id) ? [connection.id] : [],
-    ),
+    connectionIds: [
+      ...catalog.flatMap((connection) => (next.has(connection.id) ? [connection.id] : [])),
+      ...added,
+    ],
+    ...("ownCodexMcpServers" in change ? { ownCodexMcpServers: change.ownCodexMcpServers } : {}),
   };
 }
 

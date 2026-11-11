@@ -79,6 +79,8 @@ export const ProviderAdapterV2RuntimePolicy = Schema.Struct({
    * means none. Ids only, never credentials. An adapter that cannot enforce it refuses the run.
    */
   mcpConnections: Schema.optional(Schema.Array(McpConnectionId)),
+  /** With `mcpConnections`: the user's own MCP servers load too. Apps and plugins stay off. */
+  userMcpServers: Schema.optional(Schema.Literal("enabled")),
 });
 export type ProviderAdapterV2RuntimePolicy = typeof ProviderAdapterV2RuntimePolicy.Type;
 

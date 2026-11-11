@@ -231,12 +231,20 @@ can be read; it does not start or contact the server. To change a connection's
 URL or command, add a new connection.
 
 In a Bot's settings, **MCP connections** lists them, and you choose which ones
-this Bot may use. Its conversations, tasks, routines and the work they start
-load exactly those connections and none of your own Codex MCP servers. A
-change applies from the Bot's next turn. A disabled connection stays granted
-but does not load until you enable it again. Removing a connection takes it
-away from every Bot that uses it; the catalog shows which Bots those are and
-asks first.
+this Bot may use. **Add connection** there adds a new one and gives it to this
+Bot in one step. The Bot's conversations, tasks, routines, forks and subagents
+load exactly those connections. So do threads the Bot starts with T3 Code's
+tools, such as a new thread or a delegated task on this environment. Turn on
+**Use my own Codex MCP servers** to load the MCP servers in your Codex config
+as well; the switch lists them by name. A change applies from the Bot's next
+turn. A disabled connection stays granted but does not load until you enable it
+again. Removing a connection takes it away from every Bot that uses it; the
+catalog shows which Bots those are and asks first.
+
+These grants choose the connections loaded in the Bot's threads. They do not
+limit which T3 Code features you can ask the Bot to use. Work a Bot delegates to
+another environment runs with that environment's own setup, and a message the
+Bot sends to one of your existing threads leaves that thread's setup unchanged.
 
 A No changes routine uses only the tools a connection's server marks as
 read-only. T3 Code cannot check that mark.

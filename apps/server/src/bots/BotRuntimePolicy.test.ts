@@ -36,13 +36,21 @@ const ungrantedBotForkThread = ThreadId.make("fork-of-ungranted-bot-home");
 const botSubagentThread = ThreadId.make("subagent-of-codex-bot-home");
 const ungrantedBotSubagentThread = ThreadId.make("subagent-of-ungranted-codex-bot-home");
 const orphanThread = ThreadId.make("subagent-of-lost-parent");
+const ownServersBotThread = ThreadId.make("bot-home:own-servers:campaign");
 const privateMail = McpConnectionId.make("2a2a2a2a-0000-4000-8000-00000000002a");
 
 const mcpAccessOf = (id: ThreadId): BotTurnContext.BotMcpAccess => {
-  const bot = (connectionIds: ReadonlyArray<McpConnectionId>) =>
-    ({ _tag: "bot", botId: BotId.make("companion"), botName: "Mail Bot", connectionIds }) as const;
+  const bot = (connectionIds: ReadonlyArray<McpConnectionId>, ownCodexMcpServers = false) =>
+    ({
+      _tag: "bot",
+      botId: BotId.make("companion"),
+      botName: "Mail Bot",
+      connectionIds,
+      ownCodexMcpServers,
+    }) as const;
   if ([botThread, workThread, noChangesThread, botForkThread, botSubagentThread].includes(id))
     return bot([privateMail]);
+  if (id === ownServersBotThread) return bot([privateMail], true);
   if ([ungrantedBotThread, ungrantedBotForkThread, ungrantedBotSubagentThread].includes(id))
     return bot([]);
   if (id === archivedBotThread || id === archivedNoChangesThread || id === orphanThread)
@@ -194,7 +202,12 @@ it.effect(
         assert.deepEqual(policy.mcpConnections, [privateMail], threadId);
         assert.equal(policy.nativeMemory, "disabled");
         assert.isUndefined(policy.nativeTools);
+        assert.isUndefined(policy.userMcpServers);
       }
+      // The Bot's switch adds the user's own Codex MCP servers to its granted connections.
+      const ownServers = yield* resolveFor(ownServersBotThread);
+      assert.deepEqual(ownServers.mcpConnections, [privateMail]);
+      assert.equal(ownServers.userMcpServers, "enabled");
       assert.deepEqual((yield* resolveFor(ungrantedBotThread)).mcpConnections, []);
       // No changes keeps the grants under its seal; the scoped Home turn needs no external account.
       const noChanges = yield* resolveFor(noChangesThread);

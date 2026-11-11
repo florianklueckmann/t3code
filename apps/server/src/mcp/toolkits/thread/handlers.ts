@@ -101,11 +101,6 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
           code: "invalid_request",
           message: "The scheduled task was not found.",
         });
-      // A routine runs with its Bot's grants, so a Bot's thread runs only its own.
-      yield* McpToolAccess.requireOwnBot(
-        Effect.succeed(scheduled.bot?.botId),
-        "running a scheduled task that is not your routine",
-      );
       const { task, threadId } = yield* scheduler
         .runNow({ id: input.taskId })
         .pipe(
@@ -168,19 +163,9 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
         Effect.gen(function* () {
           const sourcePoint = input.sourcePoint ?? { type: "latest_stable" as const };
           const { threads, projection } = yield* readThread(input.threadId);
-          // A fork loads the grants of the line it comes from, so a Bot's thread moves only its own.
-          yield* McpToolAccess.requireOwnBot(
-            McpToolAccess.threadBot(projection.thread),
-            `a ${input.action === "fork" ? "fork" : "merge"} of a thread that is not your Bot's`,
-          );
           const commandId = yield* newCommandId();
           if (input.action === "merge_back") {
             const targetThreadId = yield* required(input.targetThreadId, "targetThreadId");
-            const target = yield* readThread(targetThreadId);
-            yield* McpToolAccess.requireOwnBot(
-              McpToolAccess.threadBot(target.projection.thread),
-              "a merge into a thread that is not your Bot's",
-            );
             const result = yield* threads
               .dispatch({
                 type: "thread.merge_back",

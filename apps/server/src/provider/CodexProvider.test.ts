@@ -1,6 +1,25 @@
 import { assert, it } from "@effect/vitest";
 
-import { applyPreferredCodexDefaultModel, mapCodexModelCapabilities } from "./CodexProvider.ts";
+import {
+  applyPreferredCodexDefaultModel,
+  codexUserMcpServerNames,
+  mapCodexModelCapabilities,
+} from "./CodexProvider.ts";
+
+it("names the user's own Codex MCP servers without their settings", () => {
+  assert.deepEqual(
+    codexUserMcpServerNames({
+      mcp_servers: {
+        probe: { command: "probe", env: { TOKEN: "secret" } },
+        docs: { url: "https://docs.example.test/mcp", http_headers: { Authorization: "x" } },
+        "t3-code": { url: "http://127.0.0.1/mcp" },
+      },
+    }),
+    ["docs", "probe"],
+  );
+  assert.deepEqual(codexUserMcpServerNames({}), []);
+  assert.deepEqual(codexUserMcpServerNames({ mcp_servers: null }), []);
+});
 
 it("maps current Codex model capability fields", () => {
   const capabilities = mapCodexModelCapabilities({

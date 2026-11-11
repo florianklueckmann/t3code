@@ -4054,6 +4054,22 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                   excludeTurns: true,
                   ...readOnlyLoad,
                 }),
+                // The Bot's own-servers switch releases and loads without turning the user's off.
+                ...step(
+                  22,
+                  "thread/unsubscribe",
+                  { threadId: nativeThreadId },
+                  { status: "unsubscribed" },
+                ),
+                ...step(23, "thread/resume", grantResume, resumed),
+                ...step(
+                  24,
+                  "thread/memoryMode/set",
+                  { threadId: nativeThreadId, mode: "disabled" },
+                  {},
+                ),
+                // Switching it off again releases and turns them off.
+                ...load(25, true, grantResume),
               ],
             });
             const resumeParams: Array<{ config: { mcp_servers: Record<string, unknown> } }> = [];
@@ -4116,6 +4132,18 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             );
             yield* delivery.set(Effect.succeed(grantedLoad("token-2")));
             yield* resume({ ...seal.readOnlyPolicy, mcpConnections: [privateMail, workMail] });
+            const ownServersPolicy = { ...grantPolicy, userMcpServers: "enabled" } as const;
+            yield* resume(ownServersPolicy);
+            // A turn never runs with the user's servers on a thread loaded without them, or back.
+            assert.equal(
+              (yield* turnWith(grantPolicy))._tag,
+              "ProviderAdapterMcpConnectionsRefusedError",
+            );
+            yield* resume(grantPolicy);
+            assert.equal(
+              (yield* turnWith(ownServersPolicy))._tag,
+              "ProviderAdapterMcpConnectionsRefusedError",
+            );
 
             const granted = {
               [`t3c-${privateMail}`]: {
@@ -4151,6 +4179,20 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                 name.startsWith("t3c-"),
               ),
               Object.keys(granted),
+            );
+            const withOwnServers = resumeParams[4]!.config.mcp_servers;
+            assert.hasAllKeys(withOwnServers, [
+              ...Object.keys(granted),
+              "t3-code",
+              "t3-code-direct",
+            ]);
+            assert.deepEqual(
+              Object.fromEntries(
+                Object.entries(resumeParams[5]!.config.mcp_servers).filter(
+                  ([name]) => !name.startsWith("t3"),
+                ),
+              ),
+              seal.disabledUserServers,
             );
           }).pipe(
             Effect.provideService(HostProcess.Platform, "darwin"),
