@@ -5,7 +5,6 @@ import {
   botMcpGrantsChange,
   emptyMcpConnectionDraft,
   MCP_CONNECTIONS_NOTICE,
-  mcpConnectionDisconnectMessage,
   mcpConnectionDraft,
   mcpConnectionOAuthCallback,
   mcpConnectionRemovalMessage,
@@ -436,6 +435,7 @@ function McpConnectionEditor({
       reportFailure(`Could not give ${grantBot.name} this connection`, granted);
     }
     if (plan.kind === "create" && isOAuth) {
+      setDraft((current) => ({ ...current, oauthClientSecret: "" }));
       setCreated(true);
       await signIn.connect();
       return;
@@ -496,11 +496,7 @@ function McpConnectionEditor({
           ) : null}
           {showAccount && current !== undefined ? (
             <SettingsSection title="Account">
-              <McpConnectionSignInRows
-                signIn={signIn}
-                label={current.label}
-                disconnectMessage={mcpConnectionDisconnectMessage(usage, target.connectionId)}
-              />
+              <McpConnectionSignInRows signIn={signIn} label={current.label} usage={usage} />
             </SettingsSection>
           ) : null}
           <SettingsSection title="Connection">
@@ -801,7 +797,7 @@ function McpConnectionEditor({
               {usage.state === "failed" ? (
                 <ListActionRow
                   label="Retry loading Bots"
-                  description={`Removal names the Bots that lose this connection. ${usage.error}`}
+                  description={`Disconnect and removal name the Bots that lose this connection. ${usage.error}`}
                   onPress={retryUsage}
                 />
               ) : null}

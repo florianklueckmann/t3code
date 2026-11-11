@@ -277,6 +277,10 @@ service, add a second connection and sign in with the other account.
 - A **Signed out** connection, because you disconnected it or the service ended
   access, stays granted. Bots run without it until you choose **Reconnect**, in
   the catalog or in the Bot's settings.
+- When you reconnect, sign in with the same account as before. T3 Code cannot
+  tell which account you chose, and every Bot granted the connection gets the
+  account you sign in with. If your browser is already signed in to another
+  account of that service, switch accounts on the sign-in page.
 - A sign-in that expires in the middle of a long turn fails that connection's
   later calls in that turn. The next turn renews it.
 

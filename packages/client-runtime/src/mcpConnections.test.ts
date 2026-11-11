@@ -398,11 +398,12 @@ describe("mcpConnectionUsage", () => {
   it.each([
     ["while the Bot list loads", null, { state: "loading" }],
     ["when the Bot list failed", "Connection lost", { state: "failed", error: "Connection lost" }],
-  ] as const)("cannot confirm a removal %s", (_, error, state) => {
+  ] as const)("cannot confirm a removal or disconnect %s", (_, error, state) => {
     const usage = mcpConnectionUsage({ botsSupported: true, bots: null, error });
     expect(usage).toEqual(state);
     expect(mcpConnectionUsedByText(usage, MAIL)).toBeNull();
     expect(mcpConnectionRemovalMessage(usage, MAIL)).toBeNull();
+    expect(mcpConnectionDisconnectMessage(usage, MAIL)).toBeNull();
   });
 
   it.each([
@@ -444,6 +445,10 @@ describe("planMcpConnectionSave with OAuth", () => {
 
   it.each([
     ["a client secret without a client ID", { oauthClientSecret: "s3cret" }],
+    [
+      "a client secret reference the form rejected",
+      { oauthClientId: "app-1", oauthClientSecret: "", oauthClientSecretInvalid: true },
+    ],
     ["an Authorization header", { bindings: [{ name: "authorization", value: "Bearer x" }] }],
   ])("refuses %s", (_, patch) => {
     expect(planMcpConnectionSave({ ...draft, ...patch }, create).kind).toBe("invalid");
@@ -522,21 +527,24 @@ describe("mcpConnectionOAuthView", () => {
     ({ state: "pending", flowId: "flow-1", expiresAt }) as const;
   const failed = { state: "failed", flowId: "flow-1", reason: "declined" } as const;
 
+  const sameAccount =
+    "Sign in with the same account as before. This connection keeps its Bot grants, so those Bots reach whichever account you sign in with.";
+
   it.each([
     [
       "a new connection",
       { credential: signedOut("never") },
-      ["warning", "Not connected.", null, null, "Connect"],
+      ["warning", "Not connected.", null, null, "Connect", null],
     ],
     [
       "a revoked account",
       { credential: signedOut("revoked") },
-      ["warning", "Signed out. The service ended access.", null, null, "Reconnect"],
+      ["warning", "Signed out. The service ended access.", null, null, "Reconnect", sameAccount],
     ],
     [
       "a sign-in under way",
       { credential: signedOut("never"), signIn: pending("2026-11-11T12:05:00.000Z") },
-      ["muted", "Waiting for sign-in in the browser…", null, "flow-1", null],
+      ["muted", "Waiting for sign-in in the browser…", null, "flow-1", null, null],
     ],
     [
       "a sign-in past its expiry",
@@ -547,6 +555,7 @@ describe("mcpConnectionOAuthView", () => {
         "This sign-in was cancelled, expired or already used. Start it again.",
         null,
         "Try again",
+        null,
       ],
     ],
     [
@@ -558,21 +567,26 @@ describe("mcpConnectionOAuthView", () => {
         "The service did not grant access.",
         null,
         "Try again",
+        sameAccount,
       ],
     ],
     [
       "a connected account",
       { credential: connected },
-      ["ok", "Connected since Nov 10, 2026", null, null, null],
+      ["ok", "Connected since Nov 10, 2026", null, null, null, null],
     ],
-  ] as const)("reads %s", (_, state, [tone, text, failure, pendingFlowId, signIn]) => {
-    expect(mcpConnectionOAuthView(state, NOW, "catalog")).toEqual({
-      tone,
-      text,
-      failure,
-      pendingFlowId,
-      signIn,
-      connected: state.credential.state === "connected",
-    });
-  });
+  ] as const)(
+    "reads %s",
+    (_, state, [tone, text, failure, pendingFlowId, signIn, reconnectWarning]) => {
+      expect(mcpConnectionOAuthView(state, NOW, "catalog")).toEqual({
+        tone,
+        text,
+        failure,
+        pendingFlowId,
+        signIn,
+        reconnectWarning,
+        connected: state.credential.state === "connected",
+      });
+    },
+  );
 });

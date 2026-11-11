@@ -165,6 +165,7 @@ export function BotMcpGrantsSetting({
                 <BotMcpGrantSignIn
                   environmentId={environmentId}
                   connectionId={row.id}
+                  label={row.label}
                   fallback={row.oauth}
                   disabled={formLocked}
                 />
@@ -222,11 +223,13 @@ export function BotMcpGrantsSetting({
 function BotMcpGrantSignIn({
   environmentId,
   connectionId,
+  label,
   fallback,
   disabled,
 }: {
   readonly environmentId: EnvironmentId;
   readonly connectionId: McpConnectionId;
+  readonly label: string;
   readonly fallback: McpConnectionOAuthState;
   readonly disabled: boolean;
 }) {
@@ -235,7 +238,7 @@ function BotMcpGrantSignIn({
     <div className="grid gap-1.5 pl-7">
       <div className="flex flex-wrap items-center gap-2">
         <Badge variant={STATUS_BADGE[signIn.view.tone]}>{signIn.view.text}</Badge>
-        <McpConnectionSignInButtons signIn={signIn} disabled={disabled} />
+        <McpConnectionSignInButtons signIn={signIn} label={label} disabled={disabled} />
       </div>
       <McpConnectionSignInDetails signIn={signIn} />
     </div>

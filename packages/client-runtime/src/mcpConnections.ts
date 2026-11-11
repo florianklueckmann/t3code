@@ -38,6 +38,8 @@ export interface McpConnectionDraft {
   readonly oauthClientId: string;
   /** Empty for a public client. */
   readonly oauthClientSecret: SettingsSecretValue;
+  /** The secret field shows a reference it rejected; `oauthClientSecret` is the last valid value. */
+  readonly oauthClientSecretInvalid: boolean;
   readonly bindings: ReadonlyArray<{ readonly name: string; readonly value: SettingsSecretValue }>;
 }
 
@@ -53,6 +55,7 @@ export function emptyMcpConnectionDraft(oauthSupported: boolean): McpConnectionD
     auth: oauthSupported ? "oauth" : "headers",
     oauthClientId: "",
     oauthClientSecret: "",
+    oauthClientSecretInvalid: false,
     bindings: [],
   };
 }
@@ -72,6 +75,7 @@ export function mcpConnectionDraft(definition: McpConnectionDefinition): McpConn
     auth: oauth === undefined ? "headers" : "oauth",
     oauthClientId: oauth?.client?.id ?? "",
     oauthClientSecret: oauth?.client?.secret ?? "",
+    oauthClientSecretInvalid: false,
     bindings: Object.entries(bindings).map(([name, value]) => ({ name, value })),
   };
 }
@@ -134,14 +138,13 @@ export function planMcpConnectionSave(
     }
     names.add(key);
   }
-  if (
-    target.kind === "create" &&
-    draft.transport === "http" &&
-    draft.auth === "oauth" &&
-    draft.oauthClientId.trim() === "" &&
-    draft.oauthClientSecret !== ""
-  ) {
-    return { kind: "invalid", message: "Enter your OAuth app's client ID, or clear its secret." };
+  if (target.kind === "create" && draft.transport === "http" && draft.auth === "oauth") {
+    if (draft.oauthClientSecretInvalid) {
+      return { kind: "invalid", message: "Enter a valid secret reference for the client secret." };
+    }
+    if (draft.oauthClientId.trim() === "" && draft.oauthClientSecret !== "") {
+      return { kind: "invalid", message: "Enter your OAuth app's client ID, or clear its secret." };
+    }
   }
   const transport =
     target.kind === "create"
@@ -242,8 +245,16 @@ export interface McpConnectionOAuthView {
   readonly pendingFlowId: string | null;
   /** The button that starts a sign-in; null while one runs or the account is connected. */
   readonly signIn: "Connect" | "Reconnect" | "Try again" | null;
+  /**
+   * Confirmed before a sign-in on a connection that had an account. The service names no account,
+   * so another one would silently take its place under the same id and Bot grants.
+   */
+  readonly reconnectWarning: string | null;
   readonly connected: boolean;
 }
+
+const RECONNECT_WARNING =
+  "Sign in with the same account as before. This connection keeps its Bot grants, so those Bots reach whichever account you sign in with.";
 
 const SIGNED_OUT_REASON = {
   never: "Not connected.",
@@ -272,7 +283,7 @@ export function mcpConnectionOAuthView(
         );
   const credential = state.credential;
   const connected = credential.state === "connected";
-  const base = { failure, pendingFlowId: pending, connected };
+  const base = { failure, pendingFlowId: pending, connected, reconnectWarning: null };
   if (pending !== null) {
     return { ...base, tone: "muted", text: "Waiting for sign-in in the browser…", signIn: null };
   }
@@ -293,6 +304,7 @@ export function mcpConnectionOAuthView(
         ? `${never ? "Not connected." : "Signed out."} This Bot runs without it until you ${never ? "connect" : "reconnect"} it.`
         : SIGNED_OUT_REASON[credential.reason],
     signIn: failure !== null ? "Try again" : never ? "Connect" : "Reconnect",
+    reconnectWarning: never ? null : RECONNECT_WARNING,
   };
 }
 
@@ -544,11 +556,25 @@ export function mcpConnectionUsedByText(
   return names === undefined ? null : `Used by ${listNames(names)}`;
 }
 
+/** What a confirmation that names the affected Bots says until it can name them. */
+export function mcpConnectionUsagePendingText(usage: McpConnectionUsage): string | null {
+  switch (usage.state) {
+    case "loading":
+      return "Checking which Bots use this connection…";
+    case "failed":
+      return `Could not load which Bots use this connection. ${usage.error}`;
+    case "known":
+      return null;
+  }
+}
+
+/** Null until the client knows which Bots lose the account, so disconnecting cannot be confirmed. */
 export function mcpConnectionDisconnectMessage(
   usage: McpConnectionUsage,
   connectionId: McpConnectionId,
-): string {
-  const names = usage.state === "known" ? usage.users.get(connectionId) : undefined;
+): string | null {
+  if (usage.state !== "known") return null;
+  const names = usage.users.get(connectionId);
   const runs =
     names === undefined
       ? "Bots granted it run"

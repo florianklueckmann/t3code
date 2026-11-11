@@ -1,9 +1,11 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
   MCP_CONNECTION_OAUTH_LOOPBACK_ORIGIN,
+  mcpConnectionDisconnectMessage,
   mcpConnectionOAuthCallback,
   mcpConnectionOAuthView,
   type McpConnectionOAuthCallback,
+  type McpConnectionUsage,
 } from "@t3tools/client-runtime/mcp-connections";
 import {
   type AtomCommandResult,
@@ -145,6 +147,7 @@ export function useMcpConnectionSignIn(input: {
   const disconnect = () => run(() => disconnectAccount({ environmentId, input: { connectionId } }));
 
   return {
+    connectionId,
     view,
     own: own !== null && own.flowId === view.pendingFlowId ? own : null,
     busy,
@@ -162,18 +165,20 @@ export function McpConnectionSignInRows({
   signIn,
   label,
   disabled = false,
-  disconnectMessage,
+  usage,
 }: {
   readonly signIn: McpConnectionSignIn;
   readonly label: string;
   readonly disabled?: boolean;
-  /** Offers Disconnect, confirmed with this message. */
-  readonly disconnectMessage?: string;
+  /** Offers Disconnect, confirmable once this names the Bots that lose the account. */
+  readonly usage?: McpConnectionUsage;
 }) {
   const [pasted, setPasted] = useState("");
   const { view, own } = signIn;
   const failure = signIn.error ?? view.failure;
   const off = disabled || signIn.busy || !signIn.canSignIn;
+  const disconnectMessage =
+    usage === undefined ? null : mcpConnectionDisconnectMessage(usage, signIn.connectionId);
   return (
     <>
       <View className="gap-1 px-4 py-3">
@@ -238,23 +243,34 @@ export function McpConnectionSignInRows({
           label={view.signIn}
           loading={signIn.busy}
           disabled={off}
-          onPress={() => void signIn.connect()}
+          onPress={() =>
+            view.reconnectWarning === null
+              ? void signIn.connect()
+              : Dialog.confirm({
+                  title: `Sign in to ${label} again?`,
+                  message: view.reconnectWarning,
+                  confirmText: "Sign in",
+                  onConfirm: () => void signIn.connect(),
+                })
+          }
         />
       ) : null}
-      {disconnectMessage !== undefined && view.connected ? (
+      {usage !== undefined && view.connected ? (
         <ListActionRow
           label="Disconnect"
           tone="danger"
-          disabled={off}
-          onPress={() =>
+          loading={usage.state === "loading"}
+          disabled={off || disconnectMessage === null}
+          onPress={() => {
+            if (disconnectMessage === null) return;
             Dialog.confirm({
               title: `Disconnect ${label}?`,
               message: disconnectMessage,
               confirmText: "Disconnect",
               destructive: true,
               onConfirm: () => void signIn.disconnect(),
-            })
-          }
+            });
+          }}
         />
       ) : null}
     </>

@@ -1,9 +1,12 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
   MCP_CONNECTION_OAUTH_LOOPBACK_ORIGIN,
+  mcpConnectionDisconnectMessage,
   mcpConnectionOAuthCallback,
   mcpConnectionOAuthView,
+  mcpConnectionUsagePendingText,
   type McpConnectionOAuthCallback,
+  type McpConnectionUsage,
 } from "@t3tools/client-runtime/mcp-connections";
 import {
   type AtomCommandResult,
@@ -151,6 +154,7 @@ export function useMcpConnectionSignIn(input: {
   const disconnect = () => run(() => disconnectAccount({ environmentId, input: { connectionId } }));
 
   return {
+    connectionId,
     view,
     /** Set while this client's own sign-in waits for the browser. */
     own: own !== null && own.flowId === view.pendingFlowId ? own : null,
@@ -167,17 +171,24 @@ export function useMcpConnectionSignIn(input: {
 /** The buttons that move a connection between signed out, signing in and connected. */
 export function McpConnectionSignInButtons({
   signIn,
+  label,
   disabled = false,
   disconnect,
 }: {
   readonly signIn: McpConnectionSignIn;
+  readonly label: string;
   readonly disabled?: boolean;
-  /** Offers Disconnect, confirmed with this message. */
-  readonly disconnect?: { readonly label: string; readonly message: string };
+  /** Offers Disconnect, confirmed once `usage` names the Bots that lose the account. */
+  readonly disconnect?: { readonly usage: McpConnectionUsage; readonly onRetryUsage: () => void };
 }) {
-  const [confirming, setConfirming] = useState(false);
+  const [reconnecting, setReconnecting] = useState(false);
+  const [disconnecting, setDisconnecting] = useState(false);
   const { view } = signIn;
   const off = disabled || signIn.busy || !signIn.canSignIn;
+  const disconnectMessage =
+    disconnect === undefined
+      ? null
+      : mcpConnectionDisconnectMessage(disconnect.usage, signIn.connectionId);
   return (
     <>
       {view.pendingFlowId !== null ? (
@@ -185,27 +196,61 @@ export function McpConnectionSignInButtons({
           Cancel sign-in
         </Button>
       ) : view.signIn !== null ? (
-        <Button size="xs" variant="outline" disabled={off} onClick={() => void signIn.connect()}>
+        <Button
+          size="xs"
+          variant="outline"
+          disabled={off}
+          onClick={() =>
+            view.reconnectWarning === null ? void signIn.connect() : setReconnecting(true)
+          }
+        >
           {view.signIn}
         </Button>
       ) : null}
+      <AlertDialog open={reconnecting} onOpenChange={setReconnecting}>
+        <AlertDialogPopup>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Sign in to {label} again?</AlertDialogTitle>
+            <AlertDialogDescription>{view.reconnectWarning}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogClose render={<Button variant="outline" />}>Cancel</AlertDialogClose>
+            <Button
+              onClick={() => {
+                setReconnecting(false);
+                void signIn.connect();
+              }}
+            >
+              Sign in
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogPopup>
+      </AlertDialog>
       {disconnect !== undefined && view.connected ? (
         <>
-          <Button size="xs" variant="ghost" disabled={off} onClick={() => setConfirming(true)}>
+          <Button size="xs" variant="ghost" disabled={off} onClick={() => setDisconnecting(true)}>
             Disconnect
           </Button>
-          <AlertDialog open={confirming} onOpenChange={setConfirming}>
+          <AlertDialog open={disconnecting} onOpenChange={setDisconnecting}>
             <AlertDialogPopup>
               <AlertDialogHeader>
-                <AlertDialogTitle>Disconnect {disconnect.label}?</AlertDialogTitle>
-                <AlertDialogDescription>{disconnect.message}</AlertDialogDescription>
+                <AlertDialogTitle>Disconnect {label}?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  {disconnectMessage ?? mcpConnectionUsagePendingText(disconnect.usage)}
+                </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>
                 <AlertDialogClose render={<Button variant="outline" />}>Cancel</AlertDialogClose>
+                {disconnect.usage.state === "failed" ? (
+                  <Button variant="outline" onClick={disconnect.onRetryUsage}>
+                    Retry
+                  </Button>
+                ) : null}
                 <Button
                   variant="destructive"
+                  disabled={disconnectMessage === null}
                   onClick={() => {
-                    setConfirming(false);
+                    setDisconnecting(false);
                     void signIn.disconnect();
                   }}
                 >

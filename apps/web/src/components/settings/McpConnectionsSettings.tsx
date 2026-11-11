@@ -2,12 +2,12 @@ import { useAtomValue } from "@effect/atom-react";
 import {
   emptyMcpConnectionDraft,
   MCP_CONNECTIONS_NOTICE,
-  mcpConnectionDisconnectMessage,
   mcpConnectionDraft,
   mcpConnectionOAuthCallback,
   mcpConnectionRemovalMessage,
   mcpConnectionStatusText,
   mcpConnectionUsage,
+  mcpConnectionUsagePendingText,
   mcpConnectionUsedByText,
   planMcpConnectionSave,
   type McpConnectionDraft,
@@ -345,10 +345,8 @@ function McpConnectionRowView({
           {signIn === null ? null : (
             <McpConnectionSignInButtons
               signIn={signIn}
-              disconnect={{
-                label: definition.label,
-                message: mcpConnectionDisconnectMessage(usage, id),
-              }}
+              label={definition.label}
+              disconnect={{ usage, onRetryUsage }}
             />
           )}
           <Button size="xs" variant="ghost" disabled={!canRefresh} onClick={onRefresh}>
@@ -404,10 +402,7 @@ function RemoveMcpConnectionButton({
           <AlertDialogHeader>
             <AlertDialogTitle>Remove {definition.label}?</AlertDialogTitle>
             <AlertDialogDescription>
-              {message ??
-                (usage.state === "failed"
-                  ? `Could not load which Bots use this connection. ${usage.error}`
-                  : "Checking which Bots use this connection…")}
+              {message ?? mcpConnectionUsagePendingText(usage)}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -546,6 +541,7 @@ export function McpConnectionDialog({
     }
     if (plan.kind === "create") grant?.onCreated(plan.input.connectionId);
     if (plan.kind === "create" && isOAuth) {
+      setDraft((current) => ({ ...current, oauthClientSecret: "" }));
       setSigningIn(true);
       await signIn.connect();
       return;
@@ -576,7 +572,7 @@ export function McpConnectionDialog({
             <McpConnectionSignInDetails signIn={signIn} />
           </DialogPanel>
           <DialogFooter variant="bare">
-            <McpConnectionSignInButtons signIn={signIn} />
+            <McpConnectionSignInButtons signIn={signIn} label={draft.label.trim()} />
             <Button variant="outline" onClick={onClose}>
               Close
             </Button>
@@ -632,7 +628,8 @@ export function McpConnectionDialog({
                 disabled={editing}
                 onValueChange={(next) => {
                   if (next !== "http" && next !== "stdio") return;
-                  setDraft({ ...draft, transport: next });
+                  // A remounted secret field shows its last valid value.
+                  setDraft({ ...draft, transport: next, oauthClientSecretInvalid: false });
                   setBindings([]);
                 }}
               >
@@ -672,7 +669,7 @@ export function McpConnectionDialog({
                   disabled={editing}
                   onValueChange={(next) => {
                     if (next !== "oauth" && next !== "headers") return;
-                    setDraft({ ...draft, auth: next });
+                    setDraft({ ...draft, auth: next, oauthClientSecretInvalid: false });
                     setBindings([]);
                   }}
                 >
@@ -713,7 +710,8 @@ export function McpConnectionDialog({
                       />
                     </CollapsibleTrigger>
                   </div>
-                  <CollapsiblePanel>
+                  {/* Keeps a rejected secret reference on screen while the save refuses it. */}
+                  <CollapsiblePanel keepMounted>
                     <div className="grid gap-3 pt-3">
                       <p className="text-xs text-muted-foreground">
                         Only for services that do not let T3 Code register itself. Add{" "}
@@ -747,7 +745,16 @@ export function McpConnectionDialog({
                             setDraft({ ...draft, oauthClientSecret: event.target.value })
                           }
                           onSecretChange={(secret) =>
-                            setDraft({ ...draft, oauthClientSecret: secret ?? "" })
+                            setDraft((current) => ({
+                              ...current,
+                              oauthClientSecret: secret ?? "",
+                            }))
+                          }
+                          onValidityChange={(valid) =>
+                            setDraft((current) => ({
+                              ...current,
+                              oauthClientSecretInvalid: !valid,
+                            }))
                           }
                         />
                       </div>
