@@ -226,8 +226,11 @@ Codex threads keep your Codex memory settings.
 
 - Bots with granted MCP connections require a supported Codex version on macOS,
   where they load only those connections. Without grants, Bots on other
-  providers or platforms keep the provider's own MCP setup with provider memory
-  off; on supported Codex versions on macOS, they load no external MCP servers.
+  providers or platforms keep the provider's own MCP setup; on supported Codex
+  versions on macOS, they load no external MCP servers.
+- Bots disable Claude's automatic memory and Grok's cross-session memory.
+  Other providers may still use their own memories when they do not expose a
+  session memory switch.
 - Built-in email and calendar connections are not available.
 - **Settings → MCP connections** stores connections
   for an environment: one connection per account, with its credentials as header

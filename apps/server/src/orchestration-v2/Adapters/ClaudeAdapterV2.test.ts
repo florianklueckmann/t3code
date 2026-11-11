@@ -1042,7 +1042,11 @@ describe("ClaudeAdapterV2 Auto-accept edits", () => {
 });
 
 describe("ClaudeAdapterV2 append-system-prompt-file launch argument", () => {
-  const startTurnWithLaunchArgs = Effect.fnUntraced(function* (launchArgs: string, cwd: string) {
+  const startTurnWithLaunchArgs = Effect.fnUntraced(function* (
+    launchArgs: string,
+    cwd: string,
+    nativeMemory?: ProviderAdapter.ProviderAdapterV2RuntimePolicy["nativeMemory"],
+  ) {
     const fileSystem = yield* FileSystem.FileSystem;
     const opened: Array<ClaudeAdapterV2.ClaudeAgentSdkQueryOptions> = [];
     const adapter = yield* ClaudeAdapterV2.makeClaudeAdapterV2({
@@ -1082,6 +1086,7 @@ describe("ClaudeAdapterV2 append-system-prompt-file launch argument", () => {
     });
     const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
       runtimeMode: "full-access",
+      ...(nativeMemory === undefined ? {} : { nativeMemory }),
       interactionMode: "default",
       cwd,
     });
@@ -1180,6 +1185,53 @@ describe("ClaudeAdapterV2 append-system-prompt-file launch argument", () => {
         ),
       ),
     ),
+  );
+
+  it.effect.each([
+    ["disabled", false],
+    [undefined, true],
+  ] as const)(
+    "honors native memory policy %s over enabled user settings",
+    ([nativeMemory, enabled]) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const cwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-memory-" });
+          const settings = {
+            autoMemoryEnabled: true,
+            env: { CLAUDE_CODE_DISABLE_AUTO_MEMORY: "0", MEMORY_SENTINEL: "preserved" },
+          };
+          yield* fileSystem.writeFileString(
+            NodePath.join(cwd, "user-settings.json"),
+            JSON.stringify(settings),
+          );
+          for (const launchArgs of [
+            `--settings '${JSON.stringify(settings)}'`,
+            "--settings user-settings.json",
+          ]) {
+            const { exit, opened } = yield* startTurnWithLaunchArgs(launchArgs, cwd, nativeMemory);
+            assert.isTrue(Exit.isSuccess(exit));
+            assert.lengthOf(opened, 1);
+            assert.deepInclude(opened[0]!.settings, {
+              autoMemoryEnabled: enabled,
+              env: {
+                CLAUDE_CODE_DISABLE_AUTO_MEMORY: enabled ? "0" : "1",
+                MEMORY_SENTINEL: "preserved",
+              },
+            });
+            assert.isUndefined(opened[0]!.extraArgs?.["settings"]);
+          }
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              NodeCrypto.layer,
+            ),
+          ),
+        ),
+      ),
   );
 
   // regression: #20413 malformed append-system-prompt launch args fail before a query opens
@@ -3411,6 +3463,57 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       };
     });
   const makeWakeHarness = makeWakeHarnessWithOptions();
+
+  it.effect("reopens the Claude query when native memory is disabled and restored", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeWakeHarnessWithOptions({
+        freshQueueOnReopen: true,
+        settings: {
+          ...DEFAULT_CLAUDE_SETTINGS,
+          launchArgs: `--settings '{"autoMemoryEnabled":true}'`,
+        },
+      });
+      for (const [index, nativeMemory] of ([undefined, "disabled", undefined] as const).entries()) {
+        const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+          ...CLAUDE_TEST_RUNTIME_POLICY,
+          ...(nativeMemory === undefined ? {} : { nativeMemory }),
+        });
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make(`attempt-claude-memory-${index}`),
+            text: "Continue.",
+            attachments: [],
+            providerTurnOrdinal: index + 1,
+            runtimePolicy,
+          }),
+        );
+        assert.deepInclude(harness.getOpenedOptions()?.settings, {
+          autoMemoryEnabled: nativeMemory !== "disabled",
+        });
+        assert.lengthOf(harness.processQueues, index + 1);
+        yield* Queue.offer(
+          harness.processQueues[index]!,
+          makeResultFrame({
+            uuid: `00000000-0000-4000-8000-00000000001${index}`,
+            result: "Done.",
+          }),
+        );
+        assert.equal((yield* Queue.take(harness.terminalReceipts)).status, "completed");
+      }
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+        ),
+      ),
+    ),
+  );
 
   it.effect.each(["release-after", "cancel-after", "release-before", "resume-pending"] as const)(
     "keeps attachment reservations across compaction: %s boundary",
