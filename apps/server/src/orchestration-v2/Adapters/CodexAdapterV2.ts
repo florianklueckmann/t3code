@@ -1,6 +1,6 @@
 import { redactCodexProtocolValue } from "./codexProtocolRedaction.ts";
 import * as DocumentText from "../../provider/DocumentText.ts";
-import { revertCodexThread } from "../../provider/CodexThreadRevert.ts";
+import { revertCodexThread, revertCodexThreadAfter } from "../../provider/CodexThreadRevert.ts";
 import { historyResponseItems } from "@t3tools/provider-core/server/handoffBudget";
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
 import {
@@ -41,6 +41,7 @@ import {
   isDelegatedAppThread,
 } from "@t3tools/contracts";
 import { SKILL_MENTION_PATTERN } from "@t3tools/shared/composerInlineTokens";
+import { CODEX_SAFETY_BLOCK_CODES } from "@t3tools/shared/conversationRecovery";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import {
@@ -1046,6 +1047,20 @@ const countTerminalTurnsAfterBoundary = (
   ).length;
 };
 
+const nativeTurnIdsThrough = (
+  input: ProviderAdapter.ProviderAdapterV2RollbackThreadInput,
+  targetNativeId: string,
+): ReadonlySet<string> => {
+  const ids = new Set([targetNativeId]);
+  if (input.target.type !== "provider_turn") return ids;
+  const targetOrdinal = input.target.providerTurn.ordinal;
+  for (const turn of input.providerThreadTurns) {
+    const nativeId = turn.nativeTurnRef?.nativeId;
+    if (turn.ordinal <= targetOrdinal && nativeId != null) ids.add(nativeId);
+  }
+  return ids;
+};
+
 const resolveCodexForkRollbackTurnCount = Effect.fn("CodexAdapterV2.resolveForkRollbackTurnCount")(
   function* (input: ProviderAdapter.ProviderAdapterV2ForkThreadInput) {
     if (input.providerTurnId === undefined || input.sourceProviderTurns === undefined) {
@@ -1222,6 +1237,14 @@ function withCodexManagedFailure(
         code: managed.code,
         ...(managed.usageLimit ? { class: "usage_limit" } : {}),
       };
+}
+
+function withCodexSafetyBlock(
+  failure: OrchestrationV2ProviderFailure,
+): OrchestrationV2ProviderFailure {
+  return failure.code !== null && CODEX_SAFETY_BLOCK_CODES.has(failure.code)
+    ? { ...failure, safetyBlock: true }
+    : failure;
 }
 
 function failureResetAt(
@@ -6528,7 +6551,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                         ...failure,
                         resetAt: failureResetAt(failure, yield* Ref.get(rateLimitSnapshot)),
                       }
-                    : failure,
+                    : withCodexSafetyBlock(failure),
                 ...(input.providerRetry === undefined
                   ? {}
                   : {
@@ -8792,7 +8815,15 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 });
               }
               const response = yield* ensureInitialized.pipe(
-                Effect.andThen(revertCodexThread(client, threadId, numTurns)),
+                Effect.andThen(
+                  nativeConversationHeadRef?.nativeId == null
+                    ? revertCodexThread(client, threadId, numTurns)
+                    : revertCodexThreadAfter(
+                        client,
+                        threadId,
+                        nativeTurnIdsThrough(threadInput, nativeConversationHeadRef.nativeId),
+                      ),
+                ),
               );
               turnTokenUsageByThread.delete(threadId);
               return {

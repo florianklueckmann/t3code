@@ -19,6 +19,7 @@ export type ThreadActionMenuId =
   | "unsnooze"
   | "rename"
   | "regenerate-title"
+  | "fresh-conversation"
   | "mark-unread"
   | "share-guest"
   | "copy"
@@ -89,6 +90,7 @@ export interface ThreadActionMenuState {
     readonly snooze: boolean;
     readonly pinning: boolean;
     readonly titleRegeneration: boolean;
+    readonly conversationRecovery?: boolean;
   };
   readonly snoozePresets: ReadonlyArray<SnoozePreset>;
   /** Guest links need their own grant, so the caller checks it instead of `canOperate`. */
@@ -174,6 +176,16 @@ export function buildThreadActionMenuItems(
             label: state.isRegeneratingTitle ? "Regenerating…" : "Regenerate title",
             icon: "refresh-cw",
             disabled: state.isRegeneratingTitle,
+          },
+        ]
+      : []),
+    ...(state.supports.conversationRecovery
+      ? [
+          {
+            id: "fresh-conversation" as const,
+            label: "Start fresh conversation",
+            icon: "refresh-cw",
+            disabled: state.isRunning,
           },
         ]
       : []),

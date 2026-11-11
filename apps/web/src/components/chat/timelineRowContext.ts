@@ -7,6 +7,7 @@ import type {
 import {
   type EnvironmentId,
   type MessageId,
+  type OrchestrationV2ConversationRecoveryMode,
   type OrchestrationV2TurnItem,
   type RunAttemptId,
   type ScopedThreadRef,
@@ -29,6 +30,13 @@ import { type MessagesTimelineRow, type WorkGroupScrollAnchor } from "./Messages
 import { type TimestampFormat } from "@t3tools/contracts/settings";
 import type { TurnItemDetailSource } from "../../state/queries";
 import { type HandoffTimelineRun } from "./V2LifecycleRow";
+
+export interface ConversationRecoveryAction {
+  readonly runId: RunId;
+  readonly mode: OrchestrationV2ConversationRecoveryMode;
+  readonly pending: boolean;
+  readonly recover: () => void;
+}
 
 /**
  * Where an expanded row reads an item's detail and a command's output. The owner's rows read them
@@ -94,6 +102,8 @@ export interface TimelineRowSharedState {
   onCancelWorktreeSetup: (() => void) | null;
   retryableWorkspacePreparationRunIds: ReadonlySet<RunId>;
   onRetryWorkspacePreparation: ((runId: RunId) => void) | null;
+  /** The recovery the refused run's error row offers. */
+  conversationRecovery: ConversationRecoveryAction | null;
   onWorktreeSetupWorkLocally: (() => void) | null;
   onOpenWorktreeSetupTerminal: ((terminalId: string) => void) | null;
   workGroupViewState: WorkGroupViewState;
