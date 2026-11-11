@@ -16,9 +16,12 @@ export interface McpCallerBotThread {
   readonly lineage: OrchestrationV2AppThreadLineage;
 }
 
-/** Lets MCP tools ask without depending on the Bot services. A server without Bots has none. */
+/**
+ * Lets MCP tools ask without depending on the Bot services. Unprovided, every line is unknown, so
+ * a lost provide refuses Bot-guarded work rather than allowing it.
+ */
 export class McpCallerBot extends Context.Reference<{
   readonly forThread: (thread: McpCallerBotThread) => Effect.Effect<McpCallerBotValue>;
 }>("t3/mcp/McpCallerBot", {
-  defaultValue: () => ({ forThread: () => Effect.succeed({ _tag: "none" }) }),
+  defaultValue: () => ({ forThread: () => Effect.succeed({ _tag: "unknown" }) }),
 }) {}

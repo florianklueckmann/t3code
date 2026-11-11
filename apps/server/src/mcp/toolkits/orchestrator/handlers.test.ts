@@ -37,8 +37,15 @@ const owners = new Map([
 ]);
 const once = { type: "once", runAt: "2026-12-01T09:00:00Z" } as const;
 
-/** Runs one tool call as a thread whose line belongs to `accessOf`; returns what reached the service. */
-const call = (name: string, params: unknown, accessOf: McpCallerBot.McpCallerBotValue) =>
+/**
+ * Runs one tool call as a thread whose line belongs to `accessOf`, or with no `McpCallerBot`
+ * provided when "unprovided"; returns what reached the service.
+ */
+const call = (
+  name: string,
+  params: unknown,
+  accessOf: McpCallerBot.McpCallerBotValue | "unprovided",
+) =>
   Effect.gen(function* () {
     const reached = yield* Ref.make<ReadonlyArray<string>>([]);
     // Recorded, then refused, so no result needs encoding; only reaching the service counts.
@@ -75,9 +82,11 @@ const call = (name: string, params: unknown, accessOf: McpCallerBot.McpCallerBot
                 getThreadShell: () => Effect.succeed(liveThreadShell(threadId)),
               }),
               layerCallerChangesAllowed,
-              Layer.succeed(McpCallerBot.McpCallerBot, {
-                forThread: () => Effect.succeed(accessOf),
-              }),
+              accessOf === "unprovided"
+                ? Layer.empty
+                : Layer.succeed(McpCallerBot.McpCallerBot, {
+                    forThread: () => Effect.succeed(accessOf),
+                  }),
               Layer.mock(OrchestratorMcpService.OrchestratorMcpService)({
                 scheduleTask: () => reach("scheduleTask"),
                 updateScheduledTask: () => reach("updateScheduledTask"),
@@ -158,6 +167,8 @@ it.effect.each([
     { _tag: "unknown" },
     "capability_denied",
   ],
+  // A lost provide must refuse, not wave Bot work through as ordinary.
+  ["create_threads", { threads: [{ prompt: "Check mail" }] }, "unprovided", "capability_denied"],
 ] as const)("%s %o from %o: %s", ([name, params, accessOf, expected]) =>
   call(name, params, accessOf).pipe(Effect.map((result) => expect(outcome(result)).toBe(expected))),
 );
