@@ -9,10 +9,17 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import { type BotId, type BotMcpGrants, McpConnectionId } from "@t3tools/contracts";
+import {
+  type BotId,
+  type BotMcpGrants,
+  type EnvironmentId,
+  McpConnectionId,
+  type McpConnectionOAuthState,
+} from "@t3tools/contracts";
 import { PlusIcon } from "lucide-react";
 import { useId, useState } from "react";
 
+import { useNowAfter } from "../../hooks/useDeadline";
 import { randomUUID } from "../../lib/utils";
 import type { EnvironmentPresentation } from "../../state/environments";
 import { useEnvironmentQuery } from "../../state/query";
@@ -24,6 +31,11 @@ import { Checkbox } from "../ui/checkbox";
 import { Label } from "../ui/label";
 import { Switch } from "../ui/switch";
 import { stackedThreadToast, toastManager } from "../ui/toast";
+import {
+  McpConnectionSignInButtons,
+  McpConnectionSignInDetails,
+  useMcpConnectionSignIn,
+} from "./McpConnectionSignIn";
 import { McpConnectionDialog } from "./McpConnectionsSettings";
 
 const STATUS_BADGE = {
@@ -47,6 +59,7 @@ export function BotMcpGrantsSetting({
   const descriptor = environment.serverConfig?.environment;
   const ownServersId = useId();
   const bots = useEnvironmentQuery(serverEnvironment.botsLive({ environmentId, input: {} }));
+  const now = useNowAfter(null);
   const catalog = useEnvironmentQuery(serverEnvironment.mcpConnections(environmentId));
   const routines = useEnvironmentQuery(
     descriptor?.capabilities.botRoutines === true
@@ -85,7 +98,9 @@ export function BotMcpGrantsSetting({
     routines: routines.data?.tasks ?? null,
     canChange,
     archived: bot.archivedAt !== null,
+    now,
   });
+  const oauthSupported = descriptor.capabilities.mcpConnectionsOAuth === true;
   const disabled = busy || formLocked || !view.editable;
 
   const change = async (next: Parameters<typeof botMcpGrantsChange>[3]) => {
@@ -125,7 +140,7 @@ export function BotMcpGrantsSetting({
       {view.rows.length > 0 ? (
         <ul className="space-y-2">
           {view.rows.map((row) => (
-            <li key={row.id}>
+            <li key={row.id} className="space-y-1">
               <label className="flex items-start gap-3 text-sm">
                 <Checkbox
                   checked={row.granted}
@@ -141,9 +156,20 @@ export function BotMcpGrantsSetting({
                       <Badge variant="outline">{row.transport === "http" ? "HTTP" : "stdio"}</Badge>
                     )}
                   </span>
-                  <Badge variant={STATUS_BADGE[row.status.tone]}>{row.status.text}</Badge>
+                  {oauthSupported && row.oauth !== null ? null : (
+                    <Badge variant={STATUS_BADGE[row.status.tone]}>{row.status.text}</Badge>
+                  )}
                 </span>
               </label>
+              {oauthSupported && row.oauth !== null ? (
+                <BotMcpGrantSignIn
+                  environmentId={environmentId}
+                  connectionId={row.id}
+                  label={row.label}
+                  fallback={row.oauth}
+                  disabled={formLocked}
+                />
+              ) : null}
             </li>
           ))}
         </ul>
@@ -180,6 +206,7 @@ export function BotMcpGrantsSetting({
           key={adding}
           environmentId={environmentId}
           environmentLabel={environment.label}
+          oauthSupported={oauthSupported}
           target={{ kind: "create", connectionId: adding }}
           grant={{
             botName: bot.name,
@@ -188,6 +215,32 @@ export function BotMcpGrantsSetting({
           onClose={() => setAdding(null)}
         />
       )}
+    </div>
+  );
+}
+
+/** An OAuth connection's live state in a Bot's settings, with a way back in when signed out. */
+function BotMcpGrantSignIn({
+  environmentId,
+  connectionId,
+  label,
+  fallback,
+  disabled,
+}: {
+  readonly environmentId: EnvironmentId;
+  readonly connectionId: McpConnectionId;
+  readonly label: string;
+  readonly fallback: McpConnectionOAuthState;
+  readonly disabled: boolean;
+}) {
+  const signIn = useMcpConnectionSignIn({ environmentId, connectionId, fallback, audience: "bot" });
+  return (
+    <div className="grid gap-1.5 pl-7">
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge variant={STATUS_BADGE[signIn.view.tone]}>{signIn.view.text}</Badge>
+        <McpConnectionSignInButtons signIn={signIn} label={label} disabled={disabled} />
+      </div>
+      <McpConnectionSignInDetails signIn={signIn} />
     </div>
   );
 }

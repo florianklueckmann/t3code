@@ -3,15 +3,18 @@ import { useNavigation, type StaticScreenProps } from "@react-navigation/native"
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import {
   botMcpGrantsChange,
-  EMPTY_MCP_CONNECTION_DRAFT,
+  emptyMcpConnectionDraft,
   MCP_CONNECTIONS_NOTICE,
   mcpConnectionDraft,
+  mcpConnectionOAuthCallback,
   mcpConnectionRemovalMessage,
   mcpConnectionStatusText,
   mcpConnectionUsage,
   mcpConnectionUsedByText,
   planMcpConnectionSave,
   type McpConnectionDraft,
+  type McpConnectionStatusText,
+  type McpConnectionUsage,
 } from "@t3tools/client-runtime/mcp-connections";
 import {
   configuredSecretSources,
@@ -21,16 +24,18 @@ import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime"
 import {
   isSecretReference,
   MCP_CONNECTION_LABEL_MAX_LENGTH,
+  MCP_CONNECTION_OAUTH_CALLBACK_PATH,
   McpConnectionId,
   resolveEnvironmentMachineKind,
   type BotId,
   type EnvironmentId,
   type McpConnectionDefinition,
+  type McpConnectionSummary,
   type SecretProviderId,
   type SettingsSecretValue,
 } from "@t3tools/contracts";
 import Constants from "expo-constants";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Platform, View } from "react-native";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -46,8 +51,10 @@ import { uuidv4 } from "../../lib/uuid";
 import { useEnvironmentServerConfig } from "../../state/entities";
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
+import { usePreparedConnection } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { reportBotFailure as reportFailure } from "../bots/reportBotFailure";
+import { McpConnectionSignInRows, useMcpConnectionSignIn } from "./McpConnectionSignIn";
 import { useSettingsEnvironmentMenu } from "./components/SettingsEnvironmentFilterHeader";
 import { FormField, SelectRow } from "./components/SettingsFormRows";
 import { SettingsScreen } from "./components/SettingsScreen";
@@ -127,6 +134,8 @@ function EnvironmentMcpConnections({ environment }: { readonly environment: Sett
     label: "mcp connections refresh",
   });
   const { usage } = useMcpConnectionUsage(environmentId);
+  const oauthSupported =
+    environment.serverConfig.environment.capabilities.mcpConnectionsOAuth === true;
   const [refreshing, setRefreshing] = useState(false);
   const entries = Object.entries(definitions) as Array<[McpConnectionId, McpConnectionDefinition]>;
   const summaries = new Map(statuses.data?.connections.map((summary) => [summary.id, summary]));
@@ -138,29 +147,25 @@ function EnvironmentMcpConnections({ environment }: { readonly environment: Sett
         </Text>
       ) : (
         entries.map(([id, definition]) => {
-          const summary = summaries.get(id);
-          const status = mcpConnectionStatusText(
-            summary?.revision === definition.revision ? summary.status : undefined,
-          );
-          return (
-            <ListActionRow
-              key={id}
-              label={definition.label}
-              description={[
-                definition.transport.type === "http" ? "HTTP" : "stdio",
-                definition.enabled ? null : "Disabled",
-                statuses.error ?? status.text,
-                mcpConnectionUsedByText(usage, id),
-              ]
-                .filter((part) => part !== null)
-                .join(" · ")}
-              onPress={() =>
-                navigation.navigate("SettingsMcpConnectionEdit", {
-                  environmentId,
-                  connectionId: id,
-                })
-              }
-            />
+          const row = {
+            environmentId,
+            id,
+            definition,
+            summary: summaries.get(id),
+            statusError: statuses.error,
+            usage,
+            onPress: () =>
+              navigation.navigate("SettingsMcpConnectionEdit", {
+                environmentId,
+                connectionId: id,
+              }),
+          };
+          return oauthSupported &&
+            definition.transport.type === "http" &&
+            definition.transport.oauth !== undefined ? (
+            <OAuthMcpConnectionRow key={id} {...row} />
+          ) : (
+            <McpConnectionRow key={id} {...row} oauthStatus={null} />
           );
         })
       )}
@@ -186,6 +191,54 @@ function EnvironmentMcpConnections({ environment }: { readonly environment: Sett
         onPress={() => navigation.navigate("SettingsMcpConnectionEdit", { environmentId })}
       />
     </>
+  );
+}
+
+interface McpConnectionRowProps {
+  readonly environmentId: EnvironmentId;
+  readonly id: McpConnectionId;
+  readonly definition: McpConnectionDefinition;
+  readonly summary: McpConnectionSummary | undefined;
+  readonly statusError: string | null;
+  readonly usage: McpConnectionUsage;
+  readonly onPress: () => void;
+}
+
+function OAuthMcpConnectionRow(props: McpConnectionRowProps) {
+  const signIn = useMcpConnectionSignIn({
+    environmentId: props.environmentId,
+    connectionId: props.id,
+    fallback: props.summary?.oauth,
+    audience: "catalog",
+  });
+  return <McpConnectionRow {...props} oauthStatus={signIn.view} />;
+}
+
+function McpConnectionRow({
+  id,
+  definition,
+  summary,
+  statusError,
+  usage,
+  onPress,
+  oauthStatus,
+}: McpConnectionRowProps & { readonly oauthStatus: McpConnectionStatusText | null }) {
+  const status =
+    oauthStatus ??
+    mcpConnectionStatusText(summary?.revision === definition.revision ? summary.status : undefined);
+  return (
+    <ListActionRow
+      label={definition.label}
+      description={[
+        definition.transport.type === "http" ? "HTTP" : "stdio",
+        definition.enabled ? null : "Disabled",
+        oauthStatus === null ? (statusError ?? status.text) : status.text,
+        mcpConnectionUsedByText(usage, id),
+      ]
+        .filter((part) => part !== null)
+        .join(" · ")}
+      onPress={onPress}
+    />
   );
 }
 
@@ -294,7 +347,10 @@ function McpConnectionEditor({
     label: "bot set mcp grants",
   });
   const editing = target.kind === "update";
-  const initial = editing ? mcpConnectionDraft(target.saved) : EMPTY_MCP_CONNECTION_DRAFT;
+  const oauthSupported = config?.environment.capabilities.mcpConnectionsOAuth === true;
+  const initial = editing
+    ? mcpConnectionDraft(target.saved)
+    : emptyMcpConnectionDraft(oauthSupported);
   const [draft, setDraft] = useState<Omit<McpConnectionDraft, "bindings">>(initial);
   const [bindings, setBindings] = useState<ReadonlyArray<BindingRow>>(() =>
     initial.bindings.map(({ name, value }) => ({
@@ -308,13 +364,36 @@ function McpConnectionEditor({
   );
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [created, setCreated] = useState(false);
+  const [ownAppOpen, setOwnAppOpen] = useState(false);
   const isHttp = draft.transport === "http";
+  const isOAuth = isHttp && draft.auth === "oauth";
   const bindingNoun = isHttp ? "Header" : "Environment variable";
   const setBinding = (key: string, next: Partial<BindingRow>) =>
     setBindings((rows) => rows.map((row) => (row.key === key ? { ...row, ...next } : row)));
   const summary = statuses.data?.connections.find(({ id }) => id === target.connectionId);
   const status =
     current !== undefined && summary?.revision === current.revision ? summary.status : undefined;
+  const showAccount = oauthSupported && isOAuth && (created || editing);
+  const signIn = useMcpConnectionSignIn({
+    environmentId,
+    connectionId: target.connectionId,
+    fallback: summary?.oauth,
+    audience: "catalog",
+    active: showAccount,
+  });
+  const prepared = usePreparedConnection(environmentId);
+  const redirectUri = `${
+    mcpConnectionOAuthCallback({
+      httpBaseUrl: prepared._tag === "Some" ? prepared.value.httpBaseUrl : null,
+      canListenOnLoopback: false,
+    }).redirectOrigin
+  }${MCP_CONNECTION_OAUTH_CALLBACK_PATH}`;
+  const connectedAfterCreate = created && signIn.view.connected;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- leaves once the server reports the new account connected, which arrives on its own stream
+  useEffect(() => {
+    if (connectedAfterCreate) navigation.goBack();
+  }, [connectedAfterCreate, navigation]);
 
   const save = async () => {
     const pendingReference = bindings.find(
@@ -355,8 +434,37 @@ function McpConnectionEditor({
       });
       reportFailure(`Could not give ${grantBot.name} this connection`, granted);
     }
+    if (plan.kind === "create" && isOAuth) {
+      setDraft((current) => ({ ...current, oauthClientSecret: "" }));
+      setCreated(true);
+      await signIn.connect();
+      return;
+    }
     navigation.goBack();
   };
+
+  if (created) {
+    return (
+      <SettingsScreen title={draft.label.trim()}>
+        <ScrollView
+          contentInsetAdjustmentBehavior="automatic"
+          className="flex-1"
+          contentContainerClassName="gap-5 px-5 pt-4"
+          contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 18) + 18 }}
+        >
+          <Text className="px-2 text-sm text-foreground-muted">
+            {signIn.view.pendingFlowId !== null
+              ? "Finish signing in in the browser. This screen closes once the account is connected."
+              : "Sign in to finish adding this connection."}
+          </Text>
+          <SettingsSection title="Account">
+            <McpConnectionSignInRows signIn={signIn} label={draft.label.trim()} />
+          </SettingsSection>
+          <Button label="Done" tone="secondary" onPress={() => navigation.goBack()} />
+        </ScrollView>
+      </SettingsScreen>
+    );
+  }
 
   return (
     <SettingsScreen title={editing ? target.saved.label : "New MCP connection"}>
@@ -381,10 +489,15 @@ function McpConnectionEditor({
               ? MCP_CONNECTIONS_NOTICE
               : `${grantBot.name} can use it as soon as you add it.`}
           </Text>
-          {editing ? (
+          {editing && !showAccount ? (
             <Text className="px-2 text-sm text-foreground-muted">
               {mcpConnectionStatusText(status).text}
             </Text>
+          ) : null}
+          {showAccount && current !== undefined ? (
+            <SettingsSection title="Account">
+              <McpConnectionSignInRows signIn={signIn} label={current.label} usage={usage} />
+            </SettingsSection>
           ) : null}
           <SettingsSection title="Connection">
             <FormField
@@ -427,7 +540,34 @@ function McpConnectionEditor({
                 placeholder="https://mcp.example.com/mcp"
                 onChange={(url) => setDraft({ ...draft, url })}
               />
-            ) : (
+            ) : null}
+            {isHttp && (oauthSupported || isOAuth) ? (
+              editing ? (
+                <FormField
+                  label="Sign-in"
+                  value={isOAuth ? "OAuth" : "Headers"}
+                  disabled
+                  borderTop
+                  onChange={() => undefined}
+                />
+              ) : (
+                <SelectRow
+                  label="Sign-in"
+                  value={isOAuth ? "Sign in with OAuth" : "Headers or none"}
+                  borderTop
+                  actions={[
+                    { id: "oauth", title: "Sign in with OAuth" },
+                    { id: "headers", title: "Headers, such as an API key, or none" },
+                  ]}
+                  onSelect={(next) => {
+                    if (next !== "oauth" && next !== "headers") return;
+                    setDraft({ ...draft, auth: next });
+                    setBindings([]);
+                  }}
+                />
+              )
+            ) : null}
+            {isHttp ? null : (
               <>
                 <FormField
                   label="Command"
@@ -453,114 +593,164 @@ function McpConnectionEditor({
               The endpoint is part of the connection's identity. To change it, add a new connection.
             </Text>
           ) : null}
-          <SettingsSection title={isHttp ? "Headers" : "Environment variables"}>
-            {bindings.map((row, index) => (
-              <View key={row.key} className={index > 0 ? "border-t border-border-subtle" : ""}>
-                <FormField
-                  label="Name"
-                  value={row.name}
-                  placeholder={isHttp ? "Authorization" : "API_TOKEN"}
-                  onChange={(name) =>
-                    // A saved value belongs to its name; a renamed binding needs a new one.
-                    setBinding(
-                      row.key,
-                      row.saved !== undefined && row.value === row.saved
-                        ? { name, value: "", saved: undefined }
-                        : { name },
-                    )
-                  }
-                />
-                {sources.length > 0 || row.source !== null ? (
-                  <SelectRow
-                    label="Source"
-                    value={
-                      row.source === null
-                        ? "Value"
-                        : (sources.find((source) => source.id === row.source)?.label ?? row.source)
-                    }
+          {isOAuth && !editing ? (
+            <SettingsSection title="OAuth app">
+              <ListActionRow
+                label="Use your own OAuth app"
+                description="Only for services that do not let T3 Code register itself."
+                onPress={() => setOwnAppOpen((open) => !open)}
+              />
+              {ownAppOpen ? (
+                <>
+                  <Text
+                    textRole="footnote"
+                    className="border-t border-border-subtle px-4 py-3 text-foreground-muted"
+                  >
+                    Add {redirectUri} as a redirect URI in your app.
+                  </Text>
+                  <FormField
+                    label="Client ID"
+                    value={draft.oauthClientId}
                     borderTop
-                    actions={[
-                      { id: "", title: "Value" },
-                      ...sources.map((source) => ({ id: source.id, title: source.label })),
-                    ]}
-                    onSelect={(id) => {
-                      const source = id === "" ? null : (id as SecretProviderId);
-                      setBinding(row.key, {
-                        source,
-                        referenceText: "",
-                        value: source === null ? (row.saved ?? "") : "",
-                      });
-                    }}
+                    onChange={(oauthClientId) => setDraft({ ...draft, oauthClientId })}
                   />
-                ) : null}
-                {row.source === null ? (
                   <View className="gap-2 border-t border-border-subtle px-4 py-3">
                     <SecretTextInput
-                      accessibilityLabel={row.name === "" ? `${bindingNoun} value` : row.name}
-                      placeholder={
-                        row.saved !== undefined && row.value === row.saved
-                          ? "Stored secret, enter a new value to replace"
-                          : "Value"
-                      }
+                      accessibilityLabel="Client secret"
+                      placeholder="Client secret, if the app has one"
                       value={
-                        typeof row.value === "string" && row.value !== row.saved ? row.value : ""
+                        typeof draft.oauthClientSecret === "string" ? draft.oauthClientSecret : ""
                       }
                       editable
-                      onChangeText={(text) =>
-                        setBinding(row.key, {
-                          value: text === "" && row.saved !== undefined ? row.saved : text,
-                        })
+                      onChangeText={(oauthClientSecret) =>
+                        setDraft({ ...draft, oauthClientSecret })
                       }
                       onSubmitEditing={() => undefined}
                     />
                   </View>
-                ) : (
+                </>
+              ) : null}
+            </SettingsSection>
+          ) : null}
+          {isOAuth && editing && draft.oauthClientId !== "" ? (
+            <Text className="px-2 text-sm text-foreground-muted">
+              Signs in with your OAuth app {draft.oauthClientId}. To use another app, add a new
+              connection.
+            </Text>
+          ) : null}
+          {isOAuth && bindings.length === 0 ? null : (
+            <SettingsSection
+              title={isOAuth ? "Other headers" : isHttp ? "Headers" : "Environment variables"}
+            >
+              {bindings.map((row, index) => (
+                <View key={row.key} className={index > 0 ? "border-t border-border-subtle" : ""}>
                   <FormField
-                    label="Reference"
-                    value={row.referenceText}
-                    borderTop
-                    onChange={(referenceText) => {
-                      const source = sources.find((candidate) => candidate.id === row.source);
-                      setBinding(row.key, {
-                        referenceText,
-                        value:
-                          (source && secretRequestReference(source, referenceText)) ??
-                          referenceText,
-                      });
-                    }}
+                    label="Name"
+                    value={row.name}
+                    placeholder={isHttp ? "Authorization" : "API_TOKEN"}
+                    onChange={(name) =>
+                      // A saved value belongs to its name; a renamed binding needs a new one.
+                      setBinding(
+                        row.key,
+                        row.saved !== undefined && row.value === row.saved
+                          ? { name, value: "", saved: undefined }
+                          : { name },
+                      )
+                    }
                   />
-                )}
-                <ListActionRow
-                  label={`Remove ${row.name === "" ? bindingNoun.toLowerCase() : row.name}`}
-                  tone="danger"
-                  onPress={() =>
-                    setBindings((rows) => rows.filter((other) => other.key !== row.key))
-                  }
-                />
-              </View>
-            ))}
-            <ListActionRow
-              label={`Add ${bindingNoun.toLowerCase()}`}
-              onPress={() =>
-                setBindings((rows) => [
-                  ...rows,
-                  {
-                    key: uuidv4(),
-                    name: "",
-                    value: "",
-                    saved: undefined,
-                    referenceText: "",
-                    source: null,
-                  },
-                ])
-              }
-            />
-          </SettingsSection>
+                  {sources.length > 0 || row.source !== null ? (
+                    <SelectRow
+                      label="Source"
+                      value={
+                        row.source === null
+                          ? "Value"
+                          : (sources.find((source) => source.id === row.source)?.label ??
+                            row.source)
+                      }
+                      borderTop
+                      actions={[
+                        { id: "", title: "Value" },
+                        ...sources.map((source) => ({ id: source.id, title: source.label })),
+                      ]}
+                      onSelect={(id) => {
+                        const source = id === "" ? null : (id as SecretProviderId);
+                        setBinding(row.key, {
+                          source,
+                          referenceText: "",
+                          value: source === null ? (row.saved ?? "") : "",
+                        });
+                      }}
+                    />
+                  ) : null}
+                  {row.source === null ? (
+                    <View className="gap-2 border-t border-border-subtle px-4 py-3">
+                      <SecretTextInput
+                        accessibilityLabel={row.name === "" ? `${bindingNoun} value` : row.name}
+                        placeholder={
+                          row.saved !== undefined && row.value === row.saved
+                            ? "Stored secret, enter a new value to replace"
+                            : "Value"
+                        }
+                        value={
+                          typeof row.value === "string" && row.value !== row.saved ? row.value : ""
+                        }
+                        editable
+                        onChangeText={(text) =>
+                          setBinding(row.key, {
+                            value: text === "" && row.saved !== undefined ? row.saved : text,
+                          })
+                        }
+                        onSubmitEditing={() => undefined}
+                      />
+                    </View>
+                  ) : (
+                    <FormField
+                      label="Reference"
+                      value={row.referenceText}
+                      borderTop
+                      onChange={(referenceText) => {
+                        const source = sources.find((candidate) => candidate.id === row.source);
+                        setBinding(row.key, {
+                          referenceText,
+                          value:
+                            (source && secretRequestReference(source, referenceText)) ??
+                            referenceText,
+                        });
+                      }}
+                    />
+                  )}
+                  <ListActionRow
+                    label={`Remove ${row.name === "" ? bindingNoun.toLowerCase() : row.name}`}
+                    tone="danger"
+                    onPress={() =>
+                      setBindings((rows) => rows.filter((other) => other.key !== row.key))
+                    }
+                  />
+                </View>
+              ))}
+              <ListActionRow
+                label={`Add ${bindingNoun.toLowerCase()}`}
+                onPress={() =>
+                  setBindings((rows) => [
+                    ...rows,
+                    {
+                      key: uuidv4(),
+                      name: "",
+                      value: "",
+                      saved: undefined,
+                      referenceText: "",
+                      source: null,
+                    },
+                  ])
+                }
+              />
+            </SettingsSection>
+          )}
           {error !== null ? (
             <Text className="px-2 text-sm text-danger-foreground">{error}</Text>
           ) : null}
           <Button
-            label={editing ? "Save changes" : "Add connection"}
+            label={editing ? "Save changes" : isOAuth ? "Connect" : "Add connection"}
             // A connection added for a Bot waits for that Bot's grants, so it can be granted.
             disabled={!canEdit || (grantToBotId !== undefined && grantBot?.mcpGrants === undefined)}
             loading={busy}
@@ -607,7 +797,7 @@ function McpConnectionEditor({
               {usage.state === "failed" ? (
                 <ListActionRow
                   label="Retry loading Bots"
-                  description={`Removal names the Bots that lose this connection. ${usage.error}`}
+                  description={`Disconnect and removal name the Bots that lose this connection. ${usage.error}`}
                   onPress={retryUsage}
                 />
               ) : null}

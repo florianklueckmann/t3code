@@ -14,10 +14,16 @@ import {
   botMcpGrantsChange,
   botMcpGrantsSection,
   codexMcpServerNames,
+  emptyMcpConnectionDraft,
   latestBotMcpGrants,
+  MCP_CONNECTION_OAUTH_LOOPBACK_ORIGIN,
+  mcpConnectionDisconnectMessage,
+  mcpConnectionOAuthCallback,
+  mcpConnectionOAuthView,
   mcpConnectionRemovalMessage,
   mcpConnectionUsage,
   mcpConnectionUsedByText,
+  planMcpConnectionSave,
 } from "./mcpConnections.ts";
 
 const MAIL = McpConnectionId.make("00000000-0000-4000-8000-000000000001");
@@ -25,6 +31,7 @@ const WORK = McpConnectionId.make("00000000-0000-4000-8000-000000000002");
 const DOCS = McpConnectionId.make("00000000-0000-4000-8000-000000000003");
 const GONE = McpConnectionId.make("00000000-0000-4000-8000-000000000004");
 const BOT = BotId.make("bot-mail");
+const NOW = Date.parse("2026-11-11T12:00:00.000Z");
 
 const connection = (
   id: McpConnectionId,
@@ -72,6 +79,7 @@ const section = (
     routines: [],
     canChange: true,
     archived: false,
+    now: NOW,
     ...patch,
   });
 
@@ -99,6 +107,34 @@ describe("botMcpGrantsSection", () => {
       ],
       ["Docs", "http", false, "error", "TOKEN could not be read from its secret provider."],
       ["Removed connection", null, true, "muted", "Removed. The Bot no longer loads it."],
+    ]);
+  });
+
+  it("offers a reconnect on an enabled OAuth account and says the Bot runs without it", () => {
+    const signedOut = {
+      credential: { state: "signed-out" as const, reason: "revoked" as const },
+    };
+    const rows = section({
+      granted: [MAIL, WORK],
+      catalog: [
+        connection(MAIL, "Private mail", { oauth: signedOut }),
+        connection(WORK, "Work mail", { enabled: false, oauth: signedOut }),
+      ],
+    }).rows;
+    expect(rows.map((row) => [row.label, row.status, row.oauth])).toEqual([
+      [
+        "Private mail",
+        {
+          tone: "warning",
+          text: "Signed out. This Bot runs without it until you reconnect it.",
+        },
+        signedOut,
+      ],
+      [
+        "Work mail",
+        { tone: "muted", text: "Disabled. The Bot doesn't load it until you enable it." },
+        null,
+      ],
     ]);
   });
 
@@ -353,16 +389,21 @@ describe("mcpConnectionUsage", () => {
       /^Archive Bot, Mail Bot and Work Bot lose this connection\. /,
     );
     expect(mcpConnectionRemovalMessage(usage, DOCS)).toMatch(/^Its saved credentials/);
+    expect(mcpConnectionDisconnectMessage(usage, WORK)).toMatch(
+      /^Work Bot runs without this account until you reconnect it\. /,
+    );
+    expect(mcpConnectionDisconnectMessage(usage, DOCS)).toMatch(/^Bots granted it run without/);
   });
 
   it.each([
     ["while the Bot list loads", null, { state: "loading" }],
     ["when the Bot list failed", "Connection lost", { state: "failed", error: "Connection lost" }],
-  ] as const)("cannot confirm a removal %s", (_, error, state) => {
+  ] as const)("cannot confirm a removal or disconnect %s", (_, error, state) => {
     const usage = mcpConnectionUsage({ botsSupported: true, bots: null, error });
     expect(usage).toEqual(state);
     expect(mcpConnectionUsedByText(usage, MAIL)).toBeNull();
     expect(mcpConnectionRemovalMessage(usage, MAIL)).toBeNull();
+    expect(mcpConnectionDisconnectMessage(usage, MAIL)).toBeNull();
   });
 
   it.each([
@@ -373,4 +414,179 @@ describe("mcpConnectionUsage", () => {
     expect(mcpConnectionUsedByText(usage, MAIL)).toBeNull();
     expect(mcpConnectionRemovalMessage(usage, MAIL)).toMatch(/^Its saved credentials/);
   });
+});
+
+describe("planMcpConnectionSave with OAuth", () => {
+  const draft = { ...emptyMcpConnectionDraft(true), label: "Mail", url: "https://mail.test/mcp" };
+  const create = { kind: "create", connectionId: MAIL } as const;
+  const vault = { provider: "op", reference: "op://Mail/app/secret" } as never;
+
+  it.each([
+    ["automatic registration", {}, { scopes: [] }],
+    [
+      "a preregistered public app",
+      { oauthClientId: " app-1 " },
+      { scopes: [], client: { id: "app-1" } },
+    ],
+    [
+      "a preregistered app with a secret reference",
+      { oauthClientId: "app-1", oauthClientSecret: vault },
+      { scopes: [], client: { id: "app-1", secret: vault } },
+    ],
+  ])("creates an OAuth connection with %s", (_, patch, oauth) => {
+    const plan = planMcpConnectionSave({ ...draft, ...patch }, create);
+    expect(plan.kind === "create" && plan.input.transport).toEqual({
+      type: "http",
+      url: "https://mail.test/mcp",
+      httpHeaders: {},
+      oauth,
+    });
+  });
+
+  it.each([
+    ["a client secret without a client ID", { oauthClientSecret: "s3cret" }],
+    [
+      "a client secret reference the form rejected",
+      { oauthClientId: "app-1", oauthClientSecret: "", oauthClientSecretInvalid: true },
+    ],
+    ["an Authorization header", { bindings: [{ name: "authorization", value: "Bearer x" }] }],
+  ])("refuses %s", (_, patch) => {
+    expect(planMcpConnectionSave({ ...draft, ...patch }, create).kind).toBe("invalid");
+  });
+
+  it("sends no OAuth setup for headers, and only bindings when editing an OAuth connection", () => {
+    const headers = planMcpConnectionSave({ ...draft, auth: "headers" }, create);
+    expect(headers.kind === "create" && headers.input.transport).toEqual({
+      type: "http",
+      url: "https://mail.test/mcp",
+      httpHeaders: {},
+    });
+    const saved = {
+      label: "Mail",
+      enabled: true,
+      revision: 4,
+      authentication: "bindings",
+      transport: {
+        type: "http",
+        url: "https://mail.test/mcp",
+        httpHeaders: {},
+        oauth: { scopes: [], client: { id: "app-1", secret: "••••" } },
+      },
+    } as never;
+    expect(
+      planMcpConnectionSave(
+        { ...draft, label: "Private mail", bindings: [{ name: "X-Team", value: "mail" }] },
+        { kind: "update", connectionId: MAIL, saved },
+      ),
+    ).toEqual({
+      kind: "update",
+      input: {
+        connectionId: MAIL,
+        expectedRevision: 4,
+        label: "Private mail",
+        enabled: true,
+        bindings: { "X-Team": "mail" },
+      },
+    });
+  });
+});
+
+describe("mcpConnectionOAuthCallback", () => {
+  it.each([
+    ["an https environment", "https://env.t3.test/", false, "environment", "https://env.t3.test"],
+    ["this computer", "http://127.0.0.1:3773/", false, "environment", "http://127.0.0.1:3773"],
+    ["localhost in dev", "http://localhost:5733/", true, "environment", "http://localhost:5733"],
+    [
+      "a plain-http remote from desktop",
+      "http://studio.lan:3773/",
+      true,
+      "listener",
+      MCP_CONNECTION_OAUTH_LOOPBACK_ORIGIN,
+    ],
+    [
+      "a plain-http remote from web or mobile",
+      "http://100.64.0.2:3773/",
+      false,
+      "paste",
+      MCP_CONNECTION_OAUTH_LOOPBACK_ORIGIN,
+    ],
+    ["an unknown address", null, false, "paste", MCP_CONNECTION_OAUTH_LOOPBACK_ORIGIN],
+  ] as const)("returns to %s", (_, httpBaseUrl, canListenOnLoopback, mode, redirectOrigin) => {
+    expect(mcpConnectionOAuthCallback({ httpBaseUrl, canListenOnLoopback })).toEqual({
+      mode,
+      redirectOrigin,
+    });
+  });
+});
+
+describe("mcpConnectionOAuthView", () => {
+  const signedOut = (reason: "never" | "disconnected" | "expired" | "revoked") =>
+    ({ state: "signed-out", reason }) as const;
+  const connected = { state: "connected", connectedAt: "2026-11-10T12:00:00.000Z" } as const;
+  const pending = (expiresAt: string) =>
+    ({ state: "pending", flowId: "flow-1", expiresAt }) as const;
+  const failed = { state: "failed", flowId: "flow-1", reason: "declined" } as const;
+
+  const sameAccount =
+    "Sign in with the same account as before. This connection keeps its Bot grants, so those Bots reach whichever account you sign in with.";
+
+  it.each([
+    [
+      "a new connection",
+      { credential: signedOut("never") },
+      ["warning", "Not connected.", null, null, "Connect", null],
+    ],
+    [
+      "a revoked account",
+      { credential: signedOut("revoked") },
+      ["warning", "Signed out. The service ended access.", null, null, "Reconnect", sameAccount],
+    ],
+    [
+      "a sign-in under way",
+      { credential: signedOut("never"), signIn: pending("2026-11-11T12:05:00.000Z") },
+      ["muted", "Waiting for sign-in in the browser…", null, "flow-1", null, null],
+    ],
+    [
+      "a sign-in past its expiry",
+      { credential: signedOut("never"), signIn: pending("2026-11-11T11:55:00.000Z") },
+      [
+        "warning",
+        "Not connected.",
+        "This sign-in was cancelled, expired or already used. Start it again.",
+        null,
+        "Try again",
+        null,
+      ],
+    ],
+    [
+      "a declined sign-in",
+      { credential: signedOut("disconnected"), signIn: failed },
+      [
+        "warning",
+        "Signed out. You disconnected it.",
+        "The service did not grant access.",
+        null,
+        "Try again",
+        sameAccount,
+      ],
+    ],
+    [
+      "a connected account",
+      { credential: connected },
+      ["ok", "Connected since Nov 10, 2026", null, null, null, null],
+    ],
+  ] as const)(
+    "reads %s",
+    (_, state, [tone, text, failure, pendingFlowId, signIn, reconnectWarning]) => {
+      expect(mcpConnectionOAuthView(state, NOW, "catalog")).toEqual({
+        tone,
+        text,
+        failure,
+        pendingFlowId,
+        signIn,
+        reconnectWarning,
+        connected: state.credential.state === "connected",
+      });
+    },
+  );
 });

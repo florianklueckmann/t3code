@@ -1116,6 +1116,9 @@ export interface DesktopBridge {
   ) => Promise<T | null>;
   receiveProviderAuthCallback: (authorizationUrl: string) => Promise<string>;
   cancelProviderAuthCallback: (authorizationUrl: string) => Promise<void>;
+  /** Listens on the sign-in's loopback redirect, opens it, and returns the browser's response. */
+  receiveMcpConnectionOAuthCallback: (authorizationUrl: string) => Promise<string>;
+  cancelMcpConnectionOAuthCallback: (authorizationUrl: string) => Promise<void>;
   openExternal: (url: string) => Promise<boolean>;
   /** Reads http(s) media in the main process, outside renderer CORS and CSP; null on network failure. */
   readMedia: (url: string) => Promise<DesktopMediaRead | null>;

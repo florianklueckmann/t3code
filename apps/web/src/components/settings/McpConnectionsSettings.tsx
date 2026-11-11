@@ -1,11 +1,13 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
-  EMPTY_MCP_CONNECTION_DRAFT,
+  emptyMcpConnectionDraft,
   MCP_CONNECTIONS_NOTICE,
   mcpConnectionDraft,
+  mcpConnectionOAuthCallback,
   mcpConnectionRemovalMessage,
   mcpConnectionStatusText,
   mcpConnectionUsage,
+  mcpConnectionUsagePendingText,
   mcpConnectionUsedByText,
   planMcpConnectionSave,
   type McpConnectionDraft,
@@ -19,18 +21,19 @@ import {
 import {
   isSecretReference,
   MCP_CONNECTION_LABEL_MAX_LENGTH,
+  MCP_CONNECTION_OAUTH_CALLBACK_PATH,
   McpConnectionId,
   type EnvironmentId,
   type McpConnectionDefinition,
   type McpConnectionSummary,
   type SettingsSecretValue,
 } from "@t3tools/contracts";
-import { PlusIcon, RefreshCwIcon, XIcon } from "lucide-react";
-import { useState } from "react";
+import { ChevronDownIcon, PlusIcon, RefreshCwIcon, XIcon } from "lucide-react";
+import { useEffect, useState } from "react";
 
 import { useEnvironmentSettings } from "../../hooks/useSettings";
 import { randomUUID } from "../../lib/utils";
-import type { EnvironmentPresentation } from "../../state/environments";
+import { useEnvironmentHttpBaseUrl, type EnvironmentPresentation } from "../../state/environments";
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -44,7 +47,8 @@ import {
   AlertDialogTitle,
 } from "../ui/alert-dialog";
 import { Badge } from "../ui/badge";
-import { Button } from "../ui/button";
+import { Button, InlineButton } from "../ui/button";
+import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collapsible";
 import {
   Dialog,
   DialogDescription,
@@ -59,6 +63,12 @@ import { Label } from "../ui/label";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Textarea } from "../ui/textarea";
 import { stackedThreadToast, toastManager } from "../ui/toast";
+import {
+  McpConnectionSignInButtons,
+  McpConnectionSignInDetails,
+  useMcpConnectionSignIn,
+  type McpConnectionSignIn,
+} from "./McpConnectionSignIn";
 import { SecretSourceInput, useSecretSources } from "./SecretSourceInput";
 import { useSettingsScope } from "./SettingsScopeContext";
 import { searchableSetting } from "./settingsSearch";
@@ -125,6 +135,8 @@ function EnvironmentMcpConnections({
     label: "mcp connections refresh",
   });
   const botsSupported = environment.serverConfig?.environment.capabilities.bots === true;
+  const oauthSupported =
+    environment.serverConfig?.environment.capabilities.mcpConnectionsOAuth === true;
   const bots = useEnvironmentQuery(
     botsSupported ? serverEnvironment.botsLive({ environmentId, input: {} }) : null,
   );
@@ -196,6 +208,7 @@ function EnvironmentMcpConnections({
               canRefresh={canRefresh && !refreshing}
               onRefresh={() => void refreshAll([id])}
               onEdit={() => setEditor({ kind: "update", connectionId: id })}
+              oauthSupported={oauthSupported}
             />
           ))
         )}
@@ -205,6 +218,7 @@ function EnvironmentMcpConnections({
           key={editor.connectionId}
           environmentId={environmentId}
           environmentLabel={environment.label}
+          oauthSupported={oauthSupported}
           target={
             editor.kind === "create" || editing === undefined
               ? { kind: "create", connectionId: editor.connectionId }
@@ -217,19 +231,7 @@ function EnvironmentMcpConnections({
   );
 }
 
-function McpConnectionRow({
-  environmentId,
-  id,
-  definition,
-  summary,
-  usage,
-  onRetryUsage,
-  statusError,
-  canEdit,
-  canRefresh,
-  onRefresh,
-  onEdit,
-}: {
+interface McpConnectionRowProps {
   readonly environmentId: EnvironmentId;
   readonly id: McpConnectionId;
   readonly definition: McpConnectionDefinition;
@@ -241,15 +243,52 @@ function McpConnectionRow({
   readonly canRefresh: boolean;
   readonly onRefresh: () => void;
   readonly onEdit: () => void;
-}) {
+}
+
+function McpConnectionRow({
+  oauthSupported,
+  ...props
+}: McpConnectionRowProps & { readonly oauthSupported: boolean }) {
+  const transport = props.definition.transport;
+  return oauthSupported && transport.type === "http" && transport.oauth !== undefined ? (
+    <OAuthMcpConnectionRow {...props} />
+  ) : (
+    <McpConnectionRowView {...props} signIn={null} />
+  );
+}
+
+function OAuthMcpConnectionRow(props: McpConnectionRowProps) {
+  const signIn = useMcpConnectionSignIn({
+    environmentId: props.environmentId,
+    connectionId: props.id,
+    fallback: props.summary?.oauth,
+    audience: "catalog",
+  });
+  return <McpConnectionRowView {...props} signIn={signIn} />;
+}
+
+function McpConnectionRowView({
+  environmentId,
+  id,
+  definition,
+  summary,
+  usage,
+  onRetryUsage,
+  statusError,
+  canEdit,
+  canRefresh,
+  onRefresh,
+  onEdit,
+  signIn,
+}: McpConnectionRowProps & { readonly signIn: McpConnectionSignIn | null }) {
   const update = useAtomCommand(serverEnvironment.updateMcpConnection, {
     label: "mcp connection set enabled",
   });
   const [busy, setBusy] = useState(false);
   // A status for an older revision describes a definition that no longer exists.
-  const status = mcpConnectionStatusText(
-    summary?.revision === definition.revision ? summary.status : undefined,
-  );
+  const status =
+    signIn?.view ??
+    mcpConnectionStatusText(summary?.revision === definition.revision ? summary.status : undefined);
   const transport = definition.transport;
   const usedBy = mcpConnectionUsedByText(usage, id);
   const toggleEnabled = async () => {
@@ -288,14 +327,28 @@ function McpConnectionRow({
         </>
       }
       status={
-        statusError !== null ? (
+        signIn !== null ? (
+          <div className="grid gap-1.5">
+            <div>
+              <Badge variant={STATUS_BADGE[status.tone]}>{status.text}</Badge>
+            </div>
+            <McpConnectionSignInDetails signIn={signIn} />
+          </div>
+        ) : statusError !== null ? (
           <span className="text-destructive">{statusError}</span>
         ) : (
           <Badge variant={STATUS_BADGE[status.tone]}>{status.text}</Badge>
         )
       }
       control={
-        <div className="flex items-center gap-1">
+        <div className="flex flex-wrap items-center justify-end gap-1">
+          {signIn === null ? null : (
+            <McpConnectionSignInButtons
+              signIn={signIn}
+              label={definition.label}
+              disconnect={{ usage, onRetryUsage }}
+            />
+          )}
           <Button size="xs" variant="ghost" disabled={!canRefresh} onClick={onRefresh}>
             Refresh
           </Button>
@@ -349,10 +402,7 @@ function RemoveMcpConnectionButton({
           <AlertDialogHeader>
             <AlertDialogTitle>Remove {definition.label}?</AlertDialogTitle>
             <AlertDialogDescription>
-              {message ??
-                (usage.state === "failed"
-                  ? `Could not load which Bots use this connection. ${usage.error}`
-                  : "Checking which Bots use this connection…")}
+              {message ?? mcpConnectionUsagePendingText(usage)}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -395,12 +445,14 @@ interface BindingRow {
 export function McpConnectionDialog({
   environmentId,
   environmentLabel,
+  oauthSupported,
   target: liveTarget,
   grant,
   onClose,
 }: {
   readonly environmentId: EnvironmentId;
   readonly environmentLabel: string;
+  readonly oauthSupported: boolean;
   readonly target:
     | { readonly kind: "create"; readonly connectionId: McpConnectionId }
     | {
@@ -424,8 +476,11 @@ export function McpConnectionDialog({
     label: "mcp connection update",
   });
   const sources = useSecretSources(environmentId);
+  const httpBaseUrl = useEnvironmentHttpBaseUrl(environmentId);
   const initial =
-    target.kind === "update" ? mcpConnectionDraft(target.saved) : EMPTY_MCP_CONNECTION_DRAFT;
+    target.kind === "update"
+      ? mcpConnectionDraft(target.saved)
+      : emptyMcpConnectionDraft(oauthSupported);
   const [draft, setDraft] = useState<Omit<McpConnectionDraft, "bindings">>(initial);
   const [bindings, setBindings] = useState<ReadonlyArray<BindingRow>>(() =>
     initial.bindings.map(({ name, value }) => ({
@@ -437,9 +492,30 @@ export function McpConnectionDialog({
   );
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [signingIn, setSigningIn] = useState(false);
+  const [ownAppOpen, setOwnAppOpen] = useState(false);
+  const signIn = useMcpConnectionSignIn({
+    environmentId,
+    connectionId: target.connectionId,
+    fallback: undefined,
+    audience: "catalog",
+    active: signingIn,
+  });
   const editing = target.kind === "update";
   const isHttp = draft.transport === "http";
+  const isOAuth = isHttp && draft.auth === "oauth";
   const bindingNoun = isHttp ? "header" : "environment variable";
+  const redirectUri = `${
+    mcpConnectionOAuthCallback({
+      httpBaseUrl,
+      canListenOnLoopback: window.desktopBridge?.receiveMcpConnectionOAuthCallback !== undefined,
+    }).redirectOrigin
+  }${MCP_CONNECTION_OAUTH_CALLBACK_PATH}`;
+  const connected = signingIn && signIn.view.connected;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- closes once the server reports the account connected, which arrives on its own stream
+  useEffect(() => {
+    if (connected) onClose();
+  }, [connected, onClose]);
 
   const setBinding = (key: string, next: Partial<BindingRow>) =>
     setBindings((rows) => rows.map((row) => (row.key === key ? { ...row, ...next } : row)));
@@ -464,8 +540,47 @@ export function McpConnectionDialog({
       return;
     }
     if (plan.kind === "create") grant?.onCreated(plan.input.connectionId);
+    if (plan.kind === "create" && isOAuth) {
+      setDraft((current) => ({ ...current, oauthClientSecret: "" }));
+      setSigningIn(true);
+      await signIn.connect();
+      return;
+    }
     onClose();
   };
+
+  if (signingIn) {
+    return (
+      <Dialog
+        open
+        onOpenChange={(next) => {
+          if (!next) onClose();
+        }}
+      >
+        <DialogPopup className="max-w-xl">
+          <DialogHeader>
+            <DialogTitle>Sign in to {draft.label.trim()}</DialogTitle>
+            <DialogDescription>
+              {signIn.view.pendingFlowId !== null
+                ? "Finish signing in in your browser. This closes once the account is connected."
+                : signIn.busy
+                  ? "Opening the sign-in page…"
+                  : signIn.view.text}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogPanel>
+            <McpConnectionSignInDetails signIn={signIn} />
+          </DialogPanel>
+          <DialogFooter variant="bare">
+            <McpConnectionSignInButtons signIn={signIn} label={draft.label.trim()} />
+            <Button variant="outline" onClick={onClose}>
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogPopup>
+      </Dialog>
+    );
+  }
 
   return (
     <Dialog
@@ -513,7 +628,8 @@ export function McpConnectionDialog({
                 disabled={editing}
                 onValueChange={(next) => {
                   if (next !== "http" && next !== "stdio") return;
-                  setDraft({ ...draft, transport: next });
+                  // A remounted secret field shows its last valid value.
+                  setDraft({ ...draft, transport: next, oauthClientSecretInvalid: false });
                   setBindings([]);
                 }}
               >
@@ -544,7 +660,110 @@ export function McpConnectionDialog({
                   onChange={(event) => setDraft({ ...draft, url: event.target.value })}
                 />
               </div>
-            ) : (
+            ) : null}
+            {isHttp && (oauthSupported || isOAuth) ? (
+              <div className="grid gap-1.5">
+                <Label htmlFor="mcp-connection-auth">Sign-in</Label>
+                <Select
+                  value={draft.auth}
+                  disabled={editing}
+                  onValueChange={(next) => {
+                    if (next !== "oauth" && next !== "headers") return;
+                    setDraft({ ...draft, auth: next, oauthClientSecretInvalid: false });
+                    setBindings([]);
+                  }}
+                >
+                  <SelectTrigger id="mcp-connection-auth" size="sm">
+                    <SelectValue>
+                      {isOAuth ? "Sign in with OAuth" : "Headers, such as an API key, or none"}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectPopup>
+                    <SelectItem value="oauth">Sign in with OAuth</SelectItem>
+                    <SelectItem value="headers">Headers, such as an API key, or none</SelectItem>
+                  </SelectPopup>
+                </Select>
+                {isOAuth && !editing ? (
+                  <p className="text-xs text-muted-foreground">
+                    Your browser opens the service's sign-in. Each account is its own connection.
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
+            {isOAuth ? (
+              editing ? (
+                draft.oauthClientId === "" ? null : (
+                  <p className="text-xs text-muted-foreground">
+                    Signs in with your OAuth app {draft.oauthClientId}
+                    {draft.oauthClientSecret === "" ? "" : " and its saved client secret"}. To use
+                    another app, add a new connection.
+                  </p>
+                )
+              ) : (
+                <Collapsible open={ownAppOpen} onOpenChange={setOwnAppOpen}>
+                  <div className="text-xs">
+                    <CollapsibleTrigger render={<InlineButton tone="muted" />}>
+                      Use your own OAuth app
+                      <ChevronDownIcon
+                        className={`size-3 shrink-0 ${ownAppOpen ? "rotate-180" : ""}`}
+                        aria-hidden
+                      />
+                    </CollapsibleTrigger>
+                  </div>
+                  {/* Keeps a rejected secret reference on screen while the save refuses it. */}
+                  <CollapsiblePanel keepMounted>
+                    <div className="grid gap-3 pt-3">
+                      <p className="text-xs text-muted-foreground">
+                        Only for services that do not let T3 Code register itself. Add{" "}
+                        <code className="wrap-anywhere">{redirectUri}</code> as a redirect URI in
+                        your app.
+                      </p>
+                      <div className="grid gap-1.5">
+                        <Label htmlFor="mcp-connection-client-id">Client ID</Label>
+                        <Input
+                          id="mcp-connection-client-id"
+                          size="sm"
+                          value={draft.oauthClientId}
+                          spellCheck={false}
+                          autoComplete="off"
+                          onChange={(event) =>
+                            setDraft({ ...draft, oauthClientId: event.target.value })
+                          }
+                        />
+                      </div>
+                      <div className="grid gap-1.5">
+                        <Label htmlFor="mcp-connection-client-secret">
+                          Client secret, if the app has one
+                        </Label>
+                        <SecretSourceInput
+                          id="mcp-connection-client-secret"
+                          size="sm"
+                          configured={false}
+                          value={draft.oauthClientSecret}
+                          sources={sources}
+                          onChange={(event) =>
+                            setDraft({ ...draft, oauthClientSecret: event.target.value })
+                          }
+                          onSecretChange={(secret) =>
+                            setDraft((current) => ({
+                              ...current,
+                              oauthClientSecret: secret ?? "",
+                            }))
+                          }
+                          onValidityChange={(valid) =>
+                            setDraft((current) => ({
+                              ...current,
+                              oauthClientSecretInvalid: !valid,
+                            }))
+                          }
+                        />
+                      </div>
+                    </div>
+                  </CollapsiblePanel>
+                </Collapsible>
+              )
+            ) : null}
+            {isHttp ? null : (
               <>
                 <div className="grid gap-1.5">
                   <Label htmlFor="mcp-connection-command">Command</Label>
@@ -572,73 +791,79 @@ export function McpConnectionDialog({
                 </div>
               </>
             )}
-            <div className="grid gap-2">
-              <Label>{isHttp ? "Headers" : "Environment variables"}</Label>
-              {bindings.map((row) => (
-                <div key={row.key} className="flex items-start gap-1.5">
-                  <Input
-                    size="sm"
-                    className="w-40 shrink-0"
-                    aria-label={`${bindingNoun} name`}
-                    placeholder={isHttp ? "Authorization" : "API_TOKEN"}
-                    value={row.name}
-                    spellCheck={false}
-                    onChange={(event) =>
-                      // A saved value belongs to its name; a renamed binding needs a new one.
-                      setBinding(
-                        row.key,
-                        row.saved !== undefined && row.value === row.saved
-                          ? { name: event.target.value, value: "", saved: undefined }
-                          : { name: event.target.value },
-                      )
-                    }
-                  />
-                  <SecretSourceInput
-                    size="sm"
-                    aria-label={row.name === "" ? `${bindingNoun} value` : row.name}
-                    configured={row.saved !== undefined && row.value === row.saved}
-                    value={isSecretReference(row.value) || row.value !== row.saved ? row.value : ""}
-                    sources={sources}
-                    onChange={(event) =>
-                      setBinding(row.key, {
-                        value:
-                          event.target.value === "" && row.saved !== undefined
-                            ? row.saved
-                            : event.target.value,
-                      })
-                    }
-                    onSecretChange={(secret) =>
-                      setBinding(row.key, { value: secret ?? row.saved ?? "" })
-                    }
-                  />
+            {isOAuth && bindings.length === 0 ? null : (
+              <div className="grid gap-2">
+                <Label>
+                  {isOAuth ? "Other headers" : isHttp ? "Headers" : "Environment variables"}
+                </Label>
+                {bindings.map((row) => (
+                  <div key={row.key} className="flex items-start gap-1.5">
+                    <Input
+                      size="sm"
+                      className="w-40 shrink-0"
+                      aria-label={`${bindingNoun} name`}
+                      placeholder={isHttp ? "Authorization" : "API_TOKEN"}
+                      value={row.name}
+                      spellCheck={false}
+                      onChange={(event) =>
+                        // A saved value belongs to its name; a renamed binding needs a new one.
+                        setBinding(
+                          row.key,
+                          row.saved !== undefined && row.value === row.saved
+                            ? { name: event.target.value, value: "", saved: undefined }
+                            : { name: event.target.value },
+                        )
+                      }
+                    />
+                    <SecretSourceInput
+                      size="sm"
+                      aria-label={row.name === "" ? `${bindingNoun} value` : row.name}
+                      configured={row.saved !== undefined && row.value === row.saved}
+                      value={
+                        isSecretReference(row.value) || row.value !== row.saved ? row.value : ""
+                      }
+                      sources={sources}
+                      onChange={(event) =>
+                        setBinding(row.key, {
+                          value:
+                            event.target.value === "" && row.saved !== undefined
+                              ? row.saved
+                              : event.target.value,
+                        })
+                      }
+                      onSecretChange={(secret) =>
+                        setBinding(row.key, { value: secret ?? row.saved ?? "" })
+                      }
+                    />
+                    <Button
+                      size="icon-xs"
+                      variant="ghost"
+                      aria-label={`Remove ${row.name === "" ? bindingNoun : row.name}`}
+                      onClick={() =>
+                        setBindings((rows) => rows.filter((other) => other.key !== row.key))
+                      }
+                    >
+                      <XIcon aria-hidden />
+                    </Button>
+                  </div>
+                ))}
+                <div>
                   <Button
-                    size="icon-xs"
-                    variant="ghost"
-                    aria-label={`Remove ${row.name === "" ? bindingNoun : row.name}`}
+                    size="xs"
+                    variant="outline"
                     onClick={() =>
-                      setBindings((rows) => rows.filter((other) => other.key !== row.key))
+                      setBindings((rows) => [
+                        ...rows,
+                        { key: randomUUID(), name: "", value: "", saved: undefined },
+                      ])
                     }
                   >
-                    <XIcon aria-hidden />
+                    <PlusIcon className="size-3" aria-hidden />
+                    Add {bindingNoun}
                   </Button>
                 </div>
-              ))}
-              <div>
-                <Button
-                  size="xs"
-                  variant="outline"
-                  onClick={() =>
-                    setBindings((rows) => [
-                      ...rows,
-                      { key: randomUUID(), name: "", value: "", saved: undefined },
-                    ])
-                  }
-                >
-                  <PlusIcon className="size-3" aria-hidden />
-                  Add {bindingNoun}
-                </Button>
               </div>
-            </div>
+            )}
             {error !== null ? (
               <p role="alert" className="text-xs text-destructive">
                 {error}
@@ -651,7 +876,7 @@ export function McpConnectionDialog({
             Cancel
           </Button>
           <Button type="submit" form="mcp-connection-form" disabled={saving}>
-            {editing ? "Save changes" : "Add connection"}
+            {editing ? "Save changes" : isOAuth ? "Connect" : "Add connection"}
           </Button>
         </DialogFooter>
       </DialogPopup>
