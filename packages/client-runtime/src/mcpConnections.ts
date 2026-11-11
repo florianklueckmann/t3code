@@ -264,7 +264,7 @@ export function botMcpGrantsSection(input: {
   }
   const ownServersOn = input.grants.ownCodexMcpServers === true;
   if (!usable) {
-    if (unenforceable === null && !ownServersOn) {
+    if (unenforceable === null && !ownServersOn && input.catalog.length > 0) {
       notes.push({ tone: "muted", text: "This Bot has no MCP connections." });
     }
   } else if (

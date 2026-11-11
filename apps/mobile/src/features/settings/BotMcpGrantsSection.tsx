@@ -121,17 +121,14 @@ export function BotMcpGrantsSection(props: {
           />
         </View>
       ))}
-      <View className={view.rows.length === 0 ? "" : "border-t border-border-subtle"}>
-        <ListActionRow
-          label="Add connection"
-          disabled={disabled || !canAdd}
-          onPress={() =>
-            navigation.navigate("SettingsMcpConnectionEdit", { environmentId, grantToBotId: botId })
-          }
-        />
-      </View>
       {view.ownServers === null ? null : (
-        <View className="min-h-14 flex-row items-center gap-3 border-t border-border-subtle px-4 py-3">
+        <View
+          className={
+            view.rows.length === 0
+              ? "min-h-14 flex-row items-center gap-3 px-4 py-3"
+              : "min-h-14 flex-row items-center gap-3 border-t border-border-subtle px-4 py-3"
+          }
+        >
           <View className="min-w-0 flex-1 gap-1">
             <Text textRole="body" className="text-foreground">
               {view.ownServers.label}
@@ -149,6 +146,19 @@ export function BotMcpGrantsSection(props: {
           />
         </View>
       )}
+      <View
+        className={
+          view.rows.length === 0 && view.ownServers === null ? "" : "border-t border-border-subtle"
+        }
+      >
+        <ListActionRow
+          label="Add connection"
+          disabled={disabled || !canAdd}
+          onPress={() =>
+            navigation.navigate("SettingsMcpConnectionEdit", { environmentId, grantToBotId: botId })
+          }
+        />
+      </View>
       {view.notes.map((note) => (
         <Text
           key={note.text}

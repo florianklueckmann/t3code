@@ -84,7 +84,7 @@ export function BotHomeCheckSection(props: {
             {BOT_HOME_CHECK_DESCRIPTION}
           </Text>
           <Text textRole="footnote" className="text-foreground-muted">
-            {botHomeCheckStatusLabel(view)}
+            {botHomeCheckStatusLabel(picking === null ? view : { ...view, timeOfDay: picking })}
           </Text>
           {last === null ? null : (
             <Text textRole="footnote" className="text-foreground-muted">
