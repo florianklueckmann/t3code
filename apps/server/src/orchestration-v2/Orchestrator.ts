@@ -623,6 +623,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "queued-run.edit":
     case "runtime-request.respond":
     case "runtime-request.delivery.fail":
+    case "message.delivery.fail":
     case "thread.user-input.dismiss":
     case "checkpoint.rollback":
     case "checkpoint.rollback.fail":
@@ -9903,6 +9904,56 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     });
   });
 
+  const dispatchMessageDeliveryFail = Effect.fn("Orchestrator.dispatchMessageDeliveryFail")(
+    function* (
+      command: Extract<OrchestrationV2InternalCommand, { readonly type: "message.delivery.fail" }>,
+      events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    ) {
+      const thread = yield* projectionStore
+        .getThread(command.threadId)
+        .pipe(mapDispatchError(command));
+      if (thread.deletedAt !== null) return;
+      const messageItem = yield* projectionStore
+        .getTurnItem({
+          threadId: command.threadId,
+          itemId: idAllocator.derive.userTurnItem({ messageId: command.messageId }),
+        })
+        .pipe(mapDispatchError(command));
+      if (messageItem?.nodeId == null) return;
+      const nodeId = messageItem.nodeId;
+      const now = yield* DateTime.now;
+      yield* emit(
+        events,
+        command,
+      )({
+        type: "turn-item.updated",
+        threadId: command.threadId,
+        ...(messageItem.runId === null ? {} : { runId: messageItem.runId }),
+        nodeId,
+        providerInstanceId: thread.providerInstanceId,
+        occurredAt: now,
+        payload: {
+          id: TurnItemId.make(`turn-item:message-delivery-failure:${command.messageId}`),
+          threadId: command.threadId,
+          runId: messageItem.runId,
+          nodeId,
+          providerThreadId: messageItem.providerThreadId ?? null,
+          providerTurnId: messageItem.providerTurnId ?? null,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal: yield* nextTurnItemOrdinal({ thread }),
+          status: "failed",
+          title: "Message not sent",
+          startedAt: now,
+          completedAt: now,
+          updatedAt: now,
+          type: "error",
+          failure: command.failure,
+        },
+      });
+    },
+  );
+
   const dispatchThreadUserInputDismiss = Effect.fn("Orchestrator.dispatchThreadUserInputDismiss")(
     function* (
       command: Extract<OrchestrationV2Command, { readonly type: "thread.user-input.dismiss" }>,
@@ -13963,6 +14014,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         break;
       case "runtime-request.delivery.fail":
         yield* dispatchRuntimeRequestDeliveryFail(command, events);
+        break;
+      case "message.delivery.fail":
+        yield* dispatchMessageDeliveryFail(command, events);
         break;
       case "thread.background-work.settle":
         yield* dispatchBackgroundWorkSettle(command, events, effects);
