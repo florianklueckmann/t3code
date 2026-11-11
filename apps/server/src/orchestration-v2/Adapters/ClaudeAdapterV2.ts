@@ -5869,6 +5869,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         const pendingBackgroundTasksByNativeThread = yield* Ref.make(
           new Map<string, Map<string, OrchestrationV2PendingBackgroundTask>>(),
         );
+        // Taken only around roster additions, so a held runtime's thread probe stays right.
+        const backgroundStarts = yield* Semaphore.make(1);
         // Survives roster REPLACE levels, which rebuild every entry without the agent's mark.
         const awaitedBackgroundTasksByNativeThread = yield* Ref.make(
           new Map<string, Set<string>>(),
@@ -6663,7 +6665,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             nativeThreadId: string,
             tasks: ReadonlyArray<OrchestrationV2PendingBackgroundTask>,
           ) {
-            yield* Ref.update(pendingBackgroundTasksByNativeThread, (current) => {
+            yield* backgroundStarts.withPermit(
+              Ref.update(pendingBackgroundTasksByNativeThread, (current) => {
               const updated = new Map(current);
               if (tasks.length === 0) {
                 updated.delete(nativeThreadId);
@@ -6679,7 +6682,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 );
               }
               return updated;
-            });
+            })
+            );
             yield* rememberOpaqueTasks(tasks);
             if (tasks.length > 0) {
               yield* markWakeEligibleOpaqueBackgroundTasks(
@@ -6706,7 +6710,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             nativeThreadId: string,
             task: OrchestrationV2PendingBackgroundTask,
           ) {
-            const startedMonitor = yield* Ref.modify(
+            const startedMonitor = yield* backgroundStarts.withPermit(Ref.modify(
               pendingBackgroundTasksByNativeThread,
               (current) => {
                 const roster = new Map(rosterForNativeThread(current, nativeThreadId));
@@ -6715,7 +6719,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 roster.set(task.taskId, task);
                 return [startedMonitor, new Map(current).set(nativeThreadId, roster)] as const;
               },
-            );
+            ));
             if (startedMonitor) {
               yield* addTaskIdsToNativeThreadSet(
                 awaitedBackgroundTasksByNativeThread,
@@ -12591,7 +12595,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               ? {}
               : { allowedTools: queryPolicy.allowedTools }),
           });
-          const queryPolicyKey = claudeEffectiveQueryPolicyKey(queryPolicy, mcpOverrides);
+          const queryPolicyKey = `${turnInput.runtimePolicy.nativeMemory ?? "default"}:${claudeEffectiveQueryPolicyKey(queryPolicy, mcpOverrides)}`;
           const resumeSessionAt = yield* getNativeConversationHeadId(turnInput.providerThread);
           const existing = yield* Ref.get(queryContext);
           // Continuations drain existing output without prompting; retain the live process regardless of selection.
@@ -12698,6 +12702,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             ],
             { concurrency: "unbounded" },
           );
+          const sdkSettings = launchArgSettings === undefined ? undefined : claudeSdkLaunchArgSettings(launchArgSettings);
+          const querySettings = turnInput.runtimePolicy.nativeMemory === "disabled"
+            ? { ...sdkSettings, autoMemoryEnabled: false, env: { ...sdkSettings?.env, CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1" } }
+            : sdkSettings;
           const closedExistingNativeThreadId = existing !== null ? existing.nativeThreadId : null;
           clearedNativeSessions.delete(nativeThreadId);
           if (existing !== null) {
@@ -12729,9 +12737,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             // Delegated threads have no one typing, so they never ask for suggestions.
             promptSuggestions:
               !isDelegatedAppThread(turnInput.appThread) && (yield* promptSuggestionsEnabled),
-            ...(launchArgSettings === undefined
-              ? {}
-              : { sdkSettings: claudeSdkLaunchArgSettings(launchArgSettings) }),
+            ...(querySettings === undefined ? {} : { sdkSettings: querySettings }),
             environment: claudeQueryEnvironment(
               adapterOptions.environment,
               turnInput.appThread,
@@ -13829,6 +13835,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               ).size > 0
             );
           }),
+          holdBackgroundStarts: (effect) => backgroundStarts.withPermit(effect),
           ensureThread: Effect.fn("ClaudeAdapterV2.ensureThread")(
             function* (threadInput: ProviderAdapter.ProviderAdapterV2EnsureThreadInput) {
               const createdAt = yield* DateTime.now;

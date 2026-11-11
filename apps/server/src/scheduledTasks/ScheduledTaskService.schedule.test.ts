@@ -1,6 +1,20 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
+import * as Ref from "effect/Ref";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
+import * as SqlClient from "effect/sql/SqlClient";
+import * as OrchestratorMcpService from "../mcp/OrchestratorMcpService.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
+import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
+import * as ProjectService from "../project/ProjectService.ts";
+import * as ServerSettings from "../serverSettings.ts";
+import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
+import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import { liveThreadShell, idleThreadProjection } from "../mcp/McpToolAccess.testkit.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
-import { expect, it } from "@effect/vitest";
+import { assert, expect, it } from "@effect/vitest";
 import {
   type OrchestrationV2ConversationMessage,
   type OrchestrationV2Run,
@@ -555,4 +569,83 @@ it.effect(
       });
       expect(morning?.nextRunAt).toBe(DateTime.formatIso(DateTime.toUtc(at(8, 0, 2))));
     }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect.each(["agent", "client"] as const)(
+  "preserves server-controlled schedule provenance across database reopen for %s",
+  (caller) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "schedule-provenance-" });
+      const dbPath = path.join(directory, "statev2.sqlite");
+      const creator = ThreadId.make("bot-home:mail:project");
+      const forged = ThreadId.make("bot-home:forged:project");
+      const launches = yield* Ref.make<ThreadLaunchService.ThreadLaunchInput[]>([]);
+      const dependencies = Layer.mergeAll(
+        NodeCrypto.layer,
+        ManagedPolicy.layerTest(),
+        Layer.succeed(Scheduler.Scheduler, { register: () => Effect.void }),
+        Layer.mock(ThreadLaunchService.ThreadLaunchService)({
+          launch: (input) =>
+            Ref.update(launches, (all) => [...all, input]).pipe(
+              Effect.as({ threadId: ThreadId.make("scheduled-child"), resumed: false } as never),
+            ),
+        }),
+        Layer.mock(ThreadManagementService.ThreadManagementService)({}),
+        Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+          namedProjectsRoot: "/synthetic/projects",
+          isScratchProject: () => Effect.succeed(false),
+        }),
+        Layer.mock(SecretRequests.SecretRequests)({}),
+      );
+      const persisted = () =>
+        ScheduledTaskService.layer.pipe(
+          Layer.provide(dependencies),
+          Layer.provideMerge(SqlitePersistence.layerFromPath(dbPath)),
+        );
+      const input = yield* decodeUpsertInput({
+        id: "schedule:provenance",
+        title: "Check mail",
+        prompt: "Check the granted account",
+        enabled: true,
+        schedule: { type: "interval", everyMs: 60_000 },
+        projectId: "project:mail",
+        threadMode: "new_thread",
+        workspaceStrategy: { type: "root" },
+        modelSelection: { instanceId: "codex", model: "gpt-5.4" },
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        createdByThreadId: forged,
+      });
+      const id = yield* Effect.gen(function* () {
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+        const { task } = yield* service.upsert(
+          input,
+          caller === "agent" ? { createdByThreadId: creator } : undefined,
+        );
+        yield* service.upsert({ ...input, title: "Edited by a client" });
+        return task.id;
+      }).pipe(Effect.provide(persisted()));
+
+      yield* Effect.gen(function* () {
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+        const sql = yield* SqlClient.SqlClient;
+        const rows =
+          yield* sql`SELECT created_by_thread_id FROM scheduled_tasks WHERE task_id = ${id}`;
+        assert.deepEqual(rows, [{ created_by_thread_id: caller === "agent" ? creator : null }]);
+        for (let run = 0; run < 2; run++) {
+          const result = yield* service.runNow({ id });
+          assert.equal(result.threadId, "scheduled-child");
+          assert.isUndefined(result.task.bot);
+        }
+        const inputs = yield* Ref.get(launches);
+        assert.equal(inputs.length, 2);
+        assert.isTrue(
+          inputs.every(
+            (launch) => launch.createdByThreadId === (caller === "agent" ? creator : undefined),
+          ),
+        );
+      }).pipe(Effect.provide(persisted()));
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

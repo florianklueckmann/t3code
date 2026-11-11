@@ -155,6 +155,15 @@ describe("command permissions", () => {
   it.effect.each([
     { method: WS_METHODS.serverRunStorageCleanup, scope: AuthSettingsWriteScope },
     { method: WS_METHODS.serverReclaimDatabaseSpace, scope: AuthEnvironmentMaintainScope },
+    { method: WS_METHODS.mcpConnectionsCreate, scope: AuthSettingsWriteScope },
+    { method: WS_METHODS.mcpConnectionsUpdate, scope: AuthSettingsWriteScope },
+    { method: WS_METHODS.mcpConnectionsRemove, scope: AuthSettingsWriteScope },
+    { method: WS_METHODS.mcpConnectionsRefresh, scope: AuthSettingsWriteScope },
+    { method: WS_METHODS.mcpConnectionsOAuthStart, scope: AuthSettingsWriteScope },
+    { method: WS_METHODS.mcpConnectionsOAuthComplete, scope: AuthSettingsWriteScope },
+    { method: WS_METHODS.mcpConnectionsOAuthCancel, scope: AuthSettingsWriteScope },
+    { method: WS_METHODS.mcpConnectionsOAuthDisconnect, scope: AuthSettingsWriteScope },
+    { method: WS_METHODS.botsSetMcpGrants, scope: AuthSettingsWriteScope },
   ])("requires the destination $scope grant for $method", ({ method, scope }) =>
     Effect.gen(function* () {
       const registry = yield* setup;
@@ -196,7 +205,7 @@ describe("command permissions", () => {
       }),
   );
 
-  it.effect.each([WS_METHODS.scheduledTasksDelete, ORCHESTRATION_V2_WS_METHODS.stopWorkflow, WS_METHODS.botsSaveContinuation])(
+  it.effect.each([WS_METHODS.scheduledTasksDelete, ORCHESTRATION_V2_WS_METHODS.stopWorkflow, WS_METHODS.botsSaveContinuation, WS_METHODS.botsConfigureMaintenance, WS_METHODS.botsConfigureHomeCheck])(
     "uses the target grant for both availability and execution of %s",
     (method) =>
       Effect.gen(function* () {

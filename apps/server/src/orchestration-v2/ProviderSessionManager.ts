@@ -1714,6 +1714,21 @@ export const layerWithOptions = (
           return updated;
         });
 
+      const forgetProviderThreadLoaded = (input: {
+        readonly providerSessionId: ProviderSessionId;
+        readonly threadId: ThreadId;
+      }) =>
+        Ref.update(sessions, (current) => {
+          const key = sessionKey(input.providerSessionId);
+          const entry = current.get(key);
+          if (entry === undefined || !entry.loadedProviderThreadKeyByThread.has(input.threadId)) {
+            return current;
+          }
+          const loadedProviderThreadKeyByThread = new Map(entry.loadedProviderThreadKeyByThread);
+          loadedProviderThreadKeyByThread.delete(input.threadId);
+          return new Map(current).set(key, { ...entry, loadedProviderThreadKeyByThread });
+        });
+
       const loadNatively = <A, E>(load: Effect.Effect<A, E>) =>
         readLinkedEnvironments.pipe(
           Effect.flatMap((linkedEnvironments) =>
@@ -2382,7 +2397,11 @@ export const layerWithOptions = (
                 }),
               ),
               Effect.andThen(
-                isProviderThreadLoaded({ providerSessionId, threadId, providerThreadKey }),
+                // Granted connections can change without their ids: the adapter compares what
+                // they resolve to now, and releases the thread only when that changed.
+                input.runtimePolicy?.mcpConnections === undefined
+                  ? isProviderThreadLoaded({ providerSessionId, threadId, providerThreadKey })
+                  : Effect.succeed(false),
               ),
               Effect.flatMap((loaded) =>
                 loaded
@@ -2390,7 +2409,12 @@ export const layerWithOptions = (
                       loaded: input.providerThread,
                       linkedEnvironments: undefined,
                     })
-                  : loadNatively(runtime.resumeThread(input)),
+                  : loadNatively(runtime.resumeThread(input)).pipe(
+                      // A failed load may have released the thread first, as a Codex seal change does.
+                      Effect.onError(() =>
+                        forgetProviderThreadLoaded({ providerSessionId, threadId }),
+                      ),
+                    ),
               ),
               Effect.tap(({ loaded: providerThread, linkedEnvironments }) =>
                 markProviderThreadLoaded({

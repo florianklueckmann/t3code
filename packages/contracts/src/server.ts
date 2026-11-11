@@ -275,6 +275,8 @@ export const ServerProvider = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
   skills: Schema.Array(ServerProviderSkill).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  /** The user's own MCP servers in the provider's config, by name only. */
+  mcpServerNames: Schema.optionalKey(Schema.Array(Schema.String)),
   workspaceSnapshots: Schema.optionalKey(Schema.Array(ServerProviderWorkspaceSnapshot)),
   /**
    * Set when the server rescanned a workspace after a session start and its skills or commands

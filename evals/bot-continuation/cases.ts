@@ -6,6 +6,7 @@ export interface ContinuationCase {
   readonly waiting: readonly string[];
   readonly absent: string | null;
   readonly answer: readonly string[];
+  readonly preflightBudget?: boolean;
 }
 
 // Source: T3B-21 first-slice acceptance; all people, projects and requests are synthetic.
@@ -46,5 +47,32 @@ export const CASES: readonly ContinuationCase[] = [
     waiting: [],
     absent: null,
     answer: ["17|seventeen"],
+  },
+  {
+    id: "preflight-oversized-draft",
+    // Source: T3B-21's 2026-11-06 audit of repeatedly rejected oversized drafts.
+    capture: [
+      "Save this draft as my Working notes, preserving its wording unless storage requires shortening or merging. Keep these requests unfinished until I provide the Lantern launch date. Blue packaging is only your unapproved proposal. Do no file work, create no tasks or routines, and change no learning or project sources.",
+      ...Array.from({ length: 21 }, (_, index) => {
+        const title = `Lantern review ${index + 1}: prepare the launch checklist after I supply its date. `;
+        return (
+          title +
+          "Keep this request pending until the launch date is supplied. ".repeat(
+            index === 0 ? 7 : 3,
+          )
+        );
+      }),
+    ].join("\n"),
+    resume:
+      "What remains unfinished for Lantern, and what decision still needs me? Do not do the work yet.",
+    request: "Lantern",
+    waiting: ["date", "(?=.*blue)(?=.*(propos|unapproved|not approved|pending|undecided))"],
+    absent: null,
+    answer: [
+      "Lantern",
+      "date",
+      "(?=.*blue)(?=.*(propos|unapproved|not approved|pending|undecided))",
+    ],
+    preflightBudget: true,
   },
 ];

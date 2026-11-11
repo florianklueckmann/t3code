@@ -14,6 +14,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   BotDetail,
   BotTaskSummary,
+  type ModelSelection,
   OrchestratorMcpListScheduledTasksResult,
   OrchestratorMcpScheduleTaskResult,
   OrchestratorMcpThreadReadResult,
@@ -56,7 +57,14 @@ export interface SampleRun {
   /** The routine's result in its work thread, or the home conversation's answer. */
   readonly text: string;
   readonly tools: ReadonlyArray<ToolActivity>;
-  readonly tasks: ReadonlyArray<Pick<BotTaskSummary, "status" | "origin" | "returnToHome">>;
+  readonly tasks: ReadonlyArray<
+    Pick<BotTaskSummary, "status" | "origin" | "returnToHome" | "modelSelection">
+  >;
+  /** The Bot's selection when the sample created it, and after the turn. */
+  readonly botSelection?: {
+    readonly created: ModelSelection;
+    readonly after: ModelSelection;
+  };
   readonly routines: ReadonlyArray<{
     readonly botId: string | undefined;
     readonly sessionAt: string | undefined;
@@ -90,6 +98,9 @@ const calledTool = (tools: ReadonlyArray<ToolActivity>, name: string, action?: s
       (action === undefined || call.value.input.action === action)
     );
   });
+
+const reasoningEffort = (selection: ModelSelection | undefined) =>
+  selection?.options?.find((option) => option.id === "reasoningEffort")?.value;
 
 export const gradeSample = (testCase: PreparationCase, run: SampleRun) => {
   const checks: Array<{ readonly check: string; readonly pass: boolean }> = [];
@@ -137,6 +148,21 @@ export const gradeSample = (testCase: PreparationCase, run: SampleRun) => {
       (run.tasks[0]?.returnToHome ?? false) === testCase.returnToHome,
     );
     add("bounded Home turns", run.homeRuns === (testCase.returnToHome ? 2 : 1));
+  }
+  if (testCase.taskEffort !== undefined) {
+    const { created, after } = run.botSelection ?? {};
+    const task = run.tasks[0]?.modelSelection;
+    add(
+      "task runs at the requested reasoning on the Bot's model",
+      task?.model === created?.model && reasoningEffort(task) === testCase.taskEffort,
+    );
+    add(
+      "Bot keeps its model and reasoning",
+      created !== undefined &&
+        after?.model === created.model &&
+        reasoningEffort(after) === reasoningEffort(created),
+    );
+    add("Bot not updated", !calledTool(run.tools, "t3_bot", "update"));
   }
   if (testCase.routine === null) {
     add("no routine", run.routines.length === 0 && !calledTool(run.tools, "schedule_task"));
@@ -217,7 +243,7 @@ const runSample = Effect.fn("botPreparation.runSample")(function* (
     Project,
   );
   const botId = `bp-${tag}`;
-  yield* call(
+  const created = yield* call(
     "t3_bot",
     {
       action: "create",
@@ -231,7 +257,7 @@ const runSample = Effect.fn("botPreparation.runSample")(function* (
       },
       learningPolicy: "after_adoption",
     },
-    Schema.Unknown,
+    Schema.Struct({ bot: BotDetail }),
   );
   const attached = yield* call(
     "t3_bot",
@@ -330,10 +356,24 @@ const runSample = Effect.fn("botPreparation.runSample")(function* (
     { threadId: home, limit: 1, runLimit: 1 },
     OrchestratorMcpThreadReadResult,
   );
+  const botAfter = yield* call(
+    "t3_bot",
+    { action: "read", botId },
+    Schema.Struct({ bot: BotDetail }),
+  );
   const run: SampleRun = {
     text,
     tools,
-    tasks: tasks.map(({ status, origin, returnToHome }) => ({ status, origin, returnToHome })),
+    tasks: tasks.map(({ status, origin, returnToHome, modelSelection }) => ({
+      status,
+      origin,
+      returnToHome,
+      modelSelection,
+    })),
+    botSelection: {
+      created: created.bot.modelSelection,
+      after: botAfter.bot.modelSelection,
+    },
     routines: scheduled.tasks.map((task) => ({
       botId: task.botId,
       sessionAt: task.sessionAt,

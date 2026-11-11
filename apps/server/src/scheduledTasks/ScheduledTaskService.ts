@@ -190,6 +190,7 @@ const webhookFilters = (filters: ReadonlyArray<ScheduledTaskWebhookFilter> | und
 
 const decodeTask = Schema.decodeUnknownEffect(ScheduledTask);
 const decodeTaskId = Schema.decodeUnknownOption(ScheduledTaskId);
+const decodeCreatorThreadId = Schema.decodeUnknownEffect(Schema.NullOr(ThreadId));
 const decodeScheduleJson = Schema.decodeUnknownEffect(
   Schema.fromJsonString(ScheduledTask.fields.schedule),
 );
@@ -228,6 +229,7 @@ interface ScheduledTaskRow {
   readonly project_id: string;
   readonly thread_id: string | null;
   readonly thread_mode: string;
+  readonly created_by_thread_id: string | null;
   readonly workspace_strategy_json: string;
   readonly model_selection_json: string;
   readonly runtime_mode: string;
@@ -270,6 +272,7 @@ export class ScheduledTaskService extends Context.Service<
     readonly subscribeList: () => Stream.Stream<ScheduledTaskListResult, ScheduledTaskError>;
     readonly upsert: (
       input: ScheduledTaskUpsertInput,
+      provenance?: { readonly createdByThreadId: ThreadId },
     ) => Effect.Effect<ScheduledTaskMutationResult, ScheduledTaskError>;
     readonly setEnabled: (
       input: ScheduledTaskSetEnabledInput,
@@ -583,6 +586,7 @@ export const layer = Layer.effect(
         project_id,
         thread_id,
         thread_mode,
+        created_by_thread_id,
         workspace_strategy_json,
         model_selection_json,
         runtime_mode,
@@ -625,6 +629,7 @@ export const layer = Layer.effect(
         project_id,
         thread_id,
         thread_mode,
+        created_by_thread_id,
         workspace_strategy_json,
         model_selection_json,
         runtime_mode,
@@ -644,7 +649,9 @@ export const layer = Layer.effect(
       WHERE task_id = ${id}
     `.pipe(NodeSqliteClient.readOnly);
 
-    const findTask = Effect.fn("ScheduledTaskService.findTask")(function* (id: ScheduledTaskId) {
+    const findStoredTask = Effect.fn("ScheduledTaskService.findStoredTask")(function* (
+      id: ScheduledTaskId,
+    ) {
       const rows = yield* getRows(id).pipe(
         Effect.mapError((cause) =>
           taskError("Could not load schedule task.", { taskId: id, cause }),
@@ -652,7 +659,16 @@ export const layer = Layer.effect(
       );
       const row = rows[0];
       if (row === undefined) return null;
-      return withPolicy(yield* decode(row, yield* readWebhookOrigin));
+      const createdByThreadId = yield* decodeCreatorThreadId(row.created_by_thread_id).pipe(
+        Effect.mapError((cause) =>
+          taskError("Could not decode schedule task row.", { taskId: id, cause }),
+        ),
+      );
+      return { task: withPolicy(yield* decode(row, yield* readWebhookOrigin)), createdByThreadId };
+    });
+
+    const findTask = Effect.fn("ScheduledTaskService.findTask")(function* (id: ScheduledTaskId) {
+      return (yield* findStoredTask(id))?.task ?? null;
     });
 
     const findWebhookCredentials = (id: ScheduledTaskId) =>
@@ -692,6 +708,7 @@ export const layer = Layer.effect(
         readonly secret: string | null;
         readonly secretChanged: boolean;
       },
+      createdByThreadId: ThreadId | undefined,
     ) =>
       routines
         .mutate(
@@ -705,6 +722,7 @@ export const layer = Layer.effect(
           project_id,
           thread_id,
           thread_mode,
+          created_by_thread_id,
           workspace_strategy_json,
           model_selection_json,
           runtime_mode,
@@ -730,6 +748,7 @@ export const layer = Layer.effect(
           ${task.projectId},
           ${task.threadId},
           ${scheduledTaskThreadMode(task)},
+          ${createdByThreadId ?? null},
           ${JSON.stringify(task.workspaceStrategy)},
           ${JSON.stringify(task.modelSelection)},
           ${task.runtimeMode},
@@ -1082,7 +1101,8 @@ export const layer = Layer.effect(
       const startedAtIso = iso(startedAt);
       const run = Effect.gen(function* () {
         // Re-read stale poll snapshots so deleted, paused or postponed tasks cannot fire.
-        const active = yield* findTask(task.id);
+        const stored = yield* findStoredTask(task.id);
+        const active = stored?.task ?? null;
         if (active === null) {
           if (webhook !== undefined) {
             return yield* new WebhookDeliverySkipped({
@@ -1240,6 +1260,9 @@ export const layer = Layer.effect(
                       },
                       createdBy: active.createdBy,
                       creationSource: active.creationSource,
+                      ...(stored?.createdByThreadId == null
+                        ? {}
+                        : { createdByThreadId: stored.createdByThreadId }),
                     })
                     .pipe(
                       Effect.map((launched) => launched.threadId),
@@ -1575,7 +1598,7 @@ export const layer = Layer.effect(
 
     const upsert: ScheduledTaskService["Service"]["upsert"] = Effect.fn(
       "ScheduledTaskService.upsert",
-    )(function* (input) {
+    )(function* (input, provenance) {
       // A webhook task the policy blocks can still be edited while it is off.
       if (input.enabled && input.schedule.type === "webhook" && webhookPolicyBlock !== undefined) {
         return yield* taskError(
@@ -1783,6 +1806,7 @@ export const layer = Layer.effect(
         input.requireExisting === true,
         scheduleUnchanged ? existingTask.schedule : null,
         webhook,
+        provenance?.createdByThreadId,
       );
       yield* notifyChanged;
       return { task: (yield* findTask(id)) ?? task };

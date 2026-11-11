@@ -12,6 +12,7 @@ import {
   type BotRetireLearningInput,
   type BotTaskId,
   type BotTaskStatus,
+  selectBotTurnLearning,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
@@ -29,10 +30,6 @@ export interface RecordLearningResult {
   /** The same lesson was already active, pending or rejected, so nothing was recorded. */
   readonly duplicate: boolean;
 }
-
-/** Active entries supplied to one turn; the rest stay reviewable in settings and `t3_bot read`. */
-const ACTIVE_LEARNING_MAX_ENTRIES = 40;
-const ACTIVE_LEARNING_MAX_CHARS = 8_000;
 
 const normalizeLearningText = (text: string): string =>
   text.normalize("NFKC").toLowerCase().replace(/\s+/g, " ").trim();
@@ -166,14 +163,48 @@ export const make = (deps: {
       const revisions = revisionsOf(rows, input.replaces.entryId);
       const first = revisions[0];
       if (first === undefined) return yield* fail("Learning entry not found.");
-      if (first.project_id !== null && first.project_id !== input.projectId) {
+      const scope = BotStore.learningScopeOf(revisions);
+      if (scope !== null && scope !== input.projectId) {
         return yield* fail("That learning entry belongs to another project.");
       }
+      // Scope "bot" moves a project's entry to all projects; otherwise it keeps its scope.
+      const projectId = input.scope === "bot" ? null : scope;
       const head = activeOf(revisions);
       const stale = head === undefined || head.revision !== input.replaces.revision;
+      // Moving into a scope that already has this lesson keeps that entry; a move that applies
+      // at once retires this copy, which stays restorable.
+      const existing =
+        stale || projectId === scope
+          ? undefined
+          : rows.find(
+              (row) =>
+                row.entry_id !== first.entry_id &&
+                row.project_id === projectId &&
+                row.status === "active" &&
+                row.kind === first.kind &&
+                row.normalized_text === normalized,
+            );
+      if (existing !== undefined) {
+        const kept = yield* record(policy, {
+          ...input,
+          replaces: {
+            entryId: BotLearningEntryId.make(existing.entry_id),
+            revision: existing.revision,
+          },
+        });
+        if (input.origin === "instruction") {
+          yield* retire({ botId: input.botId, entryId: input.replaces.entryId });
+        }
+        return kept;
+      }
       // The user restating an inferred lesson makes it their instruction, which later
       // inferred lessons cannot override, so it gets its own revision.
-      if (!stale && head.normalized_text === normalized && !confirmsInference(input, head)) {
+      if (
+        !stale &&
+        head.normalized_text === normalized &&
+        head.project_id === projectId &&
+        !confirmsInference(input, head)
+      ) {
         return duplicateOf(head);
       }
       const repeated = revisions.find((revision) => repeats(input, normalized, revision));
@@ -184,7 +215,7 @@ export const make = (deps: {
         ? "stale"
         : initialStatus({
             origin: input.origin,
-            shared: first.project_id === null,
+            shared: projectId === null,
             conflictsWithInstruction,
             policy,
             fromTask,
@@ -193,7 +224,7 @@ export const make = (deps: {
         ...base,
         entry_id: first.entry_id,
         revision: Math.max(...revisions.map((revision) => revision.revision)) + 1,
-        project_id: first.project_id,
+        project_id: projectId,
         kind: first.kind,
         status,
         base_revision: input.replaces.revision,
@@ -406,37 +437,22 @@ const duplicateOf = (row: BotStore.BotLearningRow): RecordLearningResult => ({
   duplicate: true,
 });
 
-/**
- * The active learning one turn in a project sees: its own entries and the Bot's shared ones,
- * standing instructions first, bounded so history never floods the context.
- */
 export function activeLearningLines(
   rows: ReadonlyArray<BotStore.BotLearningRow>,
   projectId: string,
 ): { readonly lines: ReadonlyArray<string>; readonly omitted: number } {
-  const active = rows
-    .filter(
-      (row) => row.status === "active" && (row.project_id === null || row.project_id === projectId),
-    )
-    .toSorted(
-      (a, b) =>
-        Number(b.origin === "instruction") - Number(a.origin === "instruction") ||
-        b.created_at.localeCompare(a.created_at),
-    );
-  const lines: Array<string> = [];
-  let chars = 0;
-  for (const row of active) {
-    const line = `- [${row.entry_id} r${row.revision}; ${row.kind}${
-      row.project_id === null ? ", all projects" : ""
-    }${row.origin === "instruction" ? ", standing instruction" : ""}] ${row.text}`;
-    if (
-      lines.length >= ACTIVE_LEARNING_MAX_ENTRIES ||
-      chars + line.length > ACTIVE_LEARNING_MAX_CHARS
-    ) {
-      break;
-    }
-    lines.push(line);
-    chars += line.length;
-  }
-  return { lines, omitted: active.length - lines.length };
+  const { lines, omitted } = selectBotTurnLearning(
+    rows.map((row) => ({
+      entryId: row.entry_id,
+      revision: row.revision,
+      projectId: row.project_id,
+      kind: row.kind,
+      origin: row.origin,
+      status: row.status,
+      text: row.text,
+      createdAt: row.created_at,
+    })),
+    projectId,
+  );
+  return { lines, omitted: omitted.length };
 }

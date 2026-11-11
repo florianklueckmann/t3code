@@ -339,7 +339,7 @@ export const layerExecutor: Layer.Layer<
                   : { modelSelection: effect.request.modelSelection }),
               })
               .pipe(
-                Effect.tap(() =>
+                Effect.tap((accepted) =>
                   Effect.gen(function* () {
                     if (effect.request.type !== "provider-turn.steer") return;
                     const messageId = effect.request.messageId;
@@ -349,13 +349,33 @@ export const layerExecutor: Layer.Layer<
                       { messageIds: [effect.request.messageId] },
                     );
                     const message = projection.messages.find((row) => row.id === messageId);
-                    if (message?.delegatedCompletion === undefined) return;
-                    yield* threads.dispatch({
-                      type: "notification.delivery.accept",
-                      commandId: CommandId.make(`command:mailbox-accepted:${effect.id}`),
-                      threadId: effect.threadId,
-                      messageId: message.id,
-                    });
+                    if (message?.delegatedCompletion !== undefined) {
+                      return yield* threads.dispatch({
+                        type: "notification.delivery.accept",
+                        commandId: CommandId.make(`command:mailbox-accepted:${effect.id}`),
+                        threadId: effect.threadId,
+                        messageId: message.id,
+                      });
+                    }
+                    if (!accepted) return;
+                    yield* threads
+                      .dispatch({
+                        type: "message.steer.accept",
+                        commandId: CommandId.make(`command:steer-accepted:${effect.id}`),
+                        threadId: effect.threadId,
+                        messageId,
+                      })
+                      .pipe(
+                        // Retry only the record: failing the effect would steer a second time.
+                        // The command id makes a retry of a record that did commit a no-op.
+                        Effect.retry({ times: 3, schedule: Schedule.exponential("1 second") }),
+                        Effect.catch((cause) =>
+                          Effect.logWarning(
+                            "orchestration-v2.effect-worker.steer-acceptance-unrecorded",
+                            { threadId: effect.threadId, messageId, cause },
+                          ),
+                        ),
+                      );
                   }),
                 ),
                 Effect.catch((error) =>

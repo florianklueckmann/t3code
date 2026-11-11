@@ -1,9 +1,14 @@
 import {
   BOT_CONTINUATION_SECTIONS,
+  BOT_TURN_LEARNING_LIMITS,
   BotContinuationNoteInput,
   type BotContinuationNote,
   type BotContinuationRef,
   type BotContinuationRevision,
+  type BotMaintenanceView,
+  type BotHomeCheckView,
+  type BotRecordLearningInput,
+  selectBotTurnLearning,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import * as Option from "effect/Option";
@@ -165,6 +170,87 @@ export function botLearningViews(
   const rank = (view: BotLearningView) =>
     view.pending.length > 0 ? 0 : view.current !== undefined ? 1 : 2;
   return [...views].sort((a, b) => rank(a) - rank(b));
+}
+
+/** How a revision changes the projects its entry applies to, against the revision it replaces. */
+export function botLearningScopeChange(
+  entry: BotLearningEntry,
+  revision: BotLearningRevision,
+): "moves to all projects" | "moves to one project" | null {
+  const base = entry.revisions.find((each) => each.revision === revision.baseRevision);
+  if (base === undefined || base.projectId === revision.projectId) return null;
+  return revision.projectId === null ? "moves to all projects" : "moves to one project";
+}
+
+export const BOT_LEARNING_LEFT_OUT_EXPLANATION = `Each turn includes at most ${
+  BOT_TURN_LEARNING_LIMITS.entries
+} lessons or ${BOT_TURN_LEARNING_LIMITS.chars.toLocaleString(
+  "en-US",
+)} characters: your instructions first, then the newest. Retire or merge lessons to make room.`;
+
+/** Active entries that a Bot's turns in this project leave out, by the server's own rule. */
+export function botLearningLeftOut(
+  entries: ReadonlyArray<BotLearningEntry>,
+  projectId: ProjectId,
+): ReadonlyArray<{ readonly entry: BotLearningEntry; readonly current: BotLearningRevision }> {
+  const active = entries.flatMap((entry) =>
+    entry.revisions
+      .filter((revision) => revision.status === "active")
+      .map((current) => ({
+        entry,
+        current,
+        entryId: entry.id,
+        revision: current.revision,
+        // An entry's scope is that of its active revision.
+        projectId: entry.projectId,
+        kind: entry.kind,
+        origin: current.origin,
+        status: current.status,
+        text: current.text,
+        createdAt: current.createdAt,
+      })),
+  );
+  return selectBotTurnLearning(active, projectId).omitted;
+}
+
+/**
+ * A new revision of an entry's active text: reworded, or moved to all projects with its
+ * rationale and evidence. It is recorded from the entry's project, or for a shared entry from
+ * an attached project; null when there is no active text or no such project.
+ */
+export function botLearningRevisionInput(
+  bot: {
+    readonly id: BotId;
+    readonly projects: ReadonlyArray<Pick<BotProjectContextSummary, "projectId" | "detachedAt">>;
+  },
+  entry: BotLearningEntry,
+  change: { readonly text: string } | { readonly scope: "bot" },
+): BotRecordLearningInput | null {
+  const current = entry.revisions.find((revision) => revision.status === "active");
+  const attached = bot.projects.flatMap((project) =>
+    project.detachedAt === null ? [project.projectId] : [],
+  );
+  const projectId =
+    entry.projectId ??
+    (current !== undefined && attached.includes(current.learnedInProjectId)
+      ? current.learnedInProjectId
+      : attached[0]);
+  if (current === undefined || projectId === undefined) return null;
+  const base = {
+    botId: bot.id,
+    projectId,
+    kind: entry.kind,
+    replaces: { entryId: entry.id, revision: current.revision },
+  };
+  return "scope" in change
+    ? {
+        ...base,
+        text: current.text,
+        rationale: current.rationale,
+        evidence: current.evidence,
+        scope: change.scope,
+      }
+    : { ...base, text: change.text.trim() };
 }
 
 export interface BotConversation {
@@ -574,4 +660,91 @@ export function botContinuationRefCaption(ref: BotContinuationRef): string {
   if (ref.kind === "task")
     return `Task · ${ref.status === null ? "Unavailable" : BOT_TASK_STATUS_LABELS[ref.status]}`;
   return `${ref.directUser ? "Your words" : "Home input"}: “${ref.quote}”`;
+}
+
+/** Notification routes cannot open a result belonging to another project or work thread. */
+export function botTaskResultMatchesThread(
+  task: Pick<BotTaskSummary, "id" | "workThreadId" | "projectId">,
+  thread: { readonly taskId: string; readonly threadId: ThreadId; readonly projectId: ProjectId },
+): boolean {
+  return (
+    task.id === thread.taskId &&
+    task.workThreadId === thread.threadId &&
+    task.projectId === thread.projectId
+  );
+}
+
+export const BOT_MAINTENANCE_DESCRIPTION =
+  "Reviews this project's new messages and finished work to keep lessons and working notes current. It starts with new messages and newly completed work; earlier history is left as is.";
+const BOT_MAINTENANCE_UNAVAILABLE_LABELS: ReadonlyMap<string, string> = new Map([
+  [
+    "no_tool_profile_unavailable",
+    "Not available yet. It needs a tool-free model profile, which this server doesn't provide.",
+  ],
+  [
+    "codex_required",
+    "Needs a Codex model. Pick a Codex model for this Bot to turn maintenance on.",
+  ],
+  ["instance_unavailable", "This Bot's Codex provider is off or missing."],
+  ["provider_signed_out", "Sign in to Codex to run maintenance."],
+  ["codex_version_unsupported", "Update Codex to run maintenance."],
+  ["selected_model_unavailable", "This Bot's model isn't available on its Codex account."],
+  ["option_unsupported", "One of this Bot's model options isn't supported for maintenance."],
+]);
+/** Settings caption for a maintenance view; unknown reasons from newer servers stay readable. */
+export function botMaintenanceStatusLabel(view: BotMaintenanceView): string {
+  if (view.unavailableReason === null) return botMaintenanceState(view, false);
+  return `${botMaintenanceState(view, true)} · ${BOT_MAINTENANCE_UNAVAILABLE_LABELS.get(view.unavailableReason) ?? "Not available on this server."}`;
+}
+function botMaintenanceState(view: BotMaintenanceView, unavailable: boolean): string {
+  if (!view.enabled)
+    return view.startedAt === null ? "Off" : "Paused · turning it on continues where it stopped";
+  if (!view.writable) return "On · stopped while detached or archived";
+  return unavailable ? "On · stopped" : "On";
+}
+/** Turning off is always allowed; turning on needs an editable form, an active Bot and a server that can generate. */
+export function canToggleBotMaintenance(view: BotMaintenanceView, formLocked: boolean): boolean {
+  return view.enabled || (!formLocked && view.writable && view.unavailableReason === null);
+}
+
+export const BOT_HOME_CHECK_DESCRIPTION =
+  "Once a day, the Bot looks over this project's Home and adds to Waiting on you what needs your decision or preparation. It never acts on its own.";
+const BOT_HOME_CHECK_UNAVAILABLE_LABELS: ReadonlyMap<string, string> = new Map([
+  ["provider", "Needs a Codex model. Pick a Codex model for this Bot to turn the check on."],
+  ["platform", "Runs only when this server is a Mac."],
+]);
+/** Settings caption for a Home check; unknown reasons from newer servers stay readable. */
+export function botHomeCheckStatusLabel(view: BotHomeCheckView): string {
+  const state = !view.enabled
+    ? "Off"
+    : !view.writable
+      ? "On · stopped while detached or archived"
+      : view.unavailableReason !== null
+        ? "On · stopped"
+        : `On · daily at ${view.timeOfDay}`;
+  if (view.unavailableReason === null) return state;
+  return `${state} · ${BOT_HOME_CHECK_UNAVAILABLE_LABELS.get(view.unavailableReason) ?? "Not available on this server."}`;
+}
+/** What the latest check did, or null before the first one. */
+export function botHomeCheckLastLabel(view: BotHomeCheckView): string | null {
+  const last = view.lastCheck;
+  if (last === null) return null;
+  switch (last.outcome) {
+    case "running":
+      return "Checking now";
+    case "proposed":
+      return `Last check: added ${last.added ?? 0} to Waiting on you`;
+    case "noop":
+      return "Last check: nothing to add";
+    case "failed":
+    case "interrupted":
+    case "stopped":
+    case "unsupported":
+      return "Last check: couldn't check";
+    default:
+      return "Last check finished";
+  }
+}
+export function canToggleBotHomeCheck(view: BotHomeCheckView, formLocked: boolean): boolean {
+  return view.enabled || (!formLocked && view.writable && view.unavailableReason === null);
 }

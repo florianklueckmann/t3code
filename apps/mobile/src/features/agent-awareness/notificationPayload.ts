@@ -49,32 +49,42 @@ function encodeThreadDeepLink(input: {
 }
 
 function normalizeThreadDeepLink(value: string): string | null {
-  if (
-    value.trim() !== value ||
-    value.startsWith("//") ||
-    value.includes("?") ||
-    value.includes("#")
-  ) {
+  if (value.trim() !== value || value.startsWith("//") || value.includes("#")) {
     return null;
   }
 
-  const parts = value.split("/");
+  const [pathname, query] = value.split("?");
+  const params = new URLSearchParams(query);
+  const taskId = params.get("botTaskId");
+  if (
+    query !== undefined &&
+    (value.split("?").length !== 2 ||
+      [...params.keys()].length !== 1 ||
+      taskId === null ||
+      taskId.trim() !== taskId ||
+      taskId.length === 0)
+  )
+    return null;
+  const parts = (pathname ?? "").split("/");
   if (parts.length !== 4 || parts[0] !== "" || parts[1] !== "threads") {
     return null;
   }
 
   try {
-    return encodeThreadDeepLink({
+    const route = encodeThreadDeepLink({
       environmentId: decodeURIComponent(parts[2] ?? ""),
       threadId: decodeURIComponent(parts[3] ?? ""),
     });
+    return route === null || taskId === null
+      ? route
+      : `${route}?botTaskId=${encodeURIComponent(taskId)}`;
   } catch {
     return null;
   }
 }
 
 export function threadDeepLinkOnScreen(pathname: string): string | null {
-  const match = /^\/threads\/([^/]+)\/([^/]+)(?:\/|$)/.exec(pathname);
+  const match = /^\/threads\/([^/?#]+)\/([^/?#]+)(?:[/?#]|$)/.exec(pathname);
   if (!match?.[1] || !match[2]) {
     return null;
   }

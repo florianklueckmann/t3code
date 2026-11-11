@@ -1,5 +1,6 @@
 import {
   isListedThreadLineage,
+  type BotTaskId,
   type EnvironmentId,
   isProviderNativeSubagentThread,
   type OrchestrationV2ThreadShell,
@@ -74,11 +75,15 @@ export interface AgentAwarenessState {
   readonly deepLink: string;
 }
 
-function buildAgentAwarenessDeepLink(input: {
+export function buildAgentAwarenessDeepLink(input: {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
+  readonly botTaskId?: BotTaskId;
 }): string {
-  return `/threads/${encodeURIComponent(input.environmentId)}/${encodeURIComponent(input.threadId)}`;
+  const route = `/threads/${encodeURIComponent(input.environmentId)}/${encodeURIComponent(input.threadId)}`;
+  return input.botTaskId === undefined
+    ? route
+    : `${route}?botTaskId=${encodeURIComponent(input.botTaskId)}`;
 }
 
 export interface ProjectThreadAwarenessV2Input {

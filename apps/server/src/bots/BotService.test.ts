@@ -6,6 +6,8 @@ import {
   type BotDetail,
   BotId,
   BotTaskId,
+  McpConnectionId,
+  type OrchestrationV2AppThreadLineage,
   type OrchestrationV2ServerCommand,
   type OrchestrationV2ThreadShell,
   type Project,
@@ -28,6 +30,7 @@ import * as ThreadManagementService from "../orchestration-v2/ThreadManagementSe
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -128,6 +131,8 @@ const layerSupport = Layer.mergeAll(
         driverKind: ProviderDriverKind.make(instanceId === "claude" ? "claudeAgent" : "codex"),
       } as ProviderInstance),
   }),
+  // Task selections are covered in BotTaskService.test.ts.
+  Layer.mock(ProviderRegistry.ProviderRegistry)({}),
   BotProjectGuard.layer,
   Scheduler.layer,
   ServerSettings.layerTest(),
@@ -169,18 +174,20 @@ const withServices = <A, E>(
     readonly bots: BotService.BotService["Service"];
     readonly turnContext: BotTurnContext.BotTurnContext["Service"];
     readonly continuation: BotContinuation.BotContinuation["Service"];
+    readonly settings: ServerSettings.ServerSettingsService["Service"];
   }) => Effect.Effect<A, E>,
 ) =>
   Effect.gen(function* () {
     const bots = yield* BotService.BotService;
     const turnContext = yield* BotTurnContext.BotTurnContext;
     const continuation = yield* BotContinuation.BotContinuation;
-    return yield* body({ bots, turnContext, continuation });
+    const settings = yield* ServerSettings.ServerSettingsService;
+    return yield* body({ bots, turnContext, continuation, settings });
   }).pipe(
     Effect.provide(
       Layer.mergeAll(BotService.layer, BotTurnContext.layer, BotContinuation.layer).pipe(
         Layer.provide(BotTaskService.layer),
-        Layer.provide(Layer.merge(threadLayer, layerSupport)),
+        Layer.provideMerge(Layer.merge(threadLayer, layerSupport)),
       ),
     ),
     Effect.scoped,
@@ -469,6 +476,233 @@ it.effect("pushes a rename to open Bot list subscriptions without renaming the c
       }).pipe(Effect.scoped),
     );
   }).pipe(Effect.provide(layerDatabase)),
+);
+
+const privateMail = McpConnectionId.make("2a2a2a2a-0000-4000-8000-00000000002a");
+const workMail = McpConnectionId.make("2b2b2b2b-0000-4000-8000-00000000002b");
+const retiredMail = McpConnectionId.make("2c2c2c2c-0000-4000-8000-00000000002c");
+const mailDefinition = (label: string) => ({
+  label,
+  enabled: true,
+  revision: 1,
+  transport: { type: "stdio" as const, command: "mail-mcp", args: [], env: {} },
+  authentication: { type: "bindings" as const },
+});
+const seedCatalog = (settings: ServerSettings.ServerSettingsService["Service"]) =>
+  settings.updateMcpConnections(() =>
+    Effect.succeed({
+      mcpConnections: {
+        [privateMail]: mailDefinition("Private mail"),
+        [workMail]: mailDefinition("Work mail"),
+      },
+      retiredMcpConnectionIds: [retiredMail],
+    }),
+  );
+
+it.effect("grants only catalog connections, as a whole set guarded by its revision", () =>
+  Effect.gen(function* () {
+    const world = yield* makeThreadWorld;
+    const twinId = BotId.make("faerun-companion-twin");
+    yield* withServices(world.threadLayer, ({ bots, settings }) =>
+      Effect.gen(function* () {
+        yield* seedCatalog(settings);
+        const created = yield* createCampaignBot(bots);
+        yield* createCampaignBot(bots, twinId);
+        assert.deepEqual(created.mcpGrants, {
+          revision: 0,
+          connectionIds: [],
+          ownCodexMcpServers: false,
+        });
+
+        const granted = yield* bots.setMcpGrants({
+          botId,
+          expectedRevision: 0,
+          connectionIds: [workMail, privateMail, workMail],
+        });
+        assert.deepEqual(granted.mcpGrants, {
+          revision: 1,
+          connectionIds: [privateMail, workMail],
+          ownCodexMcpServers: false,
+        });
+
+        const stale = yield* bots
+          .setMcpGrants({ botId, expectedRevision: 0, connectionIds: [] })
+          .pipe(Effect.flip);
+        assert.include(stale.message, "changed since you opened them");
+        for (const unknown of [
+          retiredMail,
+          McpConnectionId.make("2d2d2d2d-0000-4000-8000-00000000002d"),
+        ]) {
+          const refused = yield* bots
+            .setMcpGrants({ botId, expectedRevision: 1, connectionIds: [unknown] })
+            .pipe(Effect.flip);
+          assert.include(refused.message, "no longer exists");
+        }
+        yield* bots.setMcpGrants({
+          botId: twinId,
+          expectedRevision: 0,
+          connectionIds: [workMail],
+          ownCodexMcpServers: true,
+        });
+
+        // Removing a catalog connection drops it from every Bot that had it.
+        const pull = yield* Stream.toPull(bots.subscribeList());
+        yield* pull;
+        yield* bots.forgetMcpConnection(workMail);
+        const [listed] = yield* pull;
+        assert.deepEqual(
+          listed?.bots.map((bot) => [bot.id, bot.mcpGrants]),
+          [
+            [botId, { revision: 2, connectionIds: [privateMail], ownCodexMcpServers: false }],
+            [twinId, { revision: 2, connectionIds: [], ownCodexMcpServers: true }],
+          ],
+        );
+
+        // A save that leaves the switch out keeps it; switching it alone advances the revision.
+        const kept = yield* bots.setMcpGrants({
+          botId: twinId,
+          expectedRevision: 2,
+          connectionIds: [privateMail],
+        });
+        assert.deepEqual(kept.mcpGrants, {
+          revision: 3,
+          connectionIds: [privateMail],
+          ownCodexMcpServers: true,
+        });
+        const switchedOff = yield* bots.setMcpGrants({
+          botId: twinId,
+          expectedRevision: 3,
+          connectionIds: [privateMail],
+          ownCodexMcpServers: false,
+        });
+        assert.deepEqual(switchedOff.mcpGrants, {
+          revision: 4,
+          connectionIds: [privateMail],
+          ownCodexMcpServers: false,
+        });
+
+        yield* bots.setArchived({ botId: twinId, archived: true });
+        const archived = yield* bots
+          .setMcpGrants({ botId: twinId, expectedRevision: 4, connectionIds: [privateMail] })
+          .pipe(Effect.flip);
+        assert.include(archived.message, "archived");
+      }).pipe(Effect.scoped),
+    );
+    yield* withServices(world.threadLayer, ({ bots }) =>
+      Effect.gen(function* () {
+        assert.deepEqual((yield* bots.get({ botId })).mcpGrants, {
+          revision: 2,
+          connectionIds: [privateMail],
+          ownCodexMcpServers: false,
+        });
+      }),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect(
+  "gives forks and subagents of a Bot thread that Bot's grants, and refuses lost lines",
+  () =>
+    Effect.gen(function* () {
+      yield* seedProjects;
+      const world = yield* makeThreadWorld;
+      const sql = yield* SqlClient.SqlClient;
+      const lineages = new Map<string, OrchestrationV2AppThreadLineage>();
+      const creators = new Map<string, ThreadId>();
+      const thread = (
+        id: string,
+        parent: string | null,
+        relationship: "fork" | "subagent" | null,
+        createdBy?: string,
+      ) =>
+        Effect.gen(function* () {
+          const lineage = {
+            parentThreadId: parent === null ? null : ThreadId.make(parent),
+            relationshipToParent: relationship,
+            rootThreadId: ThreadId.make(id),
+          };
+          lineages.set(id, lineage);
+          const createdByThreadId = createdBy === undefined ? undefined : ThreadId.make(createdBy);
+          if (createdByThreadId !== undefined) creators.set(id, createdByThreadId);
+          yield* sql`
+          INSERT INTO orchestration_v2_projection_threads (
+            thread_id, project_id, title, default_provider, runtime_mode, interaction_mode,
+            created_at, updated_at, payload_json
+          ) VALUES (
+            ${id}, ${campaignA}, ${id}, 'codex', 'full-access', 'default',
+            '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', ${JSON.stringify({ lineage, createdByThreadId })}
+          )
+        `;
+        });
+      yield* withServices(world.threadLayer, ({ bots, turnContext, settings }) =>
+        Effect.gen(function* () {
+          yield* seedCatalog(settings);
+          yield* createCampaignBot(bots);
+          const home = (yield* bots.attachProject({ botId, projectId: campaignA })).projects[0]!
+            .homeThreadId;
+          yield* bots.setMcpGrants({
+            botId,
+            expectedRevision: 0,
+            connectionIds: [privateMail],
+            ownCodexMcpServers: true,
+          });
+          yield* thread(home, null, null);
+          yield* thread("helper", home, "subagent");
+          yield* thread("helper-fork", "helper", "fork");
+          yield* thread("nested-helper", "helper-fork", "subagent");
+          yield* thread("plain", null, null);
+          yield* thread("plain-fork", "plain", "fork");
+          yield* thread("orphan", "deleted-parent", "subagent");
+          yield* thread("loop-a", "loop-b", "fork");
+          yield* thread("loop-b", "loop-a", "fork");
+          // Top-level threads a Bot's line launched with t3_thread_launch or create_threads.
+          yield* thread("launched", null, null, home);
+          yield* thread("launched-by-helper", null, null, "helper");
+          yield* thread("launched-fork", "launched", "fork");
+          yield* thread("launched-by-plain", null, null, "plain");
+          yield* thread("launched-by-deleted", null, null, "deleted-parent");
+          const access = (id: string) => {
+            const createdByThreadId = creators.get(id);
+            return turnContext.mcpAccessForThread({
+              id: ThreadId.make(id),
+              lineage: lineages.get(id)!,
+              ...(createdByThreadId === undefined ? {} : { createdByThreadId }),
+            });
+          };
+          const granted = {
+            _tag: "bot",
+            botId,
+            botName: "Faerun Companion",
+            connectionIds: [privateMail],
+            ownCodexMcpServers: true,
+          } as const;
+          for (const id of [
+            home,
+            "helper",
+            "helper-fork",
+            "nested-helper",
+            "launched",
+            "launched-by-helper",
+            "launched-fork",
+          ]) {
+            assert.deepEqual(yield* access(id), granted, id);
+          }
+          for (const id of ["plain", "plain-fork", "launched-by-plain"]) {
+            assert.deepEqual(yield* access(id), { _tag: "none" }, id);
+          }
+          for (const id of ["orphan", "loop-a", "launched-by-deleted"]) {
+            assert.equal((yield* access(id))._tag, "refused", id);
+          }
+          // Instructions and learning do not follow the line; only MCP access does.
+          assert.equal((yield* turnContext.forThread(ThreadId.make("helper")))._tag, "none");
+
+          yield* bots.detachProject({ botId, projectId: campaignA });
+          const detached = yield* access("nested-helper");
+          assert.equal(detached._tag, "refused");
+          assert.include(detached._tag === "refused" ? detached.message : "", "detached");
+        }),
+      );
+    }).pipe(Effect.provide(layerDatabase)),
 );
 
 const correction = {
@@ -910,12 +1144,124 @@ it.effect("keeps facts in their project by default and shares them when explicit
           existingFacts,
         );
 
+        // Moving a lesson to all projects, and rewording it, are revisions of the same entry.
+        const user = { origin: "instruction" as const, source: { kind: "user" as const } };
+        const moved = yield* bots.recordLearning({
+          ...user,
+          botId,
+          projectId: campaignA,
+          scope: "bot",
+          kind: "fact",
+          text: "Strahd fled to the Amber Temple.",
+          replaces: { entryId: local.learned.entryId, revision: 1 },
+        });
+        const entryOf = (detail: BotDetail, entryId: string) =>
+          detail.learning.find((entry) => entry.id === entryId) ?? assert.fail();
+        assert.deepEqual(moved.learned, {
+          entryId: local.learned.entryId,
+          revision: 2,
+          status: "active",
+          duplicate: false,
+        });
+        assert.isNull(entryOf(moved.bot, local.learned.entryId).projectId);
+        assert.include(
+          yield* instructionsFor(turnContext, homeB ?? assert.fail()),
+          `[${local.learned.entryId} r2; fact, all projects, standing instruction] Strahd fled to the Amber Temple.`,
+        );
+        const edited = yield* bots.recordLearning({
+          ...user,
+          botId,
+          projectId: campaignB,
+          kind: "fact",
+          text: "Strahd fled to the Amber Temple with the Abbot.",
+          replaces: { entryId: local.learned.entryId, revision: 2 },
+        });
+        const editedEntry = entryOf(edited.bot, local.learned.entryId);
+        assert.isNull(editedEntry.projectId);
+        assert.deepEqual(
+          editedEntry.revisions.map((revision) => [
+            revision.text,
+            revision.status,
+            revision.projectId,
+          ]),
+          [
+            ["Strahd fled to the Amber Temple.", "superseded", campaignA],
+            ["Strahd fled to the Amber Temple.", "superseded", null],
+            ["Strahd fled to the Amber Temple with the Abbot.", "active", null],
+          ],
+        );
+        const restored = yield* bots.restoreLearning({
+          ...user,
+          botId,
+          entryId: local.learned.entryId,
+          revision: 1,
+        });
+        assert.equal(entryOf(restored, local.learned.entryId).projectId, campaignA);
+        assert.notInclude(
+          yield* instructionsFor(turnContext, homeB ?? assert.fail()),
+          "Amber Temple",
+        );
+        // A move the Bot infers waits for the user, like any lesson for every project.
+        const proposedMove = yield* bots.recordLearning({
+          ...correction,
+          botId,
+          projectId: campaignA,
+          scope: "bot",
+          text: "The party meets in Vallaki.",
+          replaces: { entryId: explicitLocal.learned.entryId, revision: 1 },
+        });
+        assert.equal(proposedMove.learned.status, "pending");
+        const proposedMoveEntry = entryOf(proposedMove.bot, explicitLocal.learned.entryId);
+        assert.equal(proposedMoveEntry.projectId, campaignA);
+        assert.deepEqual(
+          proposedMoveEntry.revisions.map((revision) => [revision.status, revision.projectId]),
+          [
+            ["active", campaignA],
+            ["pending", null],
+          ],
+        );
+        assert.notInclude(yield* instructionsFor(turnContext, homeB ?? assert.fail()), "Vallaki");
+
+        // Moving a lesson every project already has keeps the shared one and retires this copy.
+        const localCopy = yield* bots.recordLearning({
+          ...user,
+          botId,
+          projectId: campaignA,
+          kind: "fact",
+          text: "The user's name is Rowan.",
+        });
+        const merged = yield* bots.recordLearning({
+          ...user,
+          botId,
+          projectId: campaignA,
+          scope: "bot",
+          kind: "fact",
+          text: "The user's name is Rowan.",
+          replaces: { entryId: localCopy.learned.entryId, revision: 1 },
+        });
+        assert.deepEqual(merged.learned, {
+          entryId: sharedFact.learned.entryId,
+          revision: 1,
+          status: "active",
+          duplicate: true,
+        });
+        assert.deepEqual(
+          entryOf(merged.bot, localCopy.learned.entryId).revisions.map(
+            (revision) => revision.status,
+          ),
+          ["retired"],
+        );
+        for (const home of [homeA, homeB]) {
+          const instructions = yield* instructionsFor(turnContext, home ?? assert.fail());
+          assert.lengthOf(instructions.split("The user's name is Rowan.").slice(1), 1);
+        }
+
         const detached = yield* bots.detachProject({ botId, projectId: campaignB });
         const refused = yield* bots
           .recordLearning({ ...correction, botId, projectId: campaignB })
           .pipe(Effect.flip);
         assert.include(refused.message, "not attached");
-        assert.lengthOf(detached.learning, 6);
+        assert.lengthOf(detached.learning, 7);
       }),
     );
   }).pipe(Effect.provide(layerDatabase)),

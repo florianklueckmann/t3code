@@ -59,6 +59,8 @@ export type PreparationCase =
       readonly prompt: string;
       readonly answerMust: ReadonlyArray<string>;
       readonly returnToHome?: boolean;
+      /** The reasoningEffort the started task must run at, on the Bot's model; the Bot keeps its own. */
+      readonly taskEffort?: string;
       readonly expectedFiles?: Readonly<Record<string, string>>;
       readonly existingRoutine?: { readonly title: string; readonly allowChanges: boolean };
       /** The routine the turn should set up, or none. */
@@ -116,6 +118,20 @@ export const CASES: ReadonlyArray<PreparationCase> = [
     routine: null,
     startsTask: true,
     returnToHome: false,
+  },
+  // T3B-28: start_task ignored modelSelection, so one task could only change reasoning by changing the Bot.
+  {
+    id: "task-with-own-reasoning",
+    kind: "new",
+    world: "with-records",
+    trigger: "home",
+    prompt:
+      "Use t3_bot start_task once to start a separate Bot task to read world/notes.md and report where the Sunless Gate lies. Run only that task with low reasoning effort; keep your own model and reasoning unchanged. End your turn after starting it; I will check the result myself. Do not change files, wait, poll, use external services, or create schedules.",
+    answerMust: [],
+    routine: null,
+    startsTask: true,
+    returnToHome: false,
+    taskEffort: "low",
   },
 
   {

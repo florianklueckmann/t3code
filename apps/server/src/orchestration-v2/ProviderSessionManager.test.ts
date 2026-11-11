@@ -58,6 +58,7 @@ import * as ProviderEventIngestor from "./ProviderEventIngestor.ts";
 import * as ProviderInstallationGate from "../provider/ProviderInstallationGate.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import * as BotHomes from "../bots/BotHomes.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as CommandOutputHub from "./CommandOutputHub.ts";
@@ -575,7 +576,20 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
             Ref.update(state, (current) => ({
               ...current,
               resumeCount: current.resumeCount + 1,
-            })).pipe(Effect.as(threadInput.providerThread)),
+            })).pipe(
+              Effect.andThen(
+                // Like a Codex Home seal, this load releases the thread and then fails.
+                threadInput.runtimePolicy?.nativeTools === "t3BotOnly"
+                  ? Effect.fail(
+                      new ProviderAdapter.ProviderAdapterResumeThreadError({
+                        driver: CODEX_DRIVER,
+                        providerSessionId: input.providerSessionId,
+                        providerThreadId: threadInput.providerThread.id,
+                      }),
+                    )
+                  : Effect.succeed(threadInput.providerThread),
+              ),
+            ),
           startTurn: () => options.startTurn ?? Effect.void,
           steerTurn: () => Effect.void,
           interruptTurn: () =>
@@ -714,6 +728,7 @@ function layerTest(input: {
         IdAllocator.layer,
         layerTestStores,
         ThreadCommandExecutor.layer,
+        Layer.mock(BotHomes.BotHomes)({ isHome: () => Effect.succeed(false) }),
         Layer.mock(GitVcsDriver.GitVcsDriver)({
           resolveBranchName: () => Effect.succeed(null),
         }),
@@ -4736,6 +4751,17 @@ it.effect.each([
         assert.equal((yield* Ref.get(state)).resumeCount, ++resumeCount);
         yield* resumeSecondThread;
         assert.equal((yield* Ref.get(state)).resumeCount, ++resumeCount);
+        // A failed load may have released the thread, so the earlier load no longer counts.
+        yield* secondRuntime
+          .resumeThread({
+            providerThread: secondProviderThread,
+            threadId: secondThreadId,
+            modelSelection,
+            runtimePolicy: { ...runtimePolicy, nativeTools: "t3BotOnly" },
+          })
+          .pipe(Effect.flip);
+        yield* resumeSecondThread;
+        assert.equal((yield* Ref.get(state)).resumeCount, resumeCount += 2);
         // regression: #26722 a Linked environments change reloads only the idle thread's tools.
         yield* settings.updateSettings({ linkedEnvironmentsEnabled: true });
         yield* resumeSecondThread;
@@ -4773,6 +4799,17 @@ it.effect.each([
         });
         yield* resumeSecondThread;
         assert.equal((yield* Ref.get(state)).resumeCount, ++resumeCount);
+        // Granted connections can change behind the same ids, so every grant load reaches the
+        // adapter, which compares what they resolve to now.
+        const resumeGranted = secondRuntime.resumeThread({
+          providerThread: secondProviderThread,
+          threadId: secondThreadId,
+          modelSelection,
+          runtimePolicy: { ...runtimePolicy, mcpConnections: [] },
+        });
+        yield* resumeGranted;
+        yield* resumeGranted;
+        assert.equal((yield* Ref.get(state)).resumeCount, resumeCount += 2);
 
         assert.deepEqual((yield* Ref.get(state)).unloadedNativeThreadIds, ["native-thread"]);
 

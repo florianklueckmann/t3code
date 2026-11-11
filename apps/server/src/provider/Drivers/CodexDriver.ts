@@ -14,6 +14,7 @@ import { HttpClient, HttpClientResponse } from "effect/http";
 import { ChildProcessSpawner } from "effect/process";
 
 import type * as CodexUsageHistory from "../../usage/CodexUsageHistory.ts";
+import { makeCodexSealedGeneration } from "../../textGeneration/CodexSealedGeneration.ts";
 import { makeCodexTextGeneration } from "../../textGeneration/CodexTextGeneration.ts";
 import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderLatestVersions";
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
@@ -52,6 +53,7 @@ import {
   type ProviderSnapshotSettings,
 } from "@t3tools/provider-core/server/snapshotSettings";
 import {
+  codexAccountHomePath,
   codexContinuationIdentity,
   materializeCodexShadowHome,
   resolveCodexHomeLayout,
@@ -324,6 +326,21 @@ export const CodexDriver: ProviderDriver<
     const probeSkills = yield* makeCodexSkillsProbe().pipe(
       Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
     );
+    const sealedGeneration = yield* makeCodexSealedGeneration({
+      getSnapshot: snapshot.getSnapshot,
+      storeHomePath: codexAccountHomePath(homeLayout),
+      openClient: (cwd) =>
+        withCodexAppServerClient({
+          binaryPath: effectiveConfig.binaryPath,
+          homePath: effectiveConfig.homePath,
+          launchArgs: resolveCodexLaunchArgs(effectiveConfig.launchArgs, processEnv),
+          cwd,
+          environment: processEnv,
+        }).pipe(
+          Effect.map(({ client }) => client),
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        ),
+    });
     const snapshotForCwd = (cwd: string) =>
       !effectiveConfig.enabled
         ? snapshot.getSnapshot
@@ -424,6 +441,7 @@ export const CodexDriver: ProviderDriver<
       consumeResetCredit,
       orchestrationAdapter,
       textGeneration,
+      sealedGeneration,
     } satisfies ProviderInstance;
   }),
 };

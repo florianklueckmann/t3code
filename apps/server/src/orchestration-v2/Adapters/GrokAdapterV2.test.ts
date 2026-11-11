@@ -249,8 +249,12 @@ describe("Grok launch permission mode", () => {
   const launchArgs = (runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy) =>
     Effect.gen(function* () {
       const launches: Array<ReadonlyArray<string>> = [];
+      const memoryEnvironment: Array<string | undefined> = [];
       const childProcessSpawner = ChildProcessSpawner.make((command) => {
-        if (command._tag === "StandardCommand") launches.push(command.args.map(String));
+        if (command._tag === "StandardCommand") {
+          launches.push(command.args.map(String));
+          memoryEnvironment.push(command.options.env?.GROK_MEMORY?.toString());
+        }
         return Effect.fail(
           PlatformError.systemError({
             _tag: "NotFound",
@@ -263,7 +267,7 @@ describe("Grok launch permission mode", () => {
       const adapter = yield* makeGrokAdapterV2({
         instanceId,
         settings: LAUNCH_TEST_GROK_SETTINGS,
-        environment: {},
+        environment: { GROK_MEMORY: "1" },
         hostPlatform: "darwin",
         selfInvocation: yield* resolveSelfInvocation(),
       }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner));
@@ -275,7 +279,7 @@ describe("Grok launch permission mode", () => {
           runtimePolicy,
         })
         .pipe(Effect.scoped, Effect.ignore);
-      return launches;
+      return { launches, memoryEnvironment };
     }).pipe(Effect.provideService(HostProcess.Platform, "darwin"), Effect.provide(layerTest));
 
   const policy = (
@@ -299,8 +303,20 @@ describe("Grok launch permission mode", () => {
     ).map(([runtimeMode, args]) => [runtimeMode, args.join(" "), args] as const),
   )("launches %s threads with %s", ([runtimeMode, , args]) =>
     Effect.gen(function* () {
-      assert.deepEqual(yield* launchArgs(policy(runtimeMode)), [args]);
+      assert.deepEqual((yield* launchArgs(policy(runtimeMode))).launches, [args]);
     }),
+  );
+
+  it.effect.each(["disabled", undefined] as const)(
+    "honors native memory policy %s over the Grok environment",
+    (nativeMemory) =>
+      Effect.gen(function* () {
+        const { launches, memoryEnvironment } = yield* launchArgs(
+          policy("full-access", nativeMemory === undefined ? {} : { nativeMemory }),
+        );
+        assert.lengthOf(launches, 1);
+        assert.deepEqual(memoryEnvironment, [nativeMemory === "disabled" ? "0" : "1"]);
+      }),
   );
 
   it.effect("launches a thread stored as Auto-accept edits asking", () =>
@@ -359,7 +375,7 @@ describe("Grok launch permission mode", () => {
         ),
       );
       assert.equal(resolved.runtimeMode, "approval-required");
-      assert.deepEqual(yield* launchArgs(resolved), [
+      assert.deepEqual((yield* launchArgs(resolved)).launches, [
         ["--permission-mode", "default", "agent", "stdio"],
       ]);
     }),

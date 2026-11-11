@@ -27,6 +27,10 @@ const isNonBlank = Schema.makeFilter((value: string) => value.trim().length > 0,
   arbitraryConstraint: { minLength: 1 },
 });
 export const TrimmedNonEmptyString = TrimmedString.check(isNonBlank);
+// A Record key with only checks filters which keys match, so a blank key would be skipped, not refused.
+export const NonBlankRecordKey = Schema.String.pipe(
+  Schema.decodeTo(Schema.String.check(isNonBlank)),
+);
 
 export const NonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 export const PositiveInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1));

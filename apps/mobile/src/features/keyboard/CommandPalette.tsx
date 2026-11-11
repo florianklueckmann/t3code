@@ -347,6 +347,13 @@ export function CommandPalette(props: {
         run: () => openSettings(navigation, "SettingsBots"),
       },
       {
+        key: "mcpConnections",
+        kind: "action",
+        title: "MCP connections",
+        searchTerms: ["mcp", "tool", "account", "credentials"],
+        run: () => openSettings(navigation, "SettingsMcpConnections"),
+      },
+      {
         key: "usage",
         kind: "action",
         title: "Usage",

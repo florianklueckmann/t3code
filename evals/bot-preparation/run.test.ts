@@ -1,4 +1,5 @@
 import { expect, it } from "@effect/vitest";
+import { ProviderInstanceId } from "@t3tools/contracts";
 
 import { CASES } from "./cases.ts";
 import { gradeSample, type SampleRun } from "./run.ts";
@@ -153,4 +154,51 @@ it("keeps missing Home returns as failed checks with task and file evidence", ()
     ),
   ).toContain("requested Home return policy");
   expect(failed(gradeSample(testCase, { ...run, homeRuns: 3 }))).toContain("bounded Home turns");
+});
+
+it("requires one task's reasoning without changing the Bot's", () => {
+  const testCase = byId("task-with-own-reasoning");
+  const selection = (effort: string) => ({
+    instanceId: ProviderInstanceId.make("codex"),
+    model: "gpt-6.1-terra",
+    options: [{ id: "reasoningEffort", value: effort }],
+  });
+  const call = (action: string) => ({
+    type: "tool_call",
+    title: null,
+    text: JSON.stringify({ toolName: "t3_bot", input: { action } }),
+  });
+  const run = {
+    ...base,
+    tasks: [
+      {
+        status: "completed" as const,
+        origin: "direct" as const,
+        returnToHome: false,
+        modelSelection: selection("low"),
+      },
+    ],
+    botSelection: { created: selection("high"), after: selection("high") },
+    homeRuns: 1,
+    tools: [call("start_task")],
+  };
+  expect(failed(gradeSample(testCase, run))).toEqual([]);
+  // The old server ignored the task's selection and ran it on the Bot's.
+  expect(
+    failed(
+      gradeSample(testCase, {
+        ...run,
+        tasks: [{ status: "completed", origin: "direct", returnToHome: false }],
+      }),
+    ),
+  ).toEqual(["task runs at the requested reasoning on the Bot's model"]);
+  expect(
+    failed(
+      gradeSample(testCase, {
+        ...run,
+        botSelection: { created: selection("high"), after: selection("low") },
+        tools: [call("update"), call("start_task")],
+      }),
+    ),
+  ).toEqual(["Bot keeps its model and reasoning", "Bot not updated"]);
 });

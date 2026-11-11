@@ -39,11 +39,14 @@ const read = Effect.fn("mcp.bot.read")(function* (input: BotToolInput) {
     const projectId = yield* requireProjectId(input);
     return {
       continuation: yield* continuation
-        .get({
-          botId,
-          projectId,
-          ...(input.afterTaskId === undefined ? {} : { afterTaskId: input.afterTaskId }),
-        })
+        .get(
+          {
+            botId,
+            projectId,
+            ...(input.afterTaskId === undefined ? {} : { afterTaskId: input.afterTaskId }),
+          },
+          { page: true },
+        )
         .pipe(Effect.mapError(botFailure)),
     };
   }
@@ -199,6 +202,7 @@ const write = Effect.fn("mcp.bot.write")(function* (input: BotToolInput) {
         projectId: project.projectId,
         prompt: input.task,
         ...(input.title === undefined ? {} : { title: input.title }),
+        ...(input.modelSelection === undefined ? {} : { modelSelection: input.modelSelection }),
       },
       input.returnToHome === true ? { returnToHomeFrom: caller.thread!.threadId } : undefined,
     );
@@ -254,6 +258,10 @@ export const layer = McpToolAccess.toLayer(BotToolkit, {
       input.action === "list_tasks" ||
       input.action === "read_continuation",
     McpToolAccess.reads(read),
-    McpToolAccess.writesEnvironment((input) => write(input)),
+    McpToolAccess.either(
+      (input) => input.action === "save_continuation",
+      McpToolAccess.writesOwnHomeNote((input) => write(input)),
+      McpToolAccess.writesEnvironment((input) => write(input)),
+    ),
   ),
 });

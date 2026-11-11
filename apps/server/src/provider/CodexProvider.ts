@@ -164,6 +164,7 @@ export interface CodexAppServerProviderSnapshot {
   /** Undefined when `config/read` failed, so T3 cannot know Codex's default program. */
   readonly daybreakEnabled?: boolean | undefined;
   readonly cyberAccessProgramsUnavailable?: boolean | undefined;
+  readonly mcpServerNames?: ReadonlyArray<string> | undefined;
   readonly skills: ReadonlyArray<ServerProviderSkill>;
 }
 
@@ -463,6 +464,16 @@ function applyConfiguredCodexCyberAccess(
       options.some((option) => option.id === program),
     ),
   );
+}
+
+/** Names only: a server's settings can hold credentials. T3 Code's own server is not the user's. */
+export function codexUserMcpServerNames(config: object): ReadonlyArray<string> {
+  const servers = "mcp_servers" in config ? config.mcp_servers : undefined;
+  return typeof servers === "object" && servers !== null
+    ? Object.keys(servers)
+        .filter((name) => name !== "t3-code")
+        .toSorted()
+    : [];
 }
 
 /**
@@ -784,6 +795,7 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
     cyberAccessProgramsUnavailable:
       accountResponse.account?.type === "apiKey" &&
       (config === undefined || cyberAccess?.features?.api_key_cyber_access_programs === false),
+    mcpServerNames: config === undefined ? undefined : codexUserMcpServerNames(config),
     skills: skillsResponse ? parseCodexSkillsListResponse(skillsResponse, input.cwd) : [],
   } satisfies CodexAppServerProviderSnapshot;
 });
@@ -1121,6 +1133,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
       (models) => applyConfiguredCodexCyberAccess(models, snapshot),
     ),
     skills: snapshot.skills,
+    ...(snapshot.mcpServerNames === undefined ? {} : { mcpServerNames: snapshot.mcpServerNames }),
     slashCommands: [
       COMPACT_SLASH_COMMAND,
       {

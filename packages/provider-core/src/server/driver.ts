@@ -19,6 +19,7 @@ import type * as Stream from "effect/Stream";
 import type * as ProviderAdapter from "./ProviderAdapter.ts";
 import type { ProviderAuthController } from "./auth.ts";
 import type { ProviderDriverError } from "./errors.ts";
+import type { SealedGeneration } from "./sealedGeneration.ts";
 import type { ManagedServerProvider } from "./snapshot.ts";
 import type { ProviderTextGeneration } from "./textGeneration.ts";
 import type { ProviderUsageReader } from "./usage.ts";
@@ -63,6 +64,8 @@ export interface ProviderInstance {
   ) => Effect.Effect<ProviderConsumeResetCreditOutcome, ProviderDriverError>;
   readonly orchestrationAdapter: ProviderAdapter.ProviderAdapterV2["Service"];
   readonly textGeneration: ProviderTextGeneration;
+  /** Absent means the driver cannot run a sealed generation (`codex_required`). */
+  readonly sealedGeneration?: SealedGeneration;
   readonly auth?: ProviderAuthController;
   readonly acpSessionManagement?: {
     readonly listSessions: (input: {

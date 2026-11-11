@@ -167,6 +167,7 @@ it.layer(NodeServices.layer)("effect-codex-app-server client", (it) => {
     Effect.gen(function* () {
       const secret = "codex-notification-secret-sentinel";
       const { stdio, input } = yield* makeInMemoryStdio();
+      const undecodable: Array<readonly [string, unknown]> = [];
       const warnings: Array<unknown> = [];
       const client = yield* CodexClient.make(stdio).pipe(
         Effect.provide(
@@ -181,6 +182,11 @@ it.layer(NodeServices.layer)("effect-codex-app-server client", (it) => {
       const delivered = yield* Deferred.make<unknown>();
       yield* client.handleServerNotification("item/agentMessage/delta", (payload) =>
         Deferred.succeed(delivered, payload).pipe(Effect.asVoid),
+      );
+      yield* client.handleUnknownServerNotification((method, params) =>
+        Effect.sync(() => {
+          undecodable.push([method, params]);
+        }),
       );
 
       const send = (params: unknown) =>
@@ -201,6 +207,10 @@ it.layer(NodeServices.layer)("effect-codex-app-server client", (it) => {
         threadId: "thread-1",
         turnId: "turn-1",
       });
+      assert.deepEqual(undecodable, [
+        ["item/agentMessage/delta", malformed],
+        ["item/agentMessage/delta", malformed],
+      ]);
       assert.lengthOf(warnings, 1);
       expect(warnings[0]).toMatchObject({
         operation: "decode-notification-payload",
@@ -267,6 +277,44 @@ it.layer(NodeServices.layer)("effect-codex-app-server client", (it) => {
       // Retiring the transport closes the app-server's stdin, so it does not live on unread.
       assert.equal(yield* handle.exitCode, 0);
     }),
+  );
+
+  it.effect(
+    "sends known requests without a typed handler or a decodable payload to the fallback",
+    () =>
+      Effect.gen(function* () {
+        const { stdio, input, output } = yield* makeInMemoryStdio();
+        const client = yield* CodexClient.make(stdio);
+        const seen: Array<string> = [];
+        yield* client.handleServerRequest("item/tool/requestUserInput", () =>
+          Effect.succeed({ answers: {} }),
+        );
+        yield* client.handleUnknownServerRequest((method) =>
+          Effect.sync(() => {
+            seen.push(method);
+            return { declined: true };
+          }),
+        );
+        const send = (frame: unknown) =>
+          Queue.offer(input, new TextEncoder().encode(`${JSON.stringify(frame)}\n`));
+        yield* send({
+          id: "unhandled",
+          method: "item/commandExecution/requestApproval",
+          params: { threadId: "t", turnId: "u", itemId: "i", startedAtMs: 0 },
+        });
+        yield* send({ id: "undecodable", method: "item/tool/requestUserInput", params: {} });
+        const replies = [yield* Queue.take(output), yield* Queue.take(output)].map((line) =>
+          JSON.parse(line),
+        );
+        assert.sameDeepMembers(replies, [
+          { id: "unhandled", result: { declined: true } },
+          { id: "undecodable", result: { declined: true } },
+        ]);
+        assert.sameMembers(seen, [
+          "item/commandExecution/requestApproval",
+          "item/tool/requestUserInput",
+        ]);
+      }),
   );
 });
 

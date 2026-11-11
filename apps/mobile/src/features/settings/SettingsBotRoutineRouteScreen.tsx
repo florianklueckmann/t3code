@@ -432,8 +432,9 @@ function BotRoutineForm(props: {
           )}
         </SettingsSection>
         <Text className="px-2 text-sm text-foreground-muted">
-          Each run starts a task in a new work thread in this project, in Full access without
-          approval prompts. The change mode controls the Bot's instructions, not its tool access.
+          Each run starts a task in a new work thread in this project, without approval prompts.
+          Changes allowed runs in Full access; No changes can read and report but not change
+          anything.
         </Text>
         {error !== null ? (
           <Text className="px-2 text-sm text-danger-foreground">{error}</Text>

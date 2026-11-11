@@ -13,6 +13,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
+import * as McpCallerChanges from "./McpCallerChanges.ts";
 
 const EPOCH = DateTime.makeUnsafe("2026-01-01T00:00:00.000Z");
 
@@ -61,6 +62,11 @@ export const liveThreadShell = (
 
 export const liveThreadsLayer = Layer.mock(ThreadManagement.ThreadManagementService)({
   getThreadShell: (threadId) => Effect.succeed(liveThreadShell(threadId)),
+});
+
+/** Callers of tests that are not about No changes may change things. */
+export const layerCallerChangesAllowed = Layer.succeed(McpCallerChanges.McpCallerChanges, {
+  forThread: () => Effect.succeed("allowed"),
 });
 
 export const idleThreadProjection = (

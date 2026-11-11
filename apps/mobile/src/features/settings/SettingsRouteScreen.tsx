@@ -285,6 +285,7 @@ function useSettingsIndexSections(): SettingsListSection[] {
         serverPage("SettingsThreads", "text.bubble", gt("Threads")),
         page("SettingsScheduledTasks", "clock", gt("Scheduled tasks")),
         page("SettingsBots", "brain", gt("Bots")),
+        page("SettingsMcpConnections", "cable.connector", gt("MCP connections")),
       ],
     },
     {

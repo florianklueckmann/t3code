@@ -90,11 +90,15 @@ export function withCreationProvenance(
         linkOrigin: _linkOrigin,
         delegatedFrom: _delegatedFrom,
         initialMessage: _initialMessage,
+        createdByThreadId: _createdByThreadId,
         ...rest
       } = command;
       return { ...rest, ...provenance };
     }
-    case "message.dispatch":
+    case "message.dispatch": {
+      const { ifIdleAtSequence: _ifIdleAtSequence, ...rest } = command;
+      return { ...rest, ...provenance };
+    }
     case "thread.fork":
     case "thread.merge_back":
     case "delegated_task.request":
@@ -781,6 +785,7 @@ const make = Effect.gen(function* () {
             );
       case "message.dispatch":
       case "bot-task.result.deliver":
+      case "restricted_run.start":
         return orchestrator.getThreadRecords(command.threadId, []).pipe(
           Effect.flatMap((projection) =>
             assertProviderInstanceEnabled({

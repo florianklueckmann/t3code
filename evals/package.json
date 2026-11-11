@@ -5,6 +5,7 @@
   "scripts": {
     "bot-sources": "node bot-sources/run.ts",
     "bot-preparation": "node bot-preparation/run.ts",
+    "bot-grants": "node bot-grants/run.ts",
     "mcp-tool-use": "node --env-file-if-exists=../.env mcp-tool-use/run.ts",
     "mcp-tool-use:trim-capture": "node mcp-tool-use/trim-capture.ts",
     "mcp-tool-use:regrade": "node mcp-tool-use/regrade.ts",
@@ -14,7 +15,10 @@
     "test-signal": "node --env-file-if-exists=../.env test-signal/run.ts",
     "typecheck": "effect-tsgo tsrs --noEmit",
     "test": "vp test run --config ../vite.config.ts --dir .",
-    "bot-continuation": "node bot-continuation/run.ts"
+    "bot-continuation": "node bot-continuation/run.ts",
+    "bot-maintenance": "node bot-maintenance/run.ts",
+    "bot-home-check": "node bot-home-check/run.ts",
+    "bot-note-refresh": "node bot-note-refresh/run.ts"
   },
   "dependencies": {
     "@effect/platform-node": "catalog:",

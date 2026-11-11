@@ -11,7 +11,7 @@ import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { formatBotInstant } from "../settings/botRoutineDraft";
 import { BotTaskAction, BotTaskStatusLine } from "./BotTaskPresentation";
-import { BotTaskResultSheet } from "./BotTaskResultSheet";
+import { BotTaskResult, BotTaskResultSheet } from "./BotTaskResultSheet";
 import { reportBotFailure } from "./reportBotFailure";
 
 /** One Bot task: its status, when it ran, its result and a link to its work thread. */
@@ -115,13 +115,15 @@ export function BotTaskRow(props: {
         </View>
       ) : null}
       {resultOpen ? (
-        <BotTaskResultSheet
-          environmentId={props.environmentId}
-          task={task}
-          when={when}
-          onClose={() => setResultOpen(false)}
-          onOpenThread={props.onOpen}
-        />
+        <BotTaskResultSheet onClose={() => setResultOpen(false)}>
+          <BotTaskResult
+            environmentId={props.environmentId}
+            task={task}
+            when={when}
+            onClose={() => setResultOpen(false)}
+            onOpenThread={props.onOpen}
+          />
+        </BotTaskResultSheet>
       ) : null}
     </View>
   );

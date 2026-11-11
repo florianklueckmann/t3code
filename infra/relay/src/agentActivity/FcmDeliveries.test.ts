@@ -457,7 +457,11 @@ describe("Android delivery routing", () => {
 
   it.effect("keeps completion alerts working with ongoing activity disabled", () => {
     const h = harness();
-    h.current.state = { ...state, phase: "completed" };
+    h.current.state = {
+      ...state,
+      phase: "completed",
+      deepLink: "/threads/env/thread?botTaskId=bot-task%3Asaved",
+    };
     h.current.target.preferences_json = encodeJson({
       ...preferences,
       liveActivitiesEnabled: false,
@@ -469,8 +473,13 @@ describe("Android delivery routing", () => {
         active: "false",
         alert_title: "Fix notifications",
         alert_body: "Done: Project",
+        alert_path: "/threads/env/thread?botTaskId=bot-task%3Asaved",
       });
       expect(h.sent[0]?.data.user_id).toBe("user");
+      expect(h.sent[0]?.data.device_id).toBe("phone");
+      yield* delivery.process({ ...h.job, state: h.current.state });
+      const alerts = h.sent.filter((message) => message.alert);
+      expect(alerts[1]?.data.alert_id).toBe(alerts[0]?.data.alert_id);
     }).pipe(Effect.provide(h.layer));
   });
 

@@ -55,6 +55,7 @@ import { advertisedJsonSchema } from "./advertisedJsonSchema.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpToolAccess from "./McpToolAccess.ts";
 import * as McpToolAccessTestkit from "./McpToolAccess.testkit.ts";
+import * as McpCallerChanges from "./McpCallerChanges.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpSessionRegistry from "./McpSessionRegistry.ts";
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
@@ -95,6 +96,7 @@ const client = McpSchema.McpServerClient.of({
 });
 const layerTest = McpHttpServer.layerPreviewToolkit.pipe(
   Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+  Layer.provideMerge(McpToolAccessTestkit.layerCallerChangesAllowed),
   Layer.provideMerge(McpToolAccessTestkit.liveThreadsLayer),
   Layer.provideMerge(PreviewAutomationBroker.layer),
   Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-mcp-http-server-test-" })),
@@ -102,6 +104,7 @@ const layerTest = McpHttpServer.layerPreviewToolkit.pipe(
 );
 const layerPullRequestsTest = McpHttpServer.layerPullRequestsToolkit.pipe(
   Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+  Layer.provideMerge(McpToolAccessTestkit.layerCallerChangesAllowed),
   Layer.provideMerge(McpToolAccessTestkit.liveThreadsLayer),
   Layer.provide(
     Layer.mergeAll(
@@ -240,6 +243,7 @@ it.effect.each([
       Effect.provide(
         McpHttpServer.layerDeviceToolkit.pipe(
           Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+          Layer.provideMerge(McpToolAccessTestkit.layerCallerChangesAllowed),
           Layer.provide(McpToolAccessTestkit.liveThreadsLayer),
           Layer.provide(
             Layer.mock(DeviceService.DeviceService)({
@@ -327,6 +331,7 @@ const layerRecordingTools = (calls: Array<unknown>) => {
     }),
   ).pipe(
     Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+    Layer.provideMerge(McpToolAccessTestkit.layerCallerChangesAllowed),
     Layer.provide(
       Layer.mergeAll(
         McpToolAccessTestkit.liveThreadsLayer,
@@ -1617,6 +1622,7 @@ it.effect("hides tools for links and refuses another environment while the beta 
       ).pipe(
         Layer.provide(Layer.succeedContext(settingsContext)),
         Layer.provide(McpToolAccessTestkit.liveThreadsLayer),
+        Layer.provide(McpToolAccessTestkit.layerCallerChangesAllowed),
         Layer.provide(
           Layer.mock(McpSessionRegistry.McpSessionRegistry)({
             resolve: (presented) => Effect.succeed(presented === token ? scope : undefined),
@@ -1730,6 +1736,7 @@ it.effect("lists pull request watch tools only to threads that are not delegated
         Layer.provide(
           Layer.mergeAll(
             McpToolAccessTestkit.liveThreadsLayer,
+            McpToolAccessTestkit.layerCallerChangesAllowed,
             Layer.mock(ProjectService.ProjectService)({}),
             Layer.mock(PullRequestReviewGuideService.PullRequestReviewGuideService)({}),
             Layer.mock(PullRequestService.PullRequestService)({}),
@@ -1814,6 +1821,7 @@ it.effect(
             dependencies: [
               McpInvocationContext.McpInvocationContext,
               ThreadManagementService.ThreadManagementService,
+              McpCallerChanges.McpCallerChanges,
             ],
           }),
         );
@@ -1832,6 +1840,7 @@ it.effect(
         ).pipe(
           Layer.provide(ServerSettings.layerTest()),
           Layer.provide(McpToolAccessTestkit.liveThreadsLayer),
+          Layer.provide(McpToolAccessTestkit.layerCallerChangesAllowed),
           Layer.provide(
             Layer.mock(McpSessionRegistry.McpSessionRegistry)({
               resolve: () => Effect.undefined,

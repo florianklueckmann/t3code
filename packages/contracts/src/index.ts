@@ -73,6 +73,9 @@ export * from "./worktreeSetup.ts";
 export * from "./secretRequest.ts";
 export * from "./secretReference.ts";
 export * from "./settingsSecretValue.ts";
+export * from "./mcpConnection.ts";
 export * from "./clientRpcPermissions.ts";
 
 export * from "./botContinuation.ts";
+export * from "./botMaintenance.ts";
+export * from "./botHomeCheck.ts";

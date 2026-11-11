@@ -57,12 +57,14 @@ it.effect.each([78, 79, 80, 81, 82, 83])(
             rows.map((row) => ({
               ...row,
               ...(table === "bots" && head === 78 ? { appearance_json: null } : {}),
+              ...(table === "bots" ? { mcp_grant_revision: 0, mcp_own_codex_servers: 0 } : {}),
               ...(table === "bot_tasks" && head < 83 ? { allow_changes: 0 } : {}),
               ...(table === "bot_tasks"
                 ? {
                     return_home_run_id: null,
                     return_home_message_id: null,
                     return_finished_at: null,
+                    model_selection_json: null,
                   }
                 : {}),
             })),
@@ -95,6 +97,7 @@ it.effect.each([78, 79, 80, 81, 82, 83])(
           [78, "DropOrchestrationEventCorrelationIndex"],
           [79, "DelegatedRecoveryIndexes"],
           [80, "ScheduledTaskThreadMode"],
+          [81, "ScheduledTaskCreationProvenance"],
         ]);
         assert.deepStrictEqual(
           yield* main`SELECT name FROM sqlite_master WHERE name = 'idx_orch_events_correlation_id'`,
@@ -104,7 +107,7 @@ it.effect.each([78, 79, 80, 81, 82, 83])(
         const run = Migrator.make({});
         yield* run({
           loader: Migrator.fromRecord({
-            "81_TestLaterUpstream": main`CREATE TABLE later_upstream(value TEXT)`,
+            "82_TestLaterUpstream": main`CREATE TABLE later_upstream(value TEXT)`,
           }),
         });
         assert.deepStrictEqual(
@@ -113,7 +116,8 @@ it.effect.each([78, 79, 80, 81, 82, 83])(
             { migration_id: 78, name: "DropOrchestrationEventCorrelationIndex" },
             { migration_id: 79, name: "DelegatedRecoveryIndexes" },
             { migration_id: 80, name: "ScheduledTaskThreadMode" },
-            { migration_id: 81, name: "TestLaterUpstream" },
+            { migration_id: 81, name: "ScheduledTaskCreationProvenance" },
+            { migration_id: 82, name: "TestLaterUpstream" },
           ],
         );
         const copied: Record<string, ReadonlyArray<object>> = {};
@@ -137,7 +141,7 @@ it.effect.each([78, 79, 80, 81, 82, 83])(
             yield* main`SELECT migration_id, name FROM effect_sql_migrations ORDER BY migration_id`,
             [
               ...migrationManifest.map(([migration_id, name]) => ({ migration_id, name })),
-              { migration_id: 81, name: "TestLaterUpstream" },
+              { migration_id: 82, name: "TestLaterUpstream" },
             ],
           );
           assert.deepStrictEqual(yield* main`PRAGMA integrity_check`, [{ integrity_check: "ok" }]);
@@ -202,7 +206,7 @@ it.effect.each([
         yield* main`UPDATE effect_sql_migrations SET name = 'Unknown' WHERE migration_id = 80`;
       if (fault === "schema") yield* main`ALTER TABLE bot_tasks ADD COLUMN unknown_data TEXT`;
       if (fault === "target")
-        yield* bots`INSERT INTO bots SELECT 'bot', 'Conflicting', '', '{}', 'automatic', 'created', 'updated', NULL, NULL`;
+        yield* bots`INSERT INTO bots SELECT 'bot', 'Conflicting', '', '{}', 'automatic', 'created', 'updated', NULL, NULL, 0, 0`;
       if (fault === "unknown-suffix")
         yield* main`INSERT INTO effect_sql_migrations (migration_id, name) VALUES (84, 'Unknown')`;
       if (fault === "task-mode") yield* main`UPDATE bot_tasks SET allow_changes = 2`;

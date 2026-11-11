@@ -36,3 +36,8 @@ user's already authorized edit or identify missing input, and keep the default
 case from waking Home. Missing delivery retains the task, answer, and file
 evidence as failed checks. Compare the same cases and model against a separate
 base server with a fresh home; never downgrade the newer Bot database.
+
+`task-with-own-reasoning` covers T3B-28: asked for one task at low reasoning,
+the Bot must pass that selection to `start_task`, not `update` itself. It grades
+the task's recorded selection against the Bot's model and checks the Bot's
+selection afterwards. Run it at the default `high` effort so the two differ.

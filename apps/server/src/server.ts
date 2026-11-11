@@ -81,9 +81,13 @@ import { BUILT_IN_SOURCE_CONTROL_DRIVER_LIST } from "./sourceControl/sourceContr
 import * as TextGeneration from "./textGeneration/TextGeneration.ts";
 import * as SecretCheck from "./secrets/SecretCheck.ts";
 import * as SecretResolver from "./secrets/SecretResolver.ts";
+import * as McpConnectionHttp from "./mcpConnections/http.ts";
+import * as McpConnectionOAuth from "./mcpConnections/McpConnectionOAuth.ts";
+import * as McpConnections from "./mcpConnections/McpConnections.ts";
 import * as ProviderInstanceRegistryHydration from "./provider/ProviderInstanceRegistryHydration.ts";
 import * as ProjectSettingsOverrideSweep from "./provider/ProjectSettingsOverrideSweep.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
+import * as BotExecutionConstraint from "./bots/BotExecutionConstraint.ts";
 import * as McpHttpServer from "./mcp/McpHttpServer.ts";
 import * as PeerForwarding from "./peer/PeerForwarding.ts";
 import * as RemoteDelegation from "./peer/RemoteDelegation.ts";
@@ -717,9 +721,13 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   layerProviderInstallationRefresh,
   ProviderInstallation.layer,
   ReplayMarkers.layer,
+  McpConnections.layer,
   Layer.effectDiscard(ProjectSettingsOverrideSweep.sweep),
 ).pipe(
   Layer.provideMerge(layerOrchestrationApplication),
+  // Below orchestration, which names only signed-in accounts to the model. One instance: its
+  // per-connection lock orders refreshes, sign-ins and disconnects.
+  Layer.provideMerge(McpConnectionOAuth.layer),
   Layer.provideMerge(RuntimeLayer.layerEventInfrastructure),
   Layer.provideMerge(Layer.merge(ProjectStore.layer, ThreadSearch.layer)),
   Layer.provideMerge(SecretCheck.layer),
@@ -840,6 +848,7 @@ const layerMakeRoutes = Layer.mergeAll(
     ServerHttp.layerOtlpTracesProxyRoute,
     ServerHttp.layerAssetRoute,
     ServerHttp.layerAttachmentUploadRoute,
+    McpConnectionHttp.layerOAuthCallbackRoute,
     GuestHttp.layer,
     DeviceHubProxy.layer,
     ServerBrowserStream.routeLayer,
@@ -850,6 +859,7 @@ const layerMakeRoutes = Layer.mergeAll(
   McpHttpServer.layer.pipe(
     Layer.provide(ProviderAdapterRegistry.layerFromProviderInstanceRegistry),
     Layer.provide(McpOAuth.layerMcpClientAuthenticator),
+    Layer.provide(BotExecutionConstraint.layerMcpCallerChanges),
   ),
   // Follows delegated tasks running in linked environments, including after a restart.
   Layer.effectDiscard(

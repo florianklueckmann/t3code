@@ -45,6 +45,14 @@ export interface Observation {
     readonly action: string;
     readonly botId?: string | undefined;
     readonly projectId?: string | undefined;
+    readonly noteBudget?:
+      | {
+          readonly items: number;
+          readonly totalTextUnits: number;
+          readonly maxTextUnits: number;
+          readonly maxQuoteUnits: number;
+        }
+      | undefined;
   }[];
   readonly botId: string;
   readonly projectId: string;
@@ -65,6 +73,19 @@ export const gradeSample = (testCase: ContinuationCase, run: Observation) => {
   add("no invented tasks or routines", run.tasks === 0 && run.routines === 0);
   add("sources, instructions and learning unchanged", run.unchangedSettings);
   const saves = run.calls.filter((call) => call.action === "save_continuation");
+  if (testCase.preflightBudget)
+    add(
+      "every submitted draft fits the unchanged UTF-16 budget",
+      saves.length > 0 &&
+        saves.every(
+          (call) =>
+            call.noteBudget !== undefined &&
+            call.noteBudget.items <= 20 &&
+            call.noteBudget.totalTextUnits <= 4000 &&
+            call.noteBudget.maxTextUnits <= 400 &&
+            call.noteBudget.maxQuoteUnits <= 400,
+        ),
+    );
   add(
     control ? "no unnecessary save" : "real scoped save tool activity",
     control

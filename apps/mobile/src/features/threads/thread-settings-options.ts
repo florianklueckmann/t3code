@@ -44,6 +44,31 @@ export type RuntimeModeChoice = (typeof RUNTIME_MODE_CHOICES)[number] & {
   readonly disabledReason?: string;
 };
 
+const TASK_PERMISSION_CHOICES = {
+  none: {
+    label: "No changes",
+    description: "This routine task can read and report, but not change anything.",
+    disabledReason:
+      "This routine task is set to No changes. To make the changes it proposes, ask the Bot directly.",
+  },
+  unknown: {
+    label: "Checking permission",
+    description: "Loading this task's permission.",
+    disabledReason: "Permissions stay locked until this task's permission loads.",
+  },
+};
+
+/**
+ * A Bot task's only permission while it is No changes or not yet known: fixed, so no thread mode
+ * can appear to lift it. It keeps the thread's mode as its value, which the server ignores here.
+ */
+export function taskRuntimeModeChoices(
+  mode: RuntimeMode,
+  changes: "none" | "unknown",
+): ReadonlyArray<RuntimeModeChoice> {
+  return [{ mode, ...TASK_PERMISSION_CHOICES[changes] }];
+}
+
 /**
  * Marks modes above a managed runtime ceiling. A control acting on several environments is
  * managed when any of them is, so the first target that refuses a mode supplies its reason.

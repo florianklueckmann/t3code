@@ -62,6 +62,7 @@ export type EnvironmentSubscriptionRpcTag =
   | typeof WS_METHODS.scheduledTasksSubscribe
   | typeof WS_METHODS.botsSubscribe
   | typeof WS_METHODS.botsSubscribeTasks
+  | typeof WS_METHODS.mcpConnectionsOAuthSubscribe
   | typeof WS_METHODS.serverGetStorageCleanupReport
   | typeof WS_METHODS.serverGetDatabaseStorage
   | typeof WS_METHODS.subscribeTerminalMetadata
