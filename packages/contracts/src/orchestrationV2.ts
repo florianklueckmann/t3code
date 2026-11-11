@@ -3563,6 +3563,14 @@ const OrchestrationV2InternalCommand = Schema.Union([
     threadId: ThreadId,
     messageId: MessageId,
   }),
+  /** Message `messageId` could not be delivered and will not be retried. */
+  Schema.Struct({
+    type: Schema.Literal("message.delivery.fail"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    messageId: MessageId,
+    failure: OrchestrationV2ProviderFailure,
+  }),
   /** The provider did not confirm a Stop of this turn in time. */
   Schema.Struct({
     type: Schema.Literal("thread.interrupt.unresponsive"),

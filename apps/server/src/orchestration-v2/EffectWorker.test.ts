@@ -263,9 +263,9 @@ it.effect.each([
     dispatched: [],
   },
   {
-    name: "records nothing when the turn ended first and the follow-up is refused",
+    name: "marks the message not sent when the turn ended first and the follow-up is refused",
     steer: () => steerControlFailure(true),
-    dispatched: ["message.dispatch"],
+    dispatched: ["message.dispatch", "message.delivery.fail"],
   },
 ])("$name", ({ steer, acceptFailures = 0, dispatched }) =>
   Effect.gen(function* () {
