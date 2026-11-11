@@ -187,14 +187,19 @@ const outsideBotRefusal = (work: string) =>
 const otherBotRefusal = (bot: BotId, other: BotId) =>
   new OrchestratorMcpFailure({
     code: "capability_denied",
-    message: `This thread works for Bot "${bot}", so it can start and change only that Bot's tasks, routines and threads, not those of "${other}".`,
+    message: `This thread works for Bot "${bot}", so it can start and change only that Bot's own work and settings, not those of "${other}".`,
   });
 
-/** The Bot whose line `thread` belongs to; undefined for a thread of no Bot or an unknown line. */
+/** The Bot whose line `thread` belongs to; undefined for a thread of no Bot. */
 export const threadBot = Effect.fn("McpToolAccess.threadBot")(function* (
   thread: McpCallerBot.McpCallerBotThread,
 ) {
   const access = yield* (yield* McpCallerBot.McpCallerBot).forThread(thread);
+  if (access._tag === "unknown")
+    return yield* new OrchestratorMcpFailure({
+      code: "capability_denied",
+      message: `The Bot of thread ${thread.id} could not be determined, so this thread cannot change it.`,
+    });
   return access._tag === "bot" ? access.botId : undefined;
 });
 
@@ -210,17 +215,24 @@ export const refuseBotCaller = (work: string) =>
   );
 
 /**
- * A Bot's thread starts or changes tasks and routines only for its own Bot, whose grants they
- * load. `owner` is read only for a Bot's thread; undefined means the work is no Bot's.
+ * A Bot's thread starts, steers, stops or changes work only in its own Bot's line, whose grants
+ * that work loads. `owner` is read only for a Bot's thread; undefined means the work is no Bot's,
+ * which `noBot: "allowed"` lets through for existing threads, as messaging one is outside the grants.
  */
-export const requireOwnBot = <E, R>(owner: Effect.Effect<BotId | undefined, E, R>, work: string) =>
+export const requireOwnBot = <E, R>(
+  owner: Effect.Effect<BotId | undefined, E, R>,
+  work: string,
+  options?: { readonly noBot?: "allowed" },
+) =>
   callerBot.pipe(
     Effect.flatMap((bot) =>
       bot === undefined
         ? Effect.void
         : Effect.flatMap(owner, (other) =>
             other === undefined
-              ? Effect.fail(outsideBotRefusal(work))
+              ? options?.noBot === "allowed"
+                ? Effect.void
+                : Effect.fail(outsideBotRefusal(work))
               : other === bot
                 ? Effect.void
                 : Effect.fail(otherBotRefusal(bot, other)),
@@ -315,6 +327,7 @@ export const writesThreads = <P, A, E, R>(
           if (target !== null && target.deletedAt === null) {
             yield* assertTargetWithinLimits(caller.limits, target);
             yield* assertSameLink(caller, target);
+            yield* requireOwnBot(threadBot(target), "this thread", { noBot: "allowed" });
           }
         }
         // Modes can rise after this check; the orchestrator rechecks under lock and records refusal before handlers wrap errors.

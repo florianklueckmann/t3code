@@ -24,7 +24,7 @@ import * as McpCallerChanges from "./McpCallerChanges.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpToolAccess from "./McpToolAccess.ts";
-import { liveThreadShell } from "./McpToolAccess.testkit.ts";
+import { layerNoBots, liveThreadShell } from "./McpToolAccess.testkit.ts";
 
 const supervisedThreadId = ThreadId.make("thread:supervised");
 const planThreadId = ThreadId.make("thread:plan");
@@ -244,6 +244,7 @@ const probeServer = (threads: Layer.Layer<ThreadManagement.ThreadManagementServi
     Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
     Layer.provideMerge(threads),
     Layer.provideMerge(layerCallerChanges),
+    Layer.provideMerge(layerNoBots),
   );
 
 const decodeOutcome = Schema.decodeUnknownEffect(

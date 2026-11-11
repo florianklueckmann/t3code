@@ -5,6 +5,8 @@ import {
   EnvironmentId,
   ProjectId,
   ProviderInstanceId,
+  RunId,
+  RuntimeRequestId,
   ScheduledTaskError,
   ScheduledTaskId,
   ThreadId,
@@ -32,6 +34,7 @@ const caller = ThreadId.make("thread:caller");
 const mailHome = ThreadId.make("thread:mail-home");
 const workHome = ThreadId.make("thread:work-home");
 const plainThread = ThreadId.make("thread:plain");
+const lostThread = ThreadId.make("thread:lost");
 const mailBot = BotId.make("mail-bot");
 const workBot = BotId.make("work-bot");
 const mailRoutine = ScheduledTaskId.make("routine:mail");
@@ -43,6 +46,7 @@ const lines = new Map<ThreadId, McpCallerBot.McpCallerBotValue>([
   [mailHome, ofMailBot],
   [workHome, { _tag: "bot", botId: workBot }],
   [plainThread, ordinary],
+  [lostThread, { _tag: "unknown" }],
 ]);
 const tasks = [
   { id: mailRoutine, bot: { botId: mailBot } },
@@ -121,7 +125,37 @@ const outcome = (input: { readonly result: unknown; readonly reached: ReadonlyAr
     ? "reached"
     : (input.result as { readonly code?: string } | undefined)?.code;
 
+const codex = ProviderInstanceId.make("codex");
+// No question is pending, so a respond the ownership check lets through fails at its lookup.
+const threadWrites = [
+  ["t3_thread_configure", { modelSelection: { instanceId: codex, model: "gpt-5" } }, "reached"],
+  ["t3_queue", { action: "cancel", queuedRunId: RunId.make("run:queued") }, "reached"],
+  ["t3_thread_organize", { action: "archive" }, "reached"],
+  [
+    "t3_pending_request",
+    { action: "respond", requestId: RuntimeRequestId.make("request:1"), answers: {} },
+    "invalid_request",
+  ],
+] as const;
+
+// Another Bot's thread runs with that Bot's grants, so a Bot's line changes only its own. A thread
+// of no Bot stays reachable: messaging one is outside the grant promise.
+const ownership = [
+  [mailHome, ofMailBot, true],
+  [workHome, ofMailBot, false],
+  [plainThread, ofMailBot, true],
+  [lostThread, ofMailBot, false],
+  [workHome, ordinary, true],
+  [mailHome, { _tag: "unknown" }, false],
+] as const;
+
 it.effect.each([
+  ...threadWrites.flatMap(([name, params, allowed]) =>
+    ownership.map(
+      ([threadId, accessOf, passes]) =>
+        [name, { ...params, threadId }, accessOf, passes ? allowed : "capability_denied"] as const,
+    ),
+  ),
   // A routine runs with its Bot's grants, so a Bot's line runs only its own.
   ["run_scheduled_task_now", { taskId: mailRoutine }, ofMailBot, "reached"],
   ["run_scheduled_task_now", { taskId: workRoutine }, ofMailBot, "capability_denied"],

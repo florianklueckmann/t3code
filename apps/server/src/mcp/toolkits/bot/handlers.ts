@@ -169,9 +169,18 @@ const write = Effect.fn("mcp.bot.write")(function* (input: BotToolInput) {
         message: "`cancel_task` needs `taskId`.",
       });
     }
+    yield* McpToolAccess.requireOwnBot(
+      tasks.get(input.taskId).pipe(
+        Effect.map((task) => task.botId),
+        Effect.mapError(botFailure),
+      ),
+      "this task",
+    );
     const cancelled = tasks.cancel({ taskId: input.taskId });
     return { task: yield* cancelled.pipe(Effect.mapError(botFailure)) };
   }
+  // A Bot's work loads its own grants, so a Bot's thread changes only its own Bot.
+  yield* McpToolAccess.requireOwnBot(requireBotId(input), "this Bot");
   if (
     input.action === "learn" ||
     input.action === "adopt" ||
@@ -183,8 +192,6 @@ const write = Effect.fn("mcp.bot.write")(function* (input: BotToolInput) {
   }
   const botId = yield* requireBotId(input);
   if (input.action === "start_task") {
-    // The task loads its Bot's grants, so a Bot's thread may start one only for itself.
-    yield* McpToolAccess.requireOwnBot(Effect.succeed(botId), "this task");
     if (input.task === undefined) {
       return yield* new OrchestratorMcpFailure({
         code: "invalid_request",
