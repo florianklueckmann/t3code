@@ -218,6 +218,7 @@ function setup() {
 it("keeps a dirty draft protected and inspectable when live activity or write permission changes", async () => {
   using screen = setup();
   screen.render();
+  expect(state.header.gestureEnabled).toBe(true);
   act(() => state.fields.get("Context")!.onChange("Unsaved draft"));
   expect(state.preventRemove).toBe(true);
   state.view = { ...state.view!, writable: false };

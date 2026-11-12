@@ -28,6 +28,7 @@ const reactTests = [
   "src/features/settings/SettingsServerControlsRouteScreen.test.tsx",
   "src/features/settings/SettingsScheduledTasksRouteScreen.test.tsx",
   "src/features/settings/SettingsBotNotesRouteScreen.test.tsx",
+  "src/features/settings/BotHomeCheckSection.test.tsx",
   "src/features/settings/components/BranchNamingSettings.test.tsx",
   "src/features/settings/components/SettingsDragHandle.test.tsx",
   "src/features/threads/ThreadMarkdownImage.test.tsx",

@@ -32,6 +32,8 @@ export function BotHomeCheckSection(props: {
   readonly projectId: ProjectId;
   readonly title: string;
   readonly formLocked: boolean;
+  /** True while the open picker holds a time that differs from the saved one. */
+  readonly onDraftChange: (unsaved: boolean) => void;
 }) {
   const { environmentId, botId, projectId } = props;
   const scope = { botId, projectId };
@@ -67,8 +69,12 @@ export function BotHomeCheckSection(props: {
         "Check the current setting, then change it again if you still want to.",
       );
   };
+  const pick = (timeOfDay: string | null) => {
+    setPicking(timeOfDay);
+    props.onDraftChange(timeOfDay !== null && timeOfDay !== view.timeOfDay);
+  };
   const closePicker = (timeOfDay: string | null) => {
-    setPicking(null);
+    pick(null);
     if (timeOfDay !== null && timeOfDay !== view.timeOfDay)
       void save({ enabled: view.enabled, timeOfDay });
   };
@@ -104,18 +110,18 @@ export function BotHomeCheckSection(props: {
         value={formatTimeOfDay(picking ?? view.timeOfDay)}
         borderTop
         disabled={busy || !canConfigure || props.formLocked || !view.writable}
-        onPress={() => (picking === null ? setPicking(view.timeOfDay) : closePicker(picking))}
+        onPress={() => (picking === null ? pick(view.timeOfDay) : closePicker(picking))}
       />
       {picking === null ? null : (
         <DateTimePicker
           value={timeOfDayPickerValue(picking)}
           mode="time"
           display={Platform.OS === "ios" ? "spinner" : "default"}
-          onDismiss={() => setPicking(null)}
+          onDismiss={() => pick(null)}
           onValueChange={(_, selected) => {
             const timeOfDay = timeOfDayFromPicker(selected);
             if (Platform.OS === "android") closePicker(timeOfDay);
-            else setPicking(timeOfDay);
+            else pick(timeOfDay);
           }}
         />
       )}
