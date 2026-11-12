@@ -310,13 +310,25 @@ function BotEditorScreen({ title }: { readonly title: string }) {
   const [saving, setSaving] = useState(false);
   // Set once a save or archive lands, so the removal guard lets the editor close.
   const done = useRef(false);
-  const preventRemove = editor.hasChanges || saving;
+  // Home check times save apart from the Bot, so a saved Bot does not cover them.
+  const [homeCheckDrafts, setHomeCheckDrafts] = useState<ReadonlySet<ProjectId>>(() => new Set());
+  const trackHomeCheckDraft = (projectId: ProjectId, unsaved: boolean) =>
+    setHomeCheckDrafts((current) => {
+      if (current.has(projectId) === unsaved) return current;
+      const next = new Set(current);
+      if (unsaved) next.add(projectId);
+      else next.delete(projectId);
+      return next;
+    });
+  const preventRemove = editor.hasChanges || saving || homeCheckDrafts.size > 0;
   usePreventRemove(preventRemove, ({ data }) => {
     if (done.current) {
-      navigation.dispatch(data.action);
-      return;
-    }
-    if (saving) {
+      if (homeCheckDrafts.size === 0) {
+        navigation.dispatch(data.action);
+        return;
+      }
+      done.current = false;
+    } else if (saving) {
       Dialog.alert("Saving Bot", "Wait for the Bot to finish saving before leaving.");
       return;
     }
@@ -359,6 +371,7 @@ function BotEditorScreen({ title }: { readonly title: string }) {
             setBaseline={editor.setBaseline}
             saving={saving}
             setSaving={setSaving}
+            onHomeCheckDraftChange={trackHomeCheckDraft}
             onDone={finish}
           />
         ) : (
@@ -387,6 +400,7 @@ function BotForm({
   setBaseline,
   saving,
   setSaving,
+  onHomeCheckDraftChange,
   onDone,
 }: {
   readonly environmentId: EnvironmentId;
@@ -397,6 +411,7 @@ function BotForm({
   readonly setBaseline: (next: BotDraft) => void;
   readonly saving: boolean;
   readonly setSaving: (saving: boolean) => void;
+  readonly onHomeCheckDraftChange: (projectId: ProjectId, unsaved: boolean) => void;
   readonly onDone: () => void;
 }) {
   const navigation = useNavigation<NativeStackNavigationProp<BotRoutes>>();
@@ -464,6 +479,8 @@ function BotForm({
       // Later steps and a retry after a failure diff against what the server now has.
       setBaseline(botDraftFromDetail(result.value));
     }
+    // Leaving can still be cancelled when a Home check time is unsaved.
+    submissionPending.current = false;
     setSaving(false);
     onDone();
   };
@@ -644,6 +661,7 @@ function BotForm({
                 projectId={project.projectId}
                 title={`${projectTitle(project.projectId)} · Home check`}
                 formLocked={readOnly || !project.attached}
+                onDraftChange={(unsaved) => onHomeCheckDraftChange(project.projectId, unsaved)}
               />
             ) : null}
             {routinesSupported &&
