@@ -106,7 +106,8 @@ export function AppBar(props: AppBarProps) {
             splitBack === null &&
             !(layout.usesSplitView && props.onBackToList) &&
             !(props.guardBack && props.onBack),
-          ...(props.guardBack ? { gestureEnabled: false } : undefined),
+          // Screen options merge, so a cleared guard must turn the gesture back on explicitly.
+          ...(props.guardBack === undefined ? undefined : { gestureEnabled: !props.guardBack }),
           title: props.title,
           unstable_headerSubtitle: props.subtitle || undefined,
           ...(props.matchSearchSurface
