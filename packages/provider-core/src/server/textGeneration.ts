@@ -82,6 +82,7 @@ export interface ThreadTitleGenerationResult {
 }
 
 export interface ConversationSummaryGenerationInput extends ConversationSummaryPromptInput {
+  readonly projectId?: ProjectId;
   cwd: string;
   modelSelection: ModelSelection;
 }

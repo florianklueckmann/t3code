@@ -67,7 +67,11 @@ export function runServicePreflight(input: {
   }
 
   // Startup reconciles V2 preview ids before it checks the history, so check what it will see.
-  const reconciled = reconciledV2PreviewHistory(recorded);
+  const knownForkProvenance =
+    recorded.at(-1)?.id === 81 && recorded.at(-1)?.name === "ScheduledTaskCreationProvenance";
+  const reconciled = reconciledV2PreviewHistory(
+    knownForkProvenance ? recorded.slice(0, -1) : recorded,
+  );
   const incompatible =
     reconciled === null ? ["an unexpected V2 preview history"] : skippedV2Migrations(reconciled);
   if (incompatible.length > 0) {

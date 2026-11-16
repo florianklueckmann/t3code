@@ -137,9 +137,13 @@ const withRoutes = <A, E>(
     const random = yield* SecureRandom.SecureRandom;
     const context = Context.make(SecureRandom.SecureRandom, random);
     let routerAuth: EnvironmentAuth.EnvironmentAuth["Service"] | undefined;
-    const layerRoutes = makeLayerRoutes((auth) => {
-      routerAuth = auth;
-    }, linkState, devUrl);
+    const layerRoutes = makeLayerRoutes(
+      (auth) => {
+        routerAuth = auth;
+      },
+      linkState,
+      devUrl,
+    );
     return yield* Effect.acquireUseRelease(
       Effect.sync(() => HttpRouter.toWebHandler(layerRoutes, { disableLogger: true })),
       (web) =>

@@ -7250,7 +7250,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           )
         : undefined;
     if (yieldingCompaction !== undefined) {
-      queuedRunStop = { runId: yieldingCompaction.id, reason: "Skipped Bot maintenance compaction to send a new message" };
+      queuedRunStop = {
+        runId: yieldingCompaction.id,
+        reason: "Skipped Bot maintenance compaction to send a new message",
+      };
       dispatchMode = { type: "queue_after_active" };
     }
     if (

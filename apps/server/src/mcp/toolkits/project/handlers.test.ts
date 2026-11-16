@@ -1110,6 +1110,10 @@ const callProjectMutation = Effect.fn("test.callProjectMutation")(function* (
             Layer.mock(ThreadManagement.ThreadManagementService)({
               getThreadShell: (id) => Effect.succeed(liveThreadShell(id)),
             }),
+            Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+              namedProjectsRoot: "/projects",
+              isScratchProject: () => Effect.succeed(false),
+            }),
             layerCallerChangesAllowed,
             Layer.mock(Project.ProjectService)({
               update: () => reach("update"),

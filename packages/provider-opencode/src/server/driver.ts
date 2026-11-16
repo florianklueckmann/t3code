@@ -232,7 +232,7 @@ function selectOpenCodeRuntimeTextGeneration(
         v2: v2.generateTranscriptionPostProcessing(input),
       }),
     generateConversationSummary: (input) =>
-      byOpenCodeRuntime(probe.get, {
+      byOpenCodeRuntime(resolve, {
         v1: v1.generateConversationSummary(input),
         v2: v2.generateConversationSummary(input),
       }),

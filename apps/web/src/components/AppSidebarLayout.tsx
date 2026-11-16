@@ -497,41 +497,41 @@ export function AppSidebarLayout({
       >
         {showSidebar ? (
           <>
-        <SidebarBrandWidthProbe isElectron={isElectron} onWidthChange={setBrandWidth} />
-        {botEnvironmentIds.length > 0 ? (
-          // Outside the offcanvas sidebar, so Bots stay one click away while it is collapsed.
-          <BotRail environmentIds={botEnvironmentIds} className="relative z-20 max-md:hidden" />
-        ) : null}
-        <Sidebar
-          side="left"
-          collapsible="offcanvas"
-          data-app-sidebar=""
-          {...sidebarArea}
-          role="navigation"
-          aria-label="Threads"
-          resizable={{
-            maxWidth: sidebarMaximumWidth,
-            minWidth: sidebarMinimumWidth,
-            shouldAcceptWidth: ({ currentWidth, nextWidth, wrapper, sidebarRoot }) =>
-              nextWidth <= currentWidth ||
-              wrapper.clientWidth -
-                // The Bot rail, when shown, sits left of the sidebar.
-                (sidebarRoot
-                  .querySelector("[data-slot='sidebar-container']")
-                  ?.getBoundingClientRect().left ?? 0) -
-                nextWidth >=
-                THREAD_MAIN_CONTENT_MIN_WIDTH,
-            storageKey: THREAD_SIDEBAR_WIDTH_STORAGE_KEY,
-            onResize: setSidebarWidth,
-          }}
-          style={windowControlsInsetStyle}
-        >
-          <ThreadSidebarWithBotRail
-            routeReveal={sidebarRouteReveal}
-            botEnvironmentIds={botEnvironmentIds}
-          />
-          <SidebarRail onDoubleClick={resetSidebarWidth} />
-        </Sidebar>
+            <SidebarBrandWidthProbe isElectron={isElectron} onWidthChange={setBrandWidth} />
+            {botEnvironmentIds.length > 0 ? (
+              // Outside the offcanvas sidebar, so Bots stay one click away while it is collapsed.
+              <BotRail environmentIds={botEnvironmentIds} className="relative z-20 max-md:hidden" />
+            ) : null}
+            <Sidebar
+              side="left"
+              collapsible="offcanvas"
+              data-app-sidebar=""
+              {...sidebarArea}
+              role="navigation"
+              aria-label="Threads"
+              resizable={{
+                maxWidth: sidebarMaximumWidth,
+                minWidth: sidebarMinimumWidth,
+                shouldAcceptWidth: ({ currentWidth, nextWidth, wrapper, sidebarRoot }) =>
+                  nextWidth <= currentWidth ||
+                  wrapper.clientWidth -
+                    // The Bot rail, when shown, sits left of the sidebar.
+                    (sidebarRoot
+                      .querySelector("[data-slot='sidebar-container']")
+                      ?.getBoundingClientRect().left ?? 0) -
+                    nextWidth >=
+                    THREAD_MAIN_CONTENT_MIN_WIDTH,
+                storageKey: THREAD_SIDEBAR_WIDTH_STORAGE_KEY,
+                onResize: setSidebarWidth,
+              }}
+              style={windowControlsInsetStyle}
+            >
+              <ThreadSidebarWithBotRail
+                routeReveal={sidebarRouteReveal}
+                botEnvironmentIds={botEnvironmentIds}
+              />
+              <SidebarRail onDoubleClick={resetSidebarWidth} />
+            </Sidebar>
           </>
         ) : null}
         {children}

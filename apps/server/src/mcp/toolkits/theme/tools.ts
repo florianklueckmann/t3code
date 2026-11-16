@@ -1,3 +1,4 @@
+import * as McpCallerChanges from "../../McpCallerChanges.ts";
 import {
   DefaultThemePreference,
   EnvironmentThemeFile,
@@ -17,6 +18,7 @@ const shared = {
   failure: OrchestratorMcpFailure,
   failureMode: "return" as const,
   dependencies: [
+    McpCallerChanges.McpCallerChanges,
     McpInvocationContext.McpInvocationContext,
     ThreadManagementService.ThreadManagementService,
     EnvironmentTheme.EnvironmentThemeService,

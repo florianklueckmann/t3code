@@ -1,3 +1,4 @@
+import * as McpCallerChanges from "../../McpCallerChanges.ts";
 import { OrchestratorMcpFailure } from "@t3tools/contracts";
 import { SEND_TO_USER_MAX_LENGTH, SEND_TO_USER_TOOL_NAME } from "@t3tools/shared/toolOutput";
 import * as Schema from "effect/Schema";
@@ -24,6 +25,7 @@ const SendToUserTool = Tool.make(SEND_TO_USER_TOOL_NAME, {
   failure: OrchestratorMcpFailure,
   failureMode: "return",
   dependencies: [
+    McpCallerChanges.McpCallerChanges,
     McpInvocationContext.McpInvocationContext,
     ThreadManagementService.ThreadManagementService,
   ],

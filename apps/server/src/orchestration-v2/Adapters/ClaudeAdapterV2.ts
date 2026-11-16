@@ -6667,22 +6667,22 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           ) {
             yield* backgroundStarts.withPermit(
               Ref.update(pendingBackgroundTasksByNativeThread, (current) => {
-              const updated = new Map(current);
-              if (tasks.length === 0) {
-                updated.delete(nativeThreadId);
-              } else {
-                updated.set(
-                  nativeThreadId,
-                  new Map(
-                    tasks.map((task) => {
-                      const previous = current.get(nativeThreadId)?.get(task.taskId);
-                      return [task.taskId, { ...previous, ...task }] as const;
-                    }),
-                  ),
-                );
-              }
-              return updated;
-            })
+                const updated = new Map(current);
+                if (tasks.length === 0) {
+                  updated.delete(nativeThreadId);
+                } else {
+                  updated.set(
+                    nativeThreadId,
+                    new Map(
+                      tasks.map((task) => {
+                        const previous = current.get(nativeThreadId)?.get(task.taskId);
+                        return [task.taskId, { ...previous, ...task }] as const;
+                      }),
+                    ),
+                  );
+                }
+                return updated;
+              }),
             );
             yield* rememberOpaqueTasks(tasks);
             if (tasks.length > 0) {
@@ -6710,16 +6710,15 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             nativeThreadId: string,
             task: OrchestrationV2PendingBackgroundTask,
           ) {
-            const startedMonitor = yield* backgroundStarts.withPermit(Ref.modify(
-              pendingBackgroundTasksByNativeThread,
-              (current) => {
+            const startedMonitor = yield* backgroundStarts.withPermit(
+              Ref.modify(pendingBackgroundTasksByNativeThread, (current) => {
                 const roster = new Map(rosterForNativeThread(current, nativeThreadId));
                 const startedMonitor =
                   task.kind === "monitor" && roster.get(task.taskId)?.kind !== "monitor";
                 roster.set(task.taskId, task);
                 return [startedMonitor, new Map(current).set(nativeThreadId, roster)] as const;
-              },
-            ));
+              }),
+            );
             if (startedMonitor) {
               yield* addTaskIdsToNativeThreadSet(
                 awaitedBackgroundTasksByNativeThread,
@@ -12702,10 +12701,18 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             ],
             { concurrency: "unbounded" },
           );
-          const sdkSettings = launchArgSettings === undefined ? undefined : claudeSdkLaunchArgSettings(launchArgSettings);
-          const querySettings = turnInput.runtimePolicy.nativeMemory === "disabled"
-            ? { ...sdkSettings, autoMemoryEnabled: false, env: { ...sdkSettings?.env, CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1" } }
-            : sdkSettings;
+          const sdkSettings =
+            launchArgSettings === undefined
+              ? undefined
+              : claudeSdkLaunchArgSettings(launchArgSettings);
+          const querySettings =
+            turnInput.runtimePolicy.nativeMemory === "disabled"
+              ? {
+                  ...sdkSettings,
+                  autoMemoryEnabled: false,
+                  env: { ...sdkSettings?.env, CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1" },
+                }
+              : sdkSettings;
           const closedExistingNativeThreadId = existing !== null ? existing.nativeThreadId : null;
           clearedNativeSessions.delete(nativeThreadId);
           if (existing !== null) {

@@ -261,7 +261,7 @@ describe("orchestrator MCP toolkit", () => {
       ]);
       const layerTest = layerOrchestratorToolkit.pipe(
         Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
-          Layer.provideMerge(layerCallerChangesAllowed),
+        Layer.provideMerge(layerCallerChangesAllowed),
         Layer.provideMerge(layerOrchestration),
         Layer.provide(
           CodexOrchestratorReplayHarness.makeProviderAdapterRegistryLayer(transcript).pipe(

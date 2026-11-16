@@ -229,7 +229,6 @@ interface ScheduledTaskRow {
   readonly project_id: string;
   readonly thread_id: string | null;
   readonly thread_mode: string;
-  readonly created_by_thread_id: string | null;
   readonly workspace_strategy_json: string;
   readonly model_selection_json: string;
   readonly runtime_mode: string;
@@ -586,7 +585,6 @@ export const layer = Layer.effect(
         project_id,
         thread_id,
         thread_mode,
-        created_by_thread_id,
         workspace_strategy_json,
         model_selection_json,
         runtime_mode,
@@ -629,7 +627,6 @@ export const layer = Layer.effect(
         project_id,
         thread_id,
         thread_mode,
-        created_by_thread_id,
         workspace_strategy_json,
         model_selection_json,
         runtime_mode,
@@ -659,7 +656,15 @@ export const layer = Layer.effect(
       );
       const row = rows[0];
       if (row === undefined) return null;
-      const createdByThreadId = yield* decodeCreatorThreadId(row.created_by_thread_id).pipe(
+      const createdByThreadId = yield* decodeCreatorThreadId(
+        (yield* routines
+          .get(id)
+          .pipe(
+            Effect.mapError((cause) =>
+              taskError("Could not load schedule task.", { taskId: id, cause }),
+            ),
+          ))?.created_by_thread_id ?? null,
+      ).pipe(
         Effect.mapError((cause) =>
           taskError("Could not decode schedule task row.", { taskId: id, cause }),
         ),
@@ -722,8 +727,7 @@ export const layer = Layer.effect(
           project_id,
           thread_id,
           thread_mode,
-          created_by_thread_id,
-          workspace_strategy_json,
+            workspace_strategy_json,
           model_selection_json,
           runtime_mode,
           interaction_mode,
@@ -748,7 +752,6 @@ export const layer = Layer.effect(
           ${task.projectId},
           ${task.threadId},
           ${scheduledTaskThreadMode(task)},
-          ${createdByThreadId ?? null},
           ${JSON.stringify(task.workspaceStrategy)},
           ${JSON.stringify(task.modelSelection)},
           ${task.runtimeMode},
@@ -811,7 +814,12 @@ export const layer = Layer.effect(
           END
         RETURNING task_id
       `,
-          { taskId: task.id, target: task.bot, bump: keptSchedule === null },
+          {
+            taskId: task.id,
+            target: task.bot,
+            bump: keptSchedule === null,
+            ...(createdByThreadId === undefined ? {} : { createdByThreadId }),
+          },
         )
         .pipe(
           Effect.mapError((cause) =>
@@ -1478,13 +1486,13 @@ export const layer = Layer.effect(
                   latestOccurrenceAtOrBefore(task.schedule, dueAt, now),
                 )
               : isMissedFixedTimeRun(task.schedule, dueAt, now)
-              ? rescheduleMissedRun(
-                  task,
-                  now,
-                  "missed",
-                  "Missed a scheduled run because the server was not running at that time.",
-                )
-              : runTask(task, "scheduled"),
+                ? rescheduleMissedRun(
+                    task,
+                    now,
+                    "missed",
+                    "Missed a scheduled run because the server was not running at that time.",
+                  )
+                : runTask(task, "scheduled"),
           ).pipe(
             Effect.catch((cause) =>
               Effect.logWarning("Scheduled task run failed", { taskId: task.id, cause }),

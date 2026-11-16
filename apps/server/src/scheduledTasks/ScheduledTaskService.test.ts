@@ -19,7 +19,6 @@ import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Logger from "effect/Logger";
-import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as Fiber from "effect/Fiber";

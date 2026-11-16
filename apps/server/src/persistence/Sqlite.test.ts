@@ -1,3 +1,5 @@
+import * as BotMigrations from "../bots/persistence/Migrations.ts";
+import * as ScheduledTaskProvenance from "../bots/persistence/transferScheduledTaskProvenance.ts";
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
@@ -36,9 +38,16 @@ vi.mock("node:worker_threads", async (importOriginal) => {
   return { ...actual, Worker: RecordedWorker };
 });
 
-it.effect.each([0, 78, 79, 80])(
-  "starts isolated persistence from migration %s and preserves canonical 80 across reopen",
-  (previousMigrationId) => {
+it.effect.each(
+  [0, 78, 79, 80, 81].flatMap((previousMigrationId) =>
+    (previousMigrationId === 81 ? [false, true] : [false]).map((interrupted) => ({
+      previousMigrationId,
+      interrupted,
+    })),
+  ),
+)(
+  "starts persistence from migration $previousMigrationId (interrupted transfer: $interrupted)",
+  ({ previousMigrationId, interrupted }) => {
     const tempDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-sqlite-81-"));
     const dbPath = NodePath.join(tempDir, "statev2.sqlite");
     const persistence = () =>
@@ -72,8 +81,10 @@ it.effect.each([0, 78, 79, 80])(
       if (previousMigrationId === 0 || previousMigrationId >= 80) {
         yield* sql`UPDATE scheduled_tasks SET thread_mode = 'fresh_session' WHERE task_id = 'bound'`;
       }
-      if (previousMigrationId === 0 || previousMigrationId >= 81) {
+      if (previousMigrationId === 81) {
+        yield* sql`ALTER TABLE scheduled_tasks ADD COLUMN created_by_thread_id TEXT`;
         yield* sql`UPDATE scheduled_tasks SET created_by_thread_id = 'creator' WHERE task_id = 'unbound'`;
+        yield* sql`INSERT INTO effect_sql_migrations (migration_id, name) VALUES (81, 'ScheduledTaskCreationProvenance')`;
       }
     });
 
@@ -82,11 +93,31 @@ it.effect.each([0, 78, 79, 80])(
         previousMigrationId === 0
           ? undefined
           : yield* Effect.gen(function* () {
-              yield* runMigrations({ toMigrationInclusive: previousMigrationId });
+              yield* runMigrations({ toMigrationInclusive: Math.min(previousMigrationId, 80) });
               yield* seed;
               return yield* snapshot;
             }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: dbPath })));
 
+      if (previousMigrationId === 81) {
+        const bots = Layer.effect(
+          BotDatabase.BotDatabase,
+          Effect.gen(function* () {
+            yield* BotMigrations.runMigrations();
+            return yield* SqlClient.SqlClient;
+          }),
+        ).pipe(
+          Layer.provide(
+            NodeSqliteClient.layer({ filename: NodePath.join(tempDir, "bots.sqlite") }),
+          ),
+        );
+        yield* Effect.gen(function* () {
+          const database = yield* BotDatabase.BotDatabase;
+          yield* database`INSERT INTO bot_routine_intent (
+            singleton, task_id, query, parameters_json, bot_id, bot_session_at, schedule_revision, removing, bot_allow_changes
+          ) VALUES (1, 'unbound', 'UPDATE scheduled_tasks SET created_by_thread_id = ? WHERE task_id = ? RETURNING task_id', '["replayed-creator","unbound"]', NULL, NULL, 0, 0, 0)`;
+          if (interrupted) yield* ScheduledTaskProvenance.prepareTransfer();
+        }).pipe(Effect.provide(Layer.merge(NodeSqliteClient.layer({ filename: dbPath }), bots)));
+      }
       const first = yield* Effect.gen(function* () {
         if (previousMigrationId === 0) yield* seed;
         const current = yield* snapshot;
@@ -95,17 +126,15 @@ it.effect.each([0, 78, 79, 80])(
           migrationManifest.map(([id, name]) => [id, name]),
         );
         assert.deepStrictEqual(
-          current.schedules.map(({ task_id, thread_id, thread_mode, created_by_thread_id }) => ({
+          current.schedules.map(({ task_id, thread_id, thread_mode }) => ({
             task_id,
             thread_id,
             thread_mode,
-            created_by_thread_id,
           })),
           [
             {
               task_id: "bound",
               thread_id: "bound",
-              created_by_thread_id: null,
               thread_mode:
                 previousMigrationId === 0 || previousMigrationId >= 80
                   ? "fresh_session"
@@ -115,14 +144,13 @@ it.effect.each([0, 78, 79, 80])(
               task_id: "unbound",
               thread_id: null,
               thread_mode: "new_thread",
-              created_by_thread_id:
-                previousMigrationId === 0 || previousMigrationId >= 81 ? "creator" : null,
             },
           ],
         );
         assert.lengthOf(current.indexes, 2);
         assert.deepStrictEqual(current.data, [{ id: "preserved", payload: "invalid JSON" }]);
-        if (previousMigrationId === 80) assert.deepStrictEqual(current.history.slice(0, 80), before?.history);
+        if (previousMigrationId >= 80)
+          assert.deepStrictEqual(current.history.slice(0, 80), before?.history.slice(0, 80));
         if (before)
           assert.deepStrictEqual(
             current.schedules.map(
@@ -133,8 +161,22 @@ it.effect.each([0, 78, 79, 80])(
             ),
           );
         if (before)
-          assert.deepStrictEqual(current.history.slice(0, before.history.length), before.history);
+          assert.deepStrictEqual(
+            current.history.slice(0, Math.min(before.history.length, 80)),
+            before.history.slice(0, 80),
+          );
         const bots = yield* BotDatabase.BotDatabase;
+        const provenance = yield* bots`SELECT task_id, created_by_thread_id FROM bot_routines`;
+        assert.deepStrictEqual(
+          provenance,
+          previousMigrationId === 81
+            ? [{ task_id: "unbound", created_by_thread_id: "replayed-creator" }]
+            : [],
+        );
+        const columns = yield* (yield* SqlClient.SqlClient)<{
+          readonly name: string;
+        }>`PRAGMA table_info(scheduled_tasks)`;
+        assert.isFalse(columns.some(({ name }) => name === "created_by_thread_id"));
         const botHistory = yield* bots`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
         assert.deepStrictEqual(
           botHistory.map(({ migration_id, name }) => [migration_id, name]),
@@ -155,6 +197,7 @@ it.effect.each([0, 78, 79, 80])(
             [14, "BotHomeCheck"],
             [15, "BotMcpGrants"],
             [16, "BotMcpOwnServers"],
+            [17, "ScheduledTaskProvenance"],
           ],
         );
         return { ...current, botHistory };

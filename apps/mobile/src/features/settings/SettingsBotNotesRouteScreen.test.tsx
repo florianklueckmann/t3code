@@ -32,6 +32,7 @@ vi.mock("@react-navigation/native", async () => {
   const { createContext } = await import("react");
   return {
     NavigationContext: createContext(null),
+    NavigationRouteContext: createContext(undefined),
     useRoute: () => ({ name: "SettingsBotNotes" }),
     useNavigation: () => ({ isFocused: () => true, dispatch: state.dispatch, goBack: () => {} }),
     usePreventRemove: (enabled: boolean, callback: typeof state.onPrevent) => {

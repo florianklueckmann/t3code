@@ -25,7 +25,10 @@ import { McpSchema, McpServer } from "effect/ai";
 
 import * as McpHttpServer from "../../apps/server/src/mcp/McpHttpServer.ts";
 import * as McpInvocationContext from "../../apps/server/src/mcp/McpInvocationContext.ts";
-import { liveThreadShell } from "../../apps/server/src/mcp/McpToolAccess.testkit.ts";
+import {
+  liveThreadShell,
+  layerCallerChangesAllowed,
+} from "../../apps/server/src/mcp/McpToolAccess.testkit.ts";
 import * as OrchestratorMcpService from "../../apps/server/src/mcp/OrchestratorMcpService.ts";
 import * as ThreadMetadataMcpService from "../../apps/server/src/mcp/ThreadMetadataMcpService.ts";
 import * as OrchestratorHandlers from "../../apps/server/src/mcp/toolkits/orchestrator/handlers.ts";
@@ -99,6 +102,7 @@ export const makeBackgroundWait = Effect.fn("evaluateMcpToolUse.makeBackgroundWa
   const context = yield* Layer.build(
     McpHttpServer.toolkitRegistration(OrchestratorToolkit, OrchestratorHandlers.layer).pipe(
       Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+      Layer.provide(layerCallerChangesAllowed),
       Layer.provide(Layer.mock(OrchestratorMcpService.OrchestratorMcpService)({})),
       Layer.provide(Layer.mock(ThreadMetadataMcpService.ThreadMetadataMcpService)({})),
       Layer.provide(threads),

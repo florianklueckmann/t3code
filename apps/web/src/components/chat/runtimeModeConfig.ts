@@ -11,7 +11,6 @@ import {
   ShieldOffIcon,
   CircleHelpIcon,
   EyeIcon,
-  SparklesIcon,
 } from "lucide-react";
 
 export const runtimeModeConfig: Record<

@@ -218,6 +218,8 @@ export const layer: Layer.Layer<
     const restoreMissingWorktree = yield* makeRestoreMissingWorktree;
     const turnItemPositions = yield* TurnItemPositionStore.TurnItemPositionStoreV2;
     const textGeneration = yield* TextGeneration.TextGeneration;
+    const serverSettings = yield* ServerSettings.ServerSettingsService;
+    const serverConfig = yield* ServerConfig.ServerConfig;
 
     // Build draining callbacks outside startup scope so they cannot retain full thread history.
     const makeRunControls = (input: {
@@ -1160,7 +1162,7 @@ export const layer: Layer.Layer<
       ) {
         const plan = freshConversationPlan({
           messages: ContextHandoffService.providerHandoffMessages(items, projection.runs),
-          coverage: handoffCoverage({ threadId: projection.thread.id, coveredRunOrdinals }),
+          coverage: handoffCoverage({ threadId: projection.thread.id, coveredRunOrdinals, items }),
           tokenCap,
           previousSummary: previousConversationSummary(projection.contextHandoffs, projection.runs),
         });
@@ -1753,10 +1755,6 @@ export const layer: Layer.Layer<
                 ]
               : []),
         ];
-        const firstNoticeOrdinal =
-          notices.length === 0
-            ? 0
-            : yield* projectionStore.getNextTurnItemOrdinal(projection.thread.id);
         yield* eventSink.write({
           events: [
             {
@@ -1794,33 +1792,43 @@ export const layer: Layer.Layer<
                 consumedAt: null,
               },
             },
-            ...(yield* Effect.forEach(notices, ({ signal, ...notice }, index) =>
-              Effect.map(idAllocator.allocate.event({ threadId: projection.thread.id }), (id) => ({
-                id,
-                type: "turn-item.updated" as const,
-                threadId: projection.thread.id,
-                runId: run.id,
-                nodeId: rootNode.id,
-                providerInstanceId: run.providerInstanceId,
-                occurredAt: createdAt,
-                payload: {
-                  ...notice,
-                  id: idAllocator.derive.runSignalTurnItem({ runId: run.id, signal }),
+            ...(yield* Effect.forEach(notices, ({ signal, ...notice }) =>
+              Effect.gen(function* () {
+                const turnItemId = idAllocator.derive.runSignalTurnItem({ runId: run.id, signal });
+                const ordinal = yield* turnItemPositions.allocate({
+                  threadId: projection.thread.id,
+                  turnItemId,
+                  runId: run.id,
+                  runOrdinal: run.ordinal,
+                  placement: "run_start",
+                });
+                return {
+                  id: yield* idAllocator.allocate.event({ threadId: projection.thread.id }),
+                  type: "turn-item.updated" as const,
                   threadId: projection.thread.id,
                   runId: run.id,
                   nodeId: rootNode.id,
-                  providerThreadId: providerThread.id,
-                  providerTurnId: null,
-                  nativeItemRef: null,
-                  parentItemId: null,
-                  ordinal: firstNoticeOrdinal + index,
-                  status: "completed" as const,
-                  startedAt: createdAt,
-                  completedAt: createdAt,
-                  updatedAt: createdAt,
-                  type: "system_notice" as const,
-                },
-              })),
+                  providerInstanceId: run.providerInstanceId,
+                  occurredAt: createdAt,
+                  payload: {
+                    ...notice,
+                    id: turnItemId,
+                    threadId: projection.thread.id,
+                    runId: run.id,
+                    nodeId: rootNode.id,
+                    providerThreadId: providerThread.id,
+                    providerTurnId: null,
+                    nativeItemRef: null,
+                    parentItemId: null,
+                    ordinal,
+                    status: "completed" as const,
+                    startedAt: createdAt,
+                    completedAt: createdAt,
+                    updatedAt: createdAt,
+                    type: "system_notice" as const,
+                  },
+                };
+              }),
             )),
           ],
         });

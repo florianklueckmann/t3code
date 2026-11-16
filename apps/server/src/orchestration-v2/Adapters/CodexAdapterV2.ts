@@ -104,7 +104,6 @@ import * as Queue from "effect/Queue";
 import * as Redacted from "effect/Redacted";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
-import * as Exit from "effect/Exit";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
@@ -5634,26 +5633,29 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
         yield* client.handleServerNotification("mcpServer/startupStatus/updated", (payload) =>
           Effect.gen(function* () {
             if (payload.threadId == null) return;
-            const failures = mcpStartupFailures.get(payload.threadId) ?? new Map<string, string>();
-            if (payload.status === "failed") {
-              failures.set(
-                payload.name,
-                payload.error?.trim() || `MCP server ${payload.name} failed to start.`,
-              );
-              mcpStartupFailures.set(payload.threadId, failures);
-            } else {
-              failures.delete(payload.name);
-              if (failures.size === 0) mcpStartupFailures.delete(payload.threadId);
+            const connectionId = McpConnectionDelivery.grantedConnectionOf(payload.name);
+            if (connectionId === undefined) {
+              const failures =
+                mcpStartupFailures.get(payload.threadId) ?? new Map<string, string>();
+              if (payload.status === "failed") {
+                failures.set(
+                  payload.name,
+                  payload.error?.trim() || `MCP server ${payload.name} failed to start.`,
+                );
+                mcpStartupFailures.set(payload.threadId, failures);
+              } else {
+                failures.delete(payload.name);
+                if (failures.size === 0) mcpStartupFailures.delete(payload.threadId);
+                return;
+              }
+              const context = yield* findActiveTurnByNativeThreadId(payload.threadId);
+              if (context !== undefined) yield* emitMcpStartupFailures(context);
               return;
             }
-            const context = yield* findActiveTurnByNativeThreadId(payload.threadId);
-            if (context !== undefined) yield* emitMcpStartupFailures(context);
 
             const nativeThreadId = payload.threadId;
             // A start's status can arrive before its thread id is known, so the name decides.
             if (payload.status !== "failed" || nativeThreadId == null) return;
-            const connectionId = McpConnectionDelivery.grantedConnectionOf(payload.name);
-            if (connectionId === undefined) return;
             // A refused token fails the start too; the next load refreshes it before reloading.
             if (mcpConnectionDelivery !== undefined) {
               yield* mcpConnectionDelivery.markRefused(connectionId, "startup");
@@ -6028,13 +6030,16 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             }
 
             if (payload.item.type === "imageGeneration") {
+              const image = payload.item;
               if (!(yield* Ref.get(interruptingNativeTurns)).has(payload.turnId)) {
-                yield* backgroundStarts.withPermit(Effect.sync(() => {
-                imageTurn(payload.turnId).running.set(payload.item.id, {
-                  revisedPrompt: payload.item.revisedPrompt ?? null,
-                  transparentBackground: payload.item.transparentBackground ?? null,
-                });
-                }));
+                yield* backgroundStarts.withPermit(
+                  Effect.sync(() => {
+                    imageTurn(payload.turnId).running.set(payload.item.id, {
+                      revisedPrompt: image.revisedPrompt ?? null,
+                      transparentBackground: image.transparentBackground ?? null,
+                    });
+                  }),
+                );
                 yield* emitImageGenerationItem(context, payload.item, false);
                 yield* emitImageWorkState(context, true);
               }
@@ -8676,9 +8681,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               const userMcpServers = turnsOffUserServers
                 ? yield* readUserMcpServers(load, cwd)
                 : {};
-              const response = yield* client.request(
-                "thread/start",
-                codexThreadRuntimeParams({
+              const response = yield* client.request("thread/start", {
+                ...codexThreadRuntimeParams({
                   threadId: threadInput.threadId,
                   mcpSession,
                   modelSelection: threadInput.modelSelection,
@@ -8686,7 +8690,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   userMcpServers,
                   ...(granted === undefined ? {} : { grantedConnections: granted }),
                 }),
-              );
+                ...(IdAllocator.isDelegatedTaskThread(threadInput.threadId)
+                  ? { threadSource: "subagent" }
+                  : {}),
+              });
               rememberGrantedServers(response.thread.id, granted);
               if (!isOrdinaryLoad(load)) threadLoads.set(response.thread.id, load);
               if (turnsOffUserServers)
@@ -8834,7 +8841,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             const continuation =
               turnInput.restartContinuationOfRunId !== undefined || turnInput.resume === true;
             const goalCommand = !continuation ? parseGoalCommand(turnInput.message) : null;
-            if (goalCommand !== null) return requireLoadedSeal(turnInput).pipe(Effect.andThen(runGoalCommand(turnInput, goalCommand)));
+            if (goalCommand !== null)
+              return requireLoadedSeal(turnInput).pipe(
+                Effect.andThen(runGoalCommand(turnInput, goalCommand)),
+              );
             const nativeThreadId = turnInput.providerThread.nativeThreadRef?.nativeId;
             return Effect.gen(function* () {
               yield* requireLoadedSeal(turnInput);
@@ -8847,8 +8857,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 return yield* activateGoal(turnInput, nativeThreadId, toCodexInput(turnInput));
               }
               const input =
-                !continuation ||
-                turnInput.nativeThreadHasTurns === false
+                !continuation || turnInput.nativeThreadHasTurns === false
                   ? yield* toCodexInput(turnInput)
                   : [];
               yield* startNativeTurn(turnInput, input).pipe(

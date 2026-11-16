@@ -175,7 +175,6 @@ export const layer = HttpApiBuilder.group(
         Effect.gen(function* () {
           const resolved = yield* forwardedAuthorization(oauth, payload);
           if ("redirectTo" in resolved) return resolved;
-          const urls = yield* requestUrls;
           const session = yield* oauth.approvingSession(request, resolved);
           yield* noStore;
           return {

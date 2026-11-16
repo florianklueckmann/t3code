@@ -68,7 +68,6 @@ import * as PlatformError from "effect/PlatformError";
 import { TestClock } from "effect/testing";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as Scope from "effect/Scope";
-import * as HostProcess from "@t3tools/shared/HostProcess";
 
 import packageJson from "../../../package.json" with { type: "json" };
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
@@ -791,11 +790,9 @@ describe("CodexAdapterV2 native protocol logging", () => {
             }),
           close: () => Effect.void,
         };
-        const threadId = ThreadId.make("thread-1");
         const providerSessionId = ProviderSessionId.make("provider-session-1");
         const protocolLogger = CodexAdapterV2.makeCodexAppServerProtocolLogger({
           nativeEventLogger: logger,
-          threadId,
           providerSessionId,
         });
         assert.notEqual(protocolLogger, undefined);
@@ -822,7 +819,7 @@ describe("CodexAdapterV2 native protocol logging", () => {
             assert.equal(serialized.includes("[OMITTED:"), false, `${name}: unexpected omission`);
           }
           assert.isBelow(serialized.length, 64 * 1024);
-          assert.equal(write?.threadId, threadId);
+          assert.equal(write?.threadId, null);
           assert.equal(encodeUnknownJson(payload) === original, true, `${name}: input mutated`);
           assert.equal(serialized.includes(`"direction":"${direction}"`), true);
           assert.equal(serialized.includes(`"providerSessionId":"${providerSessionId}"`), true);
@@ -1946,6 +1943,10 @@ describe("CodexAdapterV2 store start permit", () => {
             ),
             IdAllocator.layer,
             McpProviderSessions.layer,
+            Layer.mock(PortScanner.PortDiscovery)({
+              trackAgent: () => () => undefined,
+              watchAgentCommandStops: () => Effect.void,
+            }),
           ).pipe(Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
         ),
       ),
@@ -4430,43 +4431,43 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             label: "thread/resume with an explicit app thread",
             frame: { id: 5, result: { thread: { id: nativeThreadId, updatedAt: 1782622450 } } },
           },
-            {
-              type: "expect_outbound",
-              label: "thread/resume without native memory",
-              frame: {
-                id: 6,
-                method: "thread/resume",
-                params: {
-                  threadId: nativeThreadId,
-                  excludeTurns: true,
-                  config: {
-                    ...CodexAdapterV2.CODEX_THREAD_CONFIG,
-                    "features.memories": false,
-                    "memories.use_memories": false,
-                    "memories.generate_memories": false,
-                  },
+          {
+            type: "expect_outbound",
+            label: "thread/resume without native memory",
+            frame: {
+              id: 6,
+              method: "thread/resume",
+              params: {
+                threadId: nativeThreadId,
+                excludeTurns: true,
+                config: {
+                  ...CodexAdapterV2.CODEX_THREAD_CONFIG,
+                  "features.memories": false,
+                  "memories.use_memories": false,
+                  "memories.generate_memories": false,
                 },
               },
             },
-            {
-              type: "emit_inbound",
-              label: "thread/resume without native memory",
-              frame: { id: 6, result: { thread: { id: nativeThreadId, updatedAt: 1782622450 } } },
+          },
+          {
+            type: "emit_inbound",
+            label: "thread/resume without native memory",
+            frame: { id: 6, result: { thread: { id: nativeThreadId, updatedAt: 1782622450 } } },
+          },
+          {
+            type: "expect_outbound",
+            label: "thread/memoryMode/set",
+            frame: {
+              id: 7,
+              method: "thread/memoryMode/set",
+              params: { threadId: nativeThreadId, mode: "disabled" },
             },
-            {
-              type: "expect_outbound",
-              label: "thread/memoryMode/set",
-              frame: {
-                id: 7,
-                method: "thread/memoryMode/set",
-                params: { threadId: nativeThreadId, mode: "disabled" },
-              },
-            },
-            {
-              type: "emit_inbound",
-              label: "thread/memoryMode/set",
-              frame: { id: 7, result: {} },
-            },
+          },
+          {
+            type: "emit_inbound",
+            label: "thread/memoryMode/set",
+            frame: { id: 7, result: {} },
+          },
         ],
       });
       const resumeThreadEnvs: Array<unknown> = [];
@@ -4505,7 +4506,12 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       assert.equal(resumed.nativeThreadRef?.nativeId, nativeThreadId);
       assert.equal(resumed.status, "idle");
       assert.equal(DateTime.toEpochMillis(resumed.updatedAt), 1782622450000);
-      assert.deepEqual(resumeThreadEnvs, [harness.threadId, undefined, explicitThreadId, harness.threadId]);
+      assert.deepEqual(resumeThreadEnvs, [
+        harness.threadId,
+        undefined,
+        explicitThreadId,
+        harness.threadId,
+      ]);
     }).pipe(
       Effect.provide(
         Layer.mergeAll(
@@ -5450,7 +5456,28 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                 ...step(
                   8,
                   "thread/fork",
-                  { threadId: nativeThreadId, ...grantConfig },
+                  {
+                    threadId: nativeThreadId,
+                    cwd: "/workspace",
+                    excludeTurns: true,
+                    model: "gpt-5.4",
+                    config: {
+                      ...grantConfig.config,
+                      "shell_environment_policy.set.T3CODE_THREAD_ID": `thread-${scenario}-fork`,
+                      mcp_servers: {
+                        ...seal.disabledUserServers,
+                        [`t3c-${privateMail}`]: {
+                          command: "mail-mcp",
+                          args: ["--stdio"],
+                          env: { MAIL_TOKEN: "token-1" },
+                        },
+                        [`t3c-${workMail}`]: {
+                          url: "https://mail.example.test/mcp",
+                          http_headers: { Authorization: "Bearer work-header" },
+                        },
+                      },
+                    },
+                  },
                   started(`${nativeThreadId}-fork`),
                 ),
                 ...read(9, configRead),
@@ -5767,10 +5794,10 @@ describe("CodexAdapterV2 post-settle continuation", () => {
               (loadParams[index] as { config: { mcp_servers: unknown } }).config.mcp_servers,
               {
                 ...seal.disabledUserServers,
-                "t3-code": { ...t3Server, disabled_tools: ["t3_thread_wait"] },
+                "t3-code": { ...t3Server, disabled_tools: ["t3_thread_wait", "delegate_task"] },
                 "t3-code-direct": {
                   ...t3Server,
-                  enabled_tools: ["t3_thread_wait"],
+                  enabled_tools: ["t3_thread_wait", "delegate_task"],
                   omit_tools_from: ["code_mode", "deferred"],
                 },
               },
@@ -6045,7 +6072,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         approvalPolicy: "never",
         approvalsReviewer: "user",
         sandboxPolicy: { type: "dangerFullAccess" },
-        summary: "detailed",
+        summary: "auto",
         collaborationMode: { mode: "default", settings: { model: "gpt-5.4" } },
       };
       const exchange = (
@@ -6270,7 +6297,10 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         yield* Deferred.await(lookupStarted);
         yield* Fiber.interrupt(started);
         yield* Deferred.succeed(releaseLookup, undefined);
-        assert.deepEqual(requests.slice(3), ["turn/start", "thread/goal/get"]);
+        assert.deepEqual(
+          requests.slice(3).filter((method) => method !== "config/read"),
+          ["turn/start", "thread/goal/get"],
+        );
         assert.isEmpty(harness.events.filter((event) => event.type === "provider_turn.updated"));
         return;
       }
@@ -6296,7 +6326,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           assert.nestedPropertyVal(result.failure, "cause._tag", "CodexAppServerTransportError");
       }
       assert.deepEqual(
-        requests.slice(3),
+        requests.slice(3).filter((method) => method !== "config/read"),
         state === "ordinary-empty"
           ? []
           : [
@@ -7699,7 +7729,9 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           assert.isTrue(matching.some((item) => !item.streaming));
           if (streamed) assert.isTrue(matching.some((item) => item.streaming));
         }
-        const responses = updates.filter((item) => !item.streaming).map((item) => item.responseKind);
+        const responses = updates
+          .filter((item) => !item.streaming)
+          .map((item) => item.responseKind);
         assert.deepEqual(responses, ["intermediate", "intermediate", "final"]);
       }).pipe(
         Effect.provide(
@@ -10108,7 +10140,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       assert.equal(terminal?.status, "failed");
       if (terminal?.status !== "failed") return;
       assert.equal(terminal.failure.class, scenario.expectedClass);
-        assert.equal(terminal.failure.safetyBlock, "expectedSafetyBlock" in scenario || undefined);
+      assert.equal(terminal.failure.safetyBlock, "expectedSafetyBlock" in scenario || undefined);
       assert.equal(terminal.threadDisposition, "reusable");
       if (scenario.name === "message-reset")
         assert.equal(
@@ -11552,7 +11584,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                       approvalPolicy: "never",
                       approvalsReviewer: "user",
                       sandboxPolicy: { type: "readOnly", networkAccess: false },
-                      summary: "detailed",
+                      summary: "auto",
                       collaborationMode: { mode: "default", settings: { model: "gpt-5.4" } },
                     },
                   },

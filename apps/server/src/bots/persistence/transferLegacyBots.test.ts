@@ -17,6 +17,7 @@ import { transferLegacyBots } from "./transferLegacyBots.ts";
 import { seedLegacy } from "./legacyBotTestFixture.ts";
 
 const tables = ["bots", "bot_project_contexts", "bot_tasks", "bot_learning_revisions"];
+const laterMigrationId = migrationManifest.at(-1)![0] + 1;
 
 const fixture = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
@@ -78,6 +79,7 @@ it.effect.each([78, 79, 80, 81, 82, 83])(
               bot_session_at: null,
               schedule_revision: 12,
               bot_allow_changes: 0,
+              created_by_thread_id: null,
             },
             {
               task_id: "routine",
@@ -85,6 +87,7 @@ it.effect.each([78, 79, 80, 81, 82, 83])(
               bot_session_at: "session",
               schedule_revision: 9,
               bot_allow_changes: head >= 83 ? 1 : 0,
+              created_by_thread_id: null,
             },
           ]);
           const [routine] = yield* main`SELECT * FROM scheduled_tasks WHERE task_id = 'routine'`;
@@ -93,12 +96,10 @@ it.effect.each([78, 79, 80, 81, 82, 83])(
         }
         // Even the merged fork's displaced 082 must not stand in for executing upstream 078.
         yield* main`CREATE INDEX IF NOT EXISTS idx_orch_events_correlation_id ON orchestration_events(correlation_id)`;
-        assert.deepStrictEqual(yield* runMigrations(), [
-          [78, "DropOrchestrationEventCorrelationIndex"],
-          [79, "DelegatedRecoveryIndexes"],
-          [80, "ScheduledTaskThreadMode"],
-          [81, "ScheduledTaskCreationProvenance"],
-        ]);
+        assert.deepStrictEqual(
+          yield* runMigrations(),
+          migrationManifest.filter(([id]) => id >= 78),
+        );
         assert.deepStrictEqual(
           yield* main`SELECT name FROM sqlite_master WHERE name = 'idx_orch_events_correlation_id'`,
           [],
@@ -107,17 +108,16 @@ it.effect.each([78, 79, 80, 81, 82, 83])(
         const run = Migrator.make({});
         yield* run({
           loader: Migrator.fromRecord({
-            "82_TestLaterUpstream": main`CREATE TABLE later_upstream(value TEXT)`,
+            [`${laterMigrationId}_TestLaterUpstream`]: main`CREATE TABLE later_upstream(value TEXT)`,
           }),
         });
         assert.deepStrictEqual(
           yield* main`SELECT migration_id, name FROM effect_sql_migrations WHERE migration_id >= 78 ORDER BY migration_id`,
           [
-            { migration_id: 78, name: "DropOrchestrationEventCorrelationIndex" },
-            { migration_id: 79, name: "DelegatedRecoveryIndexes" },
-            { migration_id: 80, name: "ScheduledTaskThreadMode" },
-            { migration_id: 81, name: "ScheduledTaskCreationProvenance" },
-            { migration_id: 82, name: "TestLaterUpstream" },
+            ...migrationManifest
+              .filter(([id]) => id >= 78)
+              .map(([migration_id, name]) => ({ migration_id, name })),
+            { migration_id: laterMigrationId, name: "TestLaterUpstream" },
           ],
         );
         const copied: Record<string, ReadonlyArray<object>> = {};
@@ -141,7 +141,7 @@ it.effect.each([78, 79, 80, 81, 82, 83])(
             yield* main`SELECT migration_id, name FROM effect_sql_migrations ORDER BY migration_id`,
             [
               ...migrationManifest.map(([migration_id, name]) => ({ migration_id, name })),
-              { migration_id: 82, name: "TestLaterUpstream" },
+              { migration_id: laterMigrationId, name: "TestLaterUpstream" },
             ],
           );
           assert.deepStrictEqual(yield* main`PRAGMA integrity_check`, [{ integrity_check: "ok" }]);

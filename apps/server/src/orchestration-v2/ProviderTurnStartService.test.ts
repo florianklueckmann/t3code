@@ -1,3 +1,4 @@
+import * as BotTurnContext from "../bots/BotTurnContext.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it, vi } from "vite-plus/test";
@@ -166,7 +167,9 @@ function startWithMissingWorktree(
         Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({}),
         Layer.mock(EventSink.EventSinkV2)({ writeIfRunCurrent }),
         IdAllocator.layer,
-        Layer.mock(TurnItemPositionStore.TurnItemPositionStoreV2)({}),
+        Layer.mock(TurnItemPositionStore.TurnItemPositionStoreV2)({
+          allocate: () => Effect.succeed(100),
+        }),
         Layer.succeed(FileSystem.FileSystem, {
           exists: () => Effect.succeed(false),
           realPath: (target: string) =>
@@ -986,7 +989,11 @@ function makeLocalCommandHarness(input: {
       ),
     };
   }
-  if ("historyReadFailureAfterFallback" in input || "resumeFailure" in input || input.recovery !== undefined) {
+  if (
+    "historyReadFailureAfterFallback" in input ||
+    "resumeFailure" in input ||
+    input.recovery !== undefined
+  ) {
     const nativeThreadRef = {
       driver: providerThread.driver,
       nativeId: "native-resume-thread",
@@ -1295,20 +1302,23 @@ function makeLocalCommandHarness(input: {
       ? input.text === "/compact"
         ? compactThread()
         : startTurn(runInput as never)
-
       : input.sideChat !== undefined
-      ? (runInput.resume
-          ? runInput.session.resumeTurn!({
-              ...runInput,
-              messageId: runInput.message.messageId,
-            } as never)
-          : runInput.session.startTurn(runInput as never)
-        ).pipe(Effect.orDie)
-      : input.failReadsAfterRunning === true || input.failInterruptReadsAfterRunning === true || input.previousTurn !== undefined
-        ? Effect.suspend(() =>
-            providerBusy ? Effect.die("The previous provider turn is still running.") : Effect.void,
-          )
-        : Effect.die("A local command must not start a native turn."),
+        ? (runInput.resume
+            ? runInput.session.resumeTurn!({
+                ...runInput,
+                messageId: runInput.message.messageId,
+              } as never)
+            : runInput.session.startTurn(runInput as never)
+          ).pipe(Effect.orDie)
+        : input.failReadsAfterRunning === true ||
+            input.failInterruptReadsAfterRunning === true ||
+            input.previousTurn !== undefined
+          ? Effect.suspend(() =>
+              providerBusy
+                ? Effect.die("The previous provider turn is still running.")
+                : Effect.void,
+            )
+          : Effect.die("A local command must not start a native turn."),
   );
   const failReadIfRunning = Effect.suspend(() =>
     input.failReadsAfterRunning === true &&
@@ -1376,6 +1386,7 @@ function makeLocalCommandHarness(input: {
       ),
     }),
   );
+  const reservedPositions = new Map<string, number>();
   const getRuntimeRecoveryProjection = vi.fn<
     ProjectionStore.ProjectionStoreV2Shape["getRuntimeRecoveryProjection"]
   >(() =>
@@ -1400,6 +1411,7 @@ function makeLocalCommandHarness(input: {
       failReadIfRunning,
       projection.runs.find((candidate) => candidate.id === id),
     ),
+  );
   let summaryCalls = 0;
   const generateConversationSummary = vi.fn<
     TextGeneration.TextGeneration["Service"]["generateConversationSummary"]
@@ -1456,7 +1468,16 @@ function makeLocalCommandHarness(input: {
             }),
         }),
         IdAllocator.layer,
-        Layer.mock(TurnItemPositionStore.TurnItemPositionStoreV2)({}),
+        Layer.mock(TurnItemPositionStore.TurnItemPositionStoreV2)({
+          allocate: ({ turnItemId }) =>
+            Effect.sync(() => {
+              const previous = reservedPositions.get(turnItemId);
+              if (previous !== undefined) return previous;
+              const next = 100 + reservedPositions.size;
+              reservedPositions.set(turnItemId, next);
+              return next;
+            }),
+        }),
         layerWorktreeLocation(input.worktreesDir),
         input.fileSystem === undefined
           ? FileSystem.layerNoop({ exists: () => Effect.succeed(true) })
@@ -1891,12 +1912,16 @@ effectIt.effect("preserves a replacement committed before exhausted start settle
       ),
     );
     const executionLayer = RunExecutionService.layer.pipe(
+      Layer.provide(BotTurnContext.layerEmpty),
+      Layer.provide(ThreadCommandExecutor.layer),
       Layer.provide(
         Layer.mergeAll(
           McpAppModelContext.layerEmpty,
           PreviewAgentActivity.layer,
           Layer.mock(CheckpointService.CheckpointServiceV2)({ captureBaseline: () => Effect.void }),
-          Layer.mock(TurnItemPositionStore.TurnItemPositionStoreV2)({}),
+          Layer.mock(TurnItemPositionStore.TurnItemPositionStoreV2)({
+            allocate: () => Effect.succeed(100),
+          }),
           Layer.mock(EventSink.EventSinkV2)({
             consumeProviderEvents: (source, process, after) =>
               source.pipe(

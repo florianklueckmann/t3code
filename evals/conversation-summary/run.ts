@@ -124,6 +124,7 @@ await Effect.runPromise(
       const messages = history(fixture);
       const coverage = handoffCoverage({
         threadId,
+        items: [],
         coveredRunOrdinals: { from: 1, to: fixture.runs.length },
       });
       for (let sample = 1; sample <= samples; sample++) {

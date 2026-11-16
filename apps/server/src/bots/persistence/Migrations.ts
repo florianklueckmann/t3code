@@ -18,6 +18,8 @@ import HomeCheck from "./Migrations/014_BotHomeCheck.ts";
 import McpGrants from "./Migrations/015_BotMcpGrants.ts";
 import McpOwnServers from "./Migrations/016_BotMcpOwnServers.ts";
 
+import ScheduledTaskProvenance from "./Migrations/017_ScheduledTaskProvenance.ts";
+
 const routines = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`CREATE TABLE bot_routines (
@@ -56,6 +58,7 @@ const entries = [
   [14, "BotHomeCheck", HomeCheck],
   [15, "BotMcpGrants", McpGrants],
   [16, "BotMcpOwnServers", McpOwnServers],
+  [17, "ScheduledTaskProvenance", ScheduledTaskProvenance],
 ] as const;
 const run = Migrator.make({});
 export const runMigrations = Effect.fn("BotDatabase.runMigrations")(function* () {

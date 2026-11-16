@@ -19,6 +19,8 @@ import * as ProjectionStore from "../src/orchestration-v2/ProjectionStore.ts";
 import { rebuildMessageSearch } from "../src/orchestration-v2/messageSearchIndex.ts";
 import * as BotDatabase from "../src/bots/persistence/BotDatabase.ts";
 import * as BotMigrations from "../src/bots/persistence/Migrations.ts";
+import * as ScheduledTaskProvenance from "../src/bots/persistence/transferScheduledTaskProvenance.ts";
+import * as BotRoutineStore from "../src/bots/persistence/BotRoutineStore.ts";
 import { transferLegacyBots } from "../src/bots/persistence/transferLegacyBots.ts";
 import { runMigrations } from "../src/persistence/Migrations.ts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
@@ -266,7 +268,12 @@ const copySourceSlice = Effect.fn("copyDevDbSourceSlice")(function* (
       const references = yield* sql<{ name: string; parent: string }>`
         SELECT m.name, f."table" AS parent FROM src.sqlite_master m, pragma_foreign_key_list(m.name, 'src') f
         WHERE m.type = 'table'`;
-      const cleared = new Set([...CLEARED_TABLES, "bot_tasks", "bot_routines", "bot_routine_intent"]);
+      const cleared = new Set([
+        ...CLEARED_TABLES,
+        "bot_tasks",
+        "bot_routines",
+        "bot_routine_intent",
+      ]);
       for (let grew = true; grew;) {
         grew = false;
         for (const { name, parent } of references) {
@@ -637,6 +644,7 @@ export const runMigrateDevDb = Effect.fn("runMigrateDevDb")(function* (
       const sql = yield* SqlClient.SqlClient;
       yield* sql.unsafe("PRAGMA foreign_keys = ON").unprepared;
       yield* forgetPeerLinksPreviewHistory();
+      yield* ScheduledTaskProvenance.prepareTransfer();
       yield* transferLegacyBots();
       return yield* runMigrations();
     }).pipe(
@@ -644,6 +652,15 @@ export const runMigrateDevDb = Effect.fn("runMigrateDevDb")(function* (
       wrapPhase("migrate", snapshotPath),
     );
 
+    yield* ScheduledTaskProvenance.finishTransfer().pipe(
+      Effect.provide(
+        BotRoutineStore.layer.pipe(
+          Layer.provideMerge(
+            Layer.merge(NodeSqliteClient.layer({ filename: snapshotPath }), botLayer),
+          ),
+        ),
+      ),
+    );
     yield* Console.log(
       `Pruning to ${input.projects} projects, ${input.threadsPerProject} stopped threads each...`,
     );

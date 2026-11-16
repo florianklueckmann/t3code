@@ -166,7 +166,7 @@ const makeLaptopWith = (
     );
     const layerHere = McpHttpServer.layerOrchestratorToolkit.pipe(
       Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
-    Layer.provideMerge(layerCallerChangesAllowed),
+      Layer.provideMerge(layerCallerChangesAllowed),
       Layer.provideMerge(PeerLinkRequests.layer),
       Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
       Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),

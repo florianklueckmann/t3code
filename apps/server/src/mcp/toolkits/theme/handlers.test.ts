@@ -17,7 +17,7 @@ import * as ThreadCommandExecutor from "../../../orchestration-v2/ThreadCommandE
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
-import { liveThreadShell } from "../../McpToolAccess.testkit.ts";
+import { liveThreadShell, layerCallerChangesAllowed } from "../../McpToolAccess.testkit.ts";
 import * as ThemeHandlers from "./handlers.ts";
 import { ThemeToolkit } from "./tools.ts";
 
@@ -34,6 +34,7 @@ const AGENT_THEME = {
 it.effect("applies the theme through the service and reports a refusal as an invalid request", () =>
   Effect.gen(function* () {
     const layerDependencies = Layer.mergeAll(
+      layerCallerChangesAllowed,
       ThreadCommandExecutor.layer,
       Layer.succeed(McpInvocationContext.McpInvocationContext, {
         environmentId,

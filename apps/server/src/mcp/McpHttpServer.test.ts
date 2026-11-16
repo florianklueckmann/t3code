@@ -96,6 +96,7 @@ const client = McpSchema.McpServerClient.of({
 });
 const layerTest = McpHttpServer.layerPreviewToolkit.pipe(
   Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+  Layer.provide(McpToolAccessTestkit.layerCallerChangesAllowed),
   Layer.provideMerge(McpToolAccessTestkit.layerCallerChangesAllowed),
   Layer.provideMerge(McpToolAccessTestkit.liveThreadsLayer),
   Layer.provideMerge(PreviewAutomationBroker.layer),
@@ -104,6 +105,7 @@ const layerTest = McpHttpServer.layerPreviewToolkit.pipe(
 );
 const layerPullRequestsTest = McpHttpServer.layerPullRequestsToolkit.pipe(
   Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+  Layer.provide(McpToolAccessTestkit.layerCallerChangesAllowed),
   Layer.provideMerge(McpToolAccessTestkit.layerCallerChangesAllowed),
   Layer.provideMerge(McpToolAccessTestkit.liveThreadsLayer),
   Layer.provide(
@@ -243,6 +245,7 @@ it.effect.each([
       Effect.provide(
         McpHttpServer.layerDeviceToolkit.pipe(
           Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+          Layer.provide(McpToolAccessTestkit.layerCallerChangesAllowed),
           Layer.provideMerge(McpToolAccessTestkit.layerCallerChangesAllowed),
           Layer.provide(McpToolAccessTestkit.liveThreadsLayer),
           Layer.provide(
@@ -331,6 +334,7 @@ const layerRecordingTools = (calls: Array<unknown>) => {
     }),
   ).pipe(
     Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+    Layer.provide(McpToolAccessTestkit.layerCallerChangesAllowed),
     Layer.provideMerge(McpToolAccessTestkit.layerCallerChangesAllowed),
     Layer.provide(
       Layer.mergeAll(

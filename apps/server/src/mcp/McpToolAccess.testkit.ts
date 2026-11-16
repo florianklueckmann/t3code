@@ -60,14 +60,14 @@ export const liveThreadShell = (
   };
 };
 
-export const liveThreadsLayer = Layer.mock(ThreadManagement.ThreadManagementService)({
-  getThreadShell: (threadId) => Effect.succeed(liveThreadShell(threadId)),
-});
-
 /** Callers of tests that are not about No changes may change things. */
 export const layerCallerChangesAllowed = Layer.succeed(McpCallerChanges.McpCallerChanges, {
   forThread: () => Effect.succeed("allowed"),
 });
+
+export const liveThreadsLayer = Layer.mock(ThreadManagement.ThreadManagementService)({
+  getThreadShell: (threadId) => Effect.succeed(liveThreadShell(threadId)),
+}).pipe(Layer.provideMerge(layerCallerChangesAllowed));
 
 export const idleThreadProjection = (
   shell: OrchestrationV2ThreadShell,

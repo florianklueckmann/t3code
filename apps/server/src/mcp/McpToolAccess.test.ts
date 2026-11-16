@@ -1,3 +1,4 @@
+import { layerCallerChangesAllowed } from "./McpToolAccess.testkit.ts";
 import { expect, it } from "@effect/vitest";
 import {
   EnvironmentId,
@@ -595,9 +596,17 @@ it.effect.each(["reads_as_caller", "acts_as_caller"] as const)(
         .pipe(Stream.unwrap, Stream.run(Sink.last()), Effect.flatMap(Effect.fromOption));
       expect(result).toMatchObject({ code: "thread_credential_required" });
     }).pipe(
-      Effect.provide(McpToolAccess.HandlersLayer.layer(layerProbeHandlers)),
+      Effect.provide(
+        McpToolAccess.HandlersLayer.layer(layerProbeHandlers).pipe(
+          Layer.provideMerge(
+            Layer.merge(
+              layerCallerChangesAllowed,
+              Layer.mock(ThreadManagement.ThreadManagementService)({}),
+            ),
+          ),
+        ),
+      ),
       Effect.provideService(McpInvocationContext.McpInvocationContext, fullAccessClient),
-      Effect.provide(Layer.mock(ThreadManagement.ThreadManagementService)({})),
     ),
 );
 

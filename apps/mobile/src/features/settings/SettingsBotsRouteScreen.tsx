@@ -909,6 +909,7 @@ export function BotModelPickerRouteScreen() {
 
   return (
     <ThreadSettingsPickerScreen
+      cwd={null}
       environmentId={environmentId}
       projectId={null}
       providerGroups={groupByProvider(models)}

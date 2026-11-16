@@ -83,8 +83,8 @@ it.layer(NodeServices.layer)("service preflight database", (it) => {
       db.exec("DELETE FROM effect_sql_migrations WHERE migration_id >= 78");
       insert.run(78, "UnknownFork");
       expect(preflight().status).toBe("blocked");
-      db.exec("DELETE FROM effect_sql_migrations WHERE migration_id = 78");
-      insert.run(78, "DropOrchestrationEventCorrelationIndex");
+      db.exec("DELETE FROM effect_sql_migrations");
+      for (const [id, name] of migrationManifest) insert.run(id, name);
 
       db.prepare("UPDATE effect_sql_migrations SET name = ? WHERE migration_id = ?").run(
         "ForkMigration",

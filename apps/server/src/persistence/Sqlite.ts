@@ -11,6 +11,7 @@ import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as BotDatabase from "../bots/persistence/BotDatabase.ts";
 import * as BotMigrations from "../bots/persistence/Migrations.ts";
 import * as BotRoutineStore from "../bots/persistence/BotRoutineStore.ts";
+import * as ScheduledTaskProvenance from "../bots/persistence/transferScheduledTaskProvenance.ts";
 import { transferLegacyBots } from "../bots/persistence/transferLegacyBots.ts";
 
 import { hasPendingMigrations, runMigrations } from "./Migrations.ts";
@@ -66,6 +67,7 @@ const runMigrationsAsOwner = Effect.fn("SqlitePersistence.runMigrationsAsOwner")
         Effect.fail(new ServerOwnsDatabaseError({ stateDir })),
     }),
   );
+  yield* ScheduledTaskProvenance.prepareTransfer();
   yield* transferLegacyBots();
   yield* runMigrations();
 }, Effect.scoped);
@@ -104,7 +106,13 @@ const makeLayerSetup = <E, R>(migrate: Effect.Effect<unknown, E, R>) =>
     }).pipe(Effect.withSpan("Sqlite.setup")),
   );
 
-const layerSetup = makeLayerSetup(Effect.andThen(transferLegacyBots(), runMigrations()));
+const layerSetup = makeLayerSetup(
+  Effect.gen(function* () {
+    yield* ScheduledTaskProvenance.prepareTransfer();
+    yield* transferLegacyBots();
+    yield* runMigrations();
+  }),
+);
 
 const botLayer = (filename: string) =>
   Layer.effect(
@@ -120,8 +128,6 @@ const botLayer = (filename: string) =>
     }),
   ).pipe(Layer.provide(NodeSqliteClient.layer({ filename })));
 
-
-
 const makeLayerFromPath = <E, R>(makeSetup: (dbPath: string) => Layer.Layer<never, E, R>) =>
   Effect.fn("makeSqlitePersistenceLive")(function* (dbPath: string) {
     const fs = yield* FileSystem.FileSystem;
@@ -130,21 +136,25 @@ const makeLayerFromPath = <E, R>(makeSetup: (dbPath: string) => Layer.Layer<neve
 
     const databases = Layer.provideMerge(
       makeSetup(dbPath),
-      Layer.merge(botLayer(path.join(path.dirname(dbPath), "bots.sqlite")), NodeSqliteClient.layer({
-        filename: dbPath,
-        readerWorker: true,
-        // A slow disk then delays writes instead of freezing every client.
-        writerWorker: true,
-        spanAttributes: {
-          "db.name": path.basename(dbPath),
-          "service.name": "t3code-server",
-        },
-      })),
+      Layer.merge(
+        botLayer(path.join(path.dirname(dbPath), "bots.sqlite")),
+        NodeSqliteClient.layer({
+          filename: dbPath,
+          readerWorker: true,
+          // A slow disk then delays writes instead of freezing every client.
+          writerWorker: true,
+          spanAttributes: {
+            "db.name": path.basename(dbPath),
+            "service.name": "t3code-server",
+          },
+        }),
+      ),
     );
-    return BotRoutineStore.layer.pipe(Layer.provideMerge(databases),
+    const recovered = BotRoutineStore.layer.pipe(Layer.provideMerge(databases));
+    return Layer.effectDiscard(ScheduledTaskProvenance.finishTransfer()).pipe(
+      Layer.provideMerge(recovered),
       Layer.catchTag("SqlError", (error) =>
-        Layer.effect(
-          SqlClient.SqlClient,
+        Layer.effectContext(
           Effect.fail(
             SqlError.isSqlError(error) && isDamagedDatabase(error)
               ? damagedDatabaseError(dbPath, error)
@@ -158,13 +168,22 @@ const makeLayerFromPath = <E, R>(makeSetup: (dbPath: string) => Layer.Layer<neve
 export const layerFromPath = makeLayerFromPath(() => layerSetup);
 
 export const layerMemory = BotRoutineStore.layer.pipe(
-  Layer.provideMerge(Layer.provideMerge(layerSetup, Layer.merge(
-    NodeSqliteClient.layer({ filename: ":memory:" }), botLayer(":memory:")
-  )))
+  Layer.provideMerge(
+    Layer.provideMerge(
+      layerSetup,
+      Layer.merge(NodeSqliteClient.layer({ filename: ":memory:" }), botLayer(":memory:")),
+    ),
+  ),
 );
 
 const makeLayerConfig = <E, R>(
-  fromPath: (dbPath: string) => Layer.Layer<SqlClient.SqlClient | BotDatabase.BotDatabase | BotRoutineStore.BotRoutineStore, E, R>,
+  fromPath: (
+    dbPath: string,
+  ) => Layer.Layer<
+    SqlClient.SqlClient | BotDatabase.BotDatabase | BotRoutineStore.BotRoutineStore,
+    E,
+    R
+  >,
 ) =>
   Layer.unwrap(
     Effect.gen(function* () {

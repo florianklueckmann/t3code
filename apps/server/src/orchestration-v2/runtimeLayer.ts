@@ -196,7 +196,7 @@ const layerProviderTurnStartServiceProvided = ProviderTurnStartService.layer.pip
       layerRunExecutionServiceProvided,
       layerRuntimePolicyProvided,
       TurnItemPositionStore.layer,
-      TextGeneration.layer,
+      TextGeneration.layer.pipe(Layer.provide(ProviderInstallationGate.layer)),
     ),
   ),
 );
@@ -332,12 +332,11 @@ const layerBotServiceProvided = BotService.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
       BotProjectGuard.layer,
-      layerProjectService,
       layerThreadLaunchProvided,
       layerThreadManagementProvided,
       layerScheduledTaskProvided,
       layerBotTaskProvided,
-    ),
+    ).pipe(Layer.provideMerge(layerProjectService)),
   ),
 );
 const layerScratchThreadPromotionProvided = ScratchThreadPromotion.layer.pipe(

@@ -44,7 +44,6 @@ import {
   resolveThreadListV2RowStatus,
   resolveThreadListV2Status,
   resolveThreadListV2WokeAt,
-  sortThreadsForListV2,
   threadListV2AttentionUrgency,
   threadListV2ListItemsAreEqual,
   threadListV2RowAccessibilityLabel,

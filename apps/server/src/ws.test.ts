@@ -1,3 +1,4 @@
+import * as BotProjectGuard from "./bots/BotProjectGuard.ts";
 import * as BotContinuation from "./bots/BotContinuation.ts";
 import * as McpConnectionOAuth from "./mcpConnections/McpConnectionOAuth.ts";
 import * as McpConnections from "./mcpConnections/McpConnections.ts";
@@ -1819,6 +1820,13 @@ it.effect("a missing thread worktree gets its project's skills in the cwd snapsh
         getInstance: () => Effect.succeed({ instanceId, snapshotForCwd: scan } as never),
       }),
       Layer.effect(ProjectService.ProjectService, ProjectService.make).pipe(
+        Layer.provide(
+          Layer.succeed(BotProjectGuard.BotProjectGuard, {
+            withProjectLock: (_projectId, effect) => effect,
+            attachedBotNames: () => Effect.succeed([]),
+            forgetProject: () => Effect.void,
+          }),
+        ),
         Layer.provide(
           Layer.mergeAll(
             Layer.mock(ProjectionStore.ProjectionStoreV2)({

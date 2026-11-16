@@ -26,7 +26,6 @@ import {
   type SealedRefusalReason,
 } from "@t3tools/provider-core/server/sealedGeneration";
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -214,7 +213,7 @@ const floors = Effect.gen(function* () {
 const withReadyGeneration = Effect.gen(function* () {
   const sequence = yield* Ref.make(0);
   const snapshots = yield* Ref.make<ReadonlyArray<boolean>>([]);
-  const executor = yield* KeyedLock.make<ThreadId>();
+  const executor = yield* ThreadCommandExecutor.make;
   const maintenance = yield* BotMaintenance.make.pipe(
     Effect.provide(
       Layer.mergeAll(
@@ -434,19 +433,23 @@ it.effect(
       yield* bots`DROP TABLE bot_mcp_grants`;
       yield* bots`ALTER TABLE bots DROP COLUMN mcp_grant_revision`;
       yield* bots`ALTER TABLE bots DROP COLUMN mcp_own_codex_servers`;
+      yield* bots`ALTER TABLE bot_routines DROP COLUMN created_by_thread_id`;
+      yield* bots`ALTER TABLE bot_routine_intent DROP COLUMN created_by_thread_id`;
+      yield* bots`DROP TABLE bot_provenance_transfer`;
       yield* bots`DELETE FROM effect_sql_migrations WHERE migration_id >= 11`;
       yield* BotMigrations.runMigrations().pipe(Effect.provideService(SqlClient.SqlClient, bots));
       const history = yield* bots<{
         readonly migration_id: number;
         readonly name: string;
       }>`SELECT migration_id, name FROM effect_sql_migrations ORDER BY migration_id`;
-      assert.deepEqual(history.slice(-6), [
+      assert.deepEqual(history.slice(-7), [
         { migration_id: 11, name: "BotMaintenance" },
         { migration_id: 12, name: "BotMaintenanceReceipts" },
         { migration_id: 13, name: "BotMaintenanceNightly" },
         { migration_id: 14, name: "BotHomeCheck" },
         { migration_id: 15, name: "BotMcpGrants" },
         { migration_id: 16, name: "BotMcpOwnServers" },
+        { migration_id: 17, name: "ScheduledTaskProvenance" },
       ]);
       const maintenance = yield* BotMaintenance.BotMaintenance;
       const view = yield* maintenance.get(scope);
@@ -611,7 +614,7 @@ const withEngine = <A, E, R>(
     readonly runtimeStarts: Semaphore.Semaphore;
     /** Runtimes for particular provider sessions; every other session gets the shared one above. */
     readonly sessionRuntimes: Ref.Ref<ReadonlyMap<string, object>>;
-    readonly executor: KeyedLock.KeyedLock<ThreadId>;
+    readonly executor: ThreadCommandExecutor.ThreadCommandExecutor["Service"];
     /** The source maintenance registered with the Scheduler, run by hand in UTC. */
     readonly runScheduled: Effect.Effect<void>;
     /** Answers every orchestration command maintenance dispatches. */
@@ -626,7 +629,7 @@ const withEngine = <A, E, R>(
   taskResults: Readonly<Record<string, string>> = {},
 ) =>
   Effect.gen(function* () {
-    const executor = yield* KeyedLock.make<ThreadId>();
+    const executor = yield* ThreadCommandExecutor.make;
     const homeSequence = yield* Ref.make(0);
     const runtimeBackgroundWork = yield* Ref.make(false);
     const availability = yield* Ref.make<SealedRefusalReason | null>(null);
@@ -1988,6 +1991,7 @@ const executeSteer = Effect.fn("fixture.executeSteer")(function* (
   };
   const run = { id: `run-${id}`, status: options.turnStatus };
   const control = ProviderTurnControlService.layer.pipe(
+    Layer.provide(Layer.mock(EventSink.EventSinkV2)({})),
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
@@ -2015,6 +2019,7 @@ const executeSteer = Effect.fn("fixture.executeSteer")(function* (
     ),
   );
   const executor = EffectWorker.layerExecutor.pipe(
+    Layer.provide(Layer.mock(ProjectionStore.ProjectionStoreV2)({})),
     Layer.provide(
       Layer.mergeAll(
         control,

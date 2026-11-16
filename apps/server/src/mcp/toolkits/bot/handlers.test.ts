@@ -1,3 +1,4 @@
+import * as Schema from "effect/Schema";
 import * as BotContinuation from "../../../bots/BotContinuation.ts";
 import { expect, it } from "@effect/vitest";
 import {
@@ -32,6 +33,8 @@ const environmentId = EnvironmentId.make("environment:bots");
 const threadId = ThreadId.make("thread:bots");
 const botId = BotId.make("faerun-companion");
 const campaignA = ProjectId.make("project-campaign-a");
+
+const decodeJson = Schema.decodeUnknownSync(Schema.Json);
 
 const detail = {
   id: botId,
@@ -108,7 +111,7 @@ const callTool = (
     const result = yield* Effect.gen(function* () {
       const toolkit = yield* BotToolkit;
       const results = yield* toolkit
-        .handle("t3_bot", params)
+        .handle("t3_bot", decodeJson(params))
         .pipe(Stream.unwrap, Stream.runCollect);
       return results.at(-1)?.encodedResult;
     }).pipe(

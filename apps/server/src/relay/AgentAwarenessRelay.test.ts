@@ -1430,7 +1430,6 @@ describe("AgentAwarenessRelay", () => {
         if (terminal !== null) assert.equal(terminal.projectTitle, "Project");
       }),
   );
-
 });
 
 it.effect("catches up after startup without polling after success", () =>

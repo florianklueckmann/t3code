@@ -95,7 +95,6 @@ import {
 import {
   formatNextScheduledTaskRun,
   formatScheduledTaskInterval,
-  formatTimeOfDay,
   repeatLabel,
   timeOfDayFromPicker,
   timeOfDayPickerValue,
@@ -1005,11 +1004,11 @@ function TaskForm({
                   setDraft((current) => {
                     const weekdays =
                       id === "every_day"
-                        ? DAYS.map((day) => day.index)
+                        ? WEEKDAYS.map((day) => day.index)
                         : id === "weekdays"
                           ? [1, 2, 3, 4, 5]
                           : (() => {
-                              const day = DAYS.find((item) => String(item.index) === id);
+                              const day = WEEKDAYS.find((item) => String(item.index) === id);
                               if (!day) return current.schedule.weekdays;
                               return current.schedule.weekdays.includes(day.index)
                                 ? current.schedule.weekdays.filter((index) => index !== day.index)
@@ -1322,7 +1321,6 @@ function EnvironmentTasks({
   readonly onEdit: (task: ScheduledTask) => void;
 }) {
   const environmentId = environment.environmentId;
-  const timeZone = environment.serverConfig.environment.timeZone;
   const navigation = useNavigation<NativeStackNavigationProp<ScheduledTaskRoutes>>();
   // The generic form's thread, model and mode fields do not apply to a routine.
   const edit = (task: ScheduledTask) => {

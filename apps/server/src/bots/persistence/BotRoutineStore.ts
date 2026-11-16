@@ -12,6 +12,7 @@ import * as BotDatabase from "./BotDatabase.ts";
 
 interface Routine {
   readonly task_id: string;
+  readonly created_by_thread_id: string | null;
   readonly bot_id: string | null;
   readonly bot_session_at: string | null;
   readonly bot_allow_changes: number;
@@ -19,6 +20,7 @@ interface Routine {
 }
 interface Intent {
   readonly task_id: string;
+  readonly created_by_thread_id: string | null;
   readonly query: string;
   readonly parameters_json: string;
   readonly bot_id: string | null;
@@ -42,6 +44,7 @@ export class BotRoutineStore extends Context.Service<
       statement: Statement.Statement<A>,
       input: {
         readonly taskId: string;
+        readonly createdByThreadId?: string;
         readonly target?:
           | {
               readonly botId: string;
@@ -105,11 +108,11 @@ export const layer = Layer.effect(
           if (intent.removing === 1) {
             yield* bots`DELETE FROM bot_routines WHERE task_id = ${intent.task_id}`;
           } else if (rows.length > 0) {
-            yield* bots`INSERT INTO bot_routines (task_id, bot_id, bot_session_at, schedule_revision, bot_allow_changes)
-          VALUES (${intent.task_id}, ${intent.bot_id}, ${intent.bot_session_at}, ${intent.schedule_revision}, ${intent.bot_allow_changes})
+            yield* bots`INSERT INTO bot_routines (task_id, bot_id, bot_session_at, schedule_revision, bot_allow_changes, created_by_thread_id)
+          VALUES (${intent.task_id}, ${intent.bot_id}, ${intent.bot_session_at}, ${intent.schedule_revision}, ${intent.bot_allow_changes}, ${intent.created_by_thread_id})
           ON CONFLICT(task_id) DO UPDATE SET bot_id = excluded.bot_id,
             bot_session_at = excluded.bot_session_at, schedule_revision = excluded.schedule_revision,
-            bot_allow_changes = excluded.bot_allow_changes`;
+            bot_allow_changes = excluded.bot_allow_changes, created_by_thread_id = excluded.created_by_thread_id`;
           }
           yield* bots`DELETE FROM bot_routine_intent WHERE singleton = 1`;
         }),
@@ -130,7 +133,7 @@ export const layer = Layer.effect(
         Effect.gen(function* () {
           yield* recover();
           const current = yield* read(input.taskId);
-          if (!current && !input.target) {
+          if (!current && !input.target && input.createdByThreadId === undefined) {
             if (!input.removing) return yield* statement;
             return yield* sql.withTransaction(
               sql`DELETE FROM scheduled_task_webhook_deliveries WHERE task_id = ${input.taskId}`.pipe(
@@ -141,6 +144,7 @@ export const layer = Layer.effect(
           const [query, params] = statement.compile();
           const intent: Intent = {
             task_id: input.taskId,
+            created_by_thread_id: current?.created_by_thread_id ?? input.createdByThreadId ?? null,
             query,
             parameters_json: yield* validateParameters(params).pipe(
               Effect.flatMap(encodeParameters),

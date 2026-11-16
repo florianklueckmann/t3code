@@ -10,8 +10,7 @@ import {
   type ShownOrder,
 } from "@t3tools/client-runtime/state/thread-search";
 import { isShownUnderParent } from "@t3tools/client-runtime/state/threads";
-import { THREAD_JUMP_KEYBINDING_COMMANDS, type EnvironmentId } from "@t3tools/contracts";
-import { AsyncResult, Atom } from "effect/reactivity";
+import { THREAD_JUMP_KEYBINDING_COMMANDS } from "@t3tools/contracts";
 import {
   foldSearchQuery,
   PALETTE_MESSAGE_LIMIT,

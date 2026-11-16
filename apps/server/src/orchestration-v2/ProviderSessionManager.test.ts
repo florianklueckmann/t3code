@@ -4761,7 +4761,7 @@ it.effect.each([
           })
           .pipe(Effect.flip);
         yield* resumeSecondThread;
-        assert.equal((yield* Ref.get(state)).resumeCount, resumeCount += 2);
+        assert.equal((yield* Ref.get(state)).resumeCount, (resumeCount += 2));
         // regression: #26722 a Linked environments change reloads only the idle thread's tools.
         yield* settings.updateSettings({ linkedEnvironmentsEnabled: true });
         yield* resumeSecondThread;
@@ -4809,7 +4809,7 @@ it.effect.each([
         });
         yield* resumeGranted;
         yield* resumeGranted;
-        assert.equal((yield* Ref.get(state)).resumeCount, resumeCount += 2);
+        assert.equal((yield* Ref.get(state)).resumeCount, (resumeCount += 2));
 
         assert.deepEqual((yield* Ref.get(state)).unloadedNativeThreadIds, ["native-thread"]);
 

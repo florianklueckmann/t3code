@@ -1,17 +1,9 @@
+import * as BotDatabase from "../bots/persistence/BotDatabase.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
+import { ThreadId } from "@t3tools/contracts";
 import * as Ref from "effect/Ref";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
-import * as SqlClient from "effect/sql/SqlClient";
-import * as OrchestratorMcpService from "../mcp/OrchestratorMcpService.ts";
-import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
-import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
-import * as ProjectService from "../project/ProjectService.ts";
-import * as ServerSettings from "../serverSettings.ts";
-import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
-import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
-import { liveThreadShell, idleThreadProjection } from "../mcp/McpToolAccess.testkit.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { assert, expect, it } from "@effect/vitest";
@@ -26,7 +18,6 @@ import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 
@@ -630,10 +621,10 @@ it.effect.each(["agent", "client"] as const)(
 
       yield* Effect.gen(function* () {
         const service = yield* ScheduledTaskService.ScheduledTaskService;
-        const sql = yield* SqlClient.SqlClient;
+        const bots = yield* BotDatabase.BotDatabase;
         const rows =
-          yield* sql`SELECT created_by_thread_id FROM scheduled_tasks WHERE task_id = ${id}`;
-        assert.deepEqual(rows, [{ created_by_thread_id: caller === "agent" ? creator : null }]);
+          yield* bots`SELECT created_by_thread_id FROM bot_routines WHERE task_id = ${id}`;
+        assert.deepEqual(rows, caller === "agent" ? [{ created_by_thread_id: creator }] : []);
         for (let run = 0; run < 2; run++) {
           const result = yield* service.runNow({ id });
           assert.equal(result.threadId, "scheduled-child");

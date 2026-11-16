@@ -289,6 +289,7 @@ export function selectHistory(input: {
 }
 
 export function handoffCoverage(input: {
+  readonly items: ReadonlyArray<OrchestrationV2TurnItem>;
   readonly threadId: string;
   readonly coveredRunOrdinals: OrchestrationV2ContextHandoff["coveredRunOrdinals"];
 }): string {

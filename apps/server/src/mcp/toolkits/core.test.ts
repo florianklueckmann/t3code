@@ -140,6 +140,7 @@ it.effect("checks capability through the production registration", () =>
     Effect.provide(
       layerThreadToolkit.pipe(
         Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+        Layer.provide(McpToolAccessTestkit.layerCallerChangesAllowed),
         Layer.provideMerge(McpToolAccessTestkit.layerCallerChangesAllowed),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(McpToolAccessTestkit.liveThreadsLayer),
@@ -176,6 +177,7 @@ it.effect("an answered question reports already answered instead of not found", 
     Effect.provide(
       layerThreadToolkit.pipe(
         Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+        Layer.provide(McpToolAccessTestkit.layerCallerChangesAllowed),
         Layer.provideMerge(McpToolAccessTestkit.layerCallerChangesAllowed),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(
@@ -253,6 +255,7 @@ it.effect("a pending question read keeps option previews", () => {
     Effect.provide(
       layerThreadToolkit.pipe(
         Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+        Layer.provide(McpToolAccessTestkit.layerCallerChangesAllowed),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(
           Layer.mock(ThreadManagement.ThreadManagementService)({
@@ -390,6 +393,7 @@ it.effect("returns an HTML render reference that Codex and Claude tool rows both
     Effect.provide(
       McpHttpServer.layerHtmlToolkit.pipe(
         Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+        Layer.provide(McpToolAccessTestkit.layerCallerChangesAllowed),
         Layer.provideMerge(McpToolAccessTestkit.layerCallerChangesAllowed),
         Layer.provide(McpProviderSessions.layer),
         Layer.provide(PreviewBrowser.layer),
@@ -446,6 +450,7 @@ it.effect("records only failed calls of tools that hand off no work", () => {
     Effect.provide(
       layerThreadToolkit.pipe(
         Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+        Layer.provide(McpToolAccessTestkit.layerCallerChangesAllowed),
         Layer.provideMerge(McpToolAccessTestkit.layerCallerChangesAllowed),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(
@@ -528,6 +533,7 @@ it.effect("t3_queue list and read load only the queued runs and their messages",
     Effect.provide(
       layerThreadToolkit.pipe(
         Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+        Layer.provide(McpToolAccessTestkit.layerCallerChangesAllowed),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(historyReads(reads)),
       ),
@@ -555,6 +561,7 @@ it.effect("handoff analytics read only the caller's active run and its message",
     Effect.provide(
       layerThreadToolkit.pipe(
         Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+        Layer.provide(McpToolAccessTestkit.layerCallerChangesAllowed),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(historyReads(reads)),
         Layer.provide(
@@ -595,6 +602,7 @@ it.effect("rejects an unknown organize target instead of archiving the calling t
     Effect.provide(
       layerThreadToolkit.pipe(
         Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+        Layer.provide(McpToolAccessTestkit.layerCallerChangesAllowed),
         Layer.provideMerge(McpToolAccessTestkit.layerCallerChangesAllowed),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(
@@ -633,6 +641,7 @@ it.effect("keeps unexpected handler defects private through the production regis
     Effect.provide(
       layerThreadToolkit.pipe(
         Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+        Layer.provide(McpToolAccessTestkit.layerCallerChangesAllowed),
         Layer.provideMerge(McpToolAccessTestkit.layerCallerChangesAllowed),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(
@@ -752,6 +761,7 @@ it.effect("a client caller targets any thread within its ceiling and cannot act 
     Effect.provide(
       layerThreadToolkit.pipe(
         Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+        Layer.provide(McpToolAccessTestkit.layerCallerChangesAllowed),
         Layer.provideMerge(McpToolAccessTestkit.layerCallerChangesAllowed),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(
@@ -817,6 +827,7 @@ it.effect("an MCP pin lands above every existing pin, as a client pin does", () 
     Effect.provide(
       layerThreadToolkit.pipe(
         Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+        Layer.provide(McpToolAccessTestkit.layerCallerChangesAllowed),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(
           Layer.mock(ThreadManagement.ThreadManagementService)({
@@ -876,6 +887,7 @@ it.effect("search names the calling thread, so an agent can tell its own match a
     Effect.provide(
       McpHttpServer.layerThreadToolkit.pipe(
         Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+        Layer.provide(McpToolAccessTestkit.layerCallerChangesAllowed),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(McpToolAccessTestkit.liveThreadsLayer),
         Layer.provide(
@@ -939,6 +951,7 @@ it.effect("a read-only client reads threads and is refused every write before it
     Effect.provide(
       layerThreadToolkit.pipe(
         Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+        Layer.provide(McpToolAccessTestkit.layerCallerChangesAllowed),
         Layer.provideMerge(McpToolAccessTestkit.layerCallerChangesAllowed),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(
@@ -994,6 +1007,7 @@ it.effect("hides act-as-caller tools from a client caller", () =>
     Effect.provide(
       layerOrchestratorToolkit.pipe(
         Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+        Layer.provide(McpToolAccessTestkit.layerCallerChangesAllowed),
         Layer.provideMerge(McpToolAccessTestkit.layerCallerChangesAllowed),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(Layer.mock(ThreadManagement.ThreadManagementService)({})),
@@ -1045,6 +1059,7 @@ it.effect("a caller cannot rewrite a scheduled task that runs above its own mode
     Effect.provide(
       layerOrchestratorToolkit.pipe(
         Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+        Layer.provide(McpToolAccessTestkit.layerCallerChangesAllowed),
         Layer.provideMerge(McpToolAccessTestkit.layerCallerChangesAllowed),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(Layer.mock(ThreadManagement.ThreadManagementService)({})),
@@ -1120,6 +1135,7 @@ it.effect.each([
     Effect.provide(
       McpHttpServer.layerThreadToolkit.pipe(
         Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+        Layer.provide(McpToolAccessTestkit.layerCallerChangesAllowed),
         Layer.provideMerge(McpToolAccessTestkit.layerCallerChangesAllowed),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(Layer.mock(ThreadManagement.ThreadManagementService)({})),
@@ -1160,6 +1176,7 @@ it.effect("run_scheduled_task_now reports why a started run failed to dispatch",
     Effect.provide(
       McpHttpServer.layerThreadToolkit.pipe(
         Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+        Layer.provide(McpToolAccessTestkit.layerCallerChangesAllowed),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(Layer.mock(ThreadManagement.ThreadManagementService)({})),
         Layer.provide(Layer.mock(ThreadSearch.ThreadSearch)({})),
@@ -1234,6 +1251,7 @@ it.effect.each(["t3_thread_interrupt", "t3_workflow_stop"])(
       Effect.provide(
         layerOrchestratorToolkit.pipe(
           Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+          Layer.provide(McpToolAccessTestkit.layerCallerChangesAllowed),
           Layer.provideMerge(McpToolAccessTestkit.layerCallerChangesAllowed),
           Layer.provide(NodeCrypto.layer),
           Layer.provide(
@@ -1343,6 +1361,7 @@ it.effect("discovers workflow stop targets and requires orchestration capability
     Effect.provide(
       layerOrchestratorToolkit.pipe(
         Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+        Layer.provide(McpToolAccessTestkit.layerCallerChangesAllowed),
         Layer.provideMerge(McpToolAccessTestkit.layerCallerChangesAllowed),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(
@@ -1419,6 +1438,7 @@ it.effect("only the caller that prepared a pending upload can discard it", () =>
     Effect.provide(
       McpHttpServer.layerAttachmentToolkit.pipe(
         Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+        Layer.provide(McpToolAccessTestkit.layerCallerChangesAllowed),
         Layer.provideMerge(McpToolAccessTestkit.layerCallerChangesAllowed),
         Layer.provide(McpToolAccessTestkit.liveThreadsLayer),
         Layer.provide(AssetSigner.layer.pipe(Layer.provideMerge(ServerSecretStore.layer))),
@@ -1465,6 +1485,7 @@ it.effect(
       Effect.provide(
         layerOrchestratorToolkit.pipe(
           Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+          Layer.provide(McpToolAccessTestkit.layerCallerChangesAllowed),
           Layer.provideMerge(McpToolAccessTestkit.layerCallerChangesAllowed),
           Layer.provide(NodeCrypto.layer),
           Layer.provide(

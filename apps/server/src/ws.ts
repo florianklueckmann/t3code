@@ -3054,7 +3054,8 @@ export const layerWsRpc = (
                 new ProjectMutationError({
                   commandId: mutation.commandId,
                   message:
-                    cause._tag === "ProjectNotEmptyError" || cause._tag === "ProjectInvalidError" ||
+                    cause._tag === "ProjectNotEmptyError" ||
+                    cause._tag === "ProjectInvalidError" ||
                     cause._tag === "ProjectBotAttachedError"
                       ? cause.message
                       : "Failed to mutate project.",

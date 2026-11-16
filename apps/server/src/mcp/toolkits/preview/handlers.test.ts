@@ -95,9 +95,11 @@ it.effect("preview_open navigates the opened tab to a dev server in one tool cal
       issuedAt: 1,
     }),
     Effect.provide(
-      Layer.mergeAll(PreviewAutomationBroker.layer, liveThreadsLayer, layerCallerChangesAllowed).pipe(
-        Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
-      ),
+      Layer.mergeAll(
+        PreviewAutomationBroker.layer,
+        liveThreadsLayer,
+        layerCallerChangesAllowed,
+      ).pipe(Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
     ),
   ),
 );

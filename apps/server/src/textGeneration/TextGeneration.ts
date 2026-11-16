@@ -209,6 +209,7 @@ export const make = Effect.gen(function* () {
         return generate(
           "generateConversationSummary",
           input.modelSelection,
+          input.projectId,
           (service, modelSelection) =>
             service.generateConversationSummary({ ...input, modelSelection }),
         );

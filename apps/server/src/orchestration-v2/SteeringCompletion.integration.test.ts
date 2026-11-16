@@ -3435,7 +3435,6 @@ it.effect("shows a steer that could not be delivered as not sent, next to the me
   ),
 );
 
-
 it.effect("a Bot maintenance compaction still starting gives way to a message, which runs", () =>
   Effect.scoped(
     Effect.gen(function* () {

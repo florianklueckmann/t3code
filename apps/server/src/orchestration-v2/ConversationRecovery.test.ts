@@ -148,7 +148,7 @@ describe("conversationRecoveryHandoffItems", () => {
 
 describe("freshConversationPlan", () => {
   // Ten runs of a 3 KB request and a short reply. The 20k verbatim tail keeps every reply, the
-  // first request and the newest five, so runs 2-5 are split across the cut.
+  // first request and the newest four, so runs 2-6 are split across the cut.
   const messages = Array.from({ length: 10 }, (_, index) =>
     (["user", "assistant"] as const).map((role) => ({
       role,
@@ -179,9 +179,9 @@ describe("freshConversationPlan", () => {
     const fresh = plan();
     expect(fresh).toMatchObject({ type: "summarize", previousSummary: undefined });
     // A reply the tail keeps is summarized with its request, so a later update never skips it.
-    expect(fresh.type === "summarize" && fresh.messages).toHaveLength(10);
-    expect(runsOf(fresh)).toEqual([1, 2, 3, 4, 5]);
-    expect(fresh.type === "summarize" && fresh.throughRunOrdinal).toBe(5);
+    expect(fresh.type === "summarize" && fresh.messages).toHaveLength(12);
+    expect(runsOf(fresh)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(fresh.type === "summarize" && fresh.throughRunOrdinal).toBe(6);
     expect(
       freshConversationPlan({
         messages: messages.slice(-3),
@@ -195,11 +195,11 @@ describe("freshConversationPlan", () => {
   it("updates a previous summary with the newer omitted messages instead of rewriting it", () => {
     const updated = plan({ text: "PREVIOUS", throughRunOrdinal: 2 });
     expect(updated).toMatchObject({ type: "summarize", previousSummary: "PREVIOUS" });
-    expect(runsOf(updated)).toEqual([3, 4, 5]);
-    expect(updated.type === "summarize" && updated.throughRunOrdinal).toBe(5);
-    expect(plan({ text: "PREVIOUS", throughRunOrdinal: 5 })).toEqual({
+    expect(runsOf(updated)).toEqual([3, 4, 5, 6]);
+    expect(updated.type === "summarize" && updated.throughRunOrdinal).toBe(6);
+    expect(plan({ text: "PREVIOUS", throughRunOrdinal: 6 })).toEqual({
       type: "reuse",
-      summary: { text: "PREVIOUS", throughRunOrdinal: 5 },
+      summary: { text: "PREVIOUS", throughRunOrdinal: 6 },
     });
   });
 
