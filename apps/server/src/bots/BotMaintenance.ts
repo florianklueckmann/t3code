@@ -1315,6 +1315,8 @@ export const make = Effect.gen(function* () {
       );
       if (due === null || DateTime.isGreaterThan(due, now)) continue;
       yield* sql`UPDATE bot_maintenance SET nightly_at = ${DateTime.formatIso(now)} WHERE home_thread_id = ${row.home_thread_id}`;
+      // A pass started by hand is still running here and covers this night.
+      if (yield* FiberMap.has(refreshes, ThreadId.make(row.home_thread_id))) continue;
       const scope = { botId: BotId.make(row.bot_id), projectId: ProjectId.make(row.project_id) };
       yield* runNow(scope).pipe(Effect.ignore({ log: true }));
       // The refresh and compaction wait on Home turns, so the other Homes' passes do not wait.

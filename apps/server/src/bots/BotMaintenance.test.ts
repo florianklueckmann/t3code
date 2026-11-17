@@ -1710,7 +1710,7 @@ it.effect("a queued pass generates with the model the Bot has when the pass star
   }).pipe(Effect.provide(storeOnly)),
 );
 
-it.effect("refuses a manual run while a pass runs on the Home, nightly or manual", () =>
+it.effect("keeps one pass per Home, whether the night or the user starts it", () =>
   Effect.gen(function* () {
     yield* refreshHome();
     const started = yield* Deferred.make<void>();
@@ -1726,39 +1726,47 @@ it.effect("refuses a manual run while a pass runs on the Home, nightly or manual
         Effect.as({ operations: [add("i1", "open every session recap", goldLesson)] }),
       ),
     );
-    yield* withEngine(generate, ({ maintenance, homeSequence, homeTurns, homeEvents, settling }) =>
-      Effect.gen(function* () {
-        yield* enable(maintenance);
-        const turns = yield* scopedTurns(homeSequence);
-        yield* Ref.set(homeTurns, turns.dispatch);
-        yield* input("ask", gold);
-        // The nightly run takes each Home's learning pass on its own, under the pass lock.
-        const nightly = yield* maintenance.runNow(scope).pipe(Effect.forkChild);
-        yield* Deferred.await(started);
-        assert.include(
-          (yield* maintenance.run(scope).pipe(Effect.flip)).message,
-          "already running",
-        );
-        yield* Deferred.succeed(release, undefined);
-        assert.equal((yield* Fiber.join(nightly)).status, "applied");
+    yield* withEngine(
+      generate,
+      ({ maintenance, homeSequence, homeTurns, homeEvents, settling, runScheduled }) =>
+        Effect.gen(function* () {
+          yield* at("2026-11-09T14:00:00.000Z");
+          yield* enable(maintenance);
+          const turns = yield* scopedTurns(homeSequence);
+          yield* Ref.set(homeTurns, turns.dispatch);
+          yield* input("ask", gold);
+          // The nightly run takes each Home's learning pass on its own, under the pass lock.
+          const nightly = yield* maintenance.runNow(scope).pipe(Effect.forkChild);
+          yield* Deferred.await(started);
+          assert.include(
+            (yield* maintenance.run(scope).pipe(Effect.flip)).message,
+            "already running",
+          );
+          yield* Deferred.succeed(release, undefined);
+          assert.equal((yield* Fiber.join(nightly)).status, "applied");
 
-        // A manual pass waiting on its note refresh turn holds no lock, only its claim.
-        const manual = yield* maintenance.run(scope).pipe(Effect.forkChild);
-        const refreshRun = yield* Queue.take(turns.started);
-        assert.include(
-          (yield* maintenance.run(scope).pipe(Effect.flip)).message,
-          "already running",
-        );
-        assert.equal((yield* saveNoteAsBot("manual"))._tag, "saved");
-        yield* endScopedRun(refreshRun, "completed", homeSequence, homeEvents);
-        assert.equal(yield* Queue.take(settling), `effect:checkpoint.capture:${refreshRun}`);
-        assert.deepEqual(yield* Fiber.join(manual), {
-          learning: { status: "idle", reason: null, active: 0, pending: 0 },
-          note: { status: "refreshed", reason: null },
-          compaction: { status: "not_needed", reason: "usage_unknown" },
-        });
-        assert.lengthOf(yield* Ref.get(turns.commands), 1);
-      }),
+          // A manual pass waiting on its note refresh turn holds no lock, only its claim.
+          const manual = yield* maintenance.run(scope).pipe(Effect.forkChild);
+          const refreshRun = yield* Queue.take(turns.started);
+          assert.include(
+            (yield* maintenance.run(scope).pipe(Effect.flip)).message,
+            "already running",
+          );
+          // The night comes due meanwhile; the manual pass covers it, so no learning pass starts.
+          const attempts = (yield* runOutcomes).length;
+          yield* at("2026-11-10T03:00:00.000Z");
+          yield* runScheduled;
+          assert.lengthOf(yield* runOutcomes, attempts);
+          assert.equal((yield* saveNoteAsBot("manual"))._tag, "saved");
+          yield* endScopedRun(refreshRun, "completed", homeSequence, homeEvents);
+          assert.equal(yield* Queue.take(settling), `effect:checkpoint.capture:${refreshRun}`);
+          assert.deepEqual(yield* Fiber.join(manual), {
+            learning: { status: "idle", reason: null, active: 0, pending: 0 },
+            note: { status: "refreshed", reason: null },
+            compaction: { status: "not_needed", reason: "usage_unknown" },
+          });
+          assert.lengthOf(yield* Ref.get(turns.commands), 1);
+        }),
     );
   }).pipe(Effect.provide(storeOnly), Effect.provideService(HostProcess.Platform, "darwin")),
 );
