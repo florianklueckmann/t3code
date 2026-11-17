@@ -257,8 +257,10 @@ was off. It needs a Codex model on a Mac server.
 
 The Bot gets its current learning at the start of each turn, not its whole
 history: at most 40 entries or 8,000 characters, your instructions first and
-then the newest. When a project has more, its **Learning** section lists what
-is left out, so you can retire or merge entries to make room. Learning does
+then the newest. Each project's **Learning** section previews the next turn
+there: how many entries are in context, how many characters they use, and
+which entries are on demand, so the Bot reads them only when it looks them up.
+Retire or merge entries to make room. Learning does
 not add preferred sources, settle project decisions or
 give the Bot more access. Research it did for one task stays in the
 conversation but does not become a standing preference.

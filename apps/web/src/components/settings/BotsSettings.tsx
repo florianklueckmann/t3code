@@ -1032,13 +1032,14 @@ function BotLearningList({
         <div className="space-y-1 rounded-md border p-2 text-sm">
           <p className="font-medium">{turn.summary}</p>
           <p className="text-xs text-muted-foreground">{BOT_TURN_LEARNING_EXPLANATION}</p>
-          {turn.sharedOnDemand.length === 0 ? null : (
+          {turn.shared.length === 0 ? null : (
             <>
-              <p className="text-xs font-medium">On demand here, for all projects</p>
+              <p className="text-xs font-medium">For all projects</p>
               <ul className="space-y-1">
-                {turn.sharedOnDemand.map((entry) => (
-                  <li key={entry.id} className="wrap-anywhere text-muted-foreground">
-                    {entry.revisions.find((revision) => revision.status === "active")?.text}
+                {turn.shared.map(({ text, entry, marker }) => (
+                  <li key={entry.id} className="flex items-start justify-between gap-2">
+                    <span className="min-w-0 wrap-anywhere text-muted-foreground">{text}</span>
+                    <Badge variant={marker === "In context" ? "info" : "outline"}>{marker}</Badge>
                   </li>
                 ))}
               </ul>
@@ -1046,7 +1047,7 @@ function BotLearningList({
           )}
         </div>
       )}
-      {views.length === 0 ? (
+      {views.length === 0 && turn === null ? (
         <p className="text-sm text-muted-foreground">Nothing learned yet.</p>
       ) : null}
       {views.map((view) => {

@@ -135,19 +135,19 @@ export function BotLearningSection({
           <Text textRole="footnote" className="text-foreground-muted">
             {BOT_TURN_LEARNING_EXPLANATION}
           </Text>
-          {turn.sharedOnDemand.length === 0 ? null : (
+          {turn.shared.length === 0 ? null : (
             <Text textRole="footnote" className="pt-1 text-foreground">
-              On demand here, for all projects
+              For all projects
             </Text>
           )}
-          {turn.sharedOnDemand.map((entry) => (
+          {turn.shared.map(({ text, entry, marker }) => (
             <Text key={entry.id} textRole="body" className="text-foreground-muted">
-              {entry.revisions.find((revision) => revision.status === "active")?.text}
+              {text} · {marker}
             </Text>
           ))}
         </View>
       )}
-      {views.length === 0 ? (
+      {views.length === 0 && turn === null ? (
         <Text className="p-4 text-base text-foreground-muted">Nothing learned yet.</Text>
       ) : null}
       {views.map((view, index) => {

@@ -195,8 +195,12 @@ export interface BotTurnLearningView {
   readonly summary: string;
   /** "In context" or "On demand" for an entry with an active revision, else null. */
   readonly markerOf: (entry: BotLearningEntry) => "In context" | "On demand" | null;
-  /** Active entries for all projects that the next turn here leaves on demand. */
-  readonly sharedOnDemand: ReadonlyArray<BotLearningEntry>;
+  /** Active entries for all projects, in context or on demand here. */
+  readonly shared: ReadonlyArray<{
+    readonly text: string;
+    readonly entry: BotLearningEntry;
+    readonly marker: "In context" | "On demand";
+  }>;
 }
 
 /**
@@ -225,9 +229,12 @@ export function botTurnLearningView(
         : selected.has(entry.id)
           ? "In context"
           : "On demand",
-    sharedOnDemand: bot.learning.filter(
-      (entry) => entry.projectId === null && active(entry) && !selected.has(entry.id),
-    ),
+    shared: bot.learning.flatMap((entry) => {
+      const current = entry.revisions.find((revision) => revision.status === "active");
+      if (entry.projectId !== null || current === undefined) return [];
+      const marker = selected.has(entry.id) ? ("In context" as const) : ("On demand" as const);
+      return [{ text: current.text, entry, marker }];
+    }),
   };
 }
 

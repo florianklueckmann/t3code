@@ -528,7 +528,10 @@ describe("bot learning", () => {
       "On demand",
       null,
     ]);
-    expect(view?.sharedOnDemand.map((entry) => entry.id)).toEqual(["shared-out"]);
+    expect(view?.shared.map(({ entry, marker }) => [entry.id, marker])).toEqual([
+      ["shared-in", "In context"],
+      ["shared-out", "On demand"],
+    ]);
     // A server that does not report the selection shows nothing rather than a guess.
     expect(botTurnLearningView({ projects: [context], learning: entries }, projectA)).toBeNull();
   });
