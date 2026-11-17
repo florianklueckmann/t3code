@@ -15,7 +15,7 @@ Like [bot-sources](../bot-sources/), nothing is replayed and it calls no model A
 
 3. Then the full set: `pnpm bot-preparation --base-dir ../.t3 --out runs/<name>`.
 
-Flags: `--model` (default `gpt-6.1-terra`), `--effort` (default `high`), `--samples` (default 3), `--concurrency` (default 2), `--case <id>` (repeatable), `--work <dir>` for the synthetic project folders (default `<out>/work`). The run stops when the server's Codex catalog does not offer the model with that effort; it never falls back to another model.
+Flags: `--model` (default `gpt-6.1-terra`), `--effort` (default `high`), `--samples` (default 3), `--concurrency` (default 2), `--case <id>` (repeatable), `--work <dir>` for the synthetic project folders (default `<out>/work`). The run stops when the server's Codex catalog does not offer the model with that effort; it never falls back to another model. `--instance` (default `codex`) must name a Codex instance: its routines and diagnoses run No changes, which only Codex enforces, and the run refuses other providers.
 
 Routine cases create the routine through `schedule_task` with a `botId` and start it with `run_scheduled_task_now`, so they test the work thread's context, not the timing; the scheduler's timing is covered by the server tests. Each sample creates its own project and Bot.
 

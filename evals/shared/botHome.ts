@@ -11,7 +11,7 @@ import type * as NodeSqlite from "node:sqlite";
 import { BotDetail, Project } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import { type Call, encodeJson, SampleError } from "./devServerTools.ts";
+import { type BotModelSelection, type Call, encodeJson, SampleError } from "./devServerTools.ts";
 
 export interface ObservedRef {
   readonly kind: string;
@@ -82,8 +82,7 @@ export const createBotHome = Effect.fn("evals.createBotHome")(function* (
   input: {
     readonly tag: string;
     readonly work: string;
-    readonly model: string;
-    readonly effort: string;
+    readonly modelSelection: BotModelSelection;
   },
 ) {
   const root = NodePath.join(input.work, input.tag);
@@ -102,11 +101,7 @@ export const createBotHome = Effect.fn("evals.createBotHome")(function* (
       name: "Acme planning assistant",
       instructions: "Help plan synthetic Acme work.",
       learningPolicy: "after_adoption",
-      modelSelection: {
-        instanceId: "codex",
-        model: input.model,
-        options: [{ id: "reasoningEffort", value: input.effort }],
-      },
+      modelSelection: input.modelSelection,
     },
     Schema.Unknown,
   );

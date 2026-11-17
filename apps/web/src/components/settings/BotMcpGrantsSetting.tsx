@@ -10,6 +10,7 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import {
+  type BotCapabilities,
   type BotId,
   type BotMcpGrants,
   type EnvironmentId,
@@ -49,10 +50,12 @@ const STATUS_BADGE = {
 export function BotMcpGrantsSetting({
   environment,
   botId,
+  capabilities,
   formLocked,
 }: {
   readonly environment: EnvironmentPresentation;
   readonly botId: BotId;
+  readonly capabilities: BotCapabilities | undefined;
   readonly formLocked: boolean;
 }) {
   const environmentId = environment.environmentId;
@@ -90,6 +93,7 @@ export function BotMcpGrantsSetting({
     grants,
     codexMcpServerNames: codexMcpServerNames(providers),
     catalog: connections,
+    capabilities,
     providerDriver: providers.find(
       (provider) => provider.instanceId === bot.modelSelection.instanceId,
     )?.driver,
@@ -130,7 +134,7 @@ export function BotMcpGrantsSetting({
         <Button
           size="xs"
           variant="outline"
-          disabled={disabled || !canAdd}
+          disabled={disabled || !canAdd || !view.canGrant}
           onClick={() => setAdding(McpConnectionId.make(randomUUID()))}
         >
           <PlusIcon className="size-3" aria-hidden />
@@ -144,7 +148,7 @@ export function BotMcpGrantsSetting({
               <label className="flex items-start gap-3 text-sm">
                 <Checkbox
                   checked={row.granted}
-                  disabled={disabled}
+                  disabled={disabled || (!row.granted && !view.canGrant)}
                   onCheckedChange={(checked) =>
                     void change({ connectionId: row.id, granted: checked === true })
                   }
@@ -186,7 +190,7 @@ export function BotMcpGrantsSetting({
             id={ownServersId}
             aria-describedby={`${ownServersId}-description`}
             checked={view.ownServers.on}
-            disabled={disabled}
+            disabled={disabled || (!view.ownServers.on && !view.ownServers.canTurnOn)}
             onCheckedChange={(on) => void change({ ownCodexMcpServers: on })}
           />
         </div>

@@ -1,4 +1,5 @@
 import { sameBotAppearance, savedBotAppearance } from "@t3tools/client-runtime/bot-appearance";
+import { botProviderDrivers } from "@t3tools/client-runtime/bots";
 import type {
   BotAppearance,
   BotAttachProjectInput,
@@ -16,9 +17,6 @@ import type {
 } from "@t3tools/contracts";
 
 import { buildModelOptions, type ModelOption } from "../../lib/modelOptions";
-
-/** The server accepts Bots on Codex provider instances only. */
-const BOT_PROVIDER_DRIVER = "codex";
 
 export const BOT_LEARNING_POLICIES: ReadonlyArray<{
   readonly value: BotLearningPolicy;
@@ -56,15 +54,19 @@ export type BotDraft = {
   readonly projects: ReadonlyArray<BotProjectDraft>;
 };
 
-export function isBotModelOption(option: ModelOption): boolean {
-  return option.providerDriver === BOT_PROVIDER_DRIVER;
+/** Whether a model option is on a provider the server lets Bots run on. */
+export function botModelOptionFilter(
+  config: ServerConfig | null,
+): (option: ModelOption) => boolean {
+  const drivers = botProviderDrivers(config?.environment.capabilities);
+  return (option) => drivers.includes(option.providerDriver);
 }
 
 export function botModelOptions(
   config: ServerConfig | null,
   selected: ModelSelection | null,
 ): ReadonlyArray<ModelOption> {
-  return buildModelOptions(config, selected, undefined, null).filter(isBotModelOption);
+  return buildModelOptions(config, selected, undefined, null).filter(botModelOptionFilter(config));
 }
 
 export function defaultBotModelSelection(config: ServerConfig | null): ModelSelection | null {

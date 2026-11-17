@@ -210,6 +210,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   linkedThreadRefreshes: Schema.optionalKey(Schema.Boolean),
   /** Server answers the `bots.*` RPCs. Older servers have no Bots. */
   bots: Schema.optionalKey(Schema.Boolean),
+  /** Provider drivers a Bot may run on. Servers without it run Bots on Codex only. */
+  botProviders: Schema.optionalKey(Schema.Array(Schema.String)),
   /** Server stores Bot appearance; clients send it only when this is set. */
   botAppearance: Schema.optionalKey(Schema.Boolean),
   /** Server runs Bot tasks and routines (`bots.*Task*`, scheduled tasks with a `bot` target). */

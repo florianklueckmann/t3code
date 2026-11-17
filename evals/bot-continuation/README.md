@@ -1,6 +1,6 @@
 # Bot continuation
 
-Synthetic T3B-21 Home capture, correction/proposal preservation and ordinary-answer control. This runner uses shared authenticated real-server MCP helpers and the server's actual Bot instructions/tools. It never starts or stops a server. Parent owns isolated homes, fixture PIDs, model credentials and every paid turn. Defaults: Codex gpt-6-luna, medium, three samples, concurrency one; no fallback or replacement samples.
+Synthetic T3B-21 Home capture, correction/proposal preservation and ordinary-answer control. This runner uses shared authenticated real-server MCP helpers and the server's actual Bot instructions/tools. It never starts or stops a server. Parent owns isolated homes, fixture PIDs, model credentials and every paid turn. Defaults: Codex gpt-6-luna, medium, three samples, concurrency one; no fallback or replacement samples. `--instance` picks the Bot's provider instance (default `codex`); a Claude instance runs the same cases on a Claude Bot.
 
 From evals, first run one setup probe:
 

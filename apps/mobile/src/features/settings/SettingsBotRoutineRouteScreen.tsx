@@ -3,6 +3,7 @@ import { DateTimePicker } from "@expo/ui/community/datetime-picker";
 import { useNavigation, usePreventRemove, type StaticScreenProps } from "@react-navigation/native";
 import {
   botRoutineDraft,
+  botRoutineNoChanges,
   botRoutineUpsertInput,
   emptyBotRoutineDraft,
   type BotRoutineDraft,
@@ -67,7 +68,11 @@ export function SettingsBotRoutineRouteScreen({
   const scheduled = useEnvironmentQuery(
     serverEnvironment.scheduledTasksLive({ environmentId, input: {} }),
   );
+  const detail = useEnvironmentQuery(
+    serverEnvironment.botDetail({ environmentId, input: { botId } }),
+  );
   const bot = bots.data?.bots.find((entry) => entry.id === botId);
+  const capabilities = detail.data?.capabilities;
   const attached =
     bot !== undefined &&
     bot.archivedAt === null &&
@@ -75,14 +80,14 @@ export function SettingsBotRoutineRouteScreen({
   const task =
     taskId === undefined ? null : scheduled.data?.tasks.find((entry) => entry.id === taskId);
   const initialDraft =
-    taskId === undefined ? emptyBotRoutineDraft() : task ? botRoutineDraft(task) : null;
+    taskId === undefined ? emptyBotRoutineDraft(capabilities) : task ? botRoutineDraft(task) : null;
 
   const unavailable =
     config?.environment.capabilities.botRoutines !== true
       ? "Update T3 Code on this environment to use routines."
-      : bots.error || scheduled.error
-        ? (bots.error ?? scheduled.error)
-        : !bots.data || !scheduled.data
+      : bots.error || scheduled.error || detail.error
+        ? (bots.error ?? scheduled.error ?? detail.error)
+        : !bots.data || !scheduled.data || !detail.data
           ? null
           : !attached
             ? "This Bot no longer works in this project."
@@ -101,6 +106,7 @@ export function SettingsBotRoutineRouteScreen({
         bot={bot}
         projectId={projectId}
         task={task}
+        noChanges={botRoutineNoChanges(capabilities, task)}
         initialDraft={initialDraft}
         timeZone={config?.environment.timeZone}
         title={title}
@@ -145,6 +151,7 @@ function BotRoutineForm(props: {
   readonly projectId: ProjectId;
   /** The live routine being edited; null for a new one. */
   readonly task: ScheduledTask | null;
+  readonly noChanges: ReturnType<typeof botRoutineNoChanges>;
   readonly initialDraft: BotRoutineDraft;
   readonly timeZone: string | undefined;
   readonly title: string;
@@ -252,23 +259,30 @@ function BotRoutineForm(props: {
         </SettingsSection>
         <SettingsSection
           title="Changes"
-          footer={
+          footer={[
             draft.allowChanges
               ? "The Bot carries out the edits or messages requested in the brief, in Full access without approval prompts."
-              : "The Bot reports results and proposes changes. It cannot edit files or data or send messages; this is enforced with Codex on a Mac server, and elsewhere the run fails instead."
-          }
+              : "The Bot reports results and proposes changes. It cannot edit files or data or send messages; this is enforced with Codex on a Mac server, and elsewhere the run fails instead.",
+            props.noChanges.unavailableLabel,
+          ]
+            .filter((line) => line !== null)
+            .join(" ")}
         >
-          <View className="px-4 py-3">
-            <SegmentedControl
-              variant="card"
-              options={[
-                { value: "none", label: "No changes" },
-                { value: "allow", label: "Changes allowed" },
-              ]}
-              selected={draft.allowChanges ? "allow" : "none"}
-              onSelect={(value) => setDraft({ ...draft, allowChanges: value === "allow" })}
-            />
-          </View>
+          {props.noChanges.offered ? (
+            <View className="px-4 py-3">
+              <SegmentedControl
+                variant="card"
+                options={[
+                  { value: "none", label: "No changes" },
+                  { value: "allow", label: "Changes allowed" },
+                ]}
+                selected={draft.allowChanges ? "allow" : "none"}
+                onSelect={(value) => setDraft({ ...draft, allowChanges: value === "allow" })}
+              />
+            </View>
+          ) : (
+            <SelectRow label="Changes allowed" value="" actions={[]} onSelect={() => {}} />
+          )}
         </SettingsSection>
         <SettingsSection
           title="Timing"

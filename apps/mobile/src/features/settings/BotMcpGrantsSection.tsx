@@ -49,6 +49,9 @@ export function BotMcpGrantsSection(props: {
   const navigation = useNavigation<NativeStackNavigationProp<McpConnectionRoutes>>();
   const config = useEnvironmentServerConfig(environmentId);
   const bots = useEnvironmentQuery(serverEnvironment.botsLive({ environmentId, input: {} }));
+  const detail = useEnvironmentQuery(
+    serverEnvironment.botDetail({ environmentId, input: { botId } }),
+  );
   const catalog = useEnvironmentQuery(serverEnvironment.mcpConnections(environmentId));
   const routines = useEnvironmentQuery(
     config?.environment.capabilities.botRoutines === true
@@ -63,7 +66,9 @@ export function BotMcpGrantsSection(props: {
   const [acknowledged, setAcknowledged] = useState<BotMcpGrants | null>(null);
   const now = useNowAfter(null);
   const bot = bots.data?.bots.find((entry) => entry.id === botId);
+  // Waits for the detail, so a Claude Bot never shows grants as available while it loads.
   if (bot?.mcpGrants === undefined || config === null) return null;
+  if (detail.data === null && detail.error === null) return null;
   const grants = latestBotMcpGrants(bot.mcpGrants, acknowledged);
   if (catalog.data === null) {
     return catalog.error === null ? null : (
@@ -78,6 +83,7 @@ export function BotMcpGrantsSection(props: {
     grants,
     codexMcpServerNames: codexMcpServerNames(config.providers),
     catalog: connections,
+    capabilities: detail.data?.capabilities,
     providerDriver: config.providers.find(
       (provider) => provider.instanceId === bot.modelSelection.instanceId,
     )?.driver,
@@ -128,7 +134,7 @@ export function BotMcpGrantsSection(props: {
               <ThemedSwitch
                 accessibilityLabel={row.label}
                 value={row.granted}
-                disabled={disabled}
+                disabled={disabled || (!row.granted && !view.canGrant)}
                 onValueChange={(granted) => void change({ connectionId: row.id, granted })}
               />
             </View>
@@ -164,7 +170,7 @@ export function BotMcpGrantsSection(props: {
             accessibilityLabel={view.ownServers.label}
             accessibilityHint={view.ownServers.description}
             value={view.ownServers.on}
-            disabled={disabled}
+            disabled={disabled || (!view.ownServers.on && !view.ownServers.canTurnOn)}
             onValueChange={(on) => void change({ ownCodexMcpServers: on })}
           />
         </View>
@@ -176,7 +182,7 @@ export function BotMcpGrantsSection(props: {
       >
         <ListActionRow
           label="Add connection"
-          disabled={disabled || !canAdd}
+          disabled={disabled || !canAdd || !view.canGrant}
           onPress={() =>
             navigation.navigate("SettingsMcpConnectionEdit", { environmentId, grantToBotId: botId })
           }

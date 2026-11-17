@@ -14,7 +14,7 @@ pnpm bot-maintenance --out runs/check --case correction-becomes-lesson --samples
 
 Then the full set: `pnpm bot-maintenance --out runs/<name>`.
 
-Flags: `--model` (default `gpt-6.1-terra`), `--effort` (default `high`), `--samples` (default 3), `--case <id>` (repeatable), `--baseline <results.jsonl>` to show an earlier run's pass counts beside this one.
+Flags: `--model` (default `gpt-6.1-terra`), `--effort` (default `high`), `--samples` (default 3), `--case <id>` (repeatable), `--baseline <results.jsonl>` to show an earlier run's pass counts beside this one. It runs only on Codex and refuses any other `--instance`.
 
 The run stops before any model call when the sealed generator refuses the selection, for example because the model or effort is missing from the account's catalog or the account is signed out. It never falls back to another model.
 

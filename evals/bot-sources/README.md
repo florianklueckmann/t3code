@@ -15,9 +15,9 @@ Unlike [mcp-tool-use](../mcp-tool-use/), nothing is replayed or simulated, and i
 
 3. Then the full set: `pnpm bot-sources --base-dir ../.t3 --out runs/<name>`.
 
-Flags: `--model` (default `gpt-6.1-terra`), `--effort` (default `high`), `--samples` (default 3), `--concurrency` (default 2), `--case <id>` (repeatable), `--work <dir>` for the synthetic project folders (default `<out>/work`).
+Flags: `--instance` (the Bot's provider instance, default `codex`; a Claude instance such as `claudeAgent` runs the same cases on a Claude Bot), `--model` (default `gpt-6.1-terra`), `--effort` (default `high`), `--samples` (default 3), `--concurrency` (default 2), `--case <id>` (repeatable), `--work <dir>` for the synthetic project folders (default `<out>/work`).
 
-The run stops before any turn when the server's Codex catalog does not offer the model with that `reasoningEffort`; it never falls back to another model. Each row records the model the home conversation actually ran on.
+The run stops before any turn when the instance's catalog does not offer the model with that effort; it never falls back to another model. Each row records the model the home conversation actually ran on.
 
 The script signs in as a short-lived MCP client of the server, as `t3 thread` does, and revokes that session when it ends. Each sample creates its own synthetic projects and Bots, so samples do not share conversation history. A sample that does not finish, for example on a rate limit or a pending approval, is kept in `results.jsonl` with its `error` and counts as a failure.
 

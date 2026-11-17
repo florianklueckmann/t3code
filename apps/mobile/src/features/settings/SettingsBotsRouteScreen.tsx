@@ -41,7 +41,7 @@ import {
   botModelOptions,
   defaultBotModelSelection,
   detachBotProjectDraft,
-  isBotModelOption,
+  botModelOptionFilter,
   emptyBotSourceDraft,
   newBotDraft,
   planBotSave,
@@ -476,6 +476,12 @@ function BotForm({
       if (result._tag === "Failure") {
         submissionPending.current = false;
         setSaving(false);
+        // The server checks a new model first, so this refusal is about the model.
+        if (step.type === "update" && step.input.modelSelection !== undefined) {
+          setDraft((current) => ({ ...current, modelSelection: baseline.modelSelection }));
+          reportBotFailure("Model not changed", result);
+          return;
+        }
         reportBotFailure("Could not save Bot", result);
         return;
       }
@@ -932,9 +938,9 @@ export function BotModelPickerRouteScreen() {
       environmentId={environmentId}
       projectId={null}
       providerGroups={groupByProvider(models)}
-      isModelOptionEligible={isBotModelOption}
+      isModelOptionEligible={botModelOptionFilter(config)}
       selectedModel={selectedModel}
-      // Bots have no prompt here; Codex has no prompt-controlled options.
+      // Bots have no prompt here, and pickers offer no prompt-controlled options.
       prompt=""
       onPromptChange={() => {}}
       onSelectModel={(option) =>

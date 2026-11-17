@@ -8,7 +8,8 @@ its own conversation, guidance and preferred sources.
 ## Set up a Bot
 
 Open **Settings → Bots** and choose **New Bot**. Give it a name, instructions
-for how it should work and answer, a model, and a **Learning** option (see
+for how it should work and answer, a Codex or Claude model (see
+[Codex or Claude](#codex-or-claude)), and a **Learning** option (see
 [Learning](#learning)). Then attach it to a project
 under **Projects**. T3 Code starts the Bot's conversation in that project,
 titled with the Bot's name and using the project's default permission mode.
@@ -30,6 +31,32 @@ palette for the Bot or project name and pick **Open \<Bot\> in \<project\>**.
 Changes to a Bot's instructions, guidance or sources apply from its next turn,
 including in conversations that are already running. Changing its model
 switches all of its attached conversations to that model.
+
+### Codex or Claude
+
+A Bot runs on a Codex or a Claude model. Its conversations, tasks and routines,
+and the threads it starts, stay on those two providers: a Bot conversation or
+task thread you switch to another provider refuses new messages until you
+switch it back.
+
+A Bot on Claude works with the same instructions, guidance, sources, learning,
+working notes, tasks and routines. Its threads load T3 Code's own tools and no
+other MCP server: your Claude MCP servers, claude.ai connectors and plugins stay
+out. Hooks, skills, permission rules and `CLAUDE.md` files still apply, as they
+do on Codex, and so do plugins and hooks your organization manages for Claude.
+
+Some features need a Codex model for now. On a Claude Bot, **Settings → Bots**
+shows them as unavailable and says why:
+
+- MCP connections and **Use my own Codex MCP servers**
+- **No changes** routines. A new routine on a Claude Bot starts as **Changes
+  allowed**.
+- Maintenance, the Daily Home check and Diagnose failed routines
+
+To switch a Bot from Codex to Claude, first turn off what Claude can't do yet.
+Otherwise the switch is refused, the message lists what to change, and the Bot
+keeps its model. Paused No changes routines may stay; they cannot be resumed as
+No changes on Claude.
 
 Each Bot gets its own little figure. To change its color, face or topper, open
 the Bot and select the figure next to its name (on mobile, **Change look**).
@@ -97,10 +124,11 @@ Detach, archive, and cancelling the task revoke a pending return. Routines and
 older tasks do not gain automatic returns.
 
 A direct task runs on the Bot's model unless you ask the Bot to use another
-Codex model or reasoning level for that task. Only that task uses it; the Bot
-and its conversations keep their model. A model or option the provider does not
-offer, or a provider turned off for the project, is refused before the task
-starts. Routines always follow the Bot's current model.
+Codex or Claude model or reasoning level for that task. Only that task uses it;
+the Bot and its conversations keep their model. A model or option the provider
+does not offer, a provider turned off for the project, or a Claude model for a
+Bot with settings Claude can't honor yet is refused before the task starts, and
+the Bot tells you why. Routines always follow the Bot's current model.
 
 A **routine** runs a task on a schedule. In **Settings → Bots**, edit
 the Bot and choose **Add routine** under the project. Describe what the Bot should do,
@@ -113,8 +141,9 @@ then pick a timing:
 
 Choose **No changes** to have the Bot report results and propose changes
 without editing files or data or sending messages. Choose **Changes allowed**
-to authorize the edits or messages requested in the brief. New and existing routines
-default to **No changes** until you choose otherwise. The brief determines
+to authorize the edits or messages requested in the brief. New routines on a Codex
+Bot, and older routines saved without a choice, default to **No changes** until you
+choose otherwise. The brief determines
 the result's content and format.
 
 **Changes allowed** runs in **Full access** without approval prompts. **No changes**
@@ -127,9 +156,9 @@ delegating or saving what the Bot learned. It uses the provider account you
 selected for the Bot, including a ChatGPT sign-in. The task's result is saved
 as usual.
 
-No changes currently works only on macOS, with Codex 0.166.0 or later.
-Anywhere else the routine's task fails with the reason instead of running with
-more access. Follow-up messages in a routine's task stay No changes, and its
+No changes currently works only on macOS, with Codex 0.166.0 or later. A
+Claude Bot doesn't offer it. Anywhere else the routine's task fails with the
+reason instead of running with more access. Follow-up messages in a routine's task stay No changes, and its
 work thread shows No changes as its fixed permission; to have the
 Bot make the changes it proposed, ask it directly. Tasks you ask for directly
 run in the conversation's mode.
@@ -151,7 +180,8 @@ run's work thread.
 
 A diagnostic task always runs as **No changes**, in the failed routine's
 project, on the Bot's model, whatever the routine itself was allowed to do, and
-without the Bot's MCP connections. Like No changes, it needs a Mac server. Each
+without the Bot's MCP connections. Like No changes, it needs a Codex model on a
+Mac server. Each
 failed run gets at most one diagnosis, and a diagnosis that fails is not
 diagnosed again. Only routine runs that fail count: cancelled, interrupted or
 rolled-back runs, routines that could not start, and tasks you asked for
@@ -284,7 +314,7 @@ load exactly those connections. So do threads the Bot starts with T3 Code's
 tools, such as a new thread or a delegated task on this environment. Turn on
 **Use my own Codex MCP servers** to load the MCP servers in your Codex config
 as well; the switch lists them by name. A change applies from the Bot's next
-turn. A disabled connection stays granted but does not load until you enable it
+turn. Both need the Bot on a Codex model; a Claude Bot can only remove them. A disabled connection stays granted but does not load until you enable it
 again. Removing a connection takes it away from every Bot that uses it; the
 catalog shows which Bots those are and asks first.
 
@@ -324,12 +354,15 @@ service, add a second connection and sign in with the other account.
 
 ## Current limits
 
+- Bots run on Codex and Claude only.
 - MCP connections apply only to Codex 0.166.0 or later on a macOS or Linux server.
-  Elsewhere, a Bot without connections uses the provider's own MCP setup, and a
-  Bot with connections does not run.
-- Bots turn off Claude's automatic memory and Grok's cross-session memory.
-  Providers without a per-session memory switch, such as Kiro and Antigravity,
-  may still use their own memories in Bot conversations.
+  With other Codex setups, a Bot without connections uses Codex's own MCP setup,
+  and a Bot with connections does not run. A Claude Bot loads no MCP server but
+  T3 Code's own.
+- On a Claude Bot, plugins and hooks your organization manages for Claude still
+  load. MCP connections, own MCP servers, No changes routines, maintenance, the
+  Daily Home check and Diagnose failed routines are not available yet.
+- Bots turn off Claude's automatic memory.
 - Built-in email and calendar connections are not available.
 
 ## Detach and archive

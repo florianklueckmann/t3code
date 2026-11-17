@@ -15,7 +15,7 @@ Turns run in the Bot's Home through a dev server's Codex login. Nothing is repla
 
 3. Then the full set: `pnpm bot-grants --base-dir <scratch> --out runs/<name>`.
 
-Flags: `--model` (default `gpt-6.1-terra`), `--effort` (default `high`), `--samples` (default 3), `--concurrency` (default 2), `--case <id>` (repeatable), `--work <dir>` (default `<out>/work`). The run stops when the server's Codex catalog does not offer the model at that effort.
+Flags: `--model` (default `gpt-6.1-terra`), `--effort` (default `high`), `--samples` (default 3), `--concurrency` (default 2), `--case <id>` (repeatable), `--work <dir>` (default `<out>/work`). The run stops when the server's Codex catalog does not offer the model at that effort. `--instance` (default `codex`) must name a Codex instance: grants need a Codex Bot, and the run refuses other providers.
 
 The connections and grants are written through the `mcpConnections.create` and `bots.setMcpGrants` RPCs, as Settings does, and each sample removes its connections afterwards.
 
