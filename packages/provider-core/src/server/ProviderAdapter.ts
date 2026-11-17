@@ -259,6 +259,7 @@ export class ProviderAdapterOpenSessionError extends Schema.TaggedError<Provider
 }
 
 const sealRefusalText = {
+  provider: "only Codex can enforce it",
   version: "this Codex version's tools have not been verified",
   platform: "it is only verified on macOS",
   children: "this conversation already has agents it could reach",
@@ -272,7 +273,7 @@ export class ProviderAdapterSealRefusedError extends Schema.TaggedError<Provider
   {
     driver: ProviderDriverKind,
     seal: ProviderAdapterNativeTools,
-    reason: Schema.Literals(["version", "platform", "children", "seal", "unavailable"]),
+    reason: Schema.Literals(["provider", "version", "platform", "children", "seal", "unavailable"]),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {
@@ -284,6 +285,7 @@ export class ProviderAdapterSealRefusedError extends Schema.TaggedError<Provider
 }
 
 const mcpConnectionsRefusalText = {
+  provider: "only Codex can load granted connections or your own MCP servers",
   version: "this Codex version has not been verified with them",
   platform: "they are only verified on macOS and Linux",
   children: "this conversation has agents still running with its earlier connections",
@@ -300,6 +302,7 @@ export class ProviderAdapterMcpConnectionsRefusedError extends Schema.TaggedErro
   {
     driver: ProviderDriverKind,
     reason: Schema.Literals([
+      "provider",
       "version",
       "platform",
       "children",

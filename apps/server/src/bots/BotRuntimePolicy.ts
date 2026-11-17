@@ -8,41 +8,36 @@ import * as CodexAdapterV2 from "../orchestration-v2/Adapters/CodexAdapterV2.ts"
 import * as RuntimePolicy from "../orchestration-v2/RuntimePolicy.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as BotExecutionConstraint from "./BotExecutionConstraint.ts";
+import * as BotProviderSupport from "./BotProviderSupport.ts";
 import * as BotTurnContext from "./BotTurnContext.ts";
 
-const unenforceable = Effect.fn("BotRuntimePolicy.unenforceable")(function* (
-  providerInstances: ProviderInstanceRegistry.ProviderInstanceRegistry["Service"],
-  instanceId: ProviderInstanceId,
-  platformSupported: (platform: NodeJS.Platform) => boolean,
-) {
-  const instance = yield* providerInstances.getInstance(instanceId);
-  return instance?.driverKind !== "codex"
-    ? ("provider" as const)
-    : !platformSupported(yield* HostProcess.Platform)
-      ? ("platform" as const)
-      : undefined;
-});
+type ProviderInstances = ProviderInstanceRegistry.ProviderInstanceRegistry["Service"];
+
+/** An instance id is not a driver, so the registry says which driver runs it. */
+const driverOf = (providerInstances: ProviderInstances, instanceId: ProviderInstanceId) =>
+  providerInstances
+    .getInstance(instanceId)
+    .pipe(Effect.map((instance) => instance?.driverKind as string | undefined));
 
 /**
- * Why a restricted Bot run cannot be enforced on this instance here, or undefined. Only Codex
- * enforces a restriction, and only where it was verified natively. An instance id is not a
- * driver, so the registry says which driver runs it.
+ * Why a sealed Bot run cannot be enforced on this instance here, or undefined. Only Codex seals a
+ * run, and only where that was verified natively.
  */
-export const restrictionUnenforceable = (
-  providerInstances: ProviderInstanceRegistry.ProviderInstanceRegistry["Service"],
-  instanceId: ProviderInstanceId,
-) => unenforceable(providerInstances, instanceId, CodexAdapterV2.codexSealPlatformSupported);
-
-const mcpGrantsUnenforceable = (
-  providerInstances: ProviderInstanceRegistry.ProviderInstanceRegistry["Service"],
-  instanceId: ProviderInstanceId,
-) => unenforceable(providerInstances, instanceId, CodexAdapterV2.codexMcpGrantsPlatformSupported);
+export const restrictionUnenforceable = Effect.fn("BotRuntimePolicy.restrictionUnenforceable")(
+  function* (providerInstances: ProviderInstances, instanceId: ProviderInstanceId) {
+    const driver = yield* driverOf(providerInstances, instanceId);
+    if (!BotProviderSupport.botDriverSupport(driver).seals)
+      return BotProviderSupport.unsupportedReason(driver);
+    return CodexAdapterV2.codexSealPlatformSupported(yield* HostProcess.Platform)
+      ? undefined
+      : ("platform" as const);
+  },
+);
 
 /**
- * Bot threads, and the forks, subagents and threads their agents create, run without provider
- * memory and with only the Bot's granted MCP connections where enforceable, plus the user's own
- * Codex MCP servers when the Bot is switched to them. Elsewhere, only Bots with grants are refused.
- * A No changes routine task also runs restricted. Other threads keep their settings.
+ * A Bot's whole lineage runs without provider memory and with only its granted MCP connections
+ * (plus the user's own Codex servers when switched on). Codex enforces grants; Claude only an
+ * empty set; any other provider is refused. No changes tasks also run restricted.
  */
 export const layer: Layer.Layer<
   RuntimePolicy.RuntimePolicyV2,
@@ -72,7 +67,11 @@ export const layer: Layer.Layer<
           .forThread(input.thread.id)
           .pipe(Effect.mapError(resolveError));
         const sealUnenforceable = () =>
-          restrictionUnenforceable(providerInstances, input.modelSelection.instanceId);
+          restrictionUnenforceable(providerInstances, input.modelSelection.instanceId).pipe(
+            Effect.map((reason) =>
+              reason === BotProviderSupport.CLAUDE_UNSUPPORTED ? "provider" : reason,
+            ),
+          );
         if (input.restriction !== undefined) {
           const reason =
             bot._tag !== "active" ||
@@ -131,30 +130,46 @@ export const layer: Layer.Layer<
           });
         }
         const mcpConnections = access._tag === "bot" ? access.connectionIds : [];
-        const mcpReason = yield* mcpGrantsUnenforceable(
-          providerInstances,
-          input.modelSelection.instanceId,
-        );
-        if (mcpReason !== undefined && mcpConnections.length > 0) {
-          const botName = access._tag === "bot" ? access.botName : "This Bot";
-          return yield* new RuntimePolicy.RuntimePolicyMcpUnsupportedError({
+        const botName = access._tag === "bot" ? access.botName : "This Bot";
+        const refuseMcp = (detail: string) =>
+          new RuntimePolicy.RuntimePolicyMcpUnsupportedError({
             threadId: input.thread.id,
             providerInstanceId: input.modelSelection.instanceId,
-            detail:
-              mcpReason === "provider"
-                ? `${botName} uses only the MCP connections granted to it, which only Codex can enforce, so nothing ran. Switch this thread to a Codex model.`
-                : `${botName} uses only the MCP connections granted to it, which is only verified on macOS and Linux, so nothing ran.`,
+            detail,
           });
+        const support = BotProviderSupport.botDriverSupport(
+          yield* driverOf(providerInstances, input.modelSelection.instanceId),
+        );
+        if (!support.mcpIsolation) {
+          return yield* refuseMcp(
+            `${botName}'s threads run only on Codex or Claude, which keep them to T3 Code's tools and the Bot's own connections, so nothing ran. Switch this thread to a Codex or Claude model.`,
+          );
         }
+        if (mcpConnections.length > 0 && !support.mcpGrants) {
+          return yield* refuseMcp(
+            `${botName} uses only the MCP connections granted to it, which only Codex can enforce, so nothing ran. Switch this thread to a Codex model.`,
+          );
+        }
+        // Codex grants are verified on macOS and Linux only; elsewhere a Bot without grants keeps
+        // Codex's own MCP setup, as documented.
+        const grantsPlatform =
+          !support.mcpGrants ||
+          CodexAdapterV2.codexMcpGrantsPlatformSupported(yield* HostProcess.Platform);
+        if (!grantsPlatform && mcpConnections.length > 0) {
+          return yield* refuseMcp(
+            `${botName} uses only the MCP connections granted to it, which is only verified on macOS and Linux, so nothing ran.`,
+          );
+        }
+        // The user's own servers are Codex's; on Claude a Bot thread loads T3 Code's server only.
         const userMcpServers =
-          access._tag === "bot" && access.ownCodexMcpServers && !noChanges
+          support.ownMcpServers && access._tag === "bot" && access.ownCodexMcpServers && !noChanges
             ? { userMcpServers: "enabled" as const }
             : {};
         return ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
           ...policy,
           nativeMemory: "disabled",
           ...(noChanges ? { nativeTools: "readOnly" as const } : {}),
-          ...(mcpReason === undefined ? { mcpConnections, ...userMcpServers } : {}),
+          ...(grantsPlatform ? { mcpConnections, ...userMcpServers } : {}),
         });
       }),
     });

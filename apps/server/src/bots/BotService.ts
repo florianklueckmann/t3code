@@ -25,7 +25,6 @@ import {
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   type McpConnectionId,
-  type ModelSelection,
   ProjectId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -53,6 +52,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as BotLearning from "./BotLearning.ts";
 import * as BotLearningNotices from "./BotLearningNotices.ts";
 import * as BotProjectGuard from "./BotProjectGuard.ts";
+import * as BotProviderSupport from "./BotProviderSupport.ts";
 import * as BotStore from "./BotStore.ts";
 import * as BotTaskService from "./BotTaskService.ts";
 import * as BotTurnContext from "./BotTurnContext.ts";
@@ -184,8 +184,10 @@ const make = Effect.gen(function* () {
     const detail = yield* BotStore.toDetail(bot, contexts, learning, grants.get(botId)).pipe(
       Effect.mapError(storeError(botId)),
     );
+    const instance = yield* providerInstances.getInstance(detail.modelSelection.instanceId);
     return {
       ...detail,
+      capabilities: BotProviderSupport.botCapabilities(instance?.driverKind),
       projects: detail.projects.map((project) => ({
         ...project,
         turnLearning: BotLearning.turnLearning(learning, project.projectId).summary,
@@ -200,22 +202,6 @@ const make = Effect.gen(function* () {
       return yield* botError("This Bot is archived. Restore it first.", botId)();
     }
     return bot;
-  });
-
-  const requireSupportedSelection = Effect.fn("BotService.requireSupportedSelection")(function* (
-    botId: BotId,
-    modelSelection: ModelSelection,
-  ) {
-    const instance = yield* providerInstances.getInstance(modelSelection.instanceId);
-    if (instance === undefined) {
-      return yield* botError(
-        `Provider instance ${modelSelection.instanceId} is not configured.`,
-        botId,
-      )();
-    }
-    if (instance.driverKind !== BotTaskService.BOT_SUPPORTED_DRIVER) {
-      return yield* botError("Bots currently support Codex providers only.", botId)();
-    }
   });
 
   /**
@@ -345,7 +331,7 @@ const make = Effect.gen(function* () {
     ).pipe(Stream.changesWith((a, b) => JSON.stringify(a) === JSON.stringify(b)));
 
   const create: BotService["Service"]["create"] = Effect.fn("BotService.create")(function* (input) {
-    yield* requireSupportedSelection(input.botId, input.modelSelection);
+    yield* botTasks.requireSupportedModel(input);
     const now = yield* nowIso;
     const row = BotStore.botRow({
       ...input,
@@ -377,7 +363,7 @@ const make = Effect.gen(function* () {
     const current = yield* readDetail(input.botId);
     if (input.modelSelection !== undefined) {
       const modelSelection = input.modelSelection;
-      yield* requireSupportedSelection(input.botId, modelSelection);
+      yield* botTasks.requireSupportedModel({ botId: input.botId, modelSelection });
       // Home threads follow the Bot through the normal thread switch path.
       const commandSuffix = yield* random
         .uuidV4()
@@ -480,7 +466,7 @@ const make = Effect.gen(function* () {
       yield* sql
         .withTransaction(
           Effect.gen(function* () {
-            yield* requireActiveBot(input.botId);
+            const bot = yield* requireActiveBot(input.botId);
             const current = (yield* store.listMcpGrants(input.botId)).get(input.botId);
             if (current?.revision !== input.expectedRevision) {
               return yield* botError(
@@ -488,10 +474,25 @@ const make = Effect.gen(function* () {
                 input.botId,
               )();
             }
+            const ownCodexMcpServers =
+              input.ownCodexMcpServers ?? current.ownCodexMcpServers === true;
+            // Removing grants and turning the switch off stay possible on every model.
+            if (connectionIds.length > 0 || ownCodexMcpServers) {
+              const { instanceId } = yield* BotStore.decodeModelSelection(bot.model_selection_json);
+              const support = BotProviderSupport.botDriverSupport(
+                (yield* providerInstances.getInstance(instanceId))?.driverKind,
+              );
+              if (!support.mcpGrants || (ownCodexMcpServers && !support.ownMcpServers)) {
+                return yield* botError(
+                  `${bot.name} can't load MCP connections or your own MCP servers on its model yet. Switch it to a Codex model first.`,
+                  input.botId,
+                )();
+              }
+            }
             yield* store.replaceMcpGrants({
               botId: input.botId,
               connectionIds,
-              ownCodexMcpServers: input.ownCodexMcpServers ?? current.ownCodexMcpServers === true,
+              ownCodexMcpServers,
             });
           }),
         )

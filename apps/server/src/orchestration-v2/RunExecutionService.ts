@@ -40,6 +40,7 @@ import * as Stream from "effect/Stream";
 
 import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import * as McpAppModelContext from "../mcpApps/McpAppModelContext.ts";
+import * as BotProviderSupport from "../bots/BotProviderSupport.ts";
 import * as BotTurnContext from "../bots/BotTurnContext.ts";
 import * as PreviewAgentActivity from "../preview/PreviewAgentActivity.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -2189,8 +2190,9 @@ export const layer: Layer.Layer<
           ? "Failed to read this Bot conversation's instructions."
           : botContext.value._tag === "inactive"
             ? botContext.value.message
-            : applicationInstructions !== undefined && input.providerThread.driver !== "codex"
-              ? "Bots currently support Codex providers only. Switch this conversation back to a Codex provider."
+            : applicationInstructions !== undefined &&
+                !BotProviderSupport.isBotDriver(input.providerThread.driver)
+              ? `${BotProviderSupport.BOT_DRIVERS_MESSAGE} Switch this conversation to a Codex or Claude model.`
               : undefined;
         const turnInput = {
           appThread: input.appThread,

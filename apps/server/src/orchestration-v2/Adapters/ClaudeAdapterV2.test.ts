@@ -36,6 +36,7 @@ import {
   CheckpointId,
   ClaudeSettings,
   EnvironmentId,
+  McpConnectionId,
   MessageId,
   type ModelSelection,
   NodeId,
@@ -259,8 +260,12 @@ function makeClaudeTestTurnInput(input: {
   readonly messageCreationSource?: ProviderAdapter.ProviderAdapterV2TurnInput["message"]["creationSource"];
   readonly modelSelection?: ModelSelection;
   readonly runtimePolicy?: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
+  readonly applicationInstructions?: string;
 }): ProviderAdapter.ProviderAdapterV2TurnInput {
   return {
+    ...(input.applicationInstructions === undefined
+      ? {}
+      : { applicationInstructions: input.applicationInstructions }),
     appThread: makeClaudeTestAppThread(input),
     threadId: input.threadId,
     runId: RunId.make(`run-${input.attemptId}`),
@@ -1235,6 +1240,11 @@ describe("ClaudeAdapterV2 append-system-prompt-file launch argument", () => {
     launchArgs: string,
     cwd: string,
     nativeMemory?: ProviderAdapter.ProviderAdapterV2RuntimePolicy["nativeMemory"],
+    bot?: {
+      readonly policy?: Partial<ProviderAdapter.ProviderAdapterV2RuntimePolicy>;
+      readonly applicationInstructions?: string;
+      readonly offered?: Array<unknown>;
+    },
   ) {
     const fileSystem = yield* FileSystem.FileSystem;
     const opened: Array<ClaudeAdapterV2.ClaudeAgentSdkQueryOptions> = [];
@@ -1254,7 +1264,7 @@ describe("ClaudeAdapterV2 append-system-prompt-file launch argument", () => {
             opened.push(input.options);
             return {
               messages: Stream.never,
-              offer: () => Effect.void,
+              offer: (message: unknown) => Effect.sync(() => bot?.offered?.push(message)),
               setModel: () => Effect.void,
               applyFlagSettings: () => Effect.void,
               setPermissionMode: () => Effect.void,
@@ -1280,6 +1290,7 @@ describe("ClaudeAdapterV2 append-system-prompt-file launch argument", () => {
       ...(nativeMemory === undefined ? {} : { nativeMemory }),
       interactionMode: "default",
       cwd,
+      ...bot?.policy,
     });
     const threadId = ThreadId.make("thread-claude-append-file");
     const runtime = yield* adapter.openSession({
@@ -1303,6 +1314,9 @@ describe("ClaudeAdapterV2 append-system-prompt-file launch argument", () => {
           text: "What is the sentinel?",
           attachments: [],
           runtimePolicy,
+          ...(bot?.applicationInstructions === undefined
+            ? {}
+            : { applicationInstructions: bot.applicationInstructions }),
         }),
       )
       .pipe(Effect.exit);
@@ -1491,6 +1505,182 @@ describe("ClaudeAdapterV2 append-system-prompt-file launch argument", () => {
           ),
         ),
       ),
+  );
+
+  it.effect.each([
+    [{ nativeTools: "readOnly" }, "ProviderAdapterSealRefusedError"],
+    [{ nativeTools: "t3BotOnly", mcpConnections: [] }, "ProviderAdapterSealRefusedError"],
+    [
+      { mcpConnections: [McpConnectionId.make("2a2a2a2a-0000-4000-8000-00000000002a")] },
+      "ProviderAdapterMcpConnectionsRefusedError",
+    ],
+    [
+      { mcpConnections: [], userMcpServers: "enabled" },
+      "ProviderAdapterMcpConnectionsRefusedError",
+    ],
+  ] as const)("refuses a Bot policy it cannot enforce before Claude opens: %j", ([policy, tag]) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const cwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-refuse-" });
+        const { exit, opened } = yield* startTurnWithLaunchArgs("", cwd, "disabled", {
+          policy,
+        });
+        assert.lengthOf(opened, 0);
+        assert.isTrue(Exit.isFailure(exit));
+        if (Exit.isFailure(exit))
+          assert.equal((Cause.squash(exit.cause) as { readonly _tag: string })._tag, tag);
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            NodeCrypto.layer,
+          ),
+        ),
+      ),
+    ),
+  );
+
+  it.effect("loads a Bot thread with only T3 Code's MCP server and no plugins", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const cwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-isolated-" });
+        yield* fileSystem.makeDirectory(NodePath.join(cwd, ".claude"));
+        yield* fileSystem.writeFileString(
+          NodePath.join(cwd, ".claude", "settings.json"),
+          JSON.stringify({ enabledPlugins: { "project-plugin@market": true } }),
+        );
+        const launchArgs = `--mcp-config extra.json --agents '{"a":{}}' --plugin-dir /plugins --fallback-model sonnet --settings '${JSON.stringify({ enabledPlugins: { "flag-plugin@market": true } })}'`;
+        const plain = yield* startTurnWithLaunchArgs(launchArgs, cwd);
+        assert.isUndefined(plain.opened[0]?.strictMcpConfig);
+        assert.equal(plain.opened[0]?.extraArgs?.["mcp-config"], "extra.json");
+
+        const { exit, opened } = yield* startTurnWithLaunchArgs(launchArgs, cwd, "disabled", {
+          policy: { mcpConnections: [] },
+        });
+        assert.isTrue(Exit.isSuccess(exit));
+        const options = opened[0] ?? assert.fail("Claude did not open");
+        assert.isTrue(options.strictMcpConfig);
+        for (const flag of ["mcp-config", "agents", "plugin-dir"]) {
+          assert.isUndefined(options.extraArgs?.[flag], flag);
+        }
+        assert.equal(options.extraArgs?.["fallback-model"], "sonnet");
+        const settings = options.settings as Record<string, unknown> & {
+          readonly enabledPlugins: Record<string, unknown>;
+          readonly env: Record<string, string>;
+        };
+        assert.isTrue(settings["disableClaudeAiConnectors"]);
+        assert.isFalse(settings["syncClaudeAiPlugins"]);
+        assert.isFalse(settings.enabledPlugins["project-plugin@market"]);
+        assert.isFalse(settings.enabledPlugins["flag-plugin@market"]);
+        assert.equal(settings.env["CLAUDE_CODE_PLUGIN_DIRS"], "");
+        assert.equal(settings["autoMemoryEnabled"], false);
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            NodeCrypto.layer,
+          ),
+        ),
+      ),
+    ),
+  );
+
+  it.effect(
+    "delivers a Bot's instructions whole with the prompt, in parts under Claude's limit",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const cwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-bot-" });
+          const instructions = Array.from(
+            { length: 900 },
+            (_, line) => `Line ${line}: keep the campaign notes in sync.`,
+          ).join("\n");
+          const offered: Array<unknown> = [];
+          const { exit, opened } = yield* startTurnWithLaunchArgs("", cwd, "disabled", {
+            policy: { mcpConnections: [] },
+            applicationInstructions: instructions,
+            offered,
+          });
+          assert.isTrue(Exit.isSuccess(exit));
+          assert.lengthOf(offered, 1);
+          const hooks = opened[0]?.hooks?.UserPromptSubmit?.[0]?.hooks ?? assert.fail("no hooks");
+          const run = (input: Record<string, unknown>) =>
+            Effect.promise(() =>
+              Promise.all(
+                hooks.map((hook) =>
+                  hook(
+                    {
+                      hook_event_name: "UserPromptSubmit",
+                      prompt: "What is next?",
+                      session_id: "s",
+                      transcript_path: "t",
+                      cwd,
+                      ...input,
+                    } as never,
+                    undefined,
+                    { signal: new AbortController().signal },
+                  ),
+                ),
+              ),
+            ).pipe(
+              Effect.map((outputs) =>
+                outputs.flatMap((output) => {
+                  const specific = (
+                    output as { hookSpecificOutput?: { additionalContext: string } }
+                  ).hookSpecificOutput;
+                  return specific === undefined ? [] : [specific.additionalContext];
+                }),
+              ),
+            );
+          const parts = yield* run({});
+          assert.isAbove(instructions.length, 30_000);
+          assert.equal(parts.join(""), instructions);
+          for (const part of parts) assert.isAtMost(part.length, 9_000);
+          assert.deepEqual(yield* run({ agent_id: "subagent" }), []);
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              NodeCrypto.layer,
+            ),
+          ),
+        ),
+      ),
+  );
+
+  it.effect("fails a turn whose Bot instructions cannot reach Claude whole", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const cwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-bot-large-" });
+        const { exit, opened } = yield* startTurnWithLaunchArgs("", cwd, "disabled", {
+          policy: { mcpConnections: [] },
+          applicationInstructions: "x".repeat(24 * 9_000 + 1),
+        });
+        assert.lengthOf(opened, 0);
+        assert.isTrue(Exit.isFailure(exit));
+        if (Exit.isFailure(exit))
+          assert.include(Cause.pretty(exit.cause), "ClaudeBotInstructionsTooLargeError");
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            NodeCrypto.layer,
+          ),
+        ),
+      ),
+    ),
   );
 
   // regression: #20413 malformed append-system-prompt launch args fail before a query opens
@@ -3886,6 +4076,63 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       };
     });
   const makeWakeHarness = makeWakeHarnessWithOptions();
+
+  it.effect("applies changed Bot instructions on the next prompt without reopening Claude", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeWakeHarnessWithOptions({ freshQueueOnReopen: true });
+      const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+        ...CLAUDE_TEST_RUNTIME_POLICY,
+        nativeMemory: "disabled",
+        mcpConnections: [],
+      });
+      const delivered = () => {
+        const [hook] = harness.getOpenedOptions()?.hooks?.UserPromptSubmit?.[0]?.hooks ?? [];
+        return Effect.promise(async () => {
+          const output = await hook?.(
+            { hook_event_name: "UserPromptSubmit", prompt: "", session_id: "", cwd: "" } as never,
+            undefined,
+            { signal: new AbortController().signal },
+          );
+          return (output as { hookSpecificOutput?: { additionalContext?: string } } | undefined)
+            ?.hookSpecificOutput?.additionalContext;
+        });
+      };
+      for (const [index, instructions] of ["Answer in German.", "Answer in French."].entries()) {
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make(`attempt-claude-bot-instructions-${index}`),
+            text: "Continue.",
+            attachments: [],
+            providerTurnOrdinal: index + 1,
+            runtimePolicy,
+            applicationInstructions: instructions,
+          }),
+        );
+        assert.equal(yield* delivered(), instructions);
+        assert.lengthOf(harness.processQueues, 1);
+        yield* Queue.offer(
+          harness.processQueues[0]!,
+          makeResultFrame({
+            uuid: `00000000-0000-4000-8000-00000000002${index}`,
+            result: "Done.",
+          }),
+        );
+        assert.equal((yield* Queue.take(harness.terminalReceipts)).status, "completed");
+      }
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+        ),
+      ),
+    ),
+  );
 
   it.effect("reopens the Claude query when native memory is disabled and restored", () =>
     Effect.gen(function* () {

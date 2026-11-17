@@ -260,8 +260,26 @@ export const BotSummary = Schema.Struct({
 });
 export type BotSummary = typeof BotSummary.Type;
 
+/**
+ * What the Bot's model supports, derived by the server: null where available, else a reason
+ * string, so new reasons stay decodable. Platform, sign-in and the Home's own model are decided
+ * per project by each feature's own view.
+ */
+const BotCapability = Schema.NullOr(Schema.String);
+export const BotCapabilities = Schema.Struct({
+  mcpGrants: BotCapability,
+  ownMcpServers: BotCapability,
+  noChangesRoutines: BotCapability,
+  maintenance: BotCapability,
+  homeCheck: BotCapability,
+  failureDiagnosis: BotCapability,
+});
+export type BotCapabilities = typeof BotCapabilities.Type;
+
 export const BotDetail = Schema.Struct({
   ...BotSummary.fields,
+  /** Absent on servers that only run Bots on Codex. */
+  capabilities: Schema.optionalKey(BotCapabilities),
   instructions: BotInstructions,
   projects: Schema.Array(BotProjectContext),
   learning: Schema.Array(BotLearningEntry),

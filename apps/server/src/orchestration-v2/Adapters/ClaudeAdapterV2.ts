@@ -383,6 +383,9 @@ const CLAUDE_DESCENDANT_POLL = "1 second";
 // Claude Code's refusal of bypassPermissions as root, which it explains only on stderr.
 const CLAUDE_ROOT_REFUSAL =
   "--dangerously-skip-permissions cannot be used with root/sudo privileges for security reasons";
+// Its refusal of --strict-mcp-config under an organization's managed-mcp.json (2.1.326).
+const CLAUDE_STRICT_MCP_REFUSAL =
+  "You cannot use --strict-mcp-config when an enterprise MCP config is present";
 
 // fd 4 gates the launch until the server has recorded the process it is about to become.
 // The shell enters the cwd itself: as a native cwd, a mount that hangs chdir freezes the server.
@@ -722,6 +725,27 @@ export class ClaudeCodeRootRefusalError extends Schema.TaggedError<ClaudeCodeRoo
 ) {
   override get message(): string {
     return `Claude Code exited before it started: ${CLAUDE_ROOT_REFUSAL}`;
+  }
+}
+
+export class ClaudeStrictMcpRefusalError extends Schema.TaggedError<ClaudeStrictMcpRefusalError>()(
+  "ClaudeStrictMcpRefusalError",
+  {
+    cause: Schema.Defect(),
+  },
+) {
+  override get message(): string {
+    return "Claude refused to limit this Bot thread to T3 Code's tools because your organization's managed MCP configuration (managed-mcp.json) controls MCP servers on this computer, so nothing ran.";
+  }
+}
+
+/** A Bot thread runs only with T3 Code's own server, so a failed registration fails the turn. */
+class ClaudeIsolatedMcpRegistrationError extends Schema.TaggedError<ClaudeIsolatedMcpRegistrationError>()(
+  "ClaudeIsolatedMcpRegistrationError",
+  { servers: Schema.Array(Schema.String) },
+) {
+  override get message(): string {
+    return "Claude could not connect T3 Code's tools for this Bot thread, so nothing ran. Retry the turn; if it keeps failing, check the server logs.";
   }
 }
 
@@ -1640,6 +1664,18 @@ export const layerQueryRunner: Layer.Layer<
                             servers: failed,
                           },
                         );
+                        if (input.options.strictMcpConfig === true) {
+                          // A CLI that refused strict mode at startup explains why on stderr.
+                          yield* Effect.promise(() => stderrClosed).pipe(
+                            Effect.timeoutOption(CLAUDE_STDERR_DRAIN_TIMEOUT),
+                          );
+                          return yield* queryRunnerError(
+                            stderrTail.includes(CLAUDE_STRICT_MCP_REFUSAL)
+                              ? new ClaudeStrictMcpRefusalError({ cause: failed })
+                              : new ClaudeIsolatedMcpRegistrationError({ servers: failed }),
+                            "setMcpServers",
+                          );
+                        }
                       }
                     }
                     yield* logProtocolEvent({
@@ -1694,8 +1730,14 @@ export const layerQueryRunner: Layer.Layer<
                       );
                     }
                     const refusedRoot = !answered && stderrTail.includes(CLAUDE_ROOT_REFUSAL);
+                    const refusedStrict =
+                      !answered && stderrTail.includes(CLAUDE_STRICT_MCP_REFUSAL);
                     return yield* queryRunnerError(
-                      refusedRoot ? new ClaudeCodeRootRefusalError({ cause }) : cause,
+                      refusedRoot
+                        ? new ClaudeCodeRootRefusalError({ cause })
+                        : refusedStrict
+                          ? new ClaudeStrictMcpRefusalError({ cause })
+                          : cause,
                       "fromAsyncIterable",
                     );
                   }),
@@ -2134,6 +2176,118 @@ const subagentDeviceInstructions: HookCallback = () =>
     },
   });
 
+/** Launch flags that would load MCP servers, agents or plugins beside an isolated load. */
+const CLAUDE_ISOLATION_DROPPED_FLAGS: ReadonlySet<string> = new Set([
+  "mcp-config",
+  "agents",
+  "plugin-dir",
+  "plugin-dir-no-mcp",
+  "plugin-url",
+]);
+
+// Claude Code moves hook context over 10,000 characters to a file and shows a preview (measured
+// on 2.1.326), so instructions travel in smaller parts, one hook callback each, kept in order.
+const CLAUDE_BOT_INSTRUCTION_CHUNK_CHARS = 9_000;
+// Above the largest block a Bot can build (instructions, guidance, 50 sources, learning, notes).
+const CLAUDE_BOT_INSTRUCTION_HOOKS = 24;
+
+/** Splits at line ends where it can, so no part ends mid-line unless one line is too long. */
+function chunkClaudeBotInstructions(text: string): ReadonlyArray<string> {
+  const chunks: Array<string> = [];
+  let rest = text;
+  while (rest.length > CLAUDE_BOT_INSTRUCTION_CHUNK_CHARS) {
+    const lineEnd = rest.lastIndexOf("\n", CLAUDE_BOT_INSTRUCTION_CHUNK_CHARS - 1);
+    const cut = lineEnd > 0 ? lineEnd + 1 : CLAUDE_BOT_INSTRUCTION_CHUNK_CHARS;
+    chunks.push(rest.slice(0, cut));
+    rest = rest.slice(cut);
+  }
+  if (rest.length > 0) chunks.push(rest);
+  return chunks;
+}
+
+const claudeBotInstructionsFit = (text: string) =>
+  chunkClaudeBotInstructions(text).length <= CLAUDE_BOT_INSTRUCTION_HOOKS;
+
+export class ClaudeBotInstructionsTooLargeError extends Schema.TaggedError<ClaudeBotInstructionsTooLargeError>()(
+  "ClaudeBotInstructionsTooLargeError",
+  { length: Schema.Number },
+) {
+  override get message(): string {
+    return "This Bot's instructions, guidance, sources and learning are too long to send to Claude, so nothing ran. Shorten them in Settings → Bots.";
+  }
+}
+
+/**
+ * Delivers a Bot's instructions with every main-thread prompt, read when Claude takes the prompt,
+ * so a change applies on the next turn without reopening Claude. Subagents start from their task.
+ */
+function claudeBotInstructionHooks(read: () => string | undefined): Array<HookCallback> {
+  return Array.from(
+    { length: CLAUDE_BOT_INSTRUCTION_HOOKS },
+    (_, index): HookCallback =>
+      (input) => {
+        const text = read();
+        const chunk =
+          text === undefined || ("agent_id" in input && input.agent_id !== undefined)
+            ? undefined
+            : chunkClaudeBotInstructions(text)[index];
+        return Promise.resolve(
+          chunk === undefined
+            ? {}
+            : {
+                hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: chunk },
+              },
+        );
+      },
+  );
+}
+
+/**
+ * Flag settings for an isolated load. They outrank user, project and local settings: claude.ai
+ * connectors stay off, synced plugins hidden, every installed plugin disabled by id (Claude has
+ * no switch for all of them; measured on 2.1.326), and env-listed plugin folders cleared.
+ * Organization-managed settings still win, as they do for everything else.
+ */
+function claudeIsolatedSettings(
+  settings: ClaudeSdkSettings | undefined,
+  pluginIds: ReadonlyArray<string>,
+): ClaudeSdkSettings {
+  return {
+    ...settings,
+    disableClaudeAiConnectors: true,
+    syncClaudeAiPlugins: false,
+    enabledPlugins: {
+      ...settings?.enabledPlugins,
+      ...Object.fromEntries(pluginIds.map((id) => [id, false])),
+    },
+    env: { ...settings?.env, CLAUDE_CODE_PLUGIN_DIRS: "" },
+  } as ClaudeSdkSettings;
+}
+
+/**
+ * Claude enforces neither seal, nor MCP grants, nor the user's own Codex servers: a Bot thread
+ * asking for one is refused before anything native starts.
+ */
+function claudeBotPolicyRefusal(
+  policy: ProviderAdapter.ProviderAdapterV2RuntimePolicy,
+):
+  | ProviderAdapter.ProviderAdapterSealRefusedError
+  | ProviderAdapter.ProviderAdapterMcpConnectionsRefusedError
+  | undefined {
+  if (policy.nativeTools !== undefined)
+    return new ProviderAdapter.ProviderAdapterSealRefusedError({
+      driver: CLAUDE_PROVIDER,
+      seal: policy.nativeTools,
+      reason: "provider",
+    });
+  if ((policy.mcpConnections?.length ?? 0) > 0 || policy.userMcpServers !== undefined)
+    return new ProviderAdapter.ProviderAdapterMcpConnectionsRefusedError({
+      driver: CLAUDE_PROVIDER,
+      reason: "provider",
+    });
+  return undefined;
+}
+
 export function makeClaudeQueryOptions(input: {
   readonly modelSelection: ModelSelection;
   readonly modelCatalog?: ClaudeModelCatalog;
@@ -2163,6 +2317,10 @@ export function makeClaudeQueryOptions(input: {
   readonly appendSystemPromptFileText?: string;
   // Flag settings, because a user's settings.json env beats the process env in Claude Code.
   readonly toolSearchOverride?: "true";
+  /** A Bot thread: only the MCP servers passed here load, and no launch flag adds any. */
+  readonly isolated?: boolean;
+  /** Read when Claude takes each main-thread prompt; see `claudeBotInstructionHooks`. */
+  readonly botInstructions?: () => string | undefined;
 }): ClaudeAgentSdkQueryOptions {
   const compiledSelection = compileClaudeModelSelection(input.modelSelection, input.modelCatalog);
   const {
@@ -2174,10 +2332,18 @@ export function makeClaudeQueryOptions(input: {
     "append-system-prompt-file": _launchArgAppendSystemPromptFile,
     // The SDK replaces this flag with options.settings, so it arrives read as sdkSettings.
     settings: _launchArgSettings,
-    ...extraArgs
+    ...launchExtraArgs
   } = input.settings === undefined
     ? {}
     : parseCliArgs(input.settings.launchArgs, claudeLaunchArgParseOptions).flags;
+  const extraArgs =
+    input.isolated === true
+      ? Object.fromEntries(
+          Object.entries(launchExtraArgs).filter(
+            ([flag]) => !CLAUDE_ISOLATION_DROPPED_FLAGS.has(flag),
+          ),
+        )
+      : launchExtraArgs;
   // Claude Code overwrites its CLI append text with the SDK's initialize
   // appendSystemPrompt, so launch-argument text has to travel in that value.
   // The CLI puts file text before inline text and trims one trailing newline.
@@ -2312,16 +2478,22 @@ export function makeClaudeQueryOptions(input: {
         ...launchAppendSystemPrompt,
       ].join("\n\n"),
     },
-    ...(deviceInstructions || input.onStop !== undefined
+    ...(deviceInstructions || input.onStop !== undefined || input.botInstructions !== undefined
       ? {
           hooks: {
             ...(deviceInstructions
               ? { SubagentStart: [{ hooks: [subagentDeviceInstructions] }] }
               : {}),
             ...(input.onStop === undefined ? {} : { Stop: [{ hooks: [input.onStop] }] }),
+            ...(input.botInstructions === undefined
+              ? {}
+              : {
+                  UserPromptSubmit: [{ hooks: claudeBotInstructionHooks(input.botInstructions) }],
+                }),
           },
         }
       : {}),
+    ...(input.isolated === true ? { strictMcpConfig: true } : {}),
     ...(Object.keys(extraArgs).length === 0 ? {} : { extraArgs }),
   };
   const additionalDirectories = [
@@ -3437,6 +3609,13 @@ const decodeClaudeCompactSettings = Schema.decodeUnknownEffect(
   ),
 );
 const decodeClaudeCompactWindow = Schema.decodeUnknownOption(Schema.Int);
+const PluginIdRecord = Schema.Record(Schema.String, Schema.Unknown);
+const decodeClaudePluginSettings = Schema.decodeUnknownEffect(
+  fromLenientJson(Schema.Struct({ enabledPlugins: Schema.optionalKey(PluginIdRecord) })),
+);
+const decodeClaudeInstalledPlugins = Schema.decodeUnknownEffect(
+  fromLenientJson(Schema.Struct({ plugins: Schema.optionalKey(PluginIdRecord) })),
+);
 const decodeClaudeEnvSettings = Schema.decodeUnknownEffect(
   fromLenientJson(
     Schema.StructWithRest(
@@ -5056,6 +5235,10 @@ interface ClaudeLiveQueryContext {
   readonly launchArgSettings: ClaudeSdkSettings | undefined;
   readonly query: ClaudeAgentSdkQuerySession;
   readonly queryPolicyKey: string;
+  /** Opened with only T3 Code's MCP server and no plugins, as a Bot thread needs. */
+  readonly isolated: boolean;
+  /** The Bot instructions of the prompt last offered; the instruction hooks read them. */
+  readonly botInstructions: { text: string | undefined };
   selection: CompiledClaudeModelSelection;
   readonly closed: Deferred.Deferred<void, never>;
   lastTurn: ActiveClaudeTurnContext | null;
@@ -5659,6 +5842,34 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
     resolveClaudeEnv(cwd, launchArgSettings, "ENABLE_TOOL_SEARCH").pipe(
       Effect.map(claudeToolSearchOverride),
     );
+
+  /** Every plugin this home installed or a settings file names, for an isolated load to disable. */
+  const resolveClaudePluginIds = Effect.fn("ClaudeAdapterV2.resolveClaudePluginIds")(function* (
+    cwd: string | null,
+    launchArgSettings: ClaudeSdkSettings | undefined,
+  ) {
+    const namedIn = (filePath: string) =>
+      fileSystem.readFileString(filePath).pipe(
+        Effect.flatMap(decodeClaudePluginSettings),
+        Effect.map((decoded) => Object.keys(decoded.enabledPlugins ?? {})),
+        Effect.orElseSucceed((): ReadonlyArray<string> => []),
+      );
+    const installed = yield* fileSystem
+      .readFileString(path.join(homePath, "plugins", "installed_plugins.json"))
+      .pipe(
+        Effect.flatMap(decodeClaudeInstalledPlugins),
+        Effect.map((decoded) => Object.keys(decoded.plugins ?? {})),
+        Effect.orElseSucceed((): ReadonlyArray<string> => []),
+      );
+    const named = yield* Effect.forEach(yield* settingsFilesByPrecedence(cwd), namedIn);
+    return [
+      ...new Set([
+        ...installed,
+        ...named.flat(),
+        ...Object.keys(launchArgSettings?.enabledPlugins ?? {}),
+      ]),
+    ];
+  });
 
   const resolveAutoCompactWindow = Effect.fn("ClaudeAdapterV2.resolveAutoCompactWindow")(function* (
     cwd: string | null,
@@ -12595,15 +12806,20 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               ? {}
               : { allowedTools: queryPolicy.allowedTools }),
           });
-          const queryPolicyKey = `${turnInput.runtimePolicy.nativeMemory ?? "default"}:${claudeEffectiveQueryPolicyKey(queryPolicy, mcpOverrides)}`;
+          // A Bot thread's load: T3 Code's server only, no plugins, and its instructions per prompt.
+          const isolated = turnInput.runtimePolicy.mcpConnections !== undefined;
+          const botThread = turnInput.applicationInstructions !== undefined;
+          const queryPolicyKey = `${turnInput.runtimePolicy.nativeMemory ?? "default"}:${isolated ? "isolated" : "open"}:${botThread ? "bot" : "plain"}:${claudeEffectiveQueryPolicyKey(queryPolicy, mcpOverrides)}`;
           const resumeSessionAt = yield* getNativeConversationHeadId(turnInput.providerThread);
           const existing = yield* Ref.get(queryContext);
-          // Continuations drain existing output without prompting; retain the live process regardless of selection.
+          // Continuations drain existing output without prompting; retain the live process regardless of selection,
+          // but never a process loaded wider than this thread may run.
           if (
             existing !== null &&
             existing.nativeThreadId === nativeThreadId &&
             !existing.stopping &&
-            isClaudeProviderContinuationTurn(turnInput)
+            isClaudeProviderContinuationTurn(turnInput) &&
+            existing.isolated === isolated
           ) {
             return existing;
           }
@@ -12690,7 +12906,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           }
 
           // Read before closing the live process so a bad path leaves it running.
-          const [appendSystemPromptFileText, toolSearchOverride] = yield* Effect.all(
+          const [appendSystemPromptFileText, toolSearchOverride, pluginIds] = yield* Effect.all(
             [
               readClaudeAppendSystemPromptFile({
                 settings: adapterOptions.settings,
@@ -12699,6 +12915,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 path,
               }),
               resolveToolSearchOverride(turnInput.runtimePolicy.cwd, launchArgSettings),
+              isolated
+                ? resolveClaudePluginIds(turnInput.runtimePolicy.cwd, launchArgSettings)
+                : Effect.succeed([]),
             ],
             { concurrency: "unbounded" },
           );
@@ -12706,7 +12925,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             launchArgSettings === undefined
               ? undefined
               : claudeSdkLaunchArgSettings(launchArgSettings);
-          const querySettings =
+          const memorySettings =
             turnInput.runtimePolicy.nativeMemory === "disabled"
               ? {
                   ...sdkSettings,
@@ -12714,6 +12933,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   env: { ...sdkSettings?.env, CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1" },
                 }
               : sdkSettings;
+          const querySettings = isolated
+            ? claudeIsolatedSettings(memorySettings, pluginIds)
+            : memorySettings;
+          const instructionHolder: { text: string | undefined } = { text: undefined };
           const closedExistingNativeThreadId = existing !== null ? existing.nativeThreadId : null;
           clearedNativeSessions.delete(nativeThreadId);
           if (existing !== null) {
@@ -12775,6 +12998,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             supportedDialogKinds: ["resume_return"],
             ...(appendSystemPromptFileText === undefined ? {} : { appendSystemPromptFileText }),
             ...(toolSearchOverride === undefined ? {} : { toolSearchOverride }),
+            ...(isolated ? { isolated } : {}),
+            ...(botThread ? { botInstructions: () => instructionHolder.text } : {}),
           });
           const resolvedTurnCwd = yield* fileSystem
             .realPath(turnInput.runtimePolicy.cwd ?? ".")
@@ -12827,6 +13052,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             launchArgSettings,
             query: querySession,
             queryPolicyKey,
+            isolated,
+            botInstructions: instructionHolder,
             selection: compiledSelection,
             closed,
             lastTurn: null,
@@ -12958,6 +13185,15 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
 
         const startTurn = Effect.fn("ClaudeAdapterV2.startTurn")(
           function* (turnInput: ProviderAdapter.ProviderAdapterV2TurnInput) {
+            const refusal = claudeBotPolicyRefusal(turnInput.runtimePolicy);
+            if (refusal !== undefined) return yield* refusal;
+            if (
+              turnInput.applicationInstructions !== undefined &&
+              !claudeBotInstructionsFit(turnInput.applicationInstructions)
+            )
+              return yield* new ClaudeBotInstructionsTooLargeError({
+                length: turnInput.applicationInstructions.length,
+              });
             modelCatalog = yield* loadModelCatalog;
             const startedAt = yield* DateTime.now;
             const nativeThreadId = yield* getNativeThreadId(turnInput.providerThread);
@@ -13226,6 +13462,12 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               userMessage === null
                 ? Effect.void
                 : startUserTurnForWakeReports(nativeThreadId).pipe(
+                    // The hooks read these when Claude takes this prompt; one turn offers at a time.
+                    Effect.tap(() =>
+                      Effect.sync(() => {
+                        querySession.botInstructions.text = turnInput.applicationInstructions;
+                      }),
+                    ),
                     Effect.andThen(
                       Effect.uninterruptibleMask((restore) =>
                         restore(
@@ -13377,15 +13619,18 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           (effect, turnInput) =>
             effect.pipe(
               Effect.scoped,
-              Effect.mapError(
-                (cause) =>
-                  new ProviderAdapter.ProviderAdapterTurnStartError({
-                    driver: CLAUDE_PROVIDER,
-                    threadId: turnInput.threadId,
-                    providerThreadId: turnInput.providerThread.id,
-                    runId: turnInput.runId,
-                    cause,
-                  }),
+              // A refusal must not fall back to a fresh, wider native thread.
+              Effect.mapError((cause) =>
+                cause._tag === "ProviderAdapterSealRefusedError" ||
+                cause._tag === "ProviderAdapterMcpConnectionsRefusedError"
+                  ? cause
+                  : new ProviderAdapter.ProviderAdapterTurnStartError({
+                      driver: CLAUDE_PROVIDER,
+                      threadId: turnInput.threadId,
+                      providerThreadId: turnInput.providerThread.id,
+                      runId: turnInput.runId,
+                      cause,
+                    }),
               ),
             ),
         );
@@ -13561,6 +13806,16 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               return yield* new ProviderAdapter.ProviderAdapterProtocolError({
                 driver: CLAUDE_PROVIDER,
                 detail: `Claude provider turn ${turnInput.providerTurnId} is not the active turn.`,
+              });
+            }
+            // A Bot thread's message goes only into a process loaded as narrowly as its turn.
+            if (
+              existing.isolated !==
+              (currentTurn.input.runtimePolicy.mcpConnections !== undefined)
+            ) {
+              return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                driver: CLAUDE_PROVIDER,
+                detail: `Claude provider turn ${turnInput.providerTurnId} runs in a process loaded for another policy.`,
               });
             }
             // Claude echoes this uuid once it accepts the steer.

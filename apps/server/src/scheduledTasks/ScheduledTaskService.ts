@@ -534,7 +534,7 @@ export const layer = Layer.effect(
       taskId: ScheduledTaskId,
     ) =>
       botTarget
-        .requireRunnable({ botId: bot.botId, projectId })
+        .requireRunnable({ botId: bot.botId, projectId, allowChanges: bot.allowChanges })
         .pipe(Effect.mapError((message) => taskError(message, { taskId })));
     const managedPolicy = yield* ManagedPolicy.ManagedPolicy;
     const webhookPolicyOrganization = ManagedPolicy.deniedBy(managedPolicy, "webhookTasks");

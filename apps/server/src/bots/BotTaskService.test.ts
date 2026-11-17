@@ -116,6 +116,7 @@ const CATALOG = [
   catalogProvider("codex-blocked", "codex"),
   catalogProvider("codex-off", "codex", false),
   catalogProvider("claude", "claudeAgent"),
+  catalogProvider("pi", "pi"),
   { ...catalogProvider("codex-no-catalog", "codex"), models: [] },
   {
     ...catalogProvider("codex-no-options", "codex"),
@@ -363,11 +364,14 @@ const layerSupport = Layer.mergeAll(
       Effect.succeedSome({ id: projectId, deletedAt: null } as Project),
   }),
   Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
-    getInstance: (instanceId) =>
-      Effect.succeed({
-        instanceId,
-        driverKind: ProviderDriverKind.make("codex"),
-      } as ProviderInstance),
+    getInstance: (instanceId) => {
+      const provider = CATALOG.find((candidate) => candidate.instanceId === instanceId);
+      return Effect.succeed(
+        provider === undefined
+          ? undefined
+          : ({ instanceId, driverKind: provider.driver } as ProviderInstance),
+      );
+    },
   }),
   Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed(CATALOG) }),
   Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
@@ -1508,8 +1512,8 @@ it.effect.each<{
   },
   {
     name: "a provider Bots do not support",
-    modelSelection: { instanceId: ProviderInstanceId.make("claude"), model: "gpt-5" },
-    error: "Bots currently support Codex providers only.",
+    modelSelection: { instanceId: ProviderInstanceId.make("pi"), model: "gpt-5" },
+    error: "Bots run on Codex and Claude providers only.",
   },
   {
     name: "a disabled provider",
@@ -1697,8 +1701,10 @@ it.effect("waits for Home's run to end before marking it unread and stops after 
         yield* services.tasks.reconcile;
         assert.isNotNull(yield* notifiedAt(waiting.id));
         assert.isNotNull(yield* notifiedAt(refused.id));
+        // The scheduler's startup pass can overlap these passes and repeat an attempt; the
+        // command id makes a repeat harmless, so only which tasks were attempted is checked.
         assert.sameMembers(
-          [...(yield* Ref.get(world.notificationAttempts))],
+          [...new Set(yield* Ref.get(world.notificationAttempts))],
           [notify(waiting.id), notify(refused.id)],
         );
         assert.deepEqual(yield* world.commandsMatching("thread.mark-unread"), [
@@ -2295,6 +2301,152 @@ it.effect("saves the failure diagnosis rule only from its current revision and w
           .pipe(Effect.flip);
         assert.include(refused.message, "archived or detached");
         assert.isFalse((yield* services.diagnosis.get(scope)).writable);
+      }),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
+const claude = { instanceId: ProviderInstanceId.make("claude"), model: "gpt-5" };
+
+it.effect.each<{
+  readonly setting: string;
+  readonly change: string;
+  readonly apply: (input: {
+    readonly services: Services;
+    readonly home: ThreadId;
+    readonly sql: SqlClient.SqlClient;
+  }) => Effect.Effect<unknown, Error>;
+}>([
+  {
+    setting: "MCP connections",
+    change: "remove its MCP connections",
+    apply: ({ sql }) =>
+      sql`INSERT INTO bot_mcp_grants (bot_id, connection_id) VALUES (${botId}, '2a2a2a2a-0000-4000-8000-00000000002a')`,
+  },
+  {
+    setting: "the own servers switch",
+    change: 'turn off "Use my own Codex MCP servers"',
+    apply: ({ sql }) => sql`UPDATE bots SET mcp_own_codex_servers = 1 WHERE bot_id = ${botId}`,
+  },
+  {
+    setting: "an active No changes routine",
+    change: "pause its No changes routines or set them to Changes allowed",
+    apply: ({ services }) =>
+      services.routines.upsert(routineInput({ type: "fixed_time", timeOfDay: "18:00" })),
+  },
+  {
+    setting: "maintenance",
+    change: "turn off Maintenance",
+    apply: ({ sql, home }) =>
+      sql`INSERT INTO bot_maintenance (home_thread_id, settings_revision, enabled, updated_at)
+          VALUES (${home}, 1, 1, ${iso(START)})`,
+  },
+  {
+    setting: "the Home check",
+    change: "turn off the Daily Home check",
+    apply: ({ sql, home }) =>
+      sql`INSERT INTO bot_home_checks
+          (home_thread_id, settings_revision, enabled, time_of_day, done_through, updated_at)
+          VALUES (${home}, 1, 1, '08:00', ${iso(START)}, ${iso(START)})`,
+  },
+  {
+    setting: "failure diagnosis",
+    change: "turn off Diagnose failed routines",
+    apply: ({ sql, home }) =>
+      sql`INSERT INTO bot_failure_diagnosis
+          (home_thread_id, settings_revision, enabled, brief, enabled_at, updated_at)
+          VALUES (${home}, 1, 1, 'Why?', ${iso(START)}, ${iso(START)})`,
+  },
+])("keeps a Bot with $setting off Claude, for itself and for one task", ({ change, apply }) =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(START);
+    yield* seedProject;
+    const world = yield* makeThreadWorld;
+    const sql = yield* BotDatabase.BotDatabase;
+    yield* withServices(world, (services) =>
+      Effect.gen(function* () {
+        const home = yield* attachBot(services);
+        yield* apply({ services, home, sql }).pipe(Effect.orDie);
+        const switched = yield* services.bots
+          .update({ botId, modelSelection: claude })
+          .pipe(Effect.flip);
+        assert.include(switched.message, `Claude can't enforce some of this Bot's settings yet`);
+        assert.include(switched.message, change);
+        assert.deepEqual((yield* services.bots.get({ botId })).modelSelection, codex);
+        const task = yield* services.tasks
+          .start({ botId, projectId: campaign, prompt: "Recap.", modelSelection: claude })
+          .pipe(Effect.flip);
+        assert.include(task.message, change);
+      }),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect("runs a Bot on Claude with what Claude can enforce and refuses No changes routines", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(START);
+    yield* seedProject;
+    const world = yield* makeThreadWorld;
+    yield* withServices(world, (services) =>
+      Effect.gen(function* () {
+        yield* attachBot(services);
+        // A paused No changes routine does not run, so it does not block the switch.
+        const paused = yield* services.routines.upsert({
+          ...routineInput({ type: "fixed_time", timeOfDay: "18:00" }),
+          enabled: false,
+        });
+        const codexBot = yield* services.bots.get({ botId });
+        assert.deepEqual(Object.values(codexBot.capabilities ?? {}), [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+        ]);
+
+        const claudeBot = yield* services.bots.update({ botId, modelSelection: claude });
+        assert.deepEqual(claudeBot.capabilities, {
+          mcpGrants: "claude_unsupported",
+          ownMcpServers: "claude_unsupported",
+          noChangesRoutines: "claude_unsupported",
+          maintenance: "claude_unsupported",
+          homeCheck: "claude_unsupported",
+          failureDiagnosis: "claude_unsupported",
+        });
+        const task = yield* services.tasks.start({ botId, projectId: campaign, prompt: "Recap." });
+        assert.deepEqual(yield* launchedSelection(world, task.workThreadId), claude);
+
+        // The switch stays closed while Claude cannot honor it; turning it off stays open.
+        const own = yield* services.bots
+          .setMcpGrants({
+            botId,
+            expectedRevision: claudeBot.mcpGrants?.revision ?? 0,
+            connectionIds: [],
+            ownCodexMcpServers: true,
+          })
+          .pipe(Effect.flip);
+        assert.include(own.message, "Switch it to a Codex model first");
+        yield* services.bots.setMcpGrants({
+          botId,
+          expectedRevision: claudeBot.mcpGrants?.revision ?? 0,
+          connectionIds: [],
+          ownCodexMcpServers: false,
+        });
+
+        const noChanges = yield* services.routines
+          .upsert(routineInput({ type: "fixed_time", timeOfDay: "19:00" }))
+          .pipe(Effect.flip);
+        assert.include(noChanges.message, "can't enforce No changes yet");
+        const resumed = yield* services.routines
+          .setEnabled({ id: paused.task.id, enabled: true })
+          .pipe(Effect.flip);
+        assert.include(resumed.message, "can't enforce No changes yet");
+        const allowed = yield* services.routines.upsert({
+          ...routineInput({ type: "fixed_time", timeOfDay: "19:00" }),
+          bot: { botId, allowChanges: true },
+        });
+        assert.isTrue(allowed.task.enabled);
       }),
     );
   }).pipe(Effect.provide(layerDatabase)),

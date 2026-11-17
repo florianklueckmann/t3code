@@ -52,6 +52,7 @@ import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as BotDatabase from "./persistence/BotDatabase.ts";
 import * as BotContinuation from "./BotContinuation.ts";
 import * as Evidence from "./BotMaintenanceEvidence.ts";
+import * as BotProviderSupport from "./BotProviderSupport.ts";
 import * as BotRuntimePolicy from "./BotRuntimePolicy.ts";
 import * as BotService from "./BotService.ts";
 import * as BotStore from "./BotStore.ts";
@@ -263,7 +264,13 @@ export const make = Effect.gen(function* () {
     const instance = yield* providers.getInstance(selection.instanceId);
     if (instance === undefined) return { unavailableReason: "instance_unavailable" } as const;
     const sealed = instance.sealedGeneration;
-    if (sealed === undefined) return { unavailableReason: "codex_required" } as const;
+    if (sealed === undefined)
+      return {
+        unavailableReason:
+          instance.driverKind === "claudeAgent"
+            ? BotProviderSupport.CLAUDE_UNSUPPORTED
+            : "codex_required",
+      } as const;
     const reason = yield* sealed.availability(selection);
     if (reason !== null) return { unavailableReason: reason } as const;
     const generate: Generator = (packet) =>

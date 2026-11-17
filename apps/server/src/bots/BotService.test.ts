@@ -131,7 +131,9 @@ const layerSupport = Layer.mergeAll(
     getInstance: (instanceId) =>
       Effect.succeed({
         instanceId,
-        driverKind: ProviderDriverKind.make(instanceId === "claude" ? "claudeAgent" : "codex"),
+        driverKind: ProviderDriverKind.make(
+          instanceId === "claude" ? "claudeAgent" : instanceId === "pi" ? "pi" : "codex",
+        ),
       } as ProviderInstance),
   }),
   // Task selections are covered in BotTaskService.test.ts.
@@ -424,35 +426,41 @@ it.effect("finishes an interrupted archive when the request is repeated", () =>
   }).pipe(Effect.provide(layerDatabase)),
 );
 
-it.effect("moves home conversations to a new model and rejects providers without Bot support", () =>
-  Effect.gen(function* () {
-    yield* seedProjects;
-    const world = yield* makeThreadWorld;
-    yield* withServices(world.threadLayer, ({ bots }) =>
-      Effect.gen(function* () {
-        yield* createCampaignBot(bots);
-        const detail = yield* bots.attachProject({ botId, projectId: campaignA });
-        const home = detail.projects[0]?.homeThreadId ?? assert.fail();
+it.effect(
+  "moves home conversations to a new model, Claude included, and rejects other providers",
+  () =>
+    Effect.gen(function* () {
+      yield* seedProjects;
+      const world = yield* makeThreadWorld;
+      yield* withServices(world.threadLayer, ({ bots }) =>
+        Effect.gen(function* () {
+          yield* createCampaignBot(bots);
+          const detail = yield* bots.attachProject({ botId, projectId: campaignA });
+          const home = detail.projects[0]?.homeThreadId ?? assert.fail();
 
-        yield* bots.update({ botId, modelSelection: { ...codex, model: "gpt-5.5" } });
-        assert.equal((yield* Ref.get(world.threads)).get(home)?.model, "gpt-5.5");
+          yield* bots.update({ botId, modelSelection: { ...codex, model: "gpt-5.5" } });
+          assert.equal((yield* Ref.get(world.threads)).get(home)?.model, "gpt-5.5");
 
-        const claude = { instanceId: ProviderInstanceId.make("claude"), model: "claude-opus" };
-        const rejected = yield* bots.update({ botId, modelSelection: claude }).pipe(Effect.flip);
-        assert.include(rejected.message, "Codex");
-        const rejectedCreate = yield* bots
-          .create({
-            botId: BotId.make("other-bot"),
-            name: "Other",
-            instructions: "",
-            modelSelection: claude,
-            learningPolicy: "automatic",
-          })
-          .pipe(Effect.flip);
-        assert.include(rejectedCreate.message, "Codex");
-      }),
-    );
-  }).pipe(Effect.provide(layerDatabase)),
+          const claude = { instanceId: ProviderInstanceId.make("claude"), model: "claude-opus" };
+          yield* bots.update({ botId, modelSelection: claude });
+          assert.equal((yield* Ref.get(world.threads)).get(home)?.model, "claude-opus");
+
+          const pi = { instanceId: ProviderInstanceId.make("pi"), model: "pi-model" };
+          const rejected = yield* bots.update({ botId, modelSelection: pi }).pipe(Effect.flip);
+          assert.equal(rejected.message, "Bots run on Codex and Claude providers only.");
+          const rejectedCreate = yield* bots
+            .create({
+              botId: BotId.make("other-bot"),
+              name: "Other",
+              instructions: "",
+              modelSelection: pi,
+              learningPolicy: "automatic",
+            })
+            .pipe(Effect.flip);
+          assert.equal(rejectedCreate.message, "Bots run on Codex and Claude providers only.");
+        }),
+      );
+    }).pipe(Effect.provide(layerDatabase)),
 );
 
 it.effect("pushes a rename to open Bot list subscriptions without renaming the conversation", () =>
