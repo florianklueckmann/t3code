@@ -1018,11 +1018,27 @@ const make = Effect.gen(function* () {
     }
     // The result stays in the work thread; the home conversation shows its card and turns unread.
     if (current.status !== "cancelled") {
-      yield* threads.dispatch({
-        type: "thread.mark-unread",
-        commandId: CommandId.make(`bot-task-notify:${current.task_id}`),
-        threadId: ThreadId.make(current.home_thread_id),
-      });
+      const home = yield* threads
+        .getThreadShell(ThreadId.make(current.home_thread_id))
+        .pipe(Effect.mapError(botError("Failed to read the Bot task's Home thread.")));
+      // Mark unread refuses a Home whose latest run has not ended; a later pass marks it.
+      if (home?.latestRunId != null && home.latestRunCompletedAt == null) return;
+      yield* threads
+        .dispatch({
+          type: "thread.mark-unread",
+          commandId: CommandId.make(`bot-task-notify:${current.task_id}`),
+          threadId: ThreadId.make(current.home_thread_id),
+        })
+        .pipe(
+          // A refusal is stored on the command id and replays on every retry.
+          Effect.catchTags({
+            OrchestratorCommandPreviouslyRejectedError: (error) =>
+              Effect.logWarning("Bot task Home notification was refused", {
+                taskId: current.task_id,
+                detail: error.detail,
+              }),
+          }),
+        );
     }
     const now = yield* nowIso;
     yield* sql`

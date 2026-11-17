@@ -47,6 +47,7 @@ import * as TestClock from "effect/testing/TestClock";
 import { afterEach, vi } from "vite-plus/test";
 
 import * as ServerConfig from "../config.ts";
+import { OrchestratorCommandPreviouslyRejectedError } from "../orchestration-v2/Orchestrator.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
@@ -162,6 +163,8 @@ const makeThreadWorld = Effect.gen(function* () {
     readonly release: Deferred.Deferred<void>;
   } | null>(null);
   const receipts = yield* Ref.make(new Set<string>());
+  /** Command ids the orchestrator refused; their receipt replays the refusal. */
+  const rejected = yield* Ref.make(new Set<string>());
   const notificationAttempts = yield* Ref.make<ReadonlyArray<CommandId>>([]);
   /** The next command of this type fails before it is recorded. */
   const failNext = yield* Ref.make<OrchestrationV2ServerCommand["type"] | null>(null);
@@ -183,6 +186,13 @@ const makeThreadWorld = Effect.gen(function* () {
     if ((yield* Ref.get(failNext)) === command.type) {
       yield* Ref.set(failNext, null);
       return yield* Effect.die(`injected ${command.type} failure`);
+    }
+    if ((yield* Ref.get(rejected)).has(command.commandId)) {
+      return yield* new OrchestratorCommandPreviouslyRejectedError({
+        commandId: command.commandId,
+        commandType: command.type,
+        detail: "refused",
+      });
     }
     // A repeated command id replays its receipt and changes nothing.
     if ((yield* Ref.get(receipts)).has(command.commandId)) return { storedEvents: [] } as never;
@@ -226,6 +236,7 @@ const makeThreadWorld = Effect.gen(function* () {
       | "pendingRuntimeRequest"
       | "pendingBackgroundTasks"
       | "latestRunId"
+      | "latestRunCompletedAt"
       | "activeRunId"
       | "id"
       | "projectId"
@@ -242,6 +253,10 @@ const makeThreadWorld = Effect.gen(function* () {
         : null,
       pendingBackgroundTasks: Array.from({ length: thread.backgroundTasks }, () => ({}) as never),
       latestRunId: thread.runId as OrchestrationV2ThreadShell["latestRunId"],
+      latestRunCompletedAt:
+        thread.runId !== null && thread.status !== "queued" && thread.status !== "running"
+          ? DateTime.makeUnsafe(0)
+          : null,
       activeRunId: thread.status === "running" ? RunId.make(thread.runId!) : null,
     };
     return shell as OrchestrationV2ThreadShell;
@@ -329,6 +344,7 @@ const makeThreadWorld = Effect.gen(function* () {
     hangLaunches,
     launchGate,
     failNext,
+    rejected,
     notificationAttempts,
     deliveryLockTransactions,
     commandsMatching,
@@ -1628,6 +1644,55 @@ it.effect("retries a stop that failed until the cancelled task ends", () =>
         yield* services.tasks.reconcile;
         yield* services.tasks.reconcile;
         assert.equal((yield* services.tasks.get(task.id)).status, "cancelled");
+      }),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect("waits for Home's run to end before marking it unread and stops after a refusal", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(START);
+    yield* seedProject;
+    const world = yield* makeThreadWorld;
+    const sql = yield* BotDatabase.BotDatabase;
+    const notifiedAt = (taskId: string) =>
+      sql<{ readonly notified_at: string | null }>`
+        SELECT notified_at FROM bot_tasks WHERE task_id = ${taskId}
+      `.pipe(Effect.map((rows) => rows[0]?.notified_at ?? null));
+    yield* withServices(world, (services) =>
+      Effect.gen(function* () {
+        const home = yield* attachBot(services);
+        const [waiting, refused] = yield* Effect.forEach(
+          ["Summarize the last session.", "List the open threads."],
+          (prompt) => services.tasks.start({ botId, projectId: campaign, prompt }),
+        );
+        if (waiting === undefined || refused === undefined) return assert.fail();
+        const notify = (taskId: string) => CommandId.make(`bot-task-notify:${taskId}`);
+        yield* Ref.set(world.rejected, new Set([notify(refused.id)]));
+        yield* world.update(home, { status: "running", runId: "run:home" });
+        for (const task of [waiting, refused]) {
+          yield* world.update(task.workThreadId ?? assert.fail("no work thread"), {
+            status: "completed",
+          });
+        }
+
+        yield* services.tasks.reconcile;
+        assert.equal(yield* statusOf(services, waiting.id), "completed");
+        assert.isNull(yield* notifiedAt(waiting.id));
+        assert.deepEqual(yield* Ref.get(world.notificationAttempts), []);
+
+        yield* world.update(home, { status: "completed" });
+        yield* services.tasks.reconcile;
+        yield* services.tasks.reconcile;
+        assert.isNotNull(yield* notifiedAt(waiting.id));
+        assert.isNotNull(yield* notifiedAt(refused.id));
+        assert.sameMembers(
+          [...(yield* Ref.get(world.notificationAttempts))],
+          [notify(waiting.id), notify(refused.id)],
+        );
+        assert.deepEqual(yield* world.commandsMatching("thread.mark-unread"), [
+          `thread.mark-unread ${home} ${notify(waiting.id)}`,
+        ]);
       }),
     );
   }).pipe(Effect.provide(layerDatabase)),
