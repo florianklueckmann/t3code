@@ -116,6 +116,29 @@ it("checks the routine a home turn sets up against the session and lead time", (
       }),
     ),
   ).toEqual(["routine title"]);
+  const reminder = { botId: "bp-1", sessionAt: undefined, runAt: "2027-11-19T08:00:00.000Z" };
+  const once = byId("reminder-set-once");
+  expect(failed(gradeSample(once, { ...base, routines: [reminder] }))).toEqual([]);
+  expect(
+    failed(gradeSample(once, { ...base, routines: [reminder, { ...reminder, title: "Again" }] })),
+  ).toEqual(["one routine for this Bot", "exactly one routine on the requested day"]);
+  expect(
+    failed(
+      gradeSample(once, {
+        ...base,
+        routines: [reminder, { ...reminder, runAt: "2027-11-16T17:00:00.000Z" }],
+      }),
+    ),
+  ).toEqual(["one routine for this Bot"]);
+  // Midnight in Berlin is still the previous day in UTC.
+  expect(
+    failed(
+      gradeSample(once, {
+        ...base,
+        routines: [{ ...reminder, runAt: "2027-11-18T23:00:00.000Z" }],
+      }),
+    ),
+  ).toEqual([]);
 });
 
 it("keeps missing Home returns as failed checks with task and file evidence", () => {

@@ -101,6 +101,8 @@ const calledTool = (tools: ReadonlyArray<ToolActivity>, name: string, action?: s
     );
   });
 
+const berlinDate = new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Berlin" });
+
 const reasoningEffort = (selection: ModelSelection | undefined) =>
   selection?.options?.find((option) => option.id === "reasoningEffort")?.value;
 
@@ -188,9 +190,19 @@ export const gradeSample = (testCase: PreparationCase, run: SampleRun) => {
     add("no routine", run.routines.length === 0 && !calledTool(run.tools, "schedule_task"));
     return checks;
   }
-  const { sessionAt, leadHours } = testCase.routine;
   const [routine, ...others] = run.routines;
   add("one routine for this Bot", routine?.botId === run.botId && others.length === 0);
+  if ("runOn" in testCase.routine) {
+    const { runOn } = testCase.routine;
+    add(
+      "exactly one routine on the requested day",
+      run.routines.filter(
+        (r) => r.runAt != null && berlinDate.format(Date.parse(r.runAt)) === runOn,
+      ).length === 1,
+    );
+    return checks;
+  }
+  const { sessionAt, leadHours } = testCase.routine;
   if (testCase.routine.title !== undefined) {
     add("routine title", routine?.title === testCase.routine.title);
   }
@@ -369,7 +381,11 @@ const runSample = Effect.fn("botPreparation.runSample")(function* (
         ?.text ?? "";
     tools = toolActivity(yield* readItems(call, threadId, "activity"));
   } else {
-    if (testCase.existingRoutine !== undefined && testCase.routine !== null) {
+    if (
+      testCase.existingRoutine !== undefined &&
+      testCase.routine !== null &&
+      "sessionAt" in testCase.routine
+    ) {
       const { sessionAt, leadHours } = testCase.routine;
       yield* call(
         "schedule_task",
@@ -390,7 +406,8 @@ const runSample = Effect.fn("botPreparation.runSample")(function* (
         OrchestratorMcpScheduleTaskResult,
       );
     }
-    const runId = yield* runTurn(call, home, testCase.prompt);
+    let runId = yield* runTurn(call, home, testCase.prompt);
+    for (const turn of testCase.laterTurns ?? []) runId = yield* runTurn(call, home, turn);
     const messages = yield* readItems(call, home, "messages");
     text =
       messages.findLast((item) => item.runId === runId && item.type === "assistant_message")
