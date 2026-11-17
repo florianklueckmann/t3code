@@ -4035,6 +4035,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           prompt: "Remind me to descale the oven.",
           schedule: { type: "once", runAt },
           botId: BotId.make("home"),
+          sessionAt: "2026-11-20T10:00:00.000Z",
         } as const;
         const first = yield* mcp.scheduleTask(fullAccess, reminder);
         assert.isUndefined(first.alreadyScheduled);
@@ -4042,7 +4043,9 @@ describe("OrchestratorMcpService provider resolution", () => {
           ...reminder,
           title: "Descale oven",
           prompt: "  Remind me to descale\n the oven.",
-          schedule: { type: "once", runAt: "2026-11-20T10:00:00+01:00" },
+          // The scheduler reads an offset-free time as UTC.
+          schedule: { type: "once", runAt: "2026-11-20T09:00:00" },
+          sessionAt: "2026-11-20T11:00:00+01:00",
           allowChanges: false,
         });
         assert.equal(second.scheduledTaskId, first.scheduledTaskId);
@@ -4056,6 +4059,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           { projectId: ProjectId.make("project:other") },
           { allowChanges: true },
           { sessionAt: "2026-11-20T09:30:00.000Z" },
+          { enabled: false },
         ] as const) {
           const before = (yield* Ref.get(tasks)).length;
           const created = yield* mcp.scheduleTask(fullAccess, { ...reminder, ...difference });

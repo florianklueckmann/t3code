@@ -291,8 +291,15 @@ function normalizeBrief(prompt: string): string {
   return prompt.trim().replace(/\s+/g, " ");
 }
 
+/** Reads times as the scheduler stores them: an offset-free time is UTC, not local time. */
 function sameInstant(a: string | null, b: string | null): boolean {
-  return a === null || b === null ? a === b : Date.parse(a) === Date.parse(b);
+  if (a === null || b === null) return a === b;
+  const [x, y] = [DateTime.make(a), DateTime.make(b)];
+  return (
+    Option.isSome(x) &&
+    Option.isSome(y) &&
+    DateTime.toEpochMillis(x.value) === DateTime.toEpochMillis(y.value)
+  );
 }
 
 function scheduledTaskSummary(task: ScheduledTask, mayRun: boolean): OrchestratorMcpScheduledTask {
@@ -2237,7 +2244,9 @@ const make = Effect.gen(function* () {
           task.bot?.botId === routine.botId &&
           (task.bot.allowChanges ?? false) === routine.allowChanges &&
           sameInstant(task.bot.sessionAt ?? null, routine.sessionAt) &&
-          isSameSchedule(task.schedule, schedule) &&
+          (schedule.type === "once"
+            ? task.schedule.type === "once" && sameInstant(task.schedule.runAt, schedule.runAt)
+            : isSameSchedule(task.schedule, schedule)) &&
           normalizeBrief(task.prompt) === brief,
       );
     },
@@ -2295,7 +2304,7 @@ const make = Effect.gen(function* () {
       const derivedTitle = (input.prompt.split("\n")[0]?.trim() ?? "")
         .slice(0, 80)
         .replace(/[\uD800-\uDBFF]$/, "");
-      if (input.botId !== undefined) {
+      if (input.botId !== undefined && input.enabled !== false) {
         const scheduled = yield* findScheduledBotRoutine({
           projectId,
           botId: input.botId,
