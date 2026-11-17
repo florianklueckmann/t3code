@@ -167,7 +167,10 @@ export const BotContinuationView = Schema.Struct({
           ordinal: NonNegativeInt,
           kind: Schema.Literals(["input", "result"]),
           directUser: Schema.Boolean,
-          /** Too large for any read: `parts` hold only its first lines. */
+          /**
+           * Too large for any read, or with attached files a read never shows: `parts` hold
+           * only its first lines, and `bytes` counts the files too.
+           */
           tooLarge: Schema.optional(
             Schema.Struct({ bytes: NonNegativeInt, createdAt: IsoDateTime }),
           ),

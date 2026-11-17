@@ -108,7 +108,7 @@ it("selects whole sources oldest first and leaves the rest pending when the budg
   );
   assert.isFalse(mixed.more);
 
-  // A source that cannot fit an empty packet is never clipped or skipped.
+  // A batch never clips or skips a source; `admit` excludes one too large before it gets here.
   assert.deepEqual(build([home("huge", "x".repeat(48_001)), home("m2", "fits")]), {
     _tag: "blocked",
     reason: "oversized_evidence",

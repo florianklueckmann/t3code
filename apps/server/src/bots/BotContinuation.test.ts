@@ -1111,7 +1111,7 @@ it.effect(
       yield* input(1, large, { directUser: true });
       yield* input(2, "Keep the Harbor date open.", { directUser: true });
       // A large paste the composer turned into a file: the message text is only its link.
-      const stub = "[pasted-text.txt](t3-context://v1/file/file_harbor)";
+      const stub = "The Harbor log:\n[pasted-text.txt](t3-context://v1/file/file_harbor)";
       yield* input(3, stub, {
         directUser: true,
         attachments: [

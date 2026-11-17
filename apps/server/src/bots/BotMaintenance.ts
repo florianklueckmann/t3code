@@ -606,19 +606,23 @@ export const make = Effect.gen(function* () {
       const row = byId.get(id);
       classified.set(
         keyOf({ kind: "home-input", id }),
-        Evidence.classifyHomeInput({
-          message:
-            row === undefined ? undefined : Option.getOrUndefined(decodeMessage(row.payload_json)),
-          delivery:
-            row?.steered === 1
-              ? row.steer_accepted === 1
-                ? "delivered"
-                : "unknown"
-              : row?.turn_started === 1
-                ? "delivered"
-                : "undelivered",
-          runStatus: row?.run_status ?? null,
-        }),
+        Evidence.admit(
+          Evidence.classifyHomeInput({
+            message:
+              row === undefined
+                ? undefined
+                : Option.getOrUndefined(decodeMessage(row.payload_json)),
+            delivery:
+              row?.steered === 1
+                ? row.steer_accepted === 1
+                  ? "delivered"
+                  : "unknown"
+                : row?.turn_started === 1
+                  ? "delivered"
+                  : "undelivered",
+            runStatus: row?.run_status ?? null,
+          }),
+        ),
       );
     }
     for (const row of refs) {
@@ -636,10 +640,10 @@ export const make = Effect.gen(function* () {
       classified.set(
         key,
         result.state === "available"
-          ? {
+          ? Evidence.admit({
               _tag: "eligible",
               source: { kind: "task-result", id: row.source_id, text: result.text },
-            }
+            })
           : { _tag: "excluded", reason: `result_${result.state}` },
       );
     }
