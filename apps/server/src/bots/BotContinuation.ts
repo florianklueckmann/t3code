@@ -775,13 +775,14 @@ const make = Effect.gen(function* () {
           };
         });
         // The page counts as read up to its first item with a part the run did not acknowledge.
+        // A preview is never read whole: the Waiting item it must get below stands in for acks.
         const acked = new Set(input.acks ?? []);
-        const unread = shown.findIndex((source) =>
-          shownParts(
-            source.text,
-            previews.has(source.message.id),
-            acksFor(page, source.message.id),
-          ).some((part) => "ack" in part && !acked.has(part.ack)),
+        const unread = shown.findIndex(
+          (source) =>
+            !previews.has(source.message.id) &&
+            shownParts(source.text, false, acksFor(page, source.message.id)).some(
+              (part) => "ack" in part && !acked.has(part.ack),
+            ),
         );
         certified = unread === -1 ? shown : shown.slice(0, unread);
         tooLarge = certified.flatMap((source) =>

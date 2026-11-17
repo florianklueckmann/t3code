@@ -1138,9 +1138,14 @@ it.effect(
       assert.isTrue(large.startsWith(preview) && preview.endsWith("\n"));
       assert.isAtMost(utf8Bytes(preview), 2_000);
       assert.equal(shownText(next), "Keep the Harbor date open.");
-      // The model leaves out the ack of the part where the server cut the preview.
+      // A model may leave out every ack of a preview, as gpt-6-luna did in T3B-63; the Waiting
+      // item that must name it is what passes it.
       const cutPart = reference!.parts.at(-1)!;
-      const seen = acksOf(read).filter((ack) => !("ack" in cutPart) || ack !== cutPart.ack);
+      const previewAcks = new Set(
+        reference!.parts.flatMap((part) => ("ack" in part ? [part.ack] : [])),
+      );
+      const seen = acksOf(read).filter((ack) => !previewAcks.has(ack));
+      assert.isNotEmpty(previewAcks);
       assert.isTrue(reference!.parts.slice(0, -1).every((part) => "ack" in part));
       assert.include(cutPart, {
         cut: "The preview stops here. The full text stays in T3 history.",
