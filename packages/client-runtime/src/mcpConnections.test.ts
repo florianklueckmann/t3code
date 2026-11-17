@@ -140,9 +140,9 @@ describe("botMcpGrantsSection", () => {
 
   const EMPTY = "This Bot has no MCP connections.";
   const PROVIDER_LIMIT =
-    "MCP connections apply only to Codex on macOS. This Bot's model is not on a Codex provider, so without connections it uses that provider's own MCP setup. A Bot with connections does not run there.";
+    "MCP connections apply only to Codex on macOS and Linux. This Bot's model is not on a Codex provider, so without connections it uses that provider's own MCP setup. A Bot with connections does not run there.";
   const PLATFORM_LIMIT =
-    "MCP connections apply only to Codex on macOS. On Studio Mac, this Bot without connections uses Codex's own MCP setup. A Bot with connections does not run there.";
+    "MCP connections apply only to Codex on macOS and Linux. On Studio Mac, this Bot without connections uses Codex's own MCP setup. A Bot with connections does not run there.";
   const claude = ProviderDriverKind.make("claudeAgent");
   const codex = ProviderDriverKind.make("codex");
 
@@ -150,8 +150,10 @@ describe("botMcpGrantsSection", () => {
     ["Claude, with grants", claude, "darwin", [MAIL], [PROVIDER_LIMIT]],
     ["Claude, without grants", claude, "darwin", [], [PROVIDER_LIMIT]],
     ["a missing instance", undefined, "darwin", [MAIL], [PROVIDER_LIMIT]],
-    ["Codex on Linux, with grants", codex, "linux", [MAIL], [PLATFORM_LIMIT]],
-    ["Codex on Linux, without grants", codex, "linux", [], [PLATFORM_LIMIT]],
+    ["Codex on Windows, with grants", codex, "windows", [MAIL], [PLATFORM_LIMIT]],
+    ["Codex on Windows, without grants", codex, "windows", [], [PLATFORM_LIMIT]],
+    ["Codex on Linux, with grants", codex, "linux", [MAIL], []],
+    ["Codex on Linux, without grants", codex, "linux", [], [EMPTY]],
     ["Codex on macOS, with grants", codex, "darwin", [MAIL], []],
     ["Codex on macOS, without grants", codex, "darwin", [], [EMPTY]],
   ] as const)(

@@ -285,7 +285,7 @@ export class ProviderAdapterSealRefusedError extends Schema.TaggedError<Provider
 
 const mcpConnectionsRefusalText = {
   version: "this Codex version has not been verified with them",
-  platform: "they are only verified on macOS",
+  platform: "they are only verified on macOS and Linux",
   children: "this conversation has agents still running with its earlier connections",
   load: "the conversation's MCP setup could not be confirmed",
   unavailable: "this server cannot read its MCP connections",
