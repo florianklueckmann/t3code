@@ -514,6 +514,8 @@ function BotEditorForm({
     environment.serverConfig?.environment.capabilities.botAppearance === true;
   const maintenanceSupported =
     environment.serverConfig?.environment.capabilities.botMaintenance === true;
+  const maintenanceRunSupported =
+    environment.serverConfig?.environment.capabilities.botMaintenanceRun === true;
   // Chosen once per form so a retried create stays idempotent.
   const [newBotId] = useState(() => BotId.make(randomUUID()));
   const savedAppearance = saved ? savedBotAppearance(saved) : null;
@@ -758,6 +760,7 @@ function BotEditorForm({
                   projectId={context.projectId}
                   title={titleOf(context.projectId)}
                   formLocked={saving || archived}
+                  runSupported={maintenanceRunSupported}
                 />
                 <BotHomeCheckSetting
                   environmentId={environmentId}

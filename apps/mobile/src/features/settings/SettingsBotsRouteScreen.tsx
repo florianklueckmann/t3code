@@ -654,6 +654,7 @@ function BotForm({
                 projectId={project.projectId}
                 title={`${projectTitle(project.projectId)} · Maintenance`}
                 formLocked={readOnly || !project.attached}
+                runSupported={config?.environment.capabilities.botMaintenanceRun === true}
               />
             ) : null}
             {maintenanceSupported &&
