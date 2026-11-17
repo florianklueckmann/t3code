@@ -746,7 +746,7 @@ export function botMaintenanceRunLabel(result: BotMaintenanceRunResult): string 
     learning.status === "idle"
       ? "Nothing new to learn"
       : learning.status === "applied" || learning.status === "noop" || learning.status === "partial"
-        ? `${learned.length > 0 ? learned.join(", ") : "No new lessons"}${learning.status === "partial" ? ", more next run" : ""}`
+        ? `${learned.length > 0 ? learned.join(", ") : "Reviewed new messages, no new lessons"}${learning.status === "partial" ? ", more next run" : ""}`
         : maintenanceStepLabel("Learning", learning);
   const noteLabel =
     note.status === "current"
