@@ -75,7 +75,7 @@ export type PreparationCase =
       readonly taskEffort?: string;
       readonly expectedFiles?: Readonly<Record<string, string>>;
       readonly existingRoutine?: { readonly title: string; readonly allowChanges: boolean };
-      /** The routine the turn should set up, or none. `runOn` is a plain reminder's Berlin date. */
+      /** The routine the turn should set up, or none. A plain reminder: its Berlin date and a regex for its title or brief. */
       readonly routine:
         | {
             readonly sessionAt: string;
@@ -83,7 +83,7 @@ export type PreparationCase =
             readonly allowChanges?: boolean;
             readonly title?: string;
           }
-        | { readonly runOn: string }
+        | { readonly runOn: string; readonly about: string }
         | null;
       /** Whether the turn should start a separate task. */
       readonly startsTask: boolean;
@@ -288,7 +288,7 @@ export const CASES: ReadonlyArray<PreparationCase> = [
       `Second reference export (shopping history). Decision from me: from now on all quantities in this notebook are metric only, no cups or ounces.\n\n${referenceExport("INV-B")}`,
     ],
     answerMust: [],
-    routine: { runOn: "2027-11-19" },
+    routine: { runOn: "2027-11-19", about: "descal" },
     startsTask: false,
   },
   {

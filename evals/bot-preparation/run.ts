@@ -55,6 +55,15 @@ import {
 
 const TERMINAL = new Set(["completed", "failed", "interrupted", "cancelled", "skipped"]);
 
+interface Routine {
+  readonly botId: string | undefined;
+  readonly sessionAt: string | undefined;
+  readonly runAt: string | null;
+  readonly allowChanges?: boolean;
+  readonly title?: string;
+  readonly prompt?: string;
+}
+
 export interface SampleRun {
   /** The routine's result in its work thread, or the home conversation's answer. */
   readonly text: string;
@@ -67,13 +76,9 @@ export interface SampleRun {
     readonly created: ModelSelection;
     readonly after: ModelSelection;
   };
-  readonly routines: ReadonlyArray<{
-    readonly botId: string | undefined;
-    readonly sessionAt: string | undefined;
-    readonly runAt: string | null;
-    readonly allowChanges?: boolean;
-    readonly title?: string;
-  }>;
+  readonly routines: ReadonlyArray<Routine>;
+  /** With `laterTurns`, the routines as they stood before the last turn. */
+  readonly routinesBeforeLastTurn?: ReadonlyArray<Routine>;
   /** Runs in the home conversation; a routine's result must not start one. */
   readonly homeRuns: number;
   readonly filesChanged: ReadonlyArray<string>;
@@ -193,13 +198,16 @@ export const gradeSample = (testCase: PreparationCase, run: SampleRun) => {
   const [routine, ...others] = run.routines;
   add("one routine for this Bot", routine?.botId === run.botId && others.length === 0);
   if ("runOn" in testCase.routine) {
-    const { runOn } = testCase.routine;
-    add(
-      "exactly one routine on the requested day",
-      run.routines.filter(
-        (r) => r.runAt != null && berlinDate.format(Date.parse(r.runAt)) === runOn,
-      ).length === 1,
-    );
+    const { runOn, about } = testCase.routine;
+    const reminders = (routines: ReadonlyArray<Routine>) =>
+      routines.filter(
+        (r) =>
+          r.runAt != null &&
+          berlinDate.format(Date.parse(r.runAt)) === runOn &&
+          new RegExp(about, "i").test(`${r.title ?? ""}\n${r.prompt ?? ""}`),
+      ).length;
+    add("reminder set before the last turn", reminders(run.routinesBeforeLastTurn ?? []) === 1);
+    add("exactly one routine for the reminder", reminders(run.routines) === 1);
     return checks;
   }
   const { sessionAt, leadHours } = testCase.routine;
@@ -243,6 +251,20 @@ const listTasks = (call: Call, botId: string) =>
     { action: "list_tasks", botId },
     Schema.Struct({ tasks: Schema.Array(BotTaskSummary) }),
   ).pipe(Effect.map(({ tasks }) => tasks));
+
+const listRoutines = (call: Call, projectId: string) =>
+  call("list_scheduled_tasks", { projectId }, OrchestratorMcpListScheduledTasksResult).pipe(
+    Effect.map(({ tasks }): ReadonlyArray<Routine> =>
+      tasks.map((task) => ({
+        botId: task.botId,
+        sessionAt: task.sessionAt,
+        runAt: task.schedule.type === "once" ? task.schedule.runAt : null,
+        allowChanges: task.allowChanges ?? false,
+        title: task.title,
+        prompt: task.prompt,
+      })),
+    ),
+  );
 
 /** The server records a task's end on its next scheduler pass, a few seconds after the run. */
 const settledTasks = Effect.fn("botPreparation.settledTasks")(function* (
@@ -342,6 +364,7 @@ const runSample = Effect.fn("botPreparation.runSample")(function* (
 
   let text: string;
   let tools: ReadonlyArray<ToolActivity>;
+  let routinesBeforeLastTurn: ReadonlyArray<Routine> | undefined;
   if (testCase.trigger === "routine" || testCase.trigger === "diagnosis") {
     const now = yield* DateTime.now;
     if (testCase.trigger === "diagnosis")
@@ -407,7 +430,12 @@ const runSample = Effect.fn("botPreparation.runSample")(function* (
       );
     }
     let runId = yield* runTurn(call, home, testCase.prompt);
-    for (const turn of testCase.laterTurns ?? []) runId = yield* runTurn(call, home, turn);
+    for (const [index, turn] of (testCase.laterTurns ?? []).entries()) {
+      if (index === (testCase.laterTurns?.length ?? 0) - 1) {
+        routinesBeforeLastTurn = yield* listRoutines(call, project.id);
+      }
+      runId = yield* runTurn(call, home, turn);
+    }
     const messages = yield* readItems(call, home, "messages");
     text =
       messages.findLast((item) => item.runId === runId && item.type === "assistant_message")
@@ -432,11 +460,6 @@ const runSample = Effect.fn("botPreparation.runSample")(function* (
     text = messages.findLast((item) => item.type === "assistant_message")?.text ?? "";
     tools = toolActivity(yield* readItems(call, home, "activity"));
   }
-  const scheduled = yield* call(
-    "list_scheduled_tasks",
-    { projectId: project.id },
-    OrchestratorMcpListScheduledTasksResult,
-  );
   const { thread } = yield* call(
     "t3_thread_read",
     { threadId: home, limit: 1, runLimit: 1 },
@@ -461,13 +484,8 @@ const runSample = Effect.fn("botPreparation.runSample")(function* (
       created: created.bot.modelSelection,
       after: botAfter.bot.modelSelection,
     },
-    routines: scheduled.tasks.map((task) => ({
-      botId: task.botId,
-      sessionAt: task.sessionAt,
-      runAt: task.schedule.type === "once" ? task.schedule.runAt : null,
-      allowChanges: task.allowChanges ?? false,
-      title: task.title,
-    })),
+    routines: yield* listRoutines(call, project.id),
+    ...(routinesBeforeLastTurn === undefined ? {} : { routinesBeforeLastTurn }),
     homeRuns: thread.runCount,
     filesChanged: changedFiles(before, snapshot(root)),
     filesAfter: Object.fromEntries(snapshot(root)),

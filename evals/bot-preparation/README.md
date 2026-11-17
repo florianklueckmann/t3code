@@ -53,6 +53,6 @@ selection afterwards. Run it at the default `high` effort so the two differ.
 `reminder-set-once` covers T3B-62: a Home set a reminder, then set it again on the
 next, unrelated message. It sends three turns: a dated matter with no request, a
 large reference paste carrying one reminder request, and another paste with a
-standing instruction. It grades exactly one routine on the reminder's day, and no
-other routine. The duplicate has not reproduced in the eval yet; the "no other
+standing instruction. It grades that the reminder exists before the last turn,
+that exactly one routine is about it afterwards, and that there is no other routine. The duplicate has not reproduced in the eval yet; the "no other
 routine" check catches gpt-6-luna scheduling the dated matter unasked.
