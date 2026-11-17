@@ -13,7 +13,11 @@ import {
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
-import { formatThreadLink, hostedThreadLink } from "@t3tools/shared/threadLinks";
+import {
+  formatThreadLink,
+  hostedThreadLink,
+  type ThreadLinkMessage,
+} from "@t3tools/shared/threadLinks";
 
 const ALL_MCP_CAPABILITIES = [
   "preview",
@@ -165,11 +169,13 @@ export const threadLinkFor = (
   scope: Pick<McpInvocationScope, "environmentId" | "client">,
   threadId: ThreadId,
   title?: string,
+  /** Only app links open at a message; a hosted link opens the thread. */
+  message?: ThreadLinkMessage,
 ): string => {
   const hostedAppUrl = scope.client?.hostedAppUrl;
   const ref = { environmentId: scope.environmentId, threadId };
   return hostedAppUrl === undefined
-    ? formatThreadLink(ref, title)
+    ? formatThreadLink(message === undefined ? ref : { ...ref, message }, title)
     : hostedThreadLink(ref, hostedAppUrl);
 };
 

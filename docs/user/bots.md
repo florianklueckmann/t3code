@@ -180,6 +180,17 @@ recent versions, and **Restore** saves an earlier one as the newest version, so
 a restore can be undone too. Notes stay readable for archived Bots and detached
 projects, but can't be edited or restored until they are active again.
 
+## Earlier conversation
+
+After a compaction or a fresh start, older messages are no longer in the Bot's
+context, but they are still in its conversation. When you ask about something
+discussed earlier, the Bot searches its own conversation for that project, from
+the conversation itself or from one of its task threads, and links the message
+it answers from. The search never reaches other Bots, other projects or your
+other threads, and messages another agent sent into the conversation are not
+searched. On web and desktop the link opens the conversation at that message;
+on mobile it opens the conversation.
+
 ## Learning
 
 A Bot keeps what it learns per project by default, so a lesson from one campaign or

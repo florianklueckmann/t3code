@@ -1,4 +1,4 @@
-import { EnvironmentId, ThreadId, type ScopedThreadRef } from "@t3tools/contracts";
+import { EnvironmentId, MessageId, ThreadId, type ScopedThreadRef } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
@@ -32,12 +32,23 @@ const THREAD_LINK_OUTSIDE_CODE = new RegExp(
 
 const decodeThreadId = Schema.decodeUnknownOption(ThreadId);
 const decodeEnvironmentId = Schema.decodeUnknownOption(EnvironmentId);
+const decodeMessageId = Schema.decodeUnknownOption(MessageId);
 
 /** A v1 link names no environment; the message's own, or a unique match, stands in. */
 export interface ThreadLink {
   readonly environmentId: EnvironmentId | null;
   readonly threadId: ThreadId;
+  /** A v2 link may open at one message, by finding a word that message contains. */
+  readonly message?: ThreadLinkMessage;
 }
+
+export interface ThreadLinkMessage {
+  readonly messageId: MessageId;
+  readonly find: string;
+}
+
+const MESSAGE_ANCHOR = "#message=";
+const FIND_PARAM = "&find=";
 
 // Escapes even URL-safe punctuation, so a sentence's closing period never reads as part of an id.
 const hostedSegment = (id: string) =>
@@ -77,12 +88,30 @@ export function parseThreadLinkHref(href: string): ThreadLink | null {
     return threadId === null ? null : { environmentId: null, threadId };
   }
   if (!href.startsWith(V2_PREFIX)) return null;
-  const path = href.slice(V2_PREFIX.length);
+  const rest = href.slice(V2_PREFIX.length);
+  const anchorAt = rest.lastIndexOf(MESSAGE_ANCHOR);
+  const path = anchorAt < 0 ? rest : rest.slice(0, anchorAt);
   const slash = path.indexOf("/");
   if (slash < 0) return null;
   const environmentId = Option.getOrNull(decodeEnvironmentId(path.slice(0, slash)));
   const threadId = Option.getOrNull(decodeThreadId(path.slice(slash + 1)));
-  return environmentId === null || threadId === null ? null : { environmentId, threadId };
+  if (environmentId === null || threadId === null) return null;
+  const message = anchorAt < 0 ? null : parseMessageAnchor(rest.slice(anchorAt));
+  return message === null ? { environmentId, threadId } : { environmentId, threadId, message };
+}
+
+function parseMessageAnchor(anchor: string): ThreadLinkMessage | null {
+  const findAt = anchor.indexOf(FIND_PARAM);
+  if (findAt < 0) return null;
+  try {
+    const messageId = Option.getOrNull(
+      decodeMessageId(decodeURIComponent(anchor.slice(MESSAGE_ANCHOR.length, findAt))),
+    );
+    const find = decodeURIComponent(anchor.slice(findAt + FIND_PARAM.length)).trim();
+    return messageId === null || find === "" ? null : { messageId, find };
+  } catch {
+    return null;
+  }
 }
 
 function percentDecodedThreadLinkId(threadId: ThreadId): ThreadId | null {
@@ -125,9 +154,12 @@ export function guessThreadLinkRef(
 }
 
 function threadLinkHref(link: ThreadLink): string {
-  return link.environmentId === null
-    ? `${V1_PREFIX}${link.threadId}`
-    : `${V2_PREFIX}${link.environmentId}/${link.threadId}`;
+  if (link.environmentId === null) return `${V1_PREFIX}${link.threadId}`;
+  const anchor =
+    link.message === undefined
+      ? ""
+      : `${MESSAGE_ANCHOR}${hostedSegment(link.message.messageId)}${FIND_PARAM}${hostedSegment(link.message.find)}`;
+  return `${V2_PREFIX}${link.environmentId}/${link.threadId}${anchor}`;
 }
 
 const linkLabel = (label: string | undefined) =>
@@ -228,9 +260,6 @@ export function relabelThreadLinks(
       if (label !== undefined && written.environmentId === null) return undefined;
       return label?.trim() || unknownThreadLinkLabel(written, messageEnvironmentId);
     }
-    return formatThreadLink(
-      { environmentId: written.environmentId, threadId },
-      current.trim() || label || threadId,
-    );
+    return formatThreadLink({ ...written, threadId }, current.trim() || label || threadId);
   });
 }

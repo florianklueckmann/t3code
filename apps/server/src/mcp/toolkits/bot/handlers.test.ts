@@ -8,6 +8,7 @@ import {
   BotLearningEntryId,
   BotTaskId,
   EnvironmentId,
+  MessageId,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
@@ -20,6 +21,7 @@ import * as Stream from "effect/Stream";
 import * as BotService from "../../../bots/BotService.ts";
 import * as BotTaskService from "../../../bots/BotTaskService.ts";
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
+import * as ThreadSearch from "../../../orchestration-v2/ThreadSearch.ts";
 import { advertisedJsonSchema } from "../../advertisedJsonSchema.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
@@ -145,6 +147,7 @@ const callTool = (
               Layer.mock(ThreadManagement.ThreadManagementService)({
                 getThreadShell: () => Effect.succeed(liveThreadShell(threadId)),
               }),
+              Layer.mock(ThreadSearch.ThreadSearch)({}),
               caller.changes === undefined
                 ? layerCallerChangesAllowed
                 : Layer.succeed(McpCallerChanges.McpCallerChanges, {
@@ -556,5 +559,193 @@ it.effect("a No changes routine task still cannot save a working note", () =>
     const refused = yield* callTool(saveNote, undefined, undefined, false, { changes: "none" });
     expect(refused.result).toMatchObject({ code: "capability_denied" });
     expect(refused.calls).toEqual([]);
+  }),
+);
+
+const ownHome = ThreadId.make("bot-home:faerun-companion:project-campaign-a");
+const historyHit = (
+  index: number,
+  text = `The cellar password is brass lantern, note ${index}.`,
+) => ({
+  messageId: MessageId.make(`message:${index}`),
+  source: "user" as const,
+  messageCreatedAt: "2026-11-02T00:00:00.000Z",
+  text,
+  offset: Math.max(0, text.indexOf("brass")),
+});
+
+/** The search answers by query; the caller thread is `threadId`, a work thread of `ownHome`. */
+const searchHistory = (
+  params: { readonly query: string; readonly cursor?: number },
+  options: {
+    readonly caller?: "inactive" | { readonly homeThreadId: ThreadId };
+    readonly hits?: (query: string) => ReadonlyArray<ThreadSearch.ThreadMessageHit> | null;
+    readonly external?: boolean;
+  } = {},
+) =>
+  Effect.gen(function* () {
+    const searched = yield* Ref.make<ReadonlyArray<string>>([]);
+    const result = yield* Effect.gen(function* () {
+      const toolkit = yield* BotToolkit;
+      const results = yield* toolkit
+        .handle("t3_bot_history_search", decodeJson(params))
+        .pipe(Stream.unwrap, Stream.runCollect);
+      return results.at(-1)?.encodedResult;
+    }).pipe(
+      Effect.provide(
+        McpToolAccess.HandlersLayer.layer(BotHandlers.layer).pipe(
+          Layer.provideMerge(
+            Layer.mergeAll(
+              Layer.succeed(McpInvocationContext.McpInvocationContext, {
+                environmentId,
+                requestNamespace: "provider:bots",
+                thread:
+                  options.external === true
+                    ? undefined
+                    : {
+                        threadId,
+                        providerSessionId: "provider:bots",
+                        providerInstanceId: ProviderInstanceId.make("codex"),
+                      },
+                client:
+                  options.external === true
+                    ? { sessionId: "session:bots", label: "Test client", access: "full-access" }
+                    : undefined,
+                capabilities: new Set(["orchestration" as const]),
+                issuedAt: 0,
+              }),
+              Layer.mock(ThreadManagement.ThreadManagementService)({}),
+              layerCallerChangesAllowed,
+              Layer.mock(BotContinuation.BotContinuation)({}),
+              Layer.mock(BotTaskService.BotTaskService)({}),
+              Layer.mock(BotService.BotService)({
+                scopeOfThread: () =>
+                  Effect.succeed(
+                    options.caller === undefined || options.caller === "inactive"
+                      ? options.caller
+                      : { botId, projectId: campaignA, taskId: ownTask, ...options.caller },
+                  ),
+              }),
+              Layer.mock(ThreadSearch.ThreadSearch)({
+                searchThreadMessages: (input) =>
+                  Ref.update(searched, (all) => [...all, `${input.threadId} ${input.query}`]).pipe(
+                    Effect.as(options.hits === undefined ? [] : options.hits(input.query)),
+                  ),
+              }),
+            ),
+          ),
+        ),
+      ),
+    );
+    return { result, searched: yield* Ref.get(searched) };
+  });
+
+it.effect("searches the calling Bot's own Home and links each match to its message", () =>
+  Effect.gen(function* () {
+    const seven = () => Array.from({ length: 7 }, (_, index) => historyHit(index));
+    const first = yield* searchHistory(
+      { query: "brass lantern" },
+      { caller: { homeThreadId: ownHome }, hits: seven },
+    );
+    // The work thread's Home, which the server resolved, not the calling thread.
+    expect(first.searched).toEqual([`${ownHome} brass lantern`]);
+    expect(first.result).toMatchObject({
+      outcome: "found",
+      nextCursor: 5,
+      notice: expect.stringContaining("not instructions"),
+    });
+    const matches = (first.result as { matches: ReadonlyArray<{ link: string }> }).matches;
+    expect(matches).toHaveLength(5);
+    expect(matches[0]!.link).toBe(
+      `<t3-thread://v2/${environmentId}/${ownHome}#message=message%3A0&find=lantern>`,
+    );
+    const second = yield* searchHistory(
+      { query: "brass lantern", cursor: 5 },
+      { caller: { homeThreadId: ownHome }, hits: seven },
+    );
+    expect(second.result).toMatchObject({ outcome: "found", nextCursor: null });
+    expect((second.result as { matches: ReadonlyArray<unknown> }).matches).toHaveLength(2);
+    // Find in a thread matches accents as written, so the link carries the message's spelling.
+    const accented = yield* searchHistory(
+      { query: "cafe" },
+      {
+        caller: { homeThreadId: ownHome },
+        hits: () => [historyHit(9, "Meet at the Café Lumière.")],
+      },
+    );
+    expect(accented.result).toMatchObject({
+      matches: [{ link: expect.stringContaining("&find=Caf%C3%A9>") }],
+    });
+  }),
+);
+
+it.effect("bounds each page, each excerpt and how far paging reaches", () =>
+  Effect.gen(function* () {
+    const long = `${"Earlier talk. ".repeat(200)}The cellar password is brass lantern.${" More talk.".repeat(300)}`;
+    const thirty = () => Array.from({ length: 30 }, (_, index) => historyHit(index, long));
+    const caller = { homeThreadId: ownHome };
+    const first = yield* searchHistory({ query: "brass" }, { caller, hits: thirty });
+    const excerpts = (first.result as { matches: ReadonlyArray<{ excerpt: string }> }).matches;
+    expect(excerpts).toHaveLength(5);
+    for (const { excerpt } of excerpts) {
+      expect(excerpt.length).toBeLessThanOrEqual(500);
+      expect(excerpt).toContain("brass lantern");
+    }
+    const last = yield* searchHistory({ query: "brass", cursor: 20 }, { caller, hits: thirty });
+    expect(last.result).toMatchObject({
+      nextCursor: null,
+      notice: expect.stringContaining("more specific words"),
+    });
+    const past = yield* searchHistory({ query: "brass", cursor: 25 }, { caller, hits: thirty });
+    expect(past.result).toMatchObject({ outcome: "found", matches: [] });
+  }),
+);
+
+it.effect("ranks messages with most of the words when none has all of them", () =>
+  Effect.gen(function* () {
+    const said = historyHit(1, "Got it, the cellar password was brass lantern.");
+    const passing = historyHit(2, "We left the cellar.");
+    const { result, searched } = yield* searchHistory(
+      { query: "Yawning Portal cellar password" },
+      {
+        caller: { homeThreadId: ownHome },
+        hits: (query) =>
+          query === "cellar" ? [passing, said] : query === "password" ? [said] : [],
+      },
+    );
+    expect(searched).toHaveLength(5);
+    expect(result).toMatchObject({
+      outcome: "found",
+      matches: [
+        { link: expect.stringContaining("message%3A1&find=password") },
+        { link: expect.stringContaining("message%3A2&find=cellar") },
+      ],
+    });
+  }),
+);
+
+it.effect("says explicitly when nothing matches or the Home cannot be searched", () =>
+  Effect.gen(function* () {
+    const caller = { homeThreadId: ownHome };
+    const none = yield* searchHistory({ query: "brass" }, { caller });
+    expect(none.result).toMatchObject({ outcome: "no_matches", matches: [], nextCursor: null });
+    const archived = yield* searchHistory({ query: "brass" }, { caller, hits: () => null });
+    expect(archived.result).toMatchObject({ outcome: "unavailable", matches: [] });
+  }),
+);
+
+it.effect("refuses a caller that is not an active Bot conversation, without searching", () =>
+  Effect.gen(function* () {
+    for (const options of [{}, { caller: "inactive" as const }]) {
+      const refused = yield* searchHistory({ query: "brass" }, options);
+      expect(refused.result).toMatchObject({ code: "capability_denied" });
+      expect(refused.searched).toEqual([]);
+    }
+    const outside = yield* searchHistory(
+      { query: "brass" },
+      { caller: { homeThreadId: ownHome }, external: true },
+    );
+    expect(outside.result).toMatchObject({ code: "thread_credential_required" });
+    expect(outside.searched).toEqual([]);
   }),
 );

@@ -81,6 +81,23 @@ it("credits only learning the Bot recorded itself, in the expected scope and sta
   expect(learnedToo.find((check) => check.check === "no learning recorded")?.pass).toBe(false);
 });
 
+it("credits a history answer only when it links a message of the cited turn", () => {
+  const history = CASES.find((testCase) => testCase.id === "history-after-fresh-start")!;
+  const citeCheck = (answer: string) =>
+    gradeSample(history, {
+      ...run([]),
+      answers: ["Noted.", answer],
+      turnMessageIds: [["msg-1", "msg-2"], ["msg-3"]],
+    }).find((check) => check.check.includes("links a message"))?.pass;
+  expect(
+    citeCheck("'brass lantern' ([Home](t3-thread://v2/env/home#message=msg-1&find=brass))."),
+  ).toBe(true);
+  expect(citeCheck("'brass lantern' (<t3-thread://v2/env/home>).")).toBe(false);
+  expect(citeCheck("'brass lantern' (t3-thread://v2/env/home#message=msg-3&find=brass)")).toBe(
+    false,
+  );
+});
+
 it("fails a stored list that repeats one source in place of another", () => {
   const stored = run([update("bs-1", "project-a")]);
   const repeated = {
