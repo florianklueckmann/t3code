@@ -198,17 +198,23 @@ it.effect(
   () =>
     Effect.gen(function* () {
       for (const threadId of [botThread, workThread, botForkThread]) {
-        const policy = yield* resolveFor(threadId);
-        assert.deepEqual(policy.mcpConnections, [privateMail], threadId);
-        assert.equal(policy.nativeMemory, "disabled");
-        assert.isUndefined(policy.nativeTools);
-        assert.isUndefined(policy.userMcpServers);
+        for (const platform of ["darwin", "linux"] as const) {
+          const policy = yield* resolveFor(threadId, { platform });
+          assert.deepEqual(policy.mcpConnections, [privateMail], `${threadId} on ${platform}`);
+          assert.equal(policy.nativeMemory, "disabled");
+          assert.isUndefined(policy.nativeTools);
+          assert.isUndefined(policy.userMcpServers);
+        }
       }
       // The Bot's switch adds the user's own Codex MCP servers to its granted connections.
       const ownServers = yield* resolveFor(ownServersBotThread);
       assert.deepEqual(ownServers.mcpConnections, [privateMail]);
       assert.equal(ownServers.userMcpServers, "enabled");
       assert.deepEqual((yield* resolveFor(ungrantedBotThread)).mcpConnections, []);
+      assert.deepEqual(
+        (yield* resolveFor(ungrantedBotThread, { platform: "linux" })).mcpConnections,
+        [],
+      );
       // No changes keeps the grants under its seal; the scoped Home turn needs no external account.
       const noChanges = yield* resolveFor(noChangesThread);
       assert.equal(noChanges.nativeTools, "readOnly");
@@ -228,7 +234,7 @@ it.effect(
 it.effect.each([
   ["Claude Bot", botThread, ungrantedBotThread, { instanceId: "codex" }],
   ["Claude fork", botForkThread, ungrantedBotForkThread, { instanceId: "codex" }],
-  ["Linux Bot", botThread, ungrantedBotThread, { platform: "linux" }],
+  ["Windows Bot", botThread, ungrantedBotThread, { platform: "win32" }],
   [
     "Codex Bot delegating to Claude",
     botSubagentThread,

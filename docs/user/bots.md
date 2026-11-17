@@ -305,7 +305,7 @@ service, add a second connection and sign in with the other account.
 
 ## Current limits
 
-- MCP connections apply only to Codex 0.166.0 or later on a Mac server.
+- MCP connections apply only to Codex 0.166.0 or later on a macOS or Linux server.
   Elsewhere, a Bot without connections uses the provider's own MCP setup, and a
   Bot with connections does not run.
 - Bots turn off Claude's automatic memory and Grok's cross-session memory.

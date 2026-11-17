@@ -5374,7 +5374,8 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           [workMail, "call"],
         ]);
       }).pipe(
-        Effect.provideService(HostProcess.Platform, "darwin"),
+        // Grant loads, unlike seals, also run on Linux.
+        Effect.provideService(HostProcess.Platform, "linux"),
         Effect.provide(
           Layer.mergeAll(
             IdAllocator.layer,
@@ -5538,7 +5539,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         // An unmeasured Codex version or platform loads nothing, so no global server can start.
         for (const [scenario, platform, measured, reason] of [
           ["codex-grant-version", "darwin", false, "version"],
-          ["codex-grant-platform", "linux", true, "platform"],
+          ["codex-grant-platform", "win32", true, "platform"],
         ] as const) {
           yield* Effect.scoped(
             Effect.gen(function* () {

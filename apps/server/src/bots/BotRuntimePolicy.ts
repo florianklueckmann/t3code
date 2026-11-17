@@ -4,29 +4,39 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
+import * as CodexAdapterV2 from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as RuntimePolicy from "../orchestration-v2/RuntimePolicy.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as BotExecutionConstraint from "./BotExecutionConstraint.ts";
 import * as BotTurnContext from "./BotTurnContext.ts";
+
+const unenforceable = Effect.fn("BotRuntimePolicy.unenforceable")(function* (
+  providerInstances: ProviderInstanceRegistry.ProviderInstanceRegistry["Service"],
+  instanceId: ProviderInstanceId,
+  platformSupported: (platform: NodeJS.Platform) => boolean,
+) {
+  const instance = yield* providerInstances.getInstance(instanceId);
+  return instance?.driverKind !== "codex"
+    ? ("provider" as const)
+    : !platformSupported(yield* HostProcess.Platform)
+      ? ("platform" as const)
+      : undefined;
+});
 
 /**
  * Why a restricted Bot run cannot be enforced on this instance here, or undefined. Only Codex
  * enforces a restriction, and only where it was verified natively. An instance id is not a
  * driver, so the registry says which driver runs it.
  */
-export const restrictionUnenforceable = Effect.fn("BotRuntimePolicy.restrictionUnenforceable")(
-  function* (
-    providerInstances: ProviderInstanceRegistry.ProviderInstanceRegistry["Service"],
-    instanceId: ProviderInstanceId,
-  ) {
-    const instance = yield* providerInstances.getInstance(instanceId);
-    return instance?.driverKind !== "codex"
-      ? ("provider" as const)
-      : (yield* HostProcess.Platform) !== "darwin"
-        ? ("platform" as const)
-        : undefined;
-  },
-);
+export const restrictionUnenforceable = (
+  providerInstances: ProviderInstanceRegistry.ProviderInstanceRegistry["Service"],
+  instanceId: ProviderInstanceId,
+) => unenforceable(providerInstances, instanceId, CodexAdapterV2.codexSealPlatformSupported);
+
+const mcpGrantsUnenforceable = (
+  providerInstances: ProviderInstanceRegistry.ProviderInstanceRegistry["Service"],
+  instanceId: ProviderInstanceId,
+) => unenforceable(providerInstances, instanceId, CodexAdapterV2.codexMcpGrantsPlatformSupported);
 
 /**
  * Bot threads, and the forks, subagents and threads their agents create, run without provider
@@ -61,7 +71,7 @@ export const layer: Layer.Layer<
         const bot = yield* botTurnContext
           .forThread(input.thread.id)
           .pipe(Effect.mapError(resolveError));
-        const unenforceable = () =>
+        const sealUnenforceable = () =>
           restrictionUnenforceable(providerInstances, input.modelSelection.instanceId);
         if (input.restriction !== undefined) {
           const reason =
@@ -69,7 +79,7 @@ export const layer: Layer.Layer<
             bot.scope.taskId !== null ||
             bot.scope.homeThreadId !== input.thread.id
               ? ("home" as const)
-              : yield* unenforceable();
+              : yield* sealUnenforceable();
           if (reason !== undefined) {
             return yield* new RuntimePolicy.RuntimePolicyUnsupportedError({
               threadId: input.thread.id,
@@ -91,7 +101,7 @@ export const layer: Layer.Layer<
           .pipe(Effect.mapError(resolveError));
         const noChanges = constraint === "no-changes";
         if (noChanges) {
-          const reason = yield* unenforceable();
+          const reason = yield* sealUnenforceable();
           if (reason !== undefined) {
             return yield* new RuntimePolicy.RuntimePolicyUnsupportedError({
               threadId: input.thread.id,
@@ -121,7 +131,10 @@ export const layer: Layer.Layer<
           });
         }
         const mcpConnections = access._tag === "bot" ? access.connectionIds : [];
-        const mcpReason = yield* unenforceable();
+        const mcpReason = yield* mcpGrantsUnenforceable(
+          providerInstances,
+          input.modelSelection.instanceId,
+        );
         if (mcpReason !== undefined && mcpConnections.length > 0) {
           const botName = access._tag === "bot" ? access.botName : "This Bot";
           return yield* new RuntimePolicy.RuntimePolicyMcpUnsupportedError({
@@ -130,7 +143,7 @@ export const layer: Layer.Layer<
             detail:
               mcpReason === "provider"
                 ? `${botName} uses only the MCP connections granted to it, which only Codex can enforce, so nothing ran. Switch this thread to a Codex model.`
-                : `${botName} uses only the MCP connections granted to it, which is only verified on macOS, so nothing ran.`,
+                : `${botName} uses only the MCP connections granted to it, which is only verified on macOS and Linux, so nothing ran.`,
           });
         }
         const userMcpServers =

@@ -1593,6 +1593,10 @@ export const codexSealVersionSupported = (version: string | undefined) =>
   version !== undefined &&
   parseSemver(version) !== null &&
   compareSemverVersions(version, CODEX_SEAL_MIN_VERSION) >= 0;
+/** Where seals and grant loads were measured natively; Linux covers grant loads only. */
+export const codexSealPlatformSupported = (platform: NodeJS.Platform) => platform === "darwin";
+export const codexMcpGrantsPlatformSupported = (platform: NodeJS.Platform) =>
+  platform === "darwin" || platform === "linux";
 const codexFeaturesOff = (names: ReadonlyArray<string>) =>
   Object.fromEntries(names.map((name) => [`features.${name}`, false]));
 /** Each adds tools, or acts outside the read-only sandbox, so no seal keeps it. */
@@ -2509,7 +2513,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
         ) {
           if (seal === "t3BotOnly" && mcpSession === undefined)
             return yield* refuseSeal(seal, "unavailable");
-          if ((yield* HostProcess.Platform) !== "darwin")
+          if (!codexSealPlatformSupported(yield* HostProcess.Platform))
             return yield* refuseSeal(seal, "platform");
           if (!codexSealVersionSupported(yield* Ref.get(codexVersion)))
             return yield* refuseSeal(seal, "version");
@@ -2582,7 +2586,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               turnsOffUserServers: seal !== "ordinary",
             };
           if (mcpConnectionDelivery === undefined) return yield* refuseMcp("unavailable");
-          if ((yield* HostProcess.Platform) !== "darwin") return yield* refuseMcp("platform");
+          if (!codexMcpGrantsPlatformSupported(yield* HostProcess.Platform))
+            return yield* refuseMcp("platform");
           if (!codexSealVersionSupported(yield* Ref.get(codexVersion)))
             return yield* refuseMcp("version");
           const delivered = yield* mcpConnectionDelivery.resolve(ids).pipe(
