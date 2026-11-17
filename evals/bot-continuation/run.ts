@@ -78,6 +78,8 @@ const Capture = Schema.Struct({
 });
 const Manifest = Schema.Struct({
   version: Schema.Literal(1),
+  /** Absent from manifests captured before `--instance`, which all ran on Codex. */
+  instance: Schema.optional(Schema.String),
   model: Schema.String,
   effort: Schema.String,
   captures: Schema.Array(Capture),
@@ -366,11 +368,21 @@ const main = Effect.gen(function* () {
       let manifest: typeof Manifest.Type;
       if (values.phase === "resume") {
         manifest = yield* decodeManifest(NodeFS.readFileSync(manifestPath, "utf8"));
-        if (manifest.model !== values.model || manifest.effort !== values.effort)
+        if (
+          (manifest.instance ?? "codex") !== values.instance ||
+          manifest.model !== values.model ||
+          manifest.effort !== values.effort
+        )
           return yield* Effect.die(
-            new Error("Resume must use the captured model and effort; no fallback."),
+            new Error("Resume must use the captured instance, model and effort; no fallback."),
           );
       } else {
+        const run = {
+          version: 1 as const,
+          instance: values.instance,
+          model: values.model,
+          effort: values.effort,
+        };
         const captures: Captured[] = [];
         for (const testCase of selected)
           for (let sample = 0; sample < Number(values.samples); sample += 1) {
@@ -382,12 +394,9 @@ const main = Effect.gen(function* () {
               modelSelection,
             );
             captures.push(captured);
-            NodeFS.writeFileSync(
-              manifestPath,
-              encodeJson({ version: 1, model: values.model, effort: values.effort, captures }),
-            );
+            NodeFS.writeFileSync(manifestPath, encodeJson({ ...run, captures }));
           }
-        manifest = { version: 1, model: values.model, effort: values.effort, captures };
+        manifest = { ...run, captures };
       }
       NodeFS.writeFileSync(
         NodePath.join(out, "metadata.json"),

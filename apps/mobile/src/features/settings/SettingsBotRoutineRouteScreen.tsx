@@ -98,7 +98,11 @@ export function SettingsBotRoutineRouteScreen({
                 : null;
 
   const title = taskId === undefined ? "New routine" : "Edit routine";
-  if (unavailable === null && bot && initialDraft && task !== undefined) {
+  // The form starts from the capabilities of the Bot's current model, so it waits for a matching detail.
+  const detailCurrent =
+    detail.data !== null &&
+    detail.data.modelSelection.instanceId === bot?.modelSelection.instanceId;
+  if (unavailable === null && bot && detailCurrent && initialDraft && task !== undefined) {
     return (
       <BotRoutineForm
         key={taskId ?? "new"}
