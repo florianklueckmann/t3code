@@ -29,6 +29,7 @@ import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Cause from "effect/Cause";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -1247,8 +1248,32 @@ export const make = Effect.gen(function* () {
   });
 
   /**
+   * One whole pass for the Home, nightly or manual, in the service's fiber map: a Home that
+   * already has one keeps it, and the returned fiber ends interrupted at once.
+   */
+  const startPass = Effect.fn("BotMaintenance.startPass")(function* (
+    scope: BotContinuationScope,
+    home: ThreadId,
+  ) {
+    const learned = yield* Deferred.make<void>();
+    const fiber = yield* FiberMap.run(
+      refreshes,
+      home,
+      Effect.gen(function* () {
+        const learning = yield* step(runNow(scope)).pipe(
+          Effect.ensuring(Deferred.succeed(learned, undefined)),
+        );
+        return { learning, ...(yield* maintainHome(scope)) };
+      }),
+      // Started after it is in the map, so work it does synchronously cannot let a second claim in.
+      { onlyIfMissing: true, startImmediately: false },
+    );
+    return { fiber, learned: Deferred.await(learned).pipe(Effect.raceFirst(Fiber.await(fiber))) };
+  });
+
+  /**
    * The nightly pass for one Home, with the same gates, refused at once while any pass runs
-   * there. It runs in the service's fiber map, so a client that leaves does not stop it.
+   * there. A client that leaves does not stop it.
    */
   const run = Effect.fn("BotMaintenance.run")(function* (scope: BotContinuationScope) {
     const { bot, home, active } = yield* scopeOf(scope);
@@ -1258,18 +1283,7 @@ export const make = Effect.gen(function* () {
       return yield* invalid("This Bot is archived or detached, so maintenance does not run.");
     if ((yield* generationOf(bot)).unavailableReason !== null) return yield* unavailable();
     const running = invalid("Maintenance is already running for this project.");
-    // The nightly learning step holds only the pass lock; the rest of a pass holds the map entry.
-    if ((yield* passLocks.activeKeys).includes(home)) return yield* running;
-    const fiber = yield* FiberMap.run(
-      refreshes,
-      home,
-      Effect.gen(function* () {
-        const learning = yield* step(runNow(scope));
-        return { learning, ...(yield* maintainHome(scope)) };
-      }),
-      // A Home that already has a pass keeps it, and this fiber ends interrupted.
-      { onlyIfMissing: true },
-    );
+    const { fiber } = yield* startPass(scope, home);
     const exit = yield* Fiber.await(fiber);
     if (Exit.isFailure(exit))
       return yield* Cause.hasInterruptsOnly(exit.cause) ? running : Effect.failCause(exit.cause);
@@ -1315,14 +1329,10 @@ export const make = Effect.gen(function* () {
       );
       if (due === null || DateTime.isGreaterThan(due, now)) continue;
       yield* sql`UPDATE bot_maintenance SET nightly_at = ${DateTime.formatIso(now)} WHERE home_thread_id = ${row.home_thread_id}`;
-      // A pass started by hand is still running here and covers this night.
-      if (yield* FiberMap.has(refreshes, ThreadId.make(row.home_thread_id))) continue;
       const scope = { botId: BotId.make(row.bot_id), projectId: ProjectId.make(row.project_id) };
-      yield* runNow(scope).pipe(Effect.ignore({ log: true }));
-      // The refresh and compaction wait on Home turns, so the other Homes' passes do not wait.
-      yield* FiberMap.run(refreshes, ThreadId.make(row.home_thread_id), maintainHome(scope), {
-        onlyIfMissing: true,
-      });
+      // Homes learn one after another; the refresh and compaction wait on Home turns, so the
+      // next Home does not wait for them. A pass already running there covers this night.
+      yield* (yield* startPass(scope, ThreadId.make(row.home_thread_id))).learned;
     }
   });
   yield* scheduler.register("bot-maintenance", runNightly);
