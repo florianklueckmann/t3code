@@ -57,6 +57,12 @@ describe("RPC authorization scopes", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.botsConfigureHomeCheck)).toBe(
       AuthOrchestrationOperateScope,
     );
+    expect(requiredScopeForRpcMethod(WS_METHODS.botsGetFailureDiagnosis)).toBe(
+      AuthOrchestrationReadScope,
+    );
+    expect(requiredScopeForRpcMethod(WS_METHODS.botsConfigureFailureDiagnosis)).toBe(
+      AuthOrchestrationOperateScope,
+    );
   });
 
   it("keeps webhook delivery logs, which hold request bodies, behind operate scope", () => {

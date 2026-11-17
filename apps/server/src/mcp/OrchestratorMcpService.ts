@@ -1041,7 +1041,7 @@ function jsonText(value: unknown): string {
   }
 }
 
-function turnItemText(item: OrchestrationV2TurnItem): string | null {
+export function turnItemText(item: OrchestrationV2TurnItem): string | null {
   switch (item.type) {
     case "notification":
       return [item.summary, item.detail].filter((part) => part !== undefined).join("\n");

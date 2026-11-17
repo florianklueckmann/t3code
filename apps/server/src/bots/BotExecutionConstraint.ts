@@ -10,9 +10,12 @@ import * as BotStore from "./BotStore.ts";
 
 export type BotExecutionConstraintValue = "standard" | "no-changes";
 
-/** Direct tasks store allow_changes = 0 too; only a routine's saved choice restricts. */
+/**
+ * Direct tasks store allow_changes = 0 too; only a routine's saved choice restricts. A diagnosis of
+ * a failed run never changes anything, whatever its row says.
+ */
 export const isNoChangesTask = (row: { readonly origin: string; readonly allow_changes: number }) =>
-  row.origin === "routine" && row.allow_changes === 0;
+  row.origin === "diagnostic" || (row.origin === "routine" && row.allow_changes === 0);
 
 /**
  * What a thread may change, from the task row admitted for it. Routine edits, the thread's mode,

@@ -37,6 +37,14 @@ case from waking Home. Missing delivery retains the task, answer, and file
 evidence as failed checks. Compare the same cases and model against a separate
 base server with a fresh home; never downgrade the newer Bot database.
 
+`diagnoses-failed-routine` covers T3B-57: the routine's brief kills the agent's own
+Codex process, so its run fails, and the Home's failure diagnosis is on with the
+default brief. The eval turns the rule on by writing its row to the dev server's
+`bots.sqlite`, since the setting has no MCP tool. It grades the diagnosis: exactly
+one, completed, naming the kill as the cause, without running the command again,
+without a Home turn and without file changes. Compare against the revision of
+`BotTurnContext.ts` and `BotFailureDiagnosis.ts` you change.
+
 `task-with-own-reasoning` covers T3B-28: asked for one task at low reasoning,
 the Bot must pass that selection to `start_task`, not `update` itself. It grades
 the task's recorded selection against the Bot's model and checks the Bot's

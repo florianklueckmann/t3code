@@ -141,6 +141,8 @@ export const transferLegacyBots = Effect.fn("BotDatabase.transferLegacyBots")(fu
                     "return_home_message_id",
                     "return_finished_at",
                     "model_selection_json",
+                    "diagnoses_task_id",
+                    "diagnoses_run_id",
                   ].includes(row.name)
                 ),
             );
@@ -181,6 +183,8 @@ export const transferLegacyBots = Effect.fn("BotDatabase.transferLegacyBots")(fu
                 row.return_home_message_id = null;
                 row.return_finished_at = null;
                 row.model_selection_json = null;
+                row.diagnoses_task_id = null;
+                row.diagnoses_run_id = null;
               }
               const keys = targetColumns
                 .filter((column) => column.pk > 0)

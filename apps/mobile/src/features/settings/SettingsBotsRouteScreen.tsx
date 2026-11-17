@@ -28,6 +28,7 @@ import { reportBotFailure } from "../bots/reportBotFailure";
 import { useSelectWorkspaceDetail } from "../layout/workspace/useSelectWorkspaceDetail";
 import { useBotEditor, startBotEditor, startNewBotEditor } from "./bot-editor";
 import { BotContinuationSection } from "./BotContinuationSection";
+import { BotFailureDiagnosisSection } from "./BotFailureDiagnosisSection";
 import { BotHomeCheckSection } from "./BotHomeCheckSection";
 import { BotMaintenanceSection } from "./BotMaintenanceSection";
 import { BotMcpGrantsSection } from "./BotMcpGrantsSection";
@@ -310,20 +311,20 @@ function BotEditorScreen({ title }: { readonly title: string }) {
   const [saving, setSaving] = useState(false);
   // Set once a save or archive lands, so the removal guard lets the editor close.
   const done = useRef(false);
-  // Home check times save apart from the Bot, so a saved Bot does not cover them.
-  const [homeCheckDrafts, setHomeCheckDrafts] = useState<ReadonlySet<ProjectId>>(() => new Set());
-  const trackHomeCheckDraft = (projectId: ProjectId, unsaved: boolean) =>
-    setHomeCheckDrafts((current) => {
-      if (current.has(projectId) === unsaved) return current;
+  // Home check times and diagnostic briefs save apart from the Bot, so a saved Bot does not cover them.
+  const [settingDrafts, setSettingDrafts] = useState<ReadonlySet<string>>(() => new Set());
+  const trackSettingDraft = (key: string, unsaved: boolean) =>
+    setSettingDrafts((current) => {
+      if (current.has(key) === unsaved) return current;
       const next = new Set(current);
-      if (unsaved) next.add(projectId);
-      else next.delete(projectId);
+      if (unsaved) next.add(key);
+      else next.delete(key);
       return next;
     });
-  const preventRemove = editor.hasChanges || saving || homeCheckDrafts.size > 0;
+  const preventRemove = editor.hasChanges || saving || settingDrafts.size > 0;
   usePreventRemove(preventRemove, ({ data }) => {
     if (done.current) {
-      if (homeCheckDrafts.size === 0) {
+      if (settingDrafts.size === 0) {
         navigation.dispatch(data.action);
         return;
       }
@@ -371,7 +372,7 @@ function BotEditorScreen({ title }: { readonly title: string }) {
             setBaseline={editor.setBaseline}
             saving={saving}
             setSaving={setSaving}
-            onHomeCheckDraftChange={trackHomeCheckDraft}
+            onSettingDraftChange={trackSettingDraft}
             onDone={finish}
           />
         ) : (
@@ -400,7 +401,7 @@ function BotForm({
   setBaseline,
   saving,
   setSaving,
-  onHomeCheckDraftChange,
+  onSettingDraftChange,
   onDone,
 }: {
   readonly environmentId: EnvironmentId;
@@ -411,7 +412,8 @@ function BotForm({
   readonly setBaseline: (next: BotDraft) => void;
   readonly saving: boolean;
   readonly setSaving: (saving: boolean) => void;
-  readonly onHomeCheckDraftChange: (projectId: ProjectId, unsaved: boolean) => void;
+  /** Keyed per project and setting, so one section's save does not clear another's draft. */
+  readonly onSettingDraftChange: (key: string, unsaved: boolean) => void;
   readonly onDone: () => void;
 }) {
   const navigation = useNavigation<NativeStackNavigationProp<BotRoutes>>();
@@ -421,6 +423,7 @@ function BotForm({
   const routinesSupported = config?.environment.capabilities.botRoutines === true;
   const notesSupported = config?.environment.capabilities.botContinuation === true;
   const maintenanceSupported = config?.environment.capabilities.botMaintenance === true;
+  const diagnosisSupported = config?.environment.capabilities.botFailureDiagnosis === true;
   const canOperate = useAtomValue(serverEnvironment.updateBot.permissionAtom(environmentId));
   const projects = useProjects().filter((project) => project.environmentId === environmentId);
   const projectTitle = (projectId: ProjectId) =>
@@ -661,7 +664,22 @@ function BotForm({
                 projectId={project.projectId}
                 title={`${projectTitle(project.projectId)} · Home check`}
                 formLocked={readOnly || !project.attached}
-                onDraftChange={(unsaved) => onHomeCheckDraftChange(project.projectId, unsaved)}
+                onDraftChange={(unsaved) =>
+                  onSettingDraftChange(`${project.projectId}:home-check`, unsaved)
+                }
+              />
+            ) : null}
+            {diagnosisSupported &&
+            baseline.projects.some((saved) => saved.projectId === project.projectId) ? (
+              <BotFailureDiagnosisSection
+                environmentId={environmentId}
+                botId={draft.botId}
+                projectId={project.projectId}
+                title={`${projectTitle(project.projectId)} · Failed routines`}
+                formLocked={readOnly || !project.attached}
+                onDraftChange={(unsaved) =>
+                  onSettingDraftChange(`${project.projectId}:diagnosis`, unsaved)
+                }
               />
             ) : null}
             {routinesSupported &&

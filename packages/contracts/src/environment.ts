@@ -225,6 +225,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   botMaintenance: Schema.optionalKey(Schema.Boolean),
   /** Server answers bots.getHomeCheck and bots.configureHomeCheck. */
   botHomeCheck: Schema.optionalKey(Schema.Boolean),
+  /** Server answers bots.getFailureDiagnosis and bots.configureFailureDiagnosis. */
+  botFailureDiagnosis: Schema.optionalKey(Schema.Boolean),
 });
 export type ExecutionEnvironmentCapabilities = typeof ExecutionEnvironmentCapabilities.Type;
 

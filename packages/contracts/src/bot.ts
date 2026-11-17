@@ -444,7 +444,10 @@ export const BOT_TASK_TERMINAL_STATUSES: ReadonlySet<BotTaskStatus> = new Set([
   "skipped",
 ]);
 
-/** `direct` was asked for; `routine` comes from one of the Bot's scheduled routines. */
+/**
+ * `direct` was asked for; `routine` comes from one of the Bot's scheduled routines or diagnoses a
+ * failed run of one, which its `diagnosis` names.
+ */
 export const BotTaskOrigin = Schema.Literals(["direct", "routine"]);
 export type BotTaskOrigin = typeof BotTaskOrigin.Type;
 
@@ -478,6 +481,18 @@ export const BotTaskSummary = Schema.Struct({
    * Absent from servers that predate enforcement, where nothing restricted the task.
    */
   changes: Schema.optional(Schema.NullOr(Schema.Literal("none"))),
+  /**
+   * Set on a task that diagnoses a failed routine run: the run it was started for. Such a task
+   * reads as origin "routine" so clients that predate diagnoses still decode it.
+   */
+  diagnosis: Schema.optional(
+    Schema.Struct({
+      taskId: BotTaskId,
+      runId: RunId,
+      title: TrimmedNonEmptyString,
+      workThreadId: ThreadId,
+    }),
+  ),
 });
 export type BotTaskSummary = typeof BotTaskSummary.Type;
 

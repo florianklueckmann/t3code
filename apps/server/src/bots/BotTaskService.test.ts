@@ -3,11 +3,13 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
   BOT_WORK_THREAD_ID_PREFIX,
+  type BotError,
   BotId,
   BotTaskId,
   BotTaskListInput,
   type BotTaskStatus,
   CommandId,
+  McpConnectionId,
   type ModelSelection,
   type OrchestrationV2ServerCommand,
   type OrchestrationV2ThreadShell,
@@ -30,6 +32,7 @@ import {
 } from "@t3tools/contracts";
 import { makeSubagentConversationArtifacts } from "@t3tools/provider-core/server/subagentProjection";
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -62,6 +65,7 @@ import * as SecretRequests from "../secrets/SecretRequests.ts";
 import { ServerActivation } from "../serverActivation.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as BotExecutionConstraint from "./BotExecutionConstraint.ts";
+import * as BotFailureDiagnosis from "./BotFailureDiagnosis.ts";
 import * as BotProjectGuard from "./BotProjectGuard.ts";
 import * as BotService from "./BotService.ts";
 import * as BotTaskService from "./BotTaskService.ts";
@@ -389,6 +393,7 @@ interface Services {
   readonly routines: ScheduledTaskService.ScheduledTaskService["Service"];
   readonly turnContext: BotTurnContext.BotTurnContext["Service"];
   readonly constraint: BotExecutionConstraint.BotExecutionConstraint["Service"];
+  readonly diagnosis: BotFailureDiagnosis.BotFailureDiagnosis["Service"];
 }
 
 /**
@@ -407,10 +412,16 @@ const withServices = <A, E>(
       routines: yield* ScheduledTaskService.ScheduledTaskService,
       turnContext: yield* BotTurnContext.BotTurnContext,
       constraint: yield* BotExecutionConstraint.BotExecutionConstraint,
+      diagnosis: yield* BotFailureDiagnosis.BotFailureDiagnosis,
     });
   }).pipe(
     Effect.provide(
-      Layer.mergeAll(BotService.layer, BotTurnContext.layer, BotExecutionConstraint.layer).pipe(
+      Layer.mergeAll(
+        BotService.layer,
+        BotTurnContext.layer,
+        BotExecutionConstraint.layer,
+        BotFailureDiagnosis.layer,
+      ).pipe(
         Layer.provideMerge(
           ScheduledTaskService.layer.pipe(Layer.provide(BotTaskService.layerRoutineTarget)),
         ),
@@ -1908,6 +1919,382 @@ it.effect("keeps a routine's Bot when an editor saves it without one", () =>
           .upsert({ ...olderEditor, id: task.id, schedule: { type: "webhook" } })
           .pipe(Effect.flip);
         assert.include(webhook.message, "not a webhook");
+      }),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
+const DIAGNOSIS_BRIEF = "Check the session log first.";
+const MAIL = McpConnectionId.make("2a2a2a2a-0000-4000-8000-00000000002a");
+
+const enableDiagnosis = (services: Services) =>
+  services.diagnosis
+    .configure({
+      botId,
+      projectId: campaign,
+      baseRevision: 0,
+      enabled: true,
+      brief: DIAGNOSIS_BRIEF,
+    })
+    .pipe(Effect.provideService(HostProcess.Platform, "darwin"));
+
+/** Runs a routine now; its task and work thread. */
+const runRoutine = Effect.fn("BotTaskServiceTest.runRoutine")(function* (
+  services: Services,
+  allowChanges: boolean,
+) {
+  const { task } = yield* services.routines.upsert({
+    ...routineInput({ type: "fixed_time", timeOfDay: "18:00" }),
+    bot: { botId, allowChanges },
+  });
+  const run = yield* services.routines.runNow({ id: task.id });
+  const workThreadId = run.threadId ?? assert.fail("no work thread");
+  const [routine] = (yield* services.tasks.list({ workThreadId })).tasks;
+  return { taskId: routine?.id ?? assert.fail("no task"), workThreadId };
+});
+
+/** Ends the thread's first run now, in its shell and in its persisted run record. */
+const endRun = Effect.fn("BotTaskServiceTest.endRun")(function* (
+  world: ThreadWorld,
+  threadId: ThreadId,
+  status: "failed" | "rolled_back" | "interrupted",
+) {
+  yield* world.update(threadId, { status });
+  const completedAt = yield* DateTime.now;
+  yield* Ref.update(world.records, (current) =>
+    new Map(current).set(threadId, {
+      thread: { id: threadId, projectId: campaign, deletedAt: null } as never,
+      runs: [{ id: RunId.make(`run:${threadId}`), threadId, status, completedAt } as never],
+      messages: [],
+      turnItems: [
+        {
+          type: "error",
+          status: "failed",
+          runId: RunId.make(`run:${threadId}`),
+          ordinal: 1,
+          failure: { message: "The provider event stream closed unexpectedly." },
+        } as never,
+      ],
+    }),
+  );
+});
+
+const diagnosesOf = (services: Services, taskId: string) =>
+  services.tasks
+    .list({ botId })
+    .pipe(Effect.map(({ tasks }) => tasks.filter((task) => task.diagnosis?.taskId === taskId)));
+
+it.effect(
+  "diagnoses a failed routine run once, without changes, across duplicates and a restart",
+  () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(START);
+      yield* seedProject;
+      const world = yield* makeThreadWorld;
+      const sql = yield* BotDatabase.BotDatabase;
+      const failed = yield* withServices(world, (services) =>
+        Effect.gen(function* () {
+          const home = yield* attachBot(services);
+          yield* enableDiagnosis(services);
+          const routine = yield* runRoutine(services, true);
+          // The Bot may use a connection and the user's own servers; a routine run gets both.
+          yield* sql`INSERT INTO bot_mcp_grants (bot_id, connection_id) VALUES (${botId}, ${MAIL})`;
+          yield* sql`UPDATE bots SET mcp_own_codex_servers = 1 WHERE bot_id = ${botId}`;
+          yield* TestClock.adjust("1 second");
+          yield* endRun(world, routine.workThreadId, "failed");
+          // Passes at once stand in for the same failure delivered twice.
+          yield* Effect.all([services.tasks.reconcile, services.tasks.reconcile], {
+            concurrency: 2,
+            discard: true,
+          });
+          yield* services.tasks.reconcile;
+          const [diagnosis, ...others] = yield* diagnosesOf(services, routine.taskId);
+          assert.lengthOf(others, 0);
+          if (diagnosis === undefined) return assert.fail("no diagnosis");
+          assert.deepEqual(diagnosis.diagnosis, {
+            taskId: BotTaskId.make(routine.taskId),
+            runId: RunId.make(`run:${routine.workThreadId}`),
+            title: "Session preparation",
+            workThreadId: routine.workThreadId,
+          });
+          assert.equal(diagnosis.origin, "routine");
+          assert.isNull(diagnosis.scheduledTaskId);
+          assert.equal(diagnosis.homeThreadId, home);
+          assert.equal(diagnosis.projectId, campaign);
+          assert.equal(
+            diagnosis.runtimeMode,
+            (yield* services.tasks.get(BotTaskId.make(routine.taskId))).runtimeMode,
+          );
+          // The routine could change things; its diagnosis cannot, on the same model.
+          assert.equal(diagnosis.changes, "none");
+          const diagnosisThread = diagnosis.workThreadId ?? assert.fail("no work thread");
+          assert.equal(yield* services.constraint.forThread(diagnosisThread), "no-changes");
+          assert.deepEqual(
+            yield* launchedSelection(world, diagnosisThread),
+            yield* launchedSelection(world, routine.workThreadId),
+          );
+          const accessOf = (id: ThreadId) =>
+            services.turnContext.mcpAccessForThread({
+              id,
+              lineage: { parentThreadId: null, relationshipToParent: null },
+              createdByThreadId: null,
+            } as never);
+          assert.deepInclude(yield* accessOf(routine.workThreadId), {
+            connectionIds: [MAIL],
+            ownCodexMcpServers: true,
+          });
+          assert.deepInclude(yield* accessOf(diagnosisThread), {
+            connectionIds: [],
+            ownCodexMcpServers: false,
+          });
+          const context = yield* services.turnContext.forThread(diagnosisThread);
+          if (context._tag !== "active") return assert.fail("inactive diagnosis");
+          assert.include(context.instructions, "diagnoses a failed run");
+          const [row] = yield* sql<{ readonly prompt: string }>`
+            SELECT prompt FROM bot_tasks WHERE task_id = ${diagnosis.id}
+          `;
+          assert.include(row?.prompt, DIAGNOSIS_BRIEF);
+          assert.include(row?.prompt, routine.workThreadId);
+          assert.include(
+            row?.prompt,
+            "error (failed): The provider event stream closed unexpectedly.",
+          );
+          return { ...routine, diagnosisId: diagnosis.id, diagnosisThread };
+        }),
+      );
+      yield* withServices(world, (services) =>
+        Effect.gen(function* () {
+          yield* services.tasks.reconcile;
+          assert.lengthOf(yield* diagnosesOf(services, failed.taskId), 1);
+          // A diagnosis that fails is never diagnosed in turn.
+          yield* endRun(world, failed.diagnosisThread, "failed");
+          yield* services.tasks.reconcile;
+          yield* services.tasks.reconcile;
+          assert.equal(yield* statusOf(services, failed.diagnosisId), "failed");
+          assert.lengthOf((yield* services.tasks.list({ botId })).tasks, 2);
+        }),
+      );
+      assert.lengthOf(yield* world.commandsMatching(`launch ${failed.diagnosisThread}`), 1);
+    }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect("recovers a diagnosis across crashes before admission and before launch", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(START);
+    yield* seedProject;
+    const world = yield* makeThreadWorld;
+    const sql = yield* BotDatabase.BotDatabase;
+    const routine = yield* withServices(world, (services) =>
+      Effect.gen(function* () {
+        yield* attachBot(services);
+        yield* enableDiagnosis(services);
+        const routine = yield* runRoutine(services, false);
+        yield* endRun(world, routine.workThreadId, "failed");
+        // The failure is stored, then the server stops before admitting a diagnosis.
+        yield* sql`UPDATE bot_tasks SET status = 'failed', result_run_id = ${`run:${routine.workThreadId}`},
+          completed_at = ${iso(START)} WHERE task_id = ${routine.taskId}`;
+        return routine;
+      }),
+    );
+    // Before the restart, the user follows up in the failed thread.
+    yield* world.update(routine.workThreadId, { status: "running", runId: "run:follow-up" });
+    yield* withServices(world, (services) =>
+      Effect.gen(function* () {
+        const launched = yield* world.nextLaunch;
+        // The diagnosis is admitted and its launch accepted, then the server stops again.
+        yield* Ref.set(world.hangLaunches, true);
+        yield* Effect.raceFirst(
+          Deferred.await(launched),
+          services.tasks.reconcile.pipe(
+            Effect.andThen(Effect.die("the reconcile pass launched no diagnosis")),
+          ),
+        );
+      }),
+    );
+    yield* Ref.set(world.hangLaunches, false);
+    yield* withServices(world, (services) =>
+      Effect.gen(function* () {
+        yield* services.tasks.reconcile;
+        yield* services.tasks.reconcile;
+        const [diagnosis, ...others] = yield* diagnosesOf(services, routine.taskId);
+        assert.lengthOf(others, 0);
+        if (diagnosis === undefined) return assert.fail("no diagnosis");
+        assert.equal(diagnosis.diagnosis?.runId, `run:${routine.workThreadId}`);
+        const diagnosisThread = diagnosis.workThreadId ?? assert.fail("no work thread");
+        assert.lengthOf(yield* world.commandsMatching(`launch ${diagnosisThread}`), 1);
+
+        yield* world.update(diagnosisThread, { status: "running" });
+        yield* services.tasks.cancel({ taskId: diagnosis.id });
+        yield* services.tasks.reconcile;
+        yield* services.tasks.reconcile;
+        assert.equal(yield* statusOf(services, diagnosis.id), "cancelled");
+        assert.lengthOf((yield* services.tasks.list({ botId })).tasks, 2);
+      }),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect.each<{
+  readonly name: string;
+  readonly run: (
+    services: Services,
+    world: ThreadWorld,
+  ) => Effect.Effect<void, BotError | ScheduledTaskError, Scope.Scope>;
+}>([
+  {
+    name: "the rule is off",
+    run: (services, world) =>
+      Effect.gen(function* () {
+        const routine = yield* runRoutine(services, false);
+        yield* endRun(world, routine.workThreadId, "failed");
+      }),
+  },
+  {
+    name: "the rule was turned off before the run failed",
+    run: (services, world) =>
+      Effect.gen(function* () {
+        yield* enableDiagnosis(services);
+        yield* services.diagnosis.configure({
+          botId,
+          projectId: campaign,
+          baseRevision: 1,
+          enabled: false,
+        });
+        const routine = yield* runRoutine(services, false);
+        yield* endRun(world, routine.workThreadId, "failed");
+      }),
+  },
+  {
+    name: "the rule was turned on after the run failed",
+    run: (services, world) =>
+      Effect.gen(function* () {
+        const routine = yield* runRoutine(services, false);
+        yield* endRun(world, routine.workThreadId, "failed");
+        // The server reads the failure only after the rule is on.
+        yield* TestClock.adjust("1 second");
+        yield* enableDiagnosis(services);
+      }),
+  },
+  {
+    name: "the user rolled the run back",
+    run: (services, world) =>
+      Effect.gen(function* () {
+        yield* enableDiagnosis(services);
+        const routine = yield* runRoutine(services, false);
+        yield* endRun(world, routine.workThreadId, "rolled_back");
+      }),
+  },
+  {
+    name: "the run was interrupted",
+    run: (services, world) =>
+      Effect.gen(function* () {
+        yield* enableDiagnosis(services);
+        const routine = yield* runRoutine(services, false);
+        yield* endRun(world, routine.workThreadId, "interrupted");
+      }),
+  },
+  {
+    name: "the failed task was a direct request",
+    run: (services, world) =>
+      Effect.gen(function* () {
+        yield* enableDiagnosis(services);
+        const task = yield* services.tasks.start({ botId, projectId: campaign, prompt: "Fix it." });
+        yield* endRun(world, task.workThreadId ?? assert.fail("no work thread"), "failed");
+      }),
+  },
+  {
+    name: "the routine run was cancelled",
+    run: (services, world) =>
+      Effect.gen(function* () {
+        yield* enableDiagnosis(services);
+        const routine = yield* runRoutine(services, false);
+        yield* world.update(routine.workThreadId, { status: "running" });
+        yield* services.tasks.cancel({ taskId: BotTaskId.make(routine.taskId) });
+        yield* endRun(world, routine.workThreadId, "failed");
+      }),
+  },
+  {
+    name: "the Bot was archived",
+    run: (services, world) =>
+      Effect.gen(function* () {
+        yield* enableDiagnosis(services);
+        const routine = yield* runRoutine(services, false);
+        yield* endRun(world, routine.workThreadId, "failed");
+        yield* services.bots.setArchived({ botId, archived: true });
+      }),
+  },
+  {
+    name: "the project was detached",
+    run: (services, world) =>
+      Effect.gen(function* () {
+        yield* enableDiagnosis(services);
+        const routine = yield* runRoutine(services, false);
+        yield* endRun(world, routine.workThreadId, "failed");
+        yield* services.bots.detachProject({ botId, projectId: campaign });
+      }),
+  },
+])("starts no diagnosis when $name", ({ run }) =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(START);
+    yield* seedProject;
+    const world = yield* makeThreadWorld;
+    yield* withServices(world, (services) =>
+      Effect.gen(function* () {
+        yield* attachBot(services);
+        yield* run(services, world);
+        yield* services.tasks.reconcile;
+        yield* services.tasks.reconcile;
+        const tasks = (yield* services.tasks.list({ botId })).tasks;
+        assert.lengthOf(tasks, 1);
+        assert.isUndefined(tasks[0]?.diagnosis);
+      }),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect("saves the failure diagnosis rule only from its current revision and while active", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(START);
+    yield* seedProject;
+    const world = yield* makeThreadWorld;
+    yield* withServices(world, (services) =>
+      Effect.gen(function* () {
+        yield* attachBot(services);
+        const scope = { botId, projectId: campaign };
+        const onLinux = Effect.provideService(HostProcess.Platform, "linux");
+        const initial = yield* services.diagnosis.get(scope).pipe(onLinux);
+        assert.deepInclude(initial, {
+          revision: 0,
+          enabled: false,
+          writable: true,
+          unavailableReason: "platform",
+        });
+        // No changes cannot be enforced there, so a diagnosis could not run.
+        const unenforceable = yield* services.diagnosis
+          .configure({ ...scope, baseRevision: 0, enabled: true })
+          .pipe(onLinux, Effect.flip);
+        assert.include(unenforceable.message, "No changes");
+        const on = yield* enableDiagnosis(services);
+        assert.equal(on._tag, "saved");
+        const stale = yield* services.diagnosis.configure({
+          ...scope,
+          baseRevision: 0,
+          enabled: false,
+        });
+        assert.equal(stale._tag, "conflict");
+        const off = yield* services.diagnosis.configure({
+          ...scope,
+          baseRevision: 1,
+          enabled: false,
+        });
+        if (off._tag !== "saved") return assert.fail("not saved");
+        assert.deepInclude(off.view, { revision: 2, enabled: false, brief: DIAGNOSIS_BRIEF });
+        yield* services.bots.setArchived({ botId, archived: true });
+        const refused = yield* services.diagnosis
+          .configure({ ...scope, baseRevision: 2, enabled: true })
+          .pipe(Effect.flip);
+        assert.include(refused.message, "archived or detached");
+        assert.isFalse((yield* services.diagnosis.get(scope)).writable);
       }),
     );
   }).pipe(Effect.provide(layerDatabase)),

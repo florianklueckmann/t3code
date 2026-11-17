@@ -1,5 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
-import { isBotTaskOpen } from "@t3tools/client-runtime/bots";
+import { botTaskDiagnosisLabel, isBotTaskOpen } from "@t3tools/client-runtime/bots";
 import type { BotTaskSummary, EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { useState } from "react";
 import { View } from "react-native";
@@ -36,7 +36,14 @@ export function BotTaskRow(props: {
   const canView = task.status === "completed";
   const showCancel = isBotTaskOpen(task) && canCancel;
   const onHide = props.onHide;
-  const hasActions = canView || workThreadId !== null || showCancel || onHide !== undefined;
+  const failedRun = task.diagnosis;
+  const diagnosisLabel = botTaskDiagnosisLabel(task);
+  const hasActions =
+    canView ||
+    workThreadId !== null ||
+    failedRun !== undefined ||
+    showCancel ||
+    onHide !== undefined;
   const confirmCancel = () =>
     Dialog.alert("Cancel task?", task.title, [
       { text: "Keep working", style: "cancel" },
@@ -68,6 +75,11 @@ export function BotTaskRow(props: {
         {task.title}
       </Text>
       <BotTaskStatusLine status={task.status} trailing={when} numberOfLines={1} />
+      {diagnosisLabel === null ? null : (
+        <Text className="text-xs text-foreground-muted" numberOfLines={2}>
+          {diagnosisLabel}
+        </Text>
+      )}
       {props.showDetail && task.detail ? (
         <Text className="text-xs text-foreground-muted" numberOfLines={2}>
           {task.detail}
@@ -91,6 +103,15 @@ export function BotTaskRow(props: {
               tone="neutral"
               accessibilityLabel={`Open thread for ${task.title}`}
               onPress={() => props.onOpen(workThreadId)}
+            />
+          )}
+          {failedRun === undefined ? null : (
+            <BotTaskAction
+              label="Open failed run"
+              icon="exclamationmark.triangle"
+              tone="neutral"
+              accessibilityLabel={`Open the failed run of ${failedRun.title}`}
+              onPress={() => props.onOpen(failedRun.workThreadId)}
             />
           )}
           {showCancel ? (

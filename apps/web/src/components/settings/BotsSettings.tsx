@@ -97,6 +97,7 @@ import { Textarea } from "../ui/textarea";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { BotAppearancePicker } from "./BotAppearancePicker";
 import { BotContinuationNotes } from "./BotContinuationNotes";
+import { BotFailureDiagnosisSetting } from "./BotFailureDiagnosisSetting";
 import { BotHomeCheckSetting } from "./BotHomeCheckSetting";
 import { BotMcpGrantsSetting } from "./BotMcpGrantsSetting";
 import { BotMaintenanceSetting } from "./BotMaintenanceSetting";
@@ -759,6 +760,13 @@ function BotEditorForm({
                   formLocked={saving || archived}
                 />
                 <BotHomeCheckSetting
+                  environmentId={environmentId}
+                  botId={current.id}
+                  projectId={context.projectId}
+                  title={titleOf(context.projectId)}
+                  formLocked={saving || archived}
+                />
+                <BotFailureDiagnosisSetting
                   environmentId={environmentId}
                   botId={current.id}
                   projectId={context.projectId}

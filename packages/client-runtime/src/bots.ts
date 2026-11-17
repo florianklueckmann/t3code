@@ -7,6 +7,7 @@ import {
   type BotContinuationRevision,
   type BotMaintenanceView,
   type BotHomeCheckView,
+  type BotFailureDiagnosisView,
   type BotRecordLearningInput,
   selectBotTurnLearning,
 } from "@t3tools/contracts";
@@ -747,4 +748,34 @@ export function botHomeCheckLastLabel(view: BotHomeCheckView): string | null {
 }
 export function canToggleBotHomeCheck(view: BotHomeCheckView, formLocked: boolean): boolean {
   return view.enabled || (!formLocked && view.writable && view.unavailableReason === null);
+}
+
+export const BOT_FAILURE_DIAGNOSIS_DESCRIPTION =
+  "When a routine run in this project fails, the Bot starts one task that looks into why, following your brief. It changes nothing, and its result shows in Home with a link to the failed run.";
+const BOT_FAILURE_DIAGNOSIS_UNAVAILABLE_LABELS: ReadonlyMap<string, string> = new Map([
+  ["provider", "Needs a Codex model for this Bot."],
+  ["platform", "Runs only when this server is a Mac."],
+]);
+/** Settings caption; unknown reasons from newer servers stay readable. */
+export function botFailureDiagnosisStatusLabel(view: BotFailureDiagnosisView): string {
+  const state = !view.enabled
+    ? "Off"
+    : view.writable
+      ? "On"
+      : "On · stopped while detached or archived";
+  if (view.unavailableReason === null) return state;
+  return `${state} · ${BOT_FAILURE_DIAGNOSIS_UNAVAILABLE_LABELS.get(view.unavailableReason) ?? "Not available on this server."}`;
+}
+/** Turning it off always works; turning it on needs an active context where No changes holds. */
+export function canToggleBotFailureDiagnosis(
+  view: BotFailureDiagnosisView,
+  formLocked: boolean,
+): boolean {
+  return view.enabled || (!formLocked && view.writable && view.unavailableReason === null);
+}
+/** Why a diagnostic task started, for its Home card; null for other tasks. */
+export function botTaskDiagnosisLabel(task: BotTaskSummary): string | null {
+  return task.diagnosis === undefined
+    ? null
+    : `Started because the routine run “${task.diagnosis.title}” failed.`;
 }

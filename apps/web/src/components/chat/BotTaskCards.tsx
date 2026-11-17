@@ -2,6 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import {
   botConversationForThread,
   botTaskCardKey,
+  botTaskDiagnosisLabel,
   HiddenBotTaskCards,
   hideBotTaskCard,
   homeBotTaskCards,
@@ -15,7 +16,7 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import type { BotTaskSummary, EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
-import { EyeIcon, EyeOffIcon, MessageSquareIcon, XIcon } from "lucide-react";
+import { EyeIcon, EyeOffIcon, MessageSquareIcon, TriangleAlertIcon, XIcon } from "lucide-react";
 import { useState } from "react";
 
 import { useLocalStorage } from "../../hooks/useLocalStorage";
@@ -56,12 +57,15 @@ export function BotTaskRow({
   const [cancelling, setCancelling] = useState(false);
   const workThreadId = task.workThreadId;
   const when = formatInstant(task.completedAt ?? task.occurrenceDueAt ?? task.createdAt);
-  const openThread = () => {
-    if (workThreadId === null) return;
+  const diagnosisLabel = botTaskDiagnosisLabel(task);
+  const failedRun = task.diagnosis;
+  const navigateToThread = (threadId: ThreadId) =>
     void navigate({
       to: "/$environmentId/$threadId",
-      params: buildThreadRouteParams(scopeThreadRef(environmentId, workThreadId)),
+      params: buildThreadRouteParams(scopeThreadRef(environmentId, threadId)),
     });
+  const openThread = () => {
+    if (workThreadId !== null) navigateToThread(workThreadId);
   };
   const cancel = async () => {
     setCancelling(true);
@@ -89,11 +93,25 @@ export function BotTaskRow({
             {task.sessionAt === null ? null : ` · session ${formatInstant(task.sessionAt)}`}
           </span>
         </div>
+        {diagnosisLabel === null ? null : (
+          <p className="text-muted-foreground wrap-anywhere">{diagnosisLabel}</p>
+        )}
         {task.detail === null ? null : (
           <p className="text-muted-foreground wrap-anywhere">{task.detail}</p>
         )}
       </div>
       <div className="flex flex-wrap items-center gap-1">
+        {failedRun === undefined ? null : (
+          <Button
+            size="xs"
+            variant="ghost-muted"
+            aria-label={`Open the failed run of ${failedRun.title}`}
+            onClick={() => navigateToThread(failedRun.workThreadId)}
+          >
+            <TriangleAlertIcon aria-hidden />
+            Open failed run
+          </Button>
+        )}
         {task.status === "completed" ? (
           <BotTaskResultDialog
             environmentId={environmentId}

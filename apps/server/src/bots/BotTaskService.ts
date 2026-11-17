@@ -51,6 +51,7 @@ import {
 } from "../scheduledTasks/BotRoutineTarget.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import { isNoChangesTask } from "./BotExecutionConstraint.ts";
+import * as FailureDiagnosis from "./BotFailureDiagnosis.ts";
 import * as BotStore from "./BotStore.ts";
 import { isDirectHomeInput, latestDirectHomeInput } from "./homeReturn.ts";
 
@@ -84,9 +85,21 @@ interface BotTaskRow {
   readonly return_finished_at: string | null;
   /** Direct tasks: what the work thread runs on. Null for routines and older tasks, which follow the Bot. */
   readonly model_selection_json: string | null;
+  /** A diagnosis: the failed routine task and run it was admitted for. */
+  readonly diagnoses_task_id: string | null;
+  readonly diagnoses_run_id: string | null;
   readonly created_at: string;
   readonly updated_at: string;
 }
+
+/** Read with the failed task a diagnosis links to, for its summary. */
+interface BotTaskSummaryRow extends BotTaskRow {
+  readonly diagnoses_title?: string | null;
+  readonly diagnoses_work_thread_id?: string | null;
+}
+
+/** Stored only: a diagnosis reads as a routine to clients that predate it. */
+type StoredTaskOrigin = BotTaskOrigin | "diagnostic";
 
 const decodeSummary = Schema.decodeUnknownEffect(
   Schema.Struct({
@@ -228,14 +241,14 @@ const make = Effect.gen(function* () {
   const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
   const storageError = botError("Bot task storage failed.");
 
-  const toSummary = (row: BotTaskRow) =>
+  const toSummary = (row: BotTaskSummaryRow) =>
     decodeSummary({
       id: row.task_id,
       botId: row.bot_id,
       projectId: row.project_id,
       homeThreadId: row.home_thread_id,
       workThreadId: row.work_thread_id,
-      origin: row.origin,
+      origin: row.origin === "diagnostic" ? "routine" : row.origin,
       title: row.title,
       scheduledTaskId: row.scheduled_task_id,
       occurrenceDueAt: row.occurrence_due_at,
@@ -249,10 +262,28 @@ const make = Effect.gen(function* () {
       returnToHome: row.return_home_run_id !== null,
       ...(row.model_selection_json === null ? {} : { modelSelection: row.model_selection_json }),
       changes: isNoChangesTask(row) ? "none" : null,
+      ...(row.diagnoses_task_id === null ||
+      row.diagnoses_run_id === null ||
+      row.diagnoses_title == null ||
+      row.diagnoses_work_thread_id == null
+        ? {}
+        : {
+            diagnosis: {
+              taskId: row.diagnoses_task_id,
+              runId: row.diagnoses_run_id,
+              title: row.diagnoses_title,
+              workThreadId: row.diagnoses_work_thread_id,
+            },
+          }),
     }).pipe(Effect.mapError(storageError));
 
+  const summaryRows = sql`
+    SELECT t.*, f.title AS diagnoses_title, f.work_thread_id AS diagnoses_work_thread_id
+    FROM bot_tasks t LEFT JOIN bot_tasks f ON f.task_id = t.diagnoses_task_id
+  `;
+
   const readRow = (taskId: string) =>
-    sql<BotTaskRow>`SELECT * FROM bot_tasks WHERE task_id = ${taskId}`.pipe(
+    sql<BotTaskSummaryRow>`${summaryRows} WHERE t.task_id = ${taskId}`.pipe(
       Effect.map((rows) => rows[0]),
       Effect.mapError(storageError),
     );
@@ -350,7 +381,7 @@ const make = Effect.gen(function* () {
           text: row.prompt,
           attachments: [],
         },
-        createdBy: row.origin === "routine" ? "system" : "user",
+        createdBy: row.origin === "direct" ? "user" : "system",
         creationSource: "server",
       })
       .pipe(Effect.exit);
@@ -383,7 +414,7 @@ const make = Effect.gen(function* () {
         scheduled_task_id, occurrence_key, occurrence_due_at, session_at, allow_changes, runtime_mode, status,
         detail, dispatched_at, cancel_requested_at, result_run_id, completed_at, notified_at,
         created_at, updated_at, return_home_run_id, return_home_message_id, return_finished_at,
-        model_selection_json
+        model_selection_json, diagnoses_task_id, diagnoses_run_id
       ) VALUES (
         ${row.task_id}, ${row.bot_id}, ${row.project_id}, ${row.home_thread_id},
         ${row.work_thread_id}, ${row.origin}, ${row.title}, ${row.prompt},
@@ -392,7 +423,7 @@ const make = Effect.gen(function* () {
         ${row.dispatched_at}, ${row.cancel_requested_at}, ${row.result_run_id},
         ${row.completed_at}, ${row.notified_at}, ${row.created_at}, ${row.updated_at},
         ${row.return_home_run_id}, ${row.return_home_message_id}, ${row.return_finished_at},
-        ${row.model_selection_json}
+        ${row.model_selection_json}, ${row.diagnoses_task_id}, ${row.diagnoses_run_id}
       )
       ON CONFLICT DO NOTHING
     `;
@@ -402,7 +433,7 @@ const make = Effect.gen(function* () {
     readonly botId: string;
     readonly projectId: string;
     readonly homeThreadId: string;
-    readonly origin: BotTaskOrigin;
+    readonly origin: StoredTaskOrigin;
     readonly title: string;
     readonly prompt: string;
     readonly runtimeMode: RuntimeMode;
@@ -436,6 +467,8 @@ const make = Effect.gen(function* () {
     return_home_message_id: null,
     return_finished_at: null,
     model_selection_json: null,
+    diagnoses_task_id: null,
+    diagnoses_run_id: null,
     created_at: input.now,
     updated_at: input.now,
   });
@@ -776,12 +809,12 @@ const make = Effect.gen(function* () {
 
   const list: BotTaskService["Service"]["list"] = Effect.fn("BotTaskService.list")(
     function* (input) {
-      const rows = yield* sql<BotTaskRow>`
-        SELECT * FROM bot_tasks
-        WHERE (${input.botId ?? null} IS NULL OR bot_id = ${input.botId ?? null})
-          AND (${input.projectId ?? null} IS NULL OR project_id = ${input.projectId ?? null})
-          AND ${input.workThreadId === undefined ? sql`1 = 1` : sql`work_thread_id = ${input.workThreadId}`}
-        ORDER BY created_at DESC, task_id DESC
+      const rows = yield* sql<BotTaskSummaryRow>`
+        ${summaryRows}
+        WHERE (${input.botId ?? null} IS NULL OR t.bot_id = ${input.botId ?? null})
+          AND (${input.projectId ?? null} IS NULL OR t.project_id = ${input.projectId ?? null})
+          AND ${input.workThreadId === undefined ? sql`1 = 1` : sql`t.work_thread_id = ${input.workThreadId}`}
+        ORDER BY t.created_at DESC, t.task_id DESC
         LIMIT ${LIST_LIMIT}
       `.pipe(Effect.mapError(storageError));
       return { tasks: yield* Effect.forEach(rows, toSummary) };
@@ -973,6 +1006,92 @@ const make = Effect.gen(function* () {
       );
   });
 
+  /**
+   * Admits the one diagnosis a failed routine run may get when its Home's rule is on. The unique
+   * index on diagnoses_task_id, not these reads, keeps repeats and restarts to one task.
+   */
+  const admitDiagnosis = Effect.fn("BotTaskService.admitDiagnosis")(function* (failed: BotTaskRow) {
+    // A diagnosis is never a routine, so it cannot start another.
+    if (
+      failed.origin !== "routine" ||
+      failed.status !== "failed" ||
+      failed.cancel_requested_at !== null ||
+      failed.result_run_id === null ||
+      failed.work_thread_id === null
+    )
+      return;
+    const admitted = sql<{ readonly task_id: string }>`
+      SELECT task_id FROM bot_tasks WHERE diagnoses_task_id = ${failed.task_id}
+    `.pipe(Effect.map((rows) => rows.length > 0));
+    if (yield* admitted.pipe(Effect.mapError(storageError))) return;
+    const workThreadId = failed.work_thread_id;
+    const runId = failed.result_run_id;
+    // The failed run's own record: a later follow-up in the thread does not move it, a rollback does.
+    const records = yield* threads
+      .getProjectThreadRecords(
+        { projectId: ProjectId.make(failed.project_id), threadId: ThreadId.make(workThreadId) },
+        ["runs", "turnItems"],
+        { runIds: [RunId.make(runId)], turnItemRunIds: [RunId.make(runId)] },
+      )
+      .pipe(
+        Effect.catchTags({ ThreadManagementThreadNotFoundError: () => Effect.succeed(null) }),
+        Effect.mapError(botError("Failed to read the failed Bot task's run.")),
+      );
+    const run = records?.runs.find((candidate) => candidate.id === runId);
+    if (run?.status !== "failed" || run.completedAt === null) return;
+    const failedAt = DateTime.formatIso(run.completedAt);
+    const ruleOn = (rule: FailureDiagnosis.FailureDiagnosisRule | undefined) =>
+      rule?.enabled === 1 && rule.enabled_at !== null && rule.enabled_at <= failedAt;
+    const rule = yield* FailureDiagnosis.readRule(sql, failed.home_thread_id).pipe(
+      Effect.mapError(storageError),
+    );
+    if (!ruleOn(rule)) return;
+    const row = yield* sql
+      .withTransaction(
+        Effect.gen(function* () {
+          if (yield* admitted) return undefined;
+          const current = yield* FailureDiagnosis.readRule(sql, failed.home_thread_id);
+          if (current === undefined || !ruleOn(current)) return undefined;
+          const context = yield* activeContext(
+            failed.bot_id as BotId,
+            failed.project_id as ProjectId,
+          );
+          if (
+            context._tag === "inactive" ||
+            context.context.home_thread_id !== failed.home_thread_id
+          )
+            return undefined;
+          const row: BotTaskRow = {
+            ...newRow({
+              taskId: `${failed.task_id}:diagnosis`,
+              botId: failed.bot_id,
+              projectId: failed.project_id,
+              homeThreadId: failed.home_thread_id,
+              origin: "diagnostic",
+              title: `Diagnose: ${failed.title}`,
+              prompt: FailureDiagnosis.diagnosisPrompt({
+                brief: current.brief,
+                failedTaskId: failed.task_id,
+                failedTitle: failed.title,
+                workThreadId,
+                runId,
+                record: (records?.turnItems ?? []).filter((item) => item.runId === runId),
+              }),
+              runtimeMode: failed.runtime_mode as RuntimeMode,
+              now: yield* nowIso,
+            }),
+            model_selection_json: failed.model_selection_json,
+            diagnoses_task_id: failed.task_id,
+            diagnoses_run_id: runId,
+          };
+          yield* insertTask(row);
+          return row;
+        }),
+      )
+      .pipe(Effect.mapError((cause) => (isBotError(cause) ? cause : storageError(cause))));
+    if (row !== undefined) yield* dispatch(row);
+  });
+
   /** One step of the reconcile loop for one task; failures stay with that task. */
   const reconcileTask = Effect.fn("BotTaskService.reconcileTask")(function* (row: BotTaskRow) {
     if (row.completed_at === null) {
@@ -1016,6 +1135,8 @@ const make = Effect.gen(function* () {
     if (current === undefined || current.completed_at === null || current.notified_at !== null) {
       return;
     }
+    // Before the notification, which is retried until it lands, so a crash cannot skip it.
+    yield* admitDiagnosis(current);
     // The result stays in the work thread; the home conversation shows its card and turns unread.
     if (current.status !== "cancelled") {
       const home = yield* threads

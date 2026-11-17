@@ -5,6 +5,7 @@ import {
   type BotContinuationHistory,
   type BotMaintenanceView,
   type BotHomeCheckView,
+  type BotFailureDiagnosisView,
   type EnvironmentId,
   type BotSummary,
   type BotTaskResult,
@@ -1552,6 +1553,26 @@ export function createServerEnvironmentAtoms<R, E>(
       (refresh) => refresh(query),
     );
   });
+  const botFailureDiagnosisQuery = createEnvironmentRpcQueryAtomFamily(runtime, {
+    label: "environment-data:server:bots:botFailureDiagnosis",
+    tag: WS_METHODS.botsGetFailureDiagnosis,
+    staleTimeMs: 0,
+    idleTtlMs: 0,
+  });
+  const botFailureDiagnosisFamily = Atom.family((key: string) => {
+    const [environmentId, input] = JSON.parse(key) as [EnvironmentId, BotContinuationScope];
+    const query = botFailureDiagnosisQuery({ environmentId, input });
+    return Atom.readable(
+      (get): AsyncResult.AsyncResult<BotFailureDiagnosisView | null, unknown> => {
+        const config = get(configValueAtom(environmentId));
+        if (config === null) return AsyncResult.initial(true);
+        if (config.environment.capabilities.botFailureDiagnosis !== true)
+          return AsyncResult.success(null);
+        return get(query);
+      },
+      (refresh) => refresh(query),
+    );
+  });
   const workThreadBotFamily = Atom.family((key: string) => {
     const [environmentId, threadId] = JSON.parse(key) as [EnvironmentId, string];
     return Atom.make((get): BotSummary | null => {
@@ -1802,6 +1823,10 @@ export function createServerEnvironmentAtoms<R, E>(
       readonly environmentId: EnvironmentId;
       readonly input: BotContinuationScope;
     }) => botHomeCheckFamily(JSON.stringify([target.environmentId, target.input])),
+    botFailureDiagnosis: (target: {
+      readonly environmentId: EnvironmentId;
+      readonly input: BotContinuationScope;
+    }) => botFailureDiagnosisFamily(JSON.stringify([target.environmentId, target.input])),
     botDetail: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:server:bots:detail",
       tag: WS_METHODS.botsGet,
@@ -2167,6 +2192,12 @@ export function createServerEnvironmentAtoms<R, E>(
     configureBotHomeCheck: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:bots:configure-home-check",
       tag: WS_METHODS.botsConfigureHomeCheck,
+      scheduler: configScheduler,
+      concurrency: configConcurrency,
+    }),
+    configureBotFailureDiagnosis: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bots:configure-failure-diagnosis",
+      tag: WS_METHODS.botsConfigureFailureDiagnosis,
       scheduler: configScheduler,
       concurrency: configConcurrency,
     }),

@@ -211,6 +211,7 @@ describe("command permissions", () => {
     WS_METHODS.botsSaveContinuation,
     WS_METHODS.botsConfigureMaintenance,
     WS_METHODS.botsConfigureHomeCheck,
+    WS_METHODS.botsConfigureFailureDiagnosis,
   ])("uses the target grant for both availability and execution of %s", (method) =>
     Effect.gen(function* () {
       const registry = yield* setup;
