@@ -1,5 +1,8 @@
+import { vi } from "vite-plus/test";
 import { describe, expect, it } from "@effect/vitest";
 import {
+  AuthOrchestrationOperateScope,
+  type AuthSessionState,
   BotId,
   type BotListResult,
   type BotTaskListInput,
@@ -46,6 +49,24 @@ const CONFIG = {
 } as unknown as ServerConfig;
 
 const THREAD = "bot-work:same-id";
+
+vi.mock("./session.ts", () => ({
+  createEnvironmentSessionAtoms: () => ({ sessionStateAtom: operatorSessions }),
+}));
+const operatorSessions = Atom.family((_id: EnvironmentId) =>
+  Atom.make<AsyncResult.AsyncResult<AuthSessionState>>(
+    AsyncResult.success({
+      authenticated: true,
+      auth: {
+        policy: "remote-reachable" as const,
+        bootstrapMethods: [],
+        sessionMethods: [],
+        sessionCookieName: "test",
+      },
+      scopes: [AuthOrchestrationOperateScope],
+    }),
+  ),
+);
 
 const makeHarness = Effect.gen(function* () {
   const environments = yield* Effect.forEach(["first", "second", "unsupported", "legacy"], (name) =>
@@ -142,6 +163,12 @@ const makeHarness = Effect.gen(function* () {
               writable: true,
             }),
           ),
+        [WS_METHODS.botsRunMaintenance]: () =>
+          Effect.succeed({
+            learning: { status: "nothing_new", reason: null, active: 0, pending: 0 },
+            note: { status: "refreshed", reason: null },
+            compaction: { status: "skipped", reason: null },
+          }),
         [WS_METHODS.botsGetTaskResult]: (input: BotTaskResultInput) =>
           Effect.gen(function* () {
             yield* Ref.update(resultReads, (all) => [...all, input]);
@@ -467,6 +494,40 @@ it.effect("loads continuation details in the destination and never calls old-ser
           : [],
       );
     }
+  }).pipe(Effect.scoped),
+);
+
+it.effect("reads a shown continuation again after a maintenance run this client started", () =>
+  Effect.gen(function* () {
+    const { atoms, registry, environments } = yield* makeHarness;
+    const { environmentId, supervisor, continuationReads } = environments[0]!;
+    yield* SubscriptionRef.set(supervisor.state, {
+      ...AVAILABLE_CONNECTION_STATE,
+      phase: "connected" as const,
+    });
+    const input = { botId: BotId.make("same-bot"), projectId: ProjectId.make("same-project") };
+    const note = atoms.botContinuation({ environmentId, input });
+    yield* Effect.acquireRelease(
+      Effect.sync(() => registry.mount(note)),
+      (unmount) => Effect.sync(unmount),
+    );
+    yield* AtomRegistry.toStream(registry, note).pipe(
+      Stream.filter(AsyncResult.isSuccess),
+      Stream.runHead,
+    );
+    const run = yield* Effect.promise(() =>
+      atoms.runBotMaintenance.run(registry, { environmentId, input }),
+    );
+    expect(run._tag).toBe("Success");
+    yield* AtomRegistry.toStream(registry, note).pipe(
+      Stream.filter((result) => AsyncResult.isSuccess(result) && !result.waiting),
+      Stream.runHead,
+    );
+    // The unmounted history is left for its next mount.
+    expect(yield* Ref.get(continuationReads)).toEqual([
+      "get:same-bot:same-project",
+      "get:same-bot:same-project",
+    ]);
   }).pipe(Effect.scoped),
 );
 

@@ -1474,6 +1474,20 @@ export function createServerEnvironmentAtoms<R, E>(
       (refresh) => refresh(query),
     );
   });
+  // A maintenance pass can save a new note revision. Unread views stay lazy.
+  const refreshBotNotes = (
+    {
+      environmentId,
+      input,
+    }: { readonly environmentId: EnvironmentId; readonly input: BotContinuationScope },
+    registry: AtomRegistry.AtomRegistry,
+  ) => {
+    const key = JSON.stringify([environmentId, { botId: input.botId, projectId: input.projectId }]);
+    return Effect.sync(() => {
+      registry.refresh(botContinuationFamily(key));
+      registry.refresh(botContinuationHistoryFamily(key));
+    });
+  };
   // Each saved edit advances a revision in the settings snapshot, from this client or another.
   const mcpConnectionRevisionsAtom = Atom.family((environmentId: EnvironmentId) =>
     Atom.make((get) =>
@@ -2199,6 +2213,7 @@ export function createServerEnvironmentAtoms<R, E>(
     runBotMaintenance: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:bots:run-maintenance",
       tag: WS_METHODS.botsRunMaintenance,
+      onSuccess: refreshBotNotes,
     }),
     configureBotHomeCheck: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:bots:configure-home-check",
