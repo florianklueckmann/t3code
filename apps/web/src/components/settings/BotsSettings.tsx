@@ -1742,8 +1742,8 @@ function BotRoutineEditor({
         </ToggleGroup>
         <p className="text-xs text-muted-foreground">
           {form.allowChanges
-            ? "The Bot is instructed to carry out the edits or messages requested in the brief."
-            : "The Bot is instructed to report results and propose changes without editing files or data or sending messages."}
+            ? "The Bot carries out the edits or messages requested in the brief, in Full access without approval prompts."
+            : "The Bot reports results and proposes changes. It cannot edit files or data or send messages; this is enforced with Codex on a Mac server, and elsewhere the run fails instead."}
         </p>
       </div>
       <div className="space-y-2">
