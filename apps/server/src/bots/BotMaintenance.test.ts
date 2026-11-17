@@ -2313,7 +2313,7 @@ it.effect(
     }).pipe(Effect.provide(storeOnly)),
 );
 
-it.effect("keeps changed, rejected and oversized input eligible instead of consuming it", () =>
+it.effect("keeps changed and rejected input eligible instead of consuming it", () =>
   Effect.gen(function* () {
     yield* seedBot("automatic");
     const main = yield* SqlClient.SqlClient;
@@ -2404,11 +2404,17 @@ it.effect("keeps changed, rejected and oversized input eligible instead of consu
           ["Never include finances in recaps.", "Recaps stay spoiler-free."],
         );
 
+        // Input no packet can hold is passed over in its place, so later input still learns.
+        yield* Ref.set(responses, [Effect.succeed({ operations: [] })]);
         yield* input("huge", "x".repeat(48_001), { at: later(5) });
-        const oversized = yield* maintenance.runNow(scope);
-        assert.deepEqual(oversized.status === "deferred" && oversized.reason, "oversized_evidence");
-        assert.equal((yield* Ref.get(packets)).length, 7);
-        assert.equal((yield* sourceStates).huge, "pending");
+        yield* input("correction", "Keep recaps under a page.", { at: later(6) });
+        assert.equal((yield* maintenance.runNow(scope)).status, "noop");
+        assert.deepEqual(
+          (yield* Ref.get(packets)).at(-1)?.sources.map((source) => source.text),
+          ["Keep recaps under a page."],
+        );
+        assert.deepInclude(yield* sourceStates, { huge: "oversized", correction: "applied" });
+        assert.deepEqual(yield* maintenance.runNow(scope), { status: "idle" });
       }),
     );
   }).pipe(Effect.provide(storeOnly)),
