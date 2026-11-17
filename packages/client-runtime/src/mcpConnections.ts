@@ -418,7 +418,7 @@ export function botMcpGrantsSection(input: {
   const unenforceable =
     input.providerDriver !== "codex"
       ? "This Bot's model is not on a Codex provider, so without connections it uses that provider's own MCP setup."
-      : input.platformOs === "windows"
+      : input.platformOs !== "darwin" && input.platformOs !== "linux"
         ? `On ${input.environmentLabel}, this Bot without connections uses Codex's own MCP setup.`
         : null;
   const notes: Array<BotMcpGrantsNote> = [];
