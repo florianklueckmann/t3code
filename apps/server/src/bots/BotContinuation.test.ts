@@ -74,6 +74,7 @@ const input = Effect.fn("fixture.input")(function* (
     readonly automatic?: boolean;
     readonly status?: string;
     readonly withoutTurnItem?: boolean;
+    readonly attachments?: ReadonlyArray<unknown>;
   } = {},
 ) {
   const main = yield* SqlClient.SqlClient;
@@ -86,7 +87,7 @@ const input = Effect.fn("fixture.input")(function* (
     nodeId: null,
     role: "user",
     text,
-    attachments: [],
+    attachments: options.attachments ?? [],
     streaming: false,
     createdAt: now,
     updatedAt: now,
@@ -1109,18 +1110,42 @@ it.effect(
       const large = "Diff line of the pasted Harbor patch.\n".repeat(1_000);
       yield* input(1, large, { directUser: true });
       yield* input(2, "Keep the Harbor date open.", { directUser: true });
+      // A large paste the composer turned into a file: the message text is only its link.
+      const stub = "The Harbor log:\n[pasted-text.txt](t3-context://v1/file/file_harbor)";
+      yield* input(3, stub, {
+        directUser: true,
+        attachments: [
+          {
+            type: "file",
+            id: "file_harbor",
+            name: "pasted-text.txt",
+            mimeType: "text/plain",
+            sizeBytes: 100_118,
+            source: { _tag: "pasted-text" },
+          },
+        ],
+      });
       const notes = yield* BotContinuation.BotContinuation;
       const read = yield* refreshRead();
       assert.isAtMost(toolResultBytes(read), refreshResponseBytes);
-      const [reference, next] = read.uncovered!.sources;
+      const [reference, next, attached] = read.uncovered!.sources;
       assert.deepEqual(reference?.tooLarge, { bytes: utf8Bytes(large), createdAt: now });
+      assert.deepEqual(attached?.tooLarge, { bytes: utf8Bytes(stub) + 100_118, createdAt: now });
+      assert.deepEqual(attached?.parts, [
+        { text: stub, cut: "The preview stops here. The full text stays in T3 history." },
+      ]);
       const preview = shownText(reference)!;
       assert.isTrue(large.startsWith(preview) && preview.endsWith("\n"));
       assert.isAtMost(utf8Bytes(preview), 2_000);
       assert.equal(shownText(next), "Keep the Harbor date open.");
-      // The model leaves out the ack of the part where the server cut the preview.
+      // A model may leave out every ack of a preview, as gpt-6-luna did in T3B-63; the Waiting
+      // item that must name it is what passes it.
       const cutPart = reference!.parts.at(-1)!;
-      const seen = acksOf(read).filter((ack) => !("ack" in cutPart) || ack !== cutPart.ack);
+      const previewAcks = new Set(
+        reference!.parts.flatMap((part) => ("ack" in part ? [part.ack] : [])),
+      );
+      const seen = acksOf(read).filter((ack) => !previewAcks.has(ack));
+      assert.isNotEmpty(previewAcks);
       assert.isTrue(reference!.parts.slice(0, -1).every((part) => "ack" in part));
       assert.include(cutPart, {
         cut: "The preview stops here. The full text stays in T3 history.",
@@ -1130,10 +1155,31 @@ it.effect(
         .save({ ...userSave("unlisted", null, empty()), basis: read.basis!, acks: seen }, bot)
         .pipe(Effect.flip);
       assert.include(unlisted.message, "message-1");
+      assert.include(unlisted.message, "message-3");
       const kept = {
         ...empty(),
-        waiting: [{ text: "Unreviewed large input message-1: a pasted Harbor patch" }],
+        waiting: [
+          { text: "Unreviewed large input message-1: a pasted Harbor patch" },
+          { text: "Unreviewed large input message-3: pasted-text.txt" },
+        ],
       };
+      // Quoting the visible text elsewhere does not list the unread file as unreviewed.
+      const quotedOnly = yield* notes
+        .save(
+          {
+            ...userSave("quoted", null, {
+              ...kept,
+              waiting: kept.waiting.slice(0, 1),
+              context: [{ text: "The Harbor log arrived as a file.", quote: "The Harbor log:" }],
+            }),
+            basis: read.basis!,
+            acks: seen,
+          },
+          bot,
+        )
+        .pipe(Effect.flip);
+      assert.include(quotedOnly.message, "message-3");
+      assert.notInclude(quotedOnly.message, "message-1");
       const saved = yield* notes.save(
         { ...userSave("listed", null, kept), basis: read.basis!, acks: seen },
         bot,

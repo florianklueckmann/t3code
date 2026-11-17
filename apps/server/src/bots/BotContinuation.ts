@@ -117,6 +117,7 @@ const leading = (text: string, bytes: number) =>
   utf8Text.decode(utf8.encode(text).subarray(0, bytes));
 /** The UTF-8 length of the whole lines in the first `cap` bytes, or else the whole characters. */
 const leadingBytes = (encoded: Uint8Array, cap: number) => {
+  if (encoded.length <= cap) return encoded.length;
   let end = Math.min(cap, encoded.length);
   while (end > 0 && end < encoded.length && (encoded[end]! & 0xc0) === 0x80) end -= 1;
   if (end === 0) return 0;
@@ -144,6 +145,12 @@ const shownParts = (text: string, preview: boolean, ack: Ack) =>
       ? { text: part, cut: "The preview stops here. The full text stays in T3 history." }
       : { text: part, ack: ack(index, part) },
   );
+/** Attached files a read never shows, such as a large paste the composer turned into a file. */
+const fileBytes = (message: OrchestrationV2ConversationMessageJson) =>
+  message.attachments.reduce(
+    (bytes, attachment) => bytes + (attachment.type === "file" ? attachment.sizeBytes : 0),
+    0,
+  );
 const pageEntry = (source: Shown, ack: Ack) => ({
   messageId: source.message.id,
   ordinal: source.ordinal,
@@ -153,7 +160,7 @@ const pageEntry = (source: Shown, ack: Ack) => ({
     ? {}
     : {
         tooLarge: {
-          bytes: utf8.encode(source.message.text).byteLength,
+          bytes: utf8.encode(source.message.text).byteLength + fileBytes(source.message),
           createdAt: DateTime.formatIso(source.message.createdAt),
         },
       }),
@@ -188,14 +195,16 @@ const planPage = (view: BotContinuationView, delivered: readonly Delivered[], to
     jsonBytes(pageEntry(source, sizingAck)) + (shown.length === 0 ? 0 : 1);
   for (const source of delivered) {
     const whole: Shown = { ...source, text: source.message.text, preview: null };
+    // An input with attached files is never read whole, so it is shown by reference too.
+    const attached = fileBytes(source.message) > 0;
     const wholeBytes = cost(whole);
-    if (bytes + wholeBytes <= REFRESH_RESPONSE_BYTES) {
+    if (!attached && bytes + wholeBytes <= REFRESH_RESPONSE_BYTES) {
       shown.push(whole);
       bytes += wholeBytes;
       continue;
     }
     // An item that fits a page of its own starts the next one.
-    if (base + jsonBytes(pageEntry(whole, sizingAck)) <= REFRESH_RESPONSE_BYTES) break;
+    if (!attached && base + jsonBytes(pageEntry(whole, sizingAck)) <= REFRESH_RESPONSE_BYTES) break;
     if (freeItems === 0) break;
     freeItems -= 1;
     const encoded = utf8.encode(source.message.text);
@@ -766,13 +775,14 @@ const make = Effect.gen(function* () {
           };
         });
         // The page counts as read up to its first item with a part the run did not acknowledge.
+        // A preview is never read whole: the Waiting item it must get below stands in for acks.
         const acked = new Set(input.acks ?? []);
-        const unread = shown.findIndex((source) =>
-          shownParts(
-            source.text,
-            previews.has(source.message.id),
-            acksFor(page, source.message.id),
-          ).some((part) => "ack" in part && !acked.has(part.ack)),
+        const unread = shown.findIndex(
+          (source) =>
+            !previews.has(source.message.id) &&
+            shownParts(source.text, false, acksFor(page, source.message.id)).some(
+              (part) => "ack" in part && !acked.has(part.ack),
+            ),
         );
         certified = unread === -1 ? shown : shown.slice(0, unread);
         tooLarge = certified.flatMap((source) =>
@@ -902,10 +912,8 @@ const make = Effect.gen(function* () {
       // An unread input is kept as a reference to open later, never passed over silently.
       const unlisted = tooLarge.filter(
         (id) =>
-          !BOT_CONTINUATION_SECTIONS.some((section) =>
-            note[section].some((item) =>
-              item.refs.some((ref) => ref.kind === "message" && ref.messageId === id),
-            ),
+          !note.waiting.some((item) =>
+            item.refs.some((ref) => ref.kind === "message" && ref.messageId === id),
           ),
       );
       if (unlisted.length > 0)

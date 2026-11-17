@@ -160,6 +160,15 @@ export const classifyHomeInput = (input: {
 
 const units = (text: string) => JSON.stringify(text).length;
 
+/**
+ * Evidence no packet can hold is never read, so it is excluded in its place in the order
+ * instead of holding back every later source; the working note lists it as unreviewed.
+ */
+export const admit = (classified: Classified): Classified =>
+  classified._tag === "eligible" && units(classified.source.text) > LIMITS.evidenceUnits
+    ? { _tag: "excluded", reason: "oversized" }
+    : classified;
+
 /** Current learning a project sees: each entry's active head and any pending revisions. */
 const isKind = Schema.is(BotLearningKind);
 const applicable = (rows: ReadonlyArray<BotStore.BotLearningRow>, projectId: string) => {
