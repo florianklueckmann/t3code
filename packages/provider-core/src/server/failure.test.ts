@@ -132,6 +132,19 @@ it("preserves actionable T3 errors wrapped by turn startup", () => {
     });
     assert.equal(makeProviderFailure({ cause: Cause.fail(cause) }).message, error.message);
   }
+  // Claude's Bot isolation errors arrive inside the query runner's error.
+  for (const _tag of [
+    "ClaudeStrictMcpRefusalError",
+    "ClaudeIsolatedMcpRegistrationError",
+    "ClaudeBotInstructionsTooLargeError",
+  ]) {
+    const message = `${_tag} explains itself.`;
+    const cause = {
+      _tag: "ProviderAdapterTurnStartError",
+      cause: { _tag: "ClaudeAgentSdkQueryRunnerError", cause: { _tag, message } },
+    };
+    assert.equal(makeProviderFailure({ cause: Cause.fail(cause) }).message, message);
+  }
 });
 
 it("names how the provider process exited and the stage it failed in, without its output", () => {

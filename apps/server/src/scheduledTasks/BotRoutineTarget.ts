@@ -38,11 +38,12 @@ export type BotRoutineAdmission =
 export interface BotRoutineTargetShape {
   /**
    * The Bot's model, which its routines run on; fails with a user-facing reason when the Bot
-   * cannot run routines in this project.
+   * cannot run routines in this project, or cannot run them No changes when `allowChanges` is false.
    */
   readonly requireRunnable: (input: {
     readonly botId: BotId;
     readonly projectId: ProjectId;
+    readonly allowChanges?: boolean | undefined;
   }) => Effect.Effect<{ readonly modelSelection: ModelSelection }, string>;
   readonly admit: (occurrence: BotRoutineOccurrence) => Effect.Effect<BotRoutineAdmission, string>;
 }

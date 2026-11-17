@@ -792,7 +792,9 @@ const withEngine = <A, E, R>(
             Layer.mock(ThreadManagementService.ThreadManagementService)({}),
             Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
             Layer.mock(ProjectService.ProjectService)({}),
-            Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({}),
+            Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+              getInstance: () => Effect.undefined,
+            }),
             Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
             BotProjectGuard.layer,
             // A real Scheduler would replay every 5-second tick when a test moves the clock days ahead.

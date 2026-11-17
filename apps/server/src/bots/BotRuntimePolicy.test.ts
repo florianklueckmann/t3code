@@ -37,6 +37,7 @@ const botSubagentThread = ThreadId.make("subagent-of-codex-bot-home");
 const ungrantedBotSubagentThread = ThreadId.make("subagent-of-ungranted-codex-bot-home");
 const orphanThread = ThreadId.make("subagent-of-lost-parent");
 const ownServersBotThread = ThreadId.make("bot-home:own-servers:campaign");
+const ownServersOnlyBotThread = ThreadId.make("subagent-of-own-servers-codex-bot");
 const privateMail = McpConnectionId.make("2a2a2a2a-0000-4000-8000-00000000002a");
 
 const mcpAccessOf = (id: ThreadId): BotTurnContext.BotMcpAccess => {
@@ -51,6 +52,7 @@ const mcpAccessOf = (id: ThreadId): BotTurnContext.BotMcpAccess => {
   if ([botThread, workThread, noChangesThread, botForkThread, botSubagentThread].includes(id))
     return bot([privateMail]);
   if (id === ownServersBotThread) return bot([privateMail], true);
+  if (id === ownServersOnlyBotThread) return bot([], true);
   if ([ungrantedBotThread, ungrantedBotForkThread, ungrantedBotSubagentThread].includes(id))
     return bot([]);
   if (id === archivedBotThread || id === archivedNoChangesThread || id === orphanThread)
@@ -232,30 +234,68 @@ it.effect(
 );
 
 it.effect.each([
-  ["Claude Bot", botThread, ungrantedBotThread, { instanceId: "codex" }],
-  ["Claude fork", botForkThread, ungrantedBotForkThread, { instanceId: "codex" }],
-  ["Windows Bot", botThread, ungrantedBotThread, { platform: "win32" }],
+  ["Claude Bot", botThread, ungrantedBotThread],
+  ["Claude fork", botForkThread, ungrantedBotForkThread],
+  ["Codex Bot delegating to Claude", botSubagentThread, ungrantedBotSubagentThread],
+] as const)(
+  "keeps a %s to T3 Code's server alone and refuses grants there",
+  ([_, grantedThreadId, ungrantedThreadId]) =>
+    Effect.gen(function* () {
+      // In this suite the instance id "codex" runs the Claude driver.
+      const refused = yield* resolveFor(grantedThreadId, { instanceId: "codex" }).pipe(Effect.flip);
+      assert.equal(refused._tag, "RuntimePolicyMcpUnsupportedError");
+      assert.include(refused.message, "which only Codex can enforce");
+
+      for (const platform of ["darwin", "linux", "win32"] as const) {
+        const policy = yield* resolveFor(ungrantedThreadId, { instanceId: "codex", platform });
+        assert.deepEqual(policy.mcpConnections, [], platform);
+        assert.isUndefined(policy.userMcpServers);
+        assert.equal(policy.nativeMemory, "disabled");
+        assert.isUndefined(policy.nativeTools);
+      }
+    }),
+);
+
+it.effect("never gives a Claude thread the user's own Codex MCP servers", () =>
+  Effect.gen(function* () {
+    // The switch is refused for a Claude Bot; a Codex Bot's descendant on Claude stays isolated.
+    const policy = yield* resolveFor(ownServersOnlyBotThread, { instanceId: "codex" });
+    assert.deepEqual(policy.mcpConnections, []);
+    assert.isUndefined(policy.userMcpServers);
+    const onCodex = yield* resolveFor(ownServersOnlyBotThread);
+    assert.equal(onCodex.userMcpServers, "enabled");
+  }),
+);
+
+it.effect.each([
+  ["Pi Bot", botThread, ungrantedBotThread, { instanceId: "pi" }],
+  ["missing instance", botForkThread, ungrantedBotForkThread, { instanceId: "missing" }],
   [
-    "Codex Bot delegating to Claude",
+    "Codex Bot delegating to Pi",
     botSubagentThread,
     ungrantedBotSubagentThread,
-    { instanceId: "codex" },
+    { instanceId: "pi" },
   ],
-  ["missing instance", botForkThread, ungrantedBotForkThread, { instanceId: "missing" }],
-  ["Pi Bot", botThread, ungrantedBotThread, { instanceId: "pi" }],
 ] as const)(
-  "allows %s without grants and refuses it with grants where they cannot be enforced",
+  "refuses a %s, with or without grants, where Bot isolation cannot be enforced",
   ([_, grantedThreadId, ungrantedThreadId, options]) =>
     Effect.gen(function* () {
-      const refused = yield* resolveFor(grantedThreadId, options).pipe(Effect.flip);
-      assert.equal(refused._tag, "RuntimePolicyMcpUnsupportedError");
-      assert.include(refused.message, "Mail Bot uses only the MCP connections granted to it");
-
-      const policy = yield* resolveFor(ungrantedThreadId, options);
-      assert.isFalse(Object.hasOwn(policy, "mcpConnections"));
-      assert.equal(policy.nativeMemory, "disabled");
-      assert.isUndefined(policy.nativeTools);
+      for (const threadId of [grantedThreadId, ungrantedThreadId]) {
+        const refused = yield* resolveFor(threadId, options).pipe(Effect.flip);
+        assert.equal(refused._tag, "RuntimePolicyMcpUnsupportedError");
+        assert.include(refused.message, "Mail Bot's threads run only on Codex or Claude");
+      }
     }),
+);
+
+it.effect("keeps a Codex Bot on Windows on Codex's own MCP setup unless it has grants", () =>
+  Effect.gen(function* () {
+    const refused = yield* resolveFor(botThread, { platform: "win32" }).pipe(Effect.flip);
+    assert.include(refused.message, "only verified on macOS and Linux");
+    const policy = yield* resolveFor(ungrantedBotThread, { platform: "win32" });
+    assert.isFalse(Object.hasOwn(policy, "mcpConnections"));
+    assert.equal(policy.nativeMemory, "disabled");
+  }),
 );
 
 it.effect("seals a restricted run only in an active Bot Home on Codex and macOS", () =>

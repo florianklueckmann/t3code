@@ -317,6 +317,7 @@ const makeTestRelay = Effect.fnUntraced(function* (
       start: unused,
       admitRoutine: unused,
       requireRunnable: unused,
+      requireSupportedModel: unused,
       get: (taskId) => {
         const task = options.botTasks?.find((task) => task.taskId === taskId);
         return task === undefined

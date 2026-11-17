@@ -832,6 +832,7 @@ const BOT_MAINTENANCE_UNAVAILABLE_LABELS: ReadonlyMap<string, string> = new Map(
     "codex_required",
     "Needs a Codex model. Pick a Codex model for this Bot to turn maintenance on.",
   ],
+  ["claude_unsupported", "Not available on Claude yet. It runs on Codex models."],
   ["instance_unavailable", "This Bot's Codex provider is off or missing."],
   ["provider_signed_out", "Sign in to Codex to run maintenance."],
   ["codex_version_unsupported", "Update Codex to run maintenance."],
@@ -923,6 +924,7 @@ export const BOT_HOME_CHECK_DESCRIPTION =
   "Once a day, the Bot looks over this project's Home and adds to Waiting on you what needs your decision or preparation. It never acts on its own.";
 const BOT_HOME_CHECK_UNAVAILABLE_LABELS: ReadonlyMap<string, string> = new Map([
   ["provider", "Needs a Codex model. Pick a Codex model for this Bot to turn the check on."],
+  ["claude_unsupported", "Not available on Claude yet. It runs on Codex models."],
   ["platform", "Runs only when this server is a Mac."],
 ]);
 /** Settings caption for a Home check; unknown reasons from newer servers stay readable. */
@@ -965,6 +967,7 @@ export const BOT_FAILURE_DIAGNOSIS_DESCRIPTION =
   "When a routine run in this project fails, the Bot starts one task that looks into why, following your brief. It changes nothing, and its result shows in Home with a link to the failed run.";
 const BOT_FAILURE_DIAGNOSIS_UNAVAILABLE_LABELS: ReadonlyMap<string, string> = new Map([
   ["provider", "Needs a Codex model for this Bot."],
+  ["claude_unsupported", "Not available on Claude yet. It runs on Codex models."],
   ["platform", "Runs only when this server is a Mac."],
 ]);
 /** Settings caption; unknown reasons from newer servers stay readable. */

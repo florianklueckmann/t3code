@@ -490,7 +490,7 @@ it.effect.each([
         {
           kind: "unsupported",
           at: "2026-11-09T09:00:00.000Z",
-          reason: provider === "codex" ? "platform" : "provider",
+          reason: provider === "codex" ? "platform" : "claude_unsupported",
         },
       ],
     );
