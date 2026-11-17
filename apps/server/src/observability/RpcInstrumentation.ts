@@ -114,6 +114,8 @@ const RPC_AGGREGATES = {
   [WS_METHODS.botsConfigureMaintenance]: "bots",
   [WS_METHODS.botsGetHomeCheck]: "bots",
   [WS_METHODS.botsConfigureHomeCheck]: "bots",
+  [WS_METHODS.botsGetFailureDiagnosis]: "bots",
+  [WS_METHODS.botsConfigureFailureDiagnosis]: "bots",
   [WS_METHODS.botsCreate]: "bots",
   [WS_METHODS.botsUpdate]: "bots",
   [WS_METHODS.botsSetArchived]: "bots",

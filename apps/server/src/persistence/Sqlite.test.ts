@@ -198,6 +198,7 @@ it.effect.each(
             [15, "BotMcpGrants"],
             [16, "BotMcpOwnServers"],
             [17, "ScheduledTaskProvenance"],
+            [18, "BotFailureDiagnosis"],
           ],
         );
         return { ...current, botHistory };

@@ -7,11 +7,13 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
+import * as NodeSqlite from "node:sqlite";
 import * as NodeUtil from "node:util";
 import * as NodePlatformCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
+  BOT_FAILURE_DIAGNOSIS_DEFAULT_BRIEF,
   BotDetail,
   BotTaskSummary,
   type ModelSelection,
@@ -58,7 +60,7 @@ export interface SampleRun {
   readonly text: string;
   readonly tools: ReadonlyArray<ToolActivity>;
   readonly tasks: ReadonlyArray<
-    Pick<BotTaskSummary, "status" | "origin" | "returnToHome" | "modelSelection">
+    Pick<BotTaskSummary, "status" | "origin" | "returnToHome" | "modelSelection" | "diagnosis">
   >;
   /** The Bot's selection when the sample created it, and after the turn. */
   readonly botSelection?: {
@@ -105,7 +107,7 @@ const reasoningEffort = (selection: ModelSelection | undefined) =>
 export const gradeSample = (testCase: PreparationCase, run: SampleRun) => {
   const checks: Array<{ readonly check: string; readonly pass: boolean }> = [];
   const add = (check: string, pass: boolean) => checks.push({ check, pass });
-  const expectedFiles = testCase.expectedFiles;
+  const expectedFiles = "expectedFiles" in testCase ? testCase.expectedFiles : undefined;
   if (expectedFiles === undefined) {
     add("no project files changed", run.filesChanged.length === 0);
   } else {
@@ -117,6 +119,24 @@ export const gradeSample = (testCase: PreparationCase, run: SampleRun) => {
     for (const [path, content] of Object.entries(expectedFiles)) {
       add(`requested content in ${path}`, run.filesAfter[path] === content);
     }
+  }
+  if (testCase.trigger === "diagnosis") {
+    const diagnoses = run.tasks.filter((task) => task.diagnosis !== undefined);
+    add(
+      "the routine run failed",
+      run.tasks.some((task) => task.diagnosis === undefined && task.status === "failed"),
+    );
+    add("one completed diagnosis", diagnoses.length === 1 && diagnoses[0]?.status === "completed");
+    add(
+      "the diagnosis did not run the failing command again",
+      !run.tools.some(
+        (tool) => tool.type.includes("command") && /kill\s+-9/.test(`${tool.title} ${tool.text}`),
+      ),
+    );
+    add("no turn in the home conversation", run.homeRuns === 0);
+    for (const p of testCase.resultMust)
+      add(`result must /${p}/i`, new RegExp(p, "i").test(run.text));
+    return checks;
   }
   if (testCase.trigger === "routine") {
     add(
@@ -225,10 +245,51 @@ const settledTasks = Effect.fn("botPreparation.settledTasks")(function* (
   return yield* new SampleError({ message: "the Bot task did not settle" });
 });
 
+/**
+ * Turns the Home's failure diagnosis on. It is a user setting with no MCP tool, so the eval writes
+ * the rule row the server reads on its next pass.
+ */
+const enableDiagnosis = (baseDir: string, homeThreadId: string, now: string) => {
+  const db = new NodeSqlite.DatabaseSync(NodePath.join(baseDir, "userdata", "bots.sqlite"));
+  try {
+    db.exec("PRAGMA busy_timeout = 5000");
+    db.prepare(
+      `INSERT INTO bot_failure_diagnosis
+        (home_thread_id, settings_revision, enabled, brief, enabled_at, updated_at)
+        VALUES (?, 1, 1, ?, ?, ?)`,
+    ).run(homeThreadId, BOT_FAILURE_DIAGNOSIS_DEFAULT_BRIEF, now, now);
+  } finally {
+    db.close();
+  }
+};
+
+/** Waits for the routine's run to fail and its diagnosis to end. */
+const settledDiagnosis = Effect.fn("botPreparation.settledDiagnosis")(function* (
+  call: Call,
+  botId: string,
+) {
+  for (let attempt = 0; attempt < 90; attempt += 1) {
+    const tasks = yield* listTasks(call, botId);
+    const diagnosis = tasks.find((task) => task.diagnosis !== undefined);
+    // Its work thread has a run once the task leaves `accepted`.
+    if (diagnosis !== undefined && diagnosis.status !== "accepted") return diagnosis;
+    if (tasks.every((task) => TERMINAL.has(task.status) && task.status !== "failed")) {
+      return yield* new SampleError({ message: "the routine ended without a failure" });
+    }
+    yield* Effect.sleep("2 seconds");
+  }
+  return yield* new SampleError({ message: "no diagnosis started" });
+});
+
 const runSample = Effect.fn("botPreparation.runSample")(function* (
   call: Call,
   testCase: PreparationCase,
-  options: { readonly work: string; readonly model: string; readonly effort: string },
+  options: {
+    readonly work: string;
+    readonly model: string;
+    readonly effort: string;
+    readonly baseDir: string;
+  },
 ) {
   const tag = `${testCase.id}-${NodeCrypto.randomBytes(3).toString("hex")}`;
   const root = NodePath.join(options.work, tag);
@@ -269,8 +330,10 @@ const runSample = Effect.fn("botPreparation.runSample")(function* (
 
   let text: string;
   let tools: ReadonlyArray<ToolActivity>;
-  if (testCase.trigger === "routine") {
+  if (testCase.trigger === "routine" || testCase.trigger === "diagnosis") {
     const now = yield* DateTime.now;
+    if (testCase.trigger === "diagnosis")
+      enableDiagnosis(options.baseDir, home, DateTime.formatIso(now));
     const inDays = (days: number) => DateTime.formatIso(DateTime.add(now, { days }));
     const routine = yield* call(
       "schedule_task",
@@ -293,12 +356,18 @@ const runSample = Effect.fn("botPreparation.runSample")(function* (
     if (started.threadId === null) {
       return yield* new SampleError({ message: "the routine did not start a work thread" });
     }
-    const runId = yield* waitForRun(call, started.threadId);
-    const messages = yield* readItems(call, started.threadId, "messages");
+    // A diagnosis is graded on its own work thread; the routine's run is meant to fail.
+    const threadId =
+      testCase.trigger === "diagnosis"
+        ? ((yield* settledDiagnosis(call, botId)).workThreadId ??
+          (yield* new SampleError({ message: "the diagnosis has no work thread" })))
+        : started.threadId;
+    const runId = yield* waitForRun(call, threadId);
+    const messages = yield* readItems(call, threadId, "messages");
     text =
       messages.findLast((item) => item.runId === runId && item.type === "assistant_message")
         ?.text ?? "";
-    tools = toolActivity(yield* readItems(call, started.threadId, "activity"));
+    tools = toolActivity(yield* readItems(call, threadId, "activity"));
   } else {
     if (testCase.existingRoutine !== undefined && testCase.routine !== null) {
       const { sessionAt, leadHours } = testCase.routine;
@@ -364,11 +433,12 @@ const runSample = Effect.fn("botPreparation.runSample")(function* (
   const run: SampleRun = {
     text,
     tools,
-    tasks: tasks.map(({ status, origin, returnToHome, modelSelection }) => ({
+    tasks: tasks.map(({ status, origin, returnToHome, modelSelection, diagnosis }) => ({
       status,
       origin,
       returnToHome,
       modelSelection,
+      diagnosis,
     })),
     botSelection: {
       created: created.bot.modelSelection,
@@ -423,7 +493,12 @@ const main = Effect.gen(function* () {
       return yield* Effect.forEach(
         jobs,
         ({ testCase, sample }) =>
-          runSample(call, testCase, { work, model: values.model, effort: values.effort }).pipe(
+          runSample(call, testCase, {
+            work,
+            model: values.model,
+            effort: values.effort,
+            baseDir,
+          }).pipe(
             Effect.map((run) => {
               const checks = gradeSample(testCase, run);
               return {

@@ -169,6 +169,14 @@ function formatInstant(iso: string): string {
 function workTaskSection(task: WorkTask): string {
   const result =
     "Your final message is the task's result. It appears as a card in your home conversation that links to this thread.";
+  if (task.origin === "diagnostic") {
+    return [
+      "This task diagnoses a failed run of one of your routines. The first message is the user's diagnostic brief, then the failed task, its work thread, and the failed run's record: what it was asked, what it did and how it ended.",
+      "- Work from that record, and read the project as needed, to find what failed and why. Do not run the failed routine's commands to reproduce the failure.",
+      `- ${result} Say what failed, the likely cause and what the user could change. Mark anything you could not confirm as uncertain.`,
+      "- No changes: do not edit files or external data, send messages, retry the routine or start tasks. Describe a fix as a proposal for the user.",
+    ].join("\n");
+  }
   if (task.origin !== "routine") {
     return [
       "This task:",
@@ -291,7 +299,11 @@ export const layer = Layer.effect(
         const owner = yield* botOfThread(threadId);
         if (owner?._tag === "inactive") return { _tag: "refused", message: owner.message } as const;
         if (owner !== undefined) {
-          const grants = (yield* store.listMcpGrants(owner.bot.bot_id)).get(owner.bot.bot_id);
+          // A diagnosis gets none, so grants added after the failed run cannot widen it.
+          const grants =
+            owner.task?.origin === "diagnostic"
+              ? undefined
+              : (yield* store.listMcpGrants(owner.bot.bot_id)).get(owner.bot.bot_id);
           return {
             _tag: "bot",
             botId: owner.bot.bot_id as BotId,

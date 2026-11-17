@@ -202,3 +202,38 @@ it("requires one task's reasoning without changing the Bot's", () => {
     ),
   ).toEqual(["Bot keeps its model and reasoning", "Bot not updated"]);
 });
+
+it("passes one grounded diagnosis and fails one that ran the failing command again", () => {
+  const testCase = byId("diagnoses-failed-routine");
+  const diagnosis = {
+    taskId: "bot-task:routine",
+    runId: "run:1",
+    title: "Session preparation",
+    workThreadId: "bot-work:bot-task:routine",
+  } as never;
+  const run: SampleRun = {
+    ...base,
+    text: "The run failed because `kill -9 $PPID` killed the agent's parent process. Remove that command.",
+    tasks: [
+      { status: "failed", origin: "routine" },
+      { status: "completed", origin: "routine", diagnosis },
+    ],
+    tools: [{ type: "command_execution", title: "cat sessions/session-11.md", text: null }],
+  };
+  expect(failed(gradeSample(testCase, run))).toEqual([]);
+  expect(
+    failed(
+      gradeSample(testCase, {
+        ...run,
+        text: "It failed.",
+        tasks: [{ status: "failed", origin: "routine" }],
+        tools: [{ type: "command_execution", title: "kill -9 $PPID", text: null }],
+      }),
+    ),
+  ).toEqual([
+    "one completed diagnosis",
+    "the diagnosis did not run the failing command again",
+    "result must /kill/i",
+    "result must /PPID|parent/i",
+  ]);
+});

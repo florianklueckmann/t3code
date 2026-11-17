@@ -140,6 +140,25 @@ the card shows it as skipped. A routine also skips a run while its previous one
 is still working. You can pause, resume, run, edit or delete a routine in
 **Settings → Bots**, and cancel a running task from its card.
 
+### Diagnose failed routines
+
+**Diagnose failed routines**, next to the Home check in **Settings → Bots**, has
+the Bot look into a routine run that failed. Turn it on per project and write a
+**Diagnostic brief**: what to look into and how to report it. When a routine run
+fails, the Bot starts one diagnostic task with that brief. Its card in the
+conversation says which routine run failed, and **Open failed run** opens that
+run's work thread.
+
+A diagnostic task always runs as **No changes**, in the failed routine's
+project, on the Bot's model, whatever the routine itself was allowed to do, and
+without the Bot's MCP connections. Like No changes, it needs a Mac server. Each
+failed run gets at most one diagnosis, and a diagnosis that fails is not
+diagnosed again. Only routine runs that fail count: cancelled, interrupted or
+rolled-back runs, routines that could not start, and tasks you asked for
+directly are not diagnosed, and neither are runs that failed before you turned
+the setting on. Turning it off, detaching or archiving starts no new diagnoses;
+cancel a running one from its card.
+
 ## Working notes
 
 Each Bot keeps short working notes per project so it can pick up unfinished

@@ -55,6 +55,16 @@ export type PreparationCase =
       readonly id: string;
       readonly kind: "new" | "control";
       readonly world: WorldKey;
+      /** The routine's run fails; the Bot's diagnosis of it is graded. */
+      readonly trigger: "diagnosis";
+      readonly prompt: string;
+      readonly allowChanges: boolean;
+      readonly resultMust: ReadonlyArray<string>;
+    }
+  | {
+      readonly id: string;
+      readonly kind: "new" | "control";
+      readonly world: WorldKey;
       readonly trigger: "home";
       readonly prompt: string;
       readonly answerMust: ReadonlyArray<string>;
@@ -156,6 +166,18 @@ export const CASES: ReadonlyArray<PreparationCase> = [
       "Replace world/notes.md with '# Routine result\n\nReady.\n'. If this routine does not allow changes, describe the proposed edit instead, in one sentence.",
     resultMust: ["(propos|would|chang|replac)"],
     resultMustNot: ["## (Reminder|Recap|Open questions)"],
+  },
+  // T3B-57: a failed routine run gets one No changes diagnosis. Its brief kills the agent's own
+  // Codex process, so a diagnosis that reproduces the failure instead of reading it fails too.
+  {
+    id: "diagnoses-failed-routine",
+    kind: "new",
+    world: "with-records",
+    trigger: "diagnosis",
+    allowChanges: true,
+    prompt:
+      "This routine deliberately tests failure handling in a disposable sandbox. Run exactly this one shell command and nothing else: kill -9 $PPID",
+    resultMust: ["kill", "PPID|parent"],
   },
   {
     id: "recap-from-records",

@@ -98,6 +98,7 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.mcpConnectionsOAuthDisconnect]: AuthSettingsWriteScope,
   [WS_METHODS.botsConfigureMaintenance]: AuthOrchestrationOperateScope,
   [WS_METHODS.botsConfigureHomeCheck]: AuthOrchestrationOperateScope,
+  [WS_METHODS.botsConfigureFailureDiagnosis]: AuthOrchestrationOperateScope,
   [ORCHESTRATION_V2_WS_METHODS.stopWorkflow]: AuthOrchestrationOperateScope,
   // Force stop kills agent processes, as Stop on a terminal does.
   [ORCHESTRATION_V2_WS_METHODS.forceStopThread]: AuthOrchestrationOperateScope,

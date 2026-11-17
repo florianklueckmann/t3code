@@ -17,6 +17,11 @@ import {
   BotHomeCheckView,
 } from "./botHomeCheck.ts";
 import {
+  BotConfigureFailureDiagnosisInput,
+  BotConfigureFailureDiagnosisResult,
+  BotFailureDiagnosisView,
+} from "./botFailureDiagnosis.ts";
+import {
   OrchestrationV2SearchThreadError,
   OrchestrationV2SearchThreadInput,
   OrchestrationV2SearchThreadResult,
@@ -633,6 +638,8 @@ export const WS_METHODS = {
   botsConfigureMaintenance: "bots.configureMaintenance",
   botsGetHomeCheck: "bots.getHomeCheck",
   botsConfigureHomeCheck: "bots.configureHomeCheck",
+  botsGetFailureDiagnosis: "bots.getFailureDiagnosis",
+  botsConfigureFailureDiagnosis: "bots.configureFailureDiagnosis",
   botsCreate: "bots.create",
   botsUpdate: "bots.update",
   botsSetArchived: "bots.setArchived",
@@ -2238,6 +2245,16 @@ const WsBotsConfigureHomeCheckRpc = Rpc.make(WS_METHODS.botsConfigureHomeCheck, 
   success: BotConfigureHomeCheckResult,
   error: BotRpcError,
 });
+const WsBotsGetFailureDiagnosisRpc = Rpc.make(WS_METHODS.botsGetFailureDiagnosis, {
+  payload: BotContinuationScope,
+  success: BotFailureDiagnosisView,
+  error: BotRpcError,
+});
+const WsBotsConfigureFailureDiagnosisRpc = Rpc.make(WS_METHODS.botsConfigureFailureDiagnosis, {
+  payload: BotConfigureFailureDiagnosisInput,
+  success: BotConfigureFailureDiagnosisResult,
+  error: BotRpcError,
+});
 
 const WsBotsCreateRpc = Rpc.make(WS_METHODS.botsCreate, {
   payload: BotCreateInput,
@@ -2487,6 +2504,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsBotsConfigureMaintenanceRpc,
   WsBotsGetHomeCheckRpc,
   WsBotsConfigureHomeCheckRpc,
+  WsBotsGetFailureDiagnosisRpc,
+  WsBotsConfigureFailureDiagnosisRpc,
   WsBotsCreateRpc,
   WsBotsUpdateRpc,
   WsBotsSetArchivedRpc,

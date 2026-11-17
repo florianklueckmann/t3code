@@ -66,6 +66,8 @@ it.effect.each([78, 79, 80, 81, 82, 83])(
                     return_home_message_id: null,
                     return_finished_at: null,
                     model_selection_json: null,
+                    diagnoses_task_id: null,
+                    diagnoses_run_id: null,
                   }
                 : {}),
             })),
