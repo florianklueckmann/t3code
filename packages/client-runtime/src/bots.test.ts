@@ -24,7 +24,6 @@ import {
 import { describe, expect, it } from "vite-plus/test";
 
 import {
-  botLearningLeftOut,
   botLearningRevisionInput,
   botLearningScopeChange,
   botOfHomeThread,
@@ -35,6 +34,7 @@ import {
   botSourceDrafts,
   botTaskCardKey,
   botTaskResultMatchesThread,
+  botTurnLearningView,
   emptyBotSourceDraft,
   type HiddenBotTaskCards,
   hideBotTaskCard,
@@ -490,43 +490,47 @@ describe("bot learning", () => {
       ],
     };
   };
-  const many = (count: number, options: Parameters<typeof lesson>[2] = {}) =>
-    Array.from({ length: count }, (_, index) =>
-      lesson(`e${String(index + 1).padStart(2, "0")}`, index + 1, options),
+  it("shows the server's selection for one project and nothing of another", () => {
+    const entries = [
+      lesson("in", 1),
+      lesson("out", 2),
+      lesson("retired", 3, { status: "retired" }),
+      lesson("shared-in", 4, { projectId: null }),
+      lesson("shared-out", 5, { projectId: null }),
+      lesson("other", 6, { projectId: projectB }),
+    ];
+    const context = {
+      projectId: projectA,
+      homeThreadId: ThreadId.make("home"),
+      attachedAt: "2026-01-01T00:00:00.000Z",
+      detachedAt: null,
+      guidance: "",
+      sources: [],
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    };
+    const turnLearning = {
+      selected: [BotLearningEntryId.make("in"), BotLearningEntryId.make("shared-in")],
+      eligible: 4,
+      chars: 1_234,
+    };
+    const view = botTurnLearningView(
+      { projects: [{ ...context, turnLearning }], learning: entries },
+      projectA,
     );
-
-  it.each([
-    { name: "leaves nothing out within the limits", entries: many(3), leftOut: [] },
-    {
-      name: "leaves out the oldest lessons past 40, never a standing instruction",
-      entries: [lesson("instruction", 0, { origin: "instruction" }), ...many(41)],
-      leftOut: ["e02", "e01"],
-    },
-    {
-      name: "counts shared lessons but not other projects' lessons",
-      entries: [
-        lesson("shared", 0, { projectId: null }),
-        ...many(40),
-        lesson("other", 0, { projectId: projectB }),
-      ],
-      leftOut: ["shared"],
-    },
-    {
-      name: "leaves out lessons past 8,000 characters",
-      entries: many(9, { text: "x".repeat(1_000) }),
-      leftOut: ["e02", "e01"],
-    },
-    {
-      name: "never lists lessons that are not in use",
-      entries: [
-        ...many(40),
-        lesson("retired", 0, { status: "retired" }),
-        lesson("pending", 0, { status: "pending" }),
-      ],
-      leftOut: [],
-    },
-  ])("$name", ({ entries, leftOut }) => {
-    expect(botLearningLeftOut(entries, projectA).map(({ entry }) => entry.id)).toEqual(leftOut);
+    expect(view?.summary).toBe(
+      "Next turn here: 2 of 4 entries in context · 1,234 of 8,000 characters",
+    );
+    expect(entries.map((entry) => view?.markerOf(entry))).toEqual([
+      "In context",
+      "On demand",
+      null,
+      "In context",
+      "On demand",
+      null,
+    ]);
+    expect(view?.sharedOnDemand.map((entry) => entry.id)).toEqual(["shared-out"]);
+    // A server that does not report the selection shows nothing rather than a guess.
+    expect(botTurnLearningView({ projects: [context], learning: entries }, projectA)).toBeNull();
   });
 
   const bot = {

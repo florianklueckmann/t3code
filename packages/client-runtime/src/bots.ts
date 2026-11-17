@@ -11,7 +11,6 @@ import {
   type BotHomeCheckView,
   type BotFailureDiagnosisView,
   type BotRecordLearningInput,
-  selectBotTurnLearning,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import * as Option from "effect/Option";
@@ -185,35 +184,51 @@ export function botLearningScopeChange(
   return revision.projectId === null ? "moves to all projects" : "moves to one project";
 }
 
-export const BOT_LEARNING_LEFT_OUT_EXPLANATION = `Each turn includes at most ${
+export const BOT_TURN_LEARNING_EXPLANATION = `A preview from the saved learning, not a record of what an earlier turn received. Each turn includes at most ${
   BOT_TURN_LEARNING_LIMITS.entries
-} lessons or ${BOT_TURN_LEARNING_LIMITS.chars.toLocaleString(
+} entries or ${BOT_TURN_LEARNING_LIMITS.chars.toLocaleString(
   "en-US",
-)} characters: your instructions first, then the newest. Retire or merge lessons to make room.`;
+)} characters, counting those for all projects: your instructions first, then the newest. The Bot reads the rest on demand. Retire or merge entries to make room.`;
 
-/** Active entries that a Bot's turns in this project leave out, by the server's own rule. */
-export function botLearningLeftOut(
-  entries: ReadonlyArray<BotLearningEntry>,
+export interface BotTurnLearningView {
+  /** Counts and characters of the next turn here, as the server selected them. */
+  readonly summary: string;
+  /** "In context" or "On demand" for an entry with an active revision, else null. */
+  readonly markerOf: (entry: BotLearningEntry) => "In context" | "On demand" | null;
+  /** Active entries for all projects that the next turn here leaves on demand. */
+  readonly sharedOnDemand: ReadonlyArray<BotLearningEntry>;
+}
+
+/**
+ * The server's selection for the next turn in a project; null when it reports none or nothing
+ * is active there.
+ */
+export function botTurnLearningView(
+  bot: {
+    readonly projects: ReadonlyArray<BotProjectContext>;
+    readonly learning: ReadonlyArray<BotLearningEntry>;
+  },
   projectId: ProjectId,
-): ReadonlyArray<{ readonly entry: BotLearningEntry; readonly current: BotLearningRevision }> {
-  const active = entries.flatMap((entry) =>
-    entry.revisions
-      .filter((revision) => revision.status === "active")
-      .map((current) => ({
-        entry,
-        current,
-        entryId: entry.id,
-        revision: current.revision,
-        // An entry's scope is that of its active revision.
-        projectId: entry.projectId,
-        kind: entry.kind,
-        origin: current.origin,
-        status: current.status,
-        text: current.text,
-        createdAt: current.createdAt,
-      })),
-  );
-  return selectBotTurnLearning(active, projectId).omitted;
+): BotTurnLearningView | null {
+  const turn = bot.projects.find((project) => project.projectId === projectId)?.turnLearning;
+  if (turn === undefined || turn.eligible === 0) return null;
+  const selected = new Set<string>(turn.selected);
+  const active = (entry: BotLearningEntry) =>
+    entry.revisions.some((revision) => revision.status === "active");
+  return {
+    summary: `Next turn here: ${turn.selected.length} of ${turn.eligible} entries in context · ${turn.chars.toLocaleString(
+      "en-US",
+    )} of ${BOT_TURN_LEARNING_LIMITS.chars.toLocaleString("en-US")} characters`,
+    markerOf: (entry) =>
+      !active(entry) || (entry.projectId !== null && entry.projectId !== projectId)
+        ? null
+        : selected.has(entry.id)
+          ? "In context"
+          : "On demand",
+    sharedOnDemand: bot.learning.filter(
+      (entry) => entry.projectId === null && active(entry) && !selected.has(entry.id),
+    ),
+  };
 }
 
 /**

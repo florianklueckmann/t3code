@@ -1,9 +1,8 @@
 import { RegistryContext, useAtomValue } from "@effect/atom-react";
 import {
   BOT_LEARNING_KIND_LABELS,
-  BOT_LEARNING_LEFT_OUT_EXPLANATION,
   BOT_LEARNING_STATUS_LABELS,
-  botLearningLeftOut,
+  BOT_TURN_LEARNING_EXPLANATION,
   botLearningOriginLabel,
   botLearningRevisionInput,
   botLearningScopeChange,
@@ -13,6 +12,7 @@ import {
   botRoutineDraft,
   botRoutinesFor,
   botRoutineUpsertInput,
+  botTurnLearningView,
   describeBotRoutineTiming,
   emptyBotRoutineDraft,
   emptyBotSourceDraft,
@@ -978,7 +978,7 @@ function BotLearningList({
   const [editing, setEditing] = useState<{ entryId: string; text: string } | null>(null);
   const locked = disabled || busy || !canChange;
   const views = botLearningViews(bot.learning, projectId);
-  const leftOut = projectId === null ? [] : botLearningLeftOut(bot.learning, projectId);
+  const turn = projectId === null ? null : botTurnLearningView(bot, projectId);
 
   const run = async (
     title: string,
@@ -1028,12 +1028,31 @@ function BotLearningList({
             : "What the Bot keeps for later work here: your instructions and lessons from your corrections."}
         </p>
       </div>
+      {turn === null ? null : (
+        <div className="space-y-1 rounded-md border p-2 text-sm">
+          <p className="font-medium">{turn.summary}</p>
+          <p className="text-xs text-muted-foreground">{BOT_TURN_LEARNING_EXPLANATION}</p>
+          {turn.sharedOnDemand.length === 0 ? null : (
+            <>
+              <p className="text-xs font-medium">On demand here, for all projects</p>
+              <ul className="space-y-1">
+                {turn.sharedOnDemand.map((entry) => (
+                  <li key={entry.id} className="wrap-anywhere text-muted-foreground">
+                    {entry.revisions.find((revision) => revision.status === "active")?.text}
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+        </div>
+      )}
       {views.length === 0 ? (
         <p className="text-sm text-muted-foreground">Nothing learned yet.</p>
       ) : null}
       {views.map((view) => {
         const shown = view.current ?? view.latest;
         const entryId = view.entry.id;
+        const marker = turn?.markerOf(view.entry) ?? null;
         return (
           <div key={entryId} className="space-y-2 rounded-md border p-2 text-sm">
             <div className="flex items-start justify-between gap-2">
@@ -1043,6 +1062,9 @@ function BotLearningList({
                   <Badge variant={view.current ? "success" : "secondary"}>
                     {BOT_LEARNING_STATUS_LABELS[view.current ? "active" : view.latest.status]}
                   </Badge>
+                  {marker === null ? null : (
+                    <Badge variant={marker === "In context" ? "info" : "outline"}>{marker}</Badge>
+                  )}
                 </div>
                 <p
                   className={view.current ? "wrap-anywhere" : "wrap-anywhere text-muted-foreground"}
@@ -1234,20 +1256,6 @@ function BotLearningList({
           </div>
         );
       })}
-      {leftOut.length === 0 ? null : (
-        <div className="space-y-1 rounded-md border p-2 text-sm">
-          <p className="font-medium">Left out of the Bot's turns here ({leftOut.length})</p>
-          <p className="text-xs text-muted-foreground">{BOT_LEARNING_LEFT_OUT_EXPLANATION}</p>
-          <ul className="space-y-1">
-            {leftOut.map(({ entry, current }) => (
-              <li key={entry.id} className="wrap-anywhere text-muted-foreground">
-                {current.text}
-                {entry.projectId === null ? " · all projects" : ""}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
       {projectId === null ? null : (
         <div className="space-y-2">
           <Textarea

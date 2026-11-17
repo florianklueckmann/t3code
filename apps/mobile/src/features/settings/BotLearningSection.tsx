@@ -1,13 +1,13 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
   BOT_LEARNING_KIND_LABELS,
-  BOT_LEARNING_LEFT_OUT_EXPLANATION,
   BOT_LEARNING_STATUS_LABELS,
-  botLearningLeftOut,
+  BOT_TURN_LEARNING_EXPLANATION,
   botLearningOriginLabel,
   botLearningRevisionInput,
   botLearningScopeChange,
   botLearningViews,
+  botTurnLearningView,
 } from "@t3tools/client-runtime/bots";
 import {
   isAtomCommandInterrupted,
@@ -85,8 +85,8 @@ export function BotLearningSection({
   const [editing, setEditing] = useState<{ entryId: string; text: string } | null>(null);
   const locked = disabled || busy || !canChange;
   const views = detail.data ? botLearningViews(detail.data.learning, projectId) : [];
-  const leftOut =
-    detail.data && projectId !== null ? botLearningLeftOut(detail.data.learning, projectId) : [];
+  const turn =
+    detail.data && projectId !== null ? botTurnLearningView(detail.data, projectId) : null;
 
   const run = async (
     failureTitle: string,
@@ -127,23 +127,47 @@ export function BotLearningSection({
           : "Your instructions apply right away. Lessons from your corrections follow the Learning setting."
       }
     >
+      {turn === null ? null : (
+        <View className="gap-1 px-4 py-3">
+          <Text textRole="footnote" className="text-foreground">
+            {turn.summary}
+          </Text>
+          <Text textRole="footnote" className="text-foreground-muted">
+            {BOT_TURN_LEARNING_EXPLANATION}
+          </Text>
+          {turn.sharedOnDemand.length === 0 ? null : (
+            <Text textRole="footnote" className="pt-1 text-foreground">
+              On demand here, for all projects
+            </Text>
+          )}
+          {turn.sharedOnDemand.map((entry) => (
+            <Text key={entry.id} textRole="body" className="text-foreground-muted">
+              {entry.revisions.find((revision) => revision.status === "active")?.text}
+            </Text>
+          ))}
+        </View>
+      )}
       {views.length === 0 ? (
         <Text className="p-4 text-base text-foreground-muted">Nothing learned yet.</Text>
       ) : null}
       {views.map((view, index) => {
         const shown = view.current ?? view.latest;
         const entryId = view.entry.id;
+        const marker = turn?.markerOf(view.entry) ?? null;
         return (
           <View
             key={entryId}
             className={
-              index === 0 ? "gap-1 px-4 py-3" : "gap-1 border-t border-border-subtle px-4 py-3"
+              index === 0 && turn === null
+                ? "gap-1 px-4 py-3"
+                : "gap-1 border-t border-border-subtle px-4 py-3"
             }
           >
             <Text textRole="footnote" className="text-foreground-muted">
               {BOT_LEARNING_KIND_LABELS[view.entry.kind]} ·{" "}
               {BOT_LEARNING_STATUS_LABELS[view.current ? "active" : view.latest.status]} ·{" "}
               {botLearningOriginLabel(shown)}
+              {marker === null ? "" : ` · ${marker}`}
             </Text>
             <Text
               textRole="body"
@@ -283,22 +307,6 @@ export function BotLearningSection({
           </View>
         );
       })}
-      {leftOut.length === 0 ? null : (
-        <View className="gap-1 border-t border-border-subtle px-4 py-3">
-          <Text textRole="footnote" className="text-foreground">
-            Left out of the Bot's turns here ({leftOut.length})
-          </Text>
-          <Text textRole="footnote" className="text-foreground-muted">
-            {BOT_LEARNING_LEFT_OUT_EXPLANATION}
-          </Text>
-          {leftOut.map(({ entry, current }) => (
-            <Text key={entry.id} textRole="body" className="text-foreground-muted">
-              {current.text}
-              {entry.projectId === null ? " · all projects" : ""}
-            </Text>
-          ))}
-        </View>
-      )}
       {projectId === null ? null : (
         <>
           <FormField

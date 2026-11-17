@@ -89,7 +89,7 @@ function buildBotInstructions(input: {
   readonly task: WorkTask | null;
   readonly learningPolicy: string;
   readonly continuation: string;
-  readonly activeLearning: ReturnType<typeof BotLearning.activeLearningLines>;
+  readonly activeLearning: ReturnType<typeof BotLearning.turnLearning>;
 }): string {
   const place =
     input.task === null
@@ -361,7 +361,7 @@ export const layer = Layer.effect(
           sources,
           task,
           learningPolicy: bot.learning_policy,
-          activeLearning: BotLearning.activeLearningLines(learning, context.project_id),
+          activeLearning: BotLearning.turnLearning(learning, context.project_id),
           continuation:
             task !== null
               ? ""
