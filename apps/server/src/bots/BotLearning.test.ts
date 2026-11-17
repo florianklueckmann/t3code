@@ -34,6 +34,8 @@ const row = (
   conflicts_with_instruction: 0,
   created_at: `2026-01-01T00:${String(minute).padStart(2, "0")}:00.000Z`,
   decided_at: null,
+  activated_at: null,
+  restored_from: null,
 });
 
 const many = (count: number, options: Parameters<typeof row>[2] = {}) =>

@@ -419,6 +419,8 @@ import {
   BotGetInput,
   BotListInput,
   BotListResult,
+  BotLearningNoticesInput,
+  BotLearningNoticesResult,
   BotRecordLearningInput,
   BotRestoreLearningInput,
   BotRetireLearningInput,
@@ -657,6 +659,7 @@ export const WS_METHODS = {
   botsDecideLearning: "bots.decideLearning",
   botsRetireLearning: "bots.retireLearning",
   botsRestoreLearning: "bots.restoreLearning",
+  botsSubscribeLearningNotices: "bots.subscribeLearningNotices",
 
   mcpConnectionsList: "mcpConnections.list",
   mcpConnectionsCreate: "mcpConnections.create",
@@ -2354,6 +2357,13 @@ const WsBotsRestoreLearningRpc = Rpc.make(WS_METHODS.botsRestoreLearning, {
   error: BotRpcError,
 });
 
+const WsBotsSubscribeLearningNoticesRpc = Rpc.make(WS_METHODS.botsSubscribeLearningNotices, {
+  payload: BotLearningNoticesInput,
+  success: BotLearningNoticesResult,
+  error: BotRpcError,
+  stream: true,
+});
+
 const McpConnectionRpcError = Schema.Union([McpConnectionError, EnvironmentAuthorizationError]);
 
 const WsMcpConnectionsListRpc = Rpc.make(WS_METHODS.mcpConnectionsList, {
@@ -2529,6 +2539,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsBotsDecideLearningRpc,
   WsBotsRetireLearningRpc,
   WsBotsRestoreLearningRpc,
+  WsBotsSubscribeLearningNoticesRpc,
   WsMcpConnectionsListRpc,
   WsMcpConnectionsCreateRpc,
   WsMcpConnectionsUpdateRpc,

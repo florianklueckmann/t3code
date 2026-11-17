@@ -4,6 +4,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
   type BotDetail,
+  BotError,
   BotId,
   BotTaskId,
   McpConnectionId,
@@ -20,6 +21,7 @@ import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as DateTime from "effect/DateTime";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
@@ -1358,5 +1360,177 @@ it.effect("selects the only attached project and asks when several match", () =>
         );
       }),
     );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
+const learningNoticesOf = (bots: BotService.BotService["Service"], projectId: ProjectId) =>
+  bots.subscribeLearningNotices({ botId, projectId }).pipe(
+    Stream.runHead,
+    Effect.map((head) => Option.getOrThrow(head).notices),
+  );
+
+const noticeLines = (notices: Effect.Success<ReturnType<typeof learningNoticesOf>>) =>
+  notices.map((notice) => `${notice.change} r${notice.revision} ${notice.status}: ${notice.text}`);
+
+it.effect("shows each committed learning change once, in the Home it came from", () =>
+  Effect.gen(function* () {
+    yield* seedProjects;
+    const world = yield* makeThreadWorld;
+    // Distinct times keep the newest-first order independent of random entry ids.
+    const tick = TestClock.adjust("1 minute");
+    const instruction = {
+      ...correction,
+      origin: "instruction" as const,
+      source: { kind: "user" as const },
+      botId,
+      projectId: campaignA,
+    };
+    const homeA = yield* withServices(world.threadLayer, ({ bots }) =>
+      Effect.gen(function* () {
+        yield* createCampaignBot(bots);
+        yield* bots.attachProject({ botId, projectId: campaignA });
+        yield* bots.attachProject({ botId, projectId: campaignB });
+
+        const saved = yield* bots.recordLearning(instruction);
+        const entryId = saved.learned.entryId;
+        yield* tick;
+        // A retried write finds the committed lesson and records nothing new.
+        assert.isTrue((yield* bots.recordLearning(instruction)).learned.duplicate);
+        yield* bots.recordLearning({
+          ...correction,
+          text: "Name the moon phase on each date.",
+          botId,
+          projectId: campaignA,
+        });
+        yield* tick;
+        const failed = yield* bots
+          .maintainLearning({ botId, projectId: campaignA }, ({ policy, record }) =>
+            Effect.gen(function* () {
+              yield* record(policy, {
+                ...correction,
+                text: "Never committed.",
+                source: { kind: "agent", label: "Bot maintenance" },
+                botId,
+                projectId: campaignA,
+              });
+              return yield* new BotError({ message: "injected failure after the write" });
+            }),
+          )
+          .pipe(Effect.flip);
+        assert.equal(failed.message, "injected failure after the write");
+        yield* tick;
+        const edit = {
+          ...instruction,
+          text: "Give in-world dates in Dale Reckoning, with the month.",
+          replaces: { entryId, revision: 1 },
+        };
+        yield* bots.recordLearning(edit);
+        // Retried after it committed: its base moved on, but its text is already current.
+        assert.isTrue((yield* bots.recordLearning(edit)).learned.duplicate);
+        yield* tick;
+        yield* bots.retireLearning({ botId, entryId });
+        yield* tick;
+        const restore = { botId, entryId, revision: 1, source: { kind: "user" as const } };
+        yield* bots.restoreLearning(restore);
+        const restoredTwice = yield* bots.restoreLearning(restore);
+        assert.deepEqual(statusesOf(restoredTwice).slice(0, 1), ["superseded,retired,active"]);
+        yield* tick;
+        const proposalId = (yield* bots.get({ botId })).learning.find(
+          (entry) => entry.revisions[0]?.text === "Name the moon phase on each date.",
+        )?.id;
+        yield* bots.decideLearning({
+          botId,
+          entryId: proposalId ?? assert.fail(),
+          revision: 1,
+          decision: "adopt",
+        });
+        yield* tick;
+        yield* bots.recordLearning({
+          ...instruction,
+          projectId: campaignB,
+          scope: "bot",
+          kind: "fact",
+          text: "The party uses the Harptos calendar.",
+        });
+        yield* tick;
+        yield* bots.recordLearning({
+          ...instruction,
+          projectId: campaignB,
+          kind: "fact",
+          text: "Campaign B starts in Waterdeep.",
+        });
+        yield* tick;
+        yield* bots.recordLearning({
+          ...correction,
+          botId,
+          projectId: campaignB,
+          scope: "bot",
+          text: "Open each session with the weather.",
+        });
+
+        const notices = yield* learningNoticesOf(bots, campaignA);
+        assert.deepEqual(noticeLines(notices), [
+          "added r1 active: The party uses the Harptos calendar.",
+          "adopted r1 active: Name the moon phase on each date.",
+          "restored r3 active: Give in-world dates in Dale Reckoning.",
+          "retired r2 retired: Give in-world dates in Dale Reckoning, with the month.",
+          "changed r2 retired: Give in-world dates in Dale Reckoning, with the month.",
+          "added r1 active: Name the moon phase on each date.",
+          "added r1 superseded: Give in-world dates in Dale Reckoning.",
+        ]);
+        const [shared, adopted, restored, retired, changed, proposal, first] = notices;
+        // Adopted since, the proposal still reads as one; the instruction applied when saved.
+        assert.deepEqual([proposal?.proposed, first?.proposed], [true, false]);
+        assert.equal(shared?.projectId, null);
+        assert.equal(adopted?.currentRevision, 1);
+        assert.equal(restored?.restoredFrom, 1);
+        assert.deepEqual(
+          [restored, retired, changed].map((notice) => notice?.currentRevision),
+          [3, 3, 3],
+        );
+        assert.deepEqual(changed?.previous, {
+          revision: 1,
+          text: "Give in-world dates in Dale Reckoning.",
+          projectId: campaignA,
+        });
+
+        // B never sees A's own entries; a shared proposal stays where it was made until adopted.
+        assert.deepEqual(noticeLines(yield* learningNoticesOf(bots, campaignB)), [
+          "added r1 pending: Open each session with the weather.",
+          "added r1 active: Campaign B starts in Waterdeep.",
+          "added r1 active: The party uses the Harptos calendar.",
+        ]);
+        return notices;
+      }),
+    );
+
+    // Settled history is bounded; a proposal still waiting outlives any number of newer changes.
+    const boundedHistory = withServices(world.threadLayer, ({ bots }) =>
+      Effect.gen(function* () {
+        yield* bots.recordLearning({
+          ...correction,
+          text: "Track the party's renown.",
+          botId,
+          projectId: campaignA,
+        });
+        for (let index = 0; index < 30; index++) {
+          yield* tick;
+          yield* bots.recordLearning({ ...instruction, kind: "fact", text: `Session ${index}.` });
+        }
+        const notices = yield* learningNoticesOf(bots, campaignA);
+        assert.lengthOf(notices, 31);
+        assert.equal(notices.at(-1)?.text, "Track the party's renown.");
+        assert.equal(notices.at(-1)?.status, "pending");
+      }),
+    );
+
+    // A restart and its recovery pass derive the same notices from the same rows.
+    yield* withServices(world.threadLayer, ({ bots }) =>
+      Effect.gen(function* () {
+        yield* bots.reconcileTaskLearning;
+        assert.deepEqual(yield* learningNoticesOf(bots, campaignA), homeA);
+      }),
+    );
+    yield* boundedHistory;
   }).pipe(Effect.provide(layerDatabase)),
 );

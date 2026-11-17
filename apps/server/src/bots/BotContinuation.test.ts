@@ -651,7 +651,7 @@ it.effect(
           readonly migration_id: number;
           readonly name: string;
         }>`SELECT migration_id, name FROM effect_sql_migrations ORDER BY migration_id`;
-        assert.deepEqual(history.at(-1), { migration_id: 18, name: "BotFailureDiagnosis" });
+        assert.deepEqual(history.at(-1), { migration_id: 19, name: "BotLearningNotices" });
       }).pipe(Effect.provide(connection), Effect.scoped);
     }).pipe(Effect.provide(NodeServices.layer)),
 );

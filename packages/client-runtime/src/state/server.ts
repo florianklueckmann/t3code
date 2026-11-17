@@ -1753,6 +1753,12 @@ export function createServerEnvironmentAtoms<R, E>(
     botsLive,
     // The 50 newest tasks for the filter; statuses update as their work threads run.
     botTasksLive,
+    // One Home's learning notices; only an open Home subscribes, so learning text stays there.
+    botLearningNoticesLive: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "environment-data:server:bots:learning-notices:live",
+      tag: WS_METHODS.botsSubscribeLearningNotices,
+      idleTtlMs: 0,
+    }),
     botTaskResult: (target: {
       readonly environmentId: EnvironmentId;
       readonly input: BotTaskResultInput;

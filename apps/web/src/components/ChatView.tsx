@@ -334,6 +334,7 @@ import {
   shouldShowThreadErrorBanner,
 } from "./chat/ThreadErrorBanner";
 import { QueuedRunsControl, type QueuedRunsControlHandle } from "./chat/QueuedRunsControl";
+import { BotLearningNotices } from "./chat/BotLearningNotices";
 import { BotTaskCards } from "./chat/BotTaskCards";
 import { useThreadLinkedPullRequest } from "./pullRequest/useThreadLinkedPullRequest";
 import { useProactivePanels } from "../hooks/useProactivePanels";
@@ -3604,6 +3605,15 @@ export default function ChatView(props: ChatViewProps) {
                     mayBeBotHomeThreadId(activeThread.id) &&
                     serverConfig?.environment.capabilities.botRoutines === true ? (
                       <BotTaskCards
+                        environmentId={activeThread.environmentId}
+                        threadId={activeThread.id}
+                      />
+                    ) : null}
+                    {isServerThread &&
+                    activeThread &&
+                    mayBeBotHomeThreadId(activeThread.id) &&
+                    serverConfig?.environment.capabilities.botLearningNotices === true ? (
+                      <BotLearningNotices
                         environmentId={activeThread.environmentId}
                         threadId={activeThread.id}
                       />

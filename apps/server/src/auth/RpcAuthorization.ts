@@ -126,6 +126,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.botsGetFailureDiagnosis]: AuthOrchestrationReadScope,
   [WS_METHODS.botsSubscribeTasks]: AuthOrchestrationReadScope,
   [WS_METHODS.botsGetTaskResult]: AuthOrchestrationReadScope,
+  [WS_METHODS.botsSubscribeLearningNotices]: AuthOrchestrationReadScope,
   [WS_METHODS.mcpConnectionsList]: AuthOrchestrationReadScope,
   [WS_METHODS.mcpConnectionsOAuthSubscribe]: AuthOrchestrationReadScope,
   [WS_METHODS.secretsAnswerRequest]: AuthOrchestrationOperateScope,

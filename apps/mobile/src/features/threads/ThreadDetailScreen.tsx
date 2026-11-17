@@ -209,6 +209,7 @@ import { ComposerQueuedEditBanner } from "./ComposerQueuedEdit";
 import { useThreadQueuedCount } from "./ThreadQueueControl";
 import { ThreadGuestShareBar } from "./ThreadGuestShareBar";
 import { ThreadSideChatsRow } from "./ThreadSideChatsRow";
+import { BotHomeLearningNotices } from "./BotHomeLearningNotices";
 import { BotHomeTaskCards } from "./BotHomeTaskCards";
 import type { ThreadContentPresentation } from "./threadContentPresentation";
 import { resolveThreadFeedSubmissionAnchor } from "./thread-feed-scroll-position";
@@ -1686,6 +1687,15 @@ function ThreadDetailBody(
                     !mayBeBotHomeThreadId(props.selectedThread.id) ||
                     props.serverConfig?.environment.capabilities.botRoutines !== true ? null : (
                       <BotHomeTaskCards
+                        environmentId={props.environmentId}
+                        threadId={props.selectedThread.id}
+                      />
+                    )}
+                    {props.draftMode ||
+                    !mayBeBotHomeThreadId(props.selectedThread.id) ||
+                    props.serverConfig?.environment.capabilities.botLearningNotices !==
+                      true ? null : (
+                      <BotHomeLearningNotices
                         environmentId={props.environmentId}
                         threadId={props.selectedThread.id}
                       />

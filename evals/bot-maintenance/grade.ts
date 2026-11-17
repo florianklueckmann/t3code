@@ -23,6 +23,8 @@ export const batchFor = (testCase: MaintenanceCase): Evidence.Batch => {
     conflicts_with_instruction: 0,
     created_at: AT,
     decided_at: null,
+    activated_at: AT,
+    restored_from: null,
   }));
   const built = Evidence.buildBatch({
     authority: {

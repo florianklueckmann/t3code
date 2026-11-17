@@ -18,6 +18,7 @@ import type {
   BotId,
   BotLearningEntry,
   BotLearningKind,
+  BotLearningNotice,
   BotLearningRevision,
   BotLearningStatus,
   BotProjectContext,
@@ -478,6 +479,127 @@ export function showBotTaskCards(
 ): HiddenBotTaskCards {
   const shown = new Set(keys);
   return hidden.filter((key) => !shown.has(key));
+}
+
+/** Changes this close together read as one, such as everything one maintenance pass kept. */
+const LEARNING_NOTICE_GROUP_GAP_MS = 60_000;
+const HOME_LEARNING_NOTICE_GROUP_LIMIT = 3;
+
+export interface BotLearningNoticeGroup {
+  /** Changes when a newer notice joins, so a hidden group shows again. */
+  readonly key: string;
+  /** Newest first. */
+  readonly notices: ReadonlyArray<BotLearningNotice>;
+  /** Proposals in the group still waiting for the user. */
+  readonly waiting: number;
+}
+
+/**
+ * A Home's learning notices in groups, newest first: the three newest groups plus any that still
+ * holds a waiting proposal, which stays until it is decided. Hiding shares the task cards' list.
+ */
+export function homeBotLearningNoticeGroups(
+  scope: { readonly environmentId: string; readonly botId: BotId; readonly projectId: ProjectId },
+  notices: ReadonlyArray<BotLearningNotice>,
+  hidden: HiddenBotTaskCards,
+): {
+  readonly visible: ReadonlyArray<BotLearningNoticeGroup>;
+  readonly hiddenKeys: ReadonlyArray<string>;
+} {
+  const runs: Array<Array<BotLearningNotice>> = [];
+  for (const notice of notices) {
+    const run = runs.at(-1);
+    const previous = run?.at(-1);
+    if (
+      run !== undefined &&
+      previous !== undefined &&
+      Date.parse(previous.at) - Date.parse(notice.at) <= LEARNING_NOTICE_GROUP_GAP_MS
+    ) {
+      run.push(notice);
+    } else runs.push([notice]);
+  }
+  const hiddenSet = new Set(hidden);
+  const visible: BotLearningNoticeGroup[] = [];
+  const hiddenKeys: string[] = [];
+  runs.forEach((run, index) => {
+    const newest = run[0]!;
+    const group = {
+      key: JSON.stringify([
+        scope.environmentId,
+        scope.botId,
+        scope.projectId,
+        "learning",
+        newest.entryId,
+        newest.revision,
+        newest.change,
+      ]),
+      notices: run,
+      waiting: run.filter((notice) => notice.status === "pending" && notice.change !== "retired")
+        .length,
+    };
+    if (group.waiting > 0) visible.push(group);
+    else if (index >= HOME_LEARNING_NOTICE_GROUP_LIMIT) return;
+    else if (hiddenSet.has(group.key)) hiddenKeys.push(group.key);
+    else visible.push(group);
+  });
+  return { visible, hiddenKeys };
+}
+
+export function hideBotHomeCard(hidden: HiddenBotTaskCards, key: string): HiddenBotTaskCards {
+  return [...hidden.filter((candidate) => candidate !== key), key].slice(
+    -HIDDEN_BOT_TASK_CARDS_MAX,
+  );
+}
+
+const LEARNING_NOTICE_CHANGE_LABELS = {
+  added: "new",
+  changed: "changed",
+  restored: "restored",
+  adopted: "adopted",
+  retired: "retired",
+} as const;
+
+/** One line for a group, such as "2 new, 1 changed · 1 waiting for you". */
+export function botLearningNoticeGroupSummary(group: BotLearningNoticeGroup): string {
+  const counts = new Map<string, number>();
+  for (const notice of group.notices) {
+    const label = LEARNING_NOTICE_CHANGE_LABELS[notice.change];
+    counts.set(label, (counts.get(label) ?? 0) + 1);
+  }
+  const changes = [...counts].map(([label, count]) => `${count} ${label}`).join(", ");
+  return group.waiting === 0 ? changes : `${changes} · ${group.waiting} waiting for you`;
+}
+
+export function botLearningNoticeTitle(notice: BotLearningNotice): string {
+  const kind = BOT_LEARNING_KIND_LABELS[notice.kind].toLowerCase();
+  switch (notice.change) {
+    case "added":
+      return notice.proposed ? `Proposed ${kind}` : `New ${kind}`;
+    case "changed":
+      return notice.proposed ? `Proposed change to a ${kind}` : `Changed ${kind}`;
+    case "restored":
+      return `Restored ${kind} from revision ${notice.restoredFrom ?? notice.revision}`;
+    case "adopted":
+      return `Adopted ${kind}`;
+    case "retired":
+      return `Retired ${kind}`;
+  }
+}
+
+export function botLearningNoticeScopeLabel(notice: BotLearningNotice): string {
+  return notice.projectId === null ? "All projects" : "This project";
+}
+
+/**
+ * Where the entry stands now when that differs from what the notice says, so a notice about an
+ * entry that was later replaced, rejected or retired never reads as current.
+ */
+export function botLearningNoticeEntryState(notice: BotLearningNotice): string | null {
+  if (notice.change === "retired") return notice.currentRevision === null ? null : "Restored since";
+  if (notice.status === "pending") return BOT_LEARNING_STATUS_LABELS.pending;
+  if (notice.status === "rejected") return BOT_LEARNING_STATUS_LABELS.rejected;
+  if (notice.currentRevision === notice.revision) return BOT_LEARNING_STATUS_LABELS.active;
+  return notice.currentRevision === null ? "Not in use now" : "No longer current";
 }
 
 /**

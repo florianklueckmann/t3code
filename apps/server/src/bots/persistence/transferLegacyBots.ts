@@ -144,6 +144,10 @@ export const transferLegacyBots = Effect.fn("BotDatabase.transferLegacyBots")(fu
                     "diagnoses_task_id",
                     "diagnoses_run_id",
                   ].includes(row.name)
+                ) &&
+                !(
+                  table === "bot_learning_revisions" &&
+                  (row.name === "activated_at" || row.name === "restored_from")
                 ),
             );
             if (
@@ -185,6 +189,11 @@ export const transferLegacyBots = Effect.fn("BotDatabase.transferLegacyBots")(fu
                 row.model_selection_json = null;
                 row.diagnoses_task_id = null;
                 row.diagnoses_run_id = null;
+              }
+              // As migration 019 fills them for revisions that were already stored.
+              if (table === "bot_learning_revisions") {
+                row.activated_at = row.status === "active" ? (row.decided_at ?? null) : null;
+                row.restored_from = null;
               }
               const keys = targetColumns
                 .filter((column) => column.pk > 0)
