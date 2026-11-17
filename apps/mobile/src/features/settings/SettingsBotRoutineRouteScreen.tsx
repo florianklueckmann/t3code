@@ -98,13 +98,7 @@ export function SettingsBotRoutineRouteScreen({
                 : null;
 
   const title = taskId === undefined ? "New routine" : "Edit routine";
-  // The form starts from the capabilities of the Bot's current model, so it waits while a cached
-  // detail for another model reloads. A model changed elsewhere later keeps the open form; the
-  // server refuses what the new model can't run.
-  const detailCurrent =
-    detail.data !== null &&
-    (detail.data.modelSelection.instanceId === bot?.modelSelection.instanceId || !detail.isPending);
-  if (unavailable === null && bot && detailCurrent && initialDraft && task !== undefined) {
+  if (unavailable === null && bot && detail.data && initialDraft && task !== undefined) {
     return (
       <BotRoutineForm
         key={taskId ?? "new"}
@@ -166,6 +160,8 @@ function BotRoutineForm(props: {
   const navigation = useNavigation();
   const [baseline] = useState(props.initialDraft);
   const [draft, setDraftState] = useState(props.initialDraft);
+  // Capabilities can arrive after the draft started, so where No changes is not offered it can't be saved.
+  const allowChanges = draft.allowChanges || !props.noChanges.offered;
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [picker, setPicker] = useState<"date" | "time" | "timeOfDay" | null>(null);
@@ -209,7 +205,7 @@ function BotRoutineForm(props: {
   const save = async () => {
     if (submissionPending.current || !canOperate) return;
     const result = botRoutineUpsertInput(
-      draft,
+      { ...draft, allowChanges },
       {
         botId: props.bot.id,
         projectId: props.projectId,
@@ -266,7 +262,7 @@ function BotRoutineForm(props: {
         <SettingsSection
           title="Changes"
           footer={[
-            draft.allowChanges
+            allowChanges
               ? "The Bot carries out the edits or messages requested in the brief, in Full access without approval prompts."
               : "The Bot reports results and proposes changes. It cannot edit files or data or send messages; this is enforced with Codex on a Mac server, and elsewhere the run fails instead.",
             props.noChanges.unavailableLabel,
