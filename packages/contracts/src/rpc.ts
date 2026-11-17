@@ -9,6 +9,7 @@ import {
 import {
   BotConfigureMaintenanceInput,
   BotConfigureMaintenanceResult,
+  BotMaintenanceRunResult,
   BotMaintenanceView,
 } from "./botMaintenance.ts";
 import {
@@ -636,6 +637,7 @@ export const WS_METHODS = {
   botsSaveContinuation: "bots.saveContinuation",
   botsGetMaintenance: "bots.getMaintenance",
   botsConfigureMaintenance: "bots.configureMaintenance",
+  botsRunMaintenance: "bots.runMaintenance",
   botsGetHomeCheck: "bots.getHomeCheck",
   botsConfigureHomeCheck: "bots.configureHomeCheck",
   botsGetFailureDiagnosis: "bots.getFailureDiagnosis",
@@ -2235,6 +2237,11 @@ const WsBotsConfigureMaintenanceRpc = Rpc.make(WS_METHODS.botsConfigureMaintenan
   success: BotConfigureMaintenanceResult,
   error: BotRpcError,
 });
+const WsBotsRunMaintenanceRpc = Rpc.make(WS_METHODS.botsRunMaintenance, {
+  payload: BotContinuationScope,
+  success: BotMaintenanceRunResult,
+  error: BotRpcError,
+});
 const WsBotsGetHomeCheckRpc = Rpc.make(WS_METHODS.botsGetHomeCheck, {
   payload: BotContinuationScope,
   success: BotHomeCheckView,
@@ -2502,6 +2509,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsBotsSaveContinuationRpc,
   WsBotsGetMaintenanceRpc,
   WsBotsConfigureMaintenanceRpc,
+  WsBotsRunMaintenanceRpc,
   WsBotsGetHomeCheckRpc,
   WsBotsConfigureHomeCheckRpc,
   WsBotsGetFailureDiagnosisRpc,

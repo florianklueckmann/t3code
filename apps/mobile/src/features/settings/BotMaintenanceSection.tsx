@@ -1,12 +1,14 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
   BOT_MAINTENANCE_DESCRIPTION,
+  botMaintenanceRunLabel,
   botMaintenanceStatusLabel,
+  canRunBotMaintenance,
   canToggleBotMaintenance,
 } from "@t3tools/client-runtime/bots";
 import type { BotId, EnvironmentId, ProjectId } from "@t3tools/contracts";
 import { useState } from "react";
-import { View } from "react-native";
+import { Pressable, View } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";
 import * as Dialog from "../../components/ui/Dialog";
@@ -24,6 +26,7 @@ export function BotMaintenanceSection(props: {
   readonly projectId: ProjectId;
   readonly title: string;
   readonly formLocked: boolean;
+  readonly runSupported: boolean;
 }) {
   const { environmentId, botId, projectId } = props;
   const scope = { botId, projectId };
@@ -37,9 +40,27 @@ export function BotMaintenanceSection(props: {
   const canConfigure = useAtomValue(
     serverEnvironment.configureBotMaintenance.permissionAtom(environmentId),
   );
+  const runCommand = useAtomCommand(serverEnvironment.runBotMaintenance, {
+    reportFailure: false,
+  });
+  const canRunCommand = useAtomValue(
+    serverEnvironment.runBotMaintenance.permissionAtom(environmentId),
+  );
   const [busy, setBusy] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [lastRun, setLastRun] = useState<string | null>(null);
   const view = query.data;
   if (view === null) return null;
+  const runDisabled = running || !canRunCommand || !canRunBotMaintenance(view);
+
+  const run = async () => {
+    setRunning(true);
+    setLastRun(null);
+    const result = await runCommand({ environmentId, input: scope });
+    setRunning(false);
+    if (result._tag === "Success") setLastRun(botMaintenanceRunLabel(result.value));
+    else reportBotFailure("Maintenance didn't run", result);
+  };
 
   const toggle = async (enabled: boolean) => {
     setBusy(true);
@@ -78,6 +99,24 @@ export function BotMaintenanceSection(props: {
           onValueChange={(enabled) => void toggle(enabled)}
         />
       </View>
+      {props.runSupported ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityState={{ disabled: runDisabled, busy: running }}
+          disabled={runDisabled}
+          onPress={() => void run()}
+          className="min-h-14 gap-1 border-t border-border-subtle px-4 py-3 active:opacity-70 disabled:opacity-50"
+        >
+          <Text textRole="body" className="text-foreground">
+            {running ? "Running…" : "Run now"}
+          </Text>
+          {lastRun !== null ? (
+            <Text textRole="footnote" className="text-foreground-muted">
+              {lastRun}
+            </Text>
+          ) : null}
+        </Pressable>
+      ) : null}
     </SettingsSection>
   );
 }

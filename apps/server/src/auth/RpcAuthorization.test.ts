@@ -53,6 +53,9 @@ describe("RPC authorization scopes", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.botsConfigureMaintenance)).toBe(
       AuthOrchestrationOperateScope,
     );
+    expect(requiredScopeForRpcMethod(WS_METHODS.botsRunMaintenance)).toBe(
+      AuthOrchestrationOperateScope,
+    );
     expect(requiredScopeForRpcMethod(WS_METHODS.botsGetHomeCheck)).toBe(AuthOrchestrationReadScope);
     expect(requiredScopeForRpcMethod(WS_METHODS.botsConfigureHomeCheck)).toBe(
       AuthOrchestrationOperateScope,

@@ -5,6 +5,8 @@ import {
   type BotContinuationNote,
   type BotContinuationRef,
   type BotContinuationRevision,
+  type BotMaintenanceRunResult,
+  type BotMaintenanceRunStep,
   type BotMaintenanceView,
   type BotHomeCheckView,
   type BotFailureDiagnosisView,
@@ -706,6 +708,71 @@ function botMaintenanceState(view: BotMaintenanceView, unavailable: boolean): st
 /** Turning off is always allowed; turning on needs an editable form, an active Bot and a server that can generate. */
 export function canToggleBotMaintenance(view: BotMaintenanceView, formLocked: boolean): boolean {
   return view.enabled || (!formLocked && view.writable && view.unavailableReason === null);
+}
+/** The server refuses the same cases; this only keeps the action from offering a sure refusal. */
+export function canRunBotMaintenance(view: BotMaintenanceView): boolean {
+  return view.enabled && view.writable && view.unavailableReason === null;
+}
+
+const BOT_MAINTENANCE_REASON_LABELS: ReadonlyMap<string, string> = new Map([
+  ["home_active", "the conversation was busy"],
+  ["learning_pending", "lessons come first"],
+  ["note_behind", "the working notes are behind"],
+  ["settings_changed", "maintenance settings changed"],
+  ["basis_changed", "the Bot or project changed"],
+  ["source_changed", "a message changed during the pass"],
+  ["oversized_evidence", "too much to review at once"],
+  ["instructions_exceed_packet", "the Bot's instructions are too long"],
+  ["note_too_large", "the working notes are too large"],
+  ["unsupported", "not supported for this conversation"],
+  ["retry_exhausted", "earlier attempts failed"],
+  ["generation_failed", "the model call failed"],
+]);
+function maintenanceReason(step: BotMaintenanceRunStep): string {
+  if (step.status === "error" || step.reason === null) return step.reason ?? "";
+  return BOT_MAINTENANCE_REASON_LABELS.get(step.reason) ?? step.reason.replaceAll("_", " ");
+}
+function plural(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+/** One line per manual run: what learning, the working notes and compaction each did. */
+export function botMaintenanceRunLabel(result: BotMaintenanceRunResult): string {
+  const { learning, note, compaction } = result;
+  const learned = [
+    learning.active > 0 ? `Learned ${plural(learning.active, "lesson")}` : null,
+    learning.pending > 0 ? `${plural(learning.pending, "proposal")} waiting for you` : null,
+  ].filter((part) => part !== null);
+  const learningLabel =
+    learning.status === "idle"
+      ? "Nothing new to learn"
+      : learning.status === "applied" || learning.status === "noop" || learning.status === "partial"
+        ? `${learned.length > 0 ? learned.join(", ") : "Reviewed new messages, no new lessons"}${learning.status === "partial" ? ", more next run" : ""}`
+        : maintenanceStepLabel("Learning", learning);
+  const noteLabel =
+    note.status === "current"
+      ? "Notes up to date"
+      : note.status === "refreshed"
+        ? "Notes refreshed"
+        : maintenanceStepLabel("Notes", note);
+  const compactionLabel =
+    compaction.status === "not_needed"
+      ? "No compaction needed"
+      : compaction.status === "compacted"
+        ? "Context compacted"
+        : maintenanceStepLabel("Compaction", compaction);
+  return [learningLabel, noteLabel, compactionLabel].join(" · ");
+}
+function maintenanceStepLabel(name: string, step: BotMaintenanceRunStep): string {
+  const verb =
+    step.status === "deferred"
+      ? "waited"
+      : step.status === "error"
+        ? "didn't run"
+        : step.status === "failed" || step.status === "not_refreshed"
+          ? "failed"
+          : step.status.replaceAll("_", " ");
+  const reason = maintenanceReason(step);
+  return reason === "" ? `${name} ${verb}` : `${name} ${verb}: ${reason}`;
 }
 
 export const BOT_HOME_CHECK_DESCRIPTION =

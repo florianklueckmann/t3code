@@ -7,6 +7,8 @@ import {
   BotError,
   BotId,
   BotLearningEntryId,
+  type BotMaintenanceRunResult,
+  type BotMaintenanceRunStep,
   type BotMaintenanceView,
   BotTaskId,
   CommandId,
@@ -26,10 +28,15 @@ import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
+import * as Cause from "effect/Cause";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as FiberMap from "effect/FiberMap";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import type * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
@@ -173,6 +180,8 @@ export class BotMaintenance extends Context.Service<
     ) => Effect.Effect<BotConfigureMaintenanceResult, BotError>;
     /** One learning pass over new evidence; serialized per Home with every other pass. */
     readonly runNow: (scope: BotContinuationScope) => Effect.Effect<BotMaintenancePass, BotError>;
+    /** The nightly pass on demand: learning, note refresh, then compaction. */
+    readonly run: (scope: BotContinuationScope) => Effect.Effect<BotMaintenanceRunResult, BotError>;
     /** Runs a scoped Home turn that saves the working note, unless it already covers the Home. */
     readonly refreshNote: (scope: BotContinuationScope) => Effect.Effect<NoteRefresh, BotError>;
     /** Compacts a large idle Codex Home whose learning and working note are already saved. */
@@ -1224,15 +1233,79 @@ export const make = Effect.gen(function* () {
     return last;
   }, Effect.mapError(failure));
 
+  /** A step that cannot run still lets the next one try; its failure is part of the outcome. */
+  const step = <A>(effect: Effect.Effect<A, BotError>) =>
+    Effect.result(effect.pipe(Effect.tapError((error) => Effect.logWarning(error))));
+
   /** Preserve first, then compact; the compaction rechecks every gate itself. */
-  const maintainHome = (scope: BotContinuationScope) =>
-    refreshNote(scope).pipe(
-      Effect.flatMap((note) =>
-        note.status === "refreshed" ? afterRefreshTurn(scope, note.homeRunId) : Effect.void,
-      ),
-      Effect.ignore({ log: true }),
-      Effect.andThen(compactHome(scope).pipe(Effect.ignore({ log: true }))),
+  const maintainHome = Effect.fn("BotMaintenance.maintainHome")(function* (
+    scope: BotContinuationScope,
+  ) {
+    const note = yield* step(refreshNote(scope));
+    if (note._tag === "Success" && note.success.status === "refreshed")
+      yield* afterRefreshTurn(scope, note.success.homeRunId);
+    return { note, compaction: yield* step(compactHome(scope)) };
+  });
+
+  /**
+   * One whole pass for the Home, nightly or manual, in the service's fiber map: a Home that
+   * already has one keeps it, and the returned fiber ends interrupted at once.
+   */
+  const startPass = Effect.fn("BotMaintenance.startPass")(function* (
+    scope: BotContinuationScope,
+    home: ThreadId,
+  ) {
+    const learned = yield* Deferred.make<void>();
+    const fiber = yield* FiberMap.run(
+      refreshes,
+      home,
+      Effect.gen(function* () {
+        const learning = yield* step(runNow(scope)).pipe(
+          Effect.ensuring(Deferred.succeed(learned, undefined)),
+        );
+        return { learning, ...(yield* maintainHome(scope)) };
+      }),
+      // Started after it is in the map, so work it does synchronously cannot let a second claim in.
+      { onlyIfMissing: true, startImmediately: false },
     );
+    return { fiber, learned: Deferred.await(learned).pipe(Effect.raceFirst(Fiber.await(fiber))) };
+  });
+
+  /**
+   * The nightly pass for one Home, with the same gates, refused at once while any pass runs
+   * there. A client that leaves does not stop it.
+   */
+  const run = Effect.fn("BotMaintenance.run")(function* (scope: BotContinuationScope) {
+    const { bot, home, active } = yield* scopeOf(scope);
+    if ((yield* stateRow(home))?.enabled !== 1)
+      return yield* invalid("Bot maintenance is off for this project.");
+    if (!active)
+      return yield* invalid("This Bot is archived or detached, so maintenance does not run.");
+    if ((yield* generationOf(bot)).unavailableReason !== null) return yield* unavailable();
+    const running = invalid("Maintenance is already running for this project.");
+    const { fiber } = yield* startPass(scope, home);
+    const exit = yield* Fiber.await(fiber);
+    if (Exit.isFailure(exit))
+      return yield* Cause.hasInterruptsOnly(exit.cause) ? running : Effect.failCause(exit.cause);
+    const { learning, note, compaction } = exit.value;
+    const reasonOf = (outcome: object) =>
+      "reason" in outcome && typeof outcome.reason === "string" ? outcome.reason : null;
+    const stepOf = <A extends { readonly status: string }>(
+      result: Result.Result<A, BotError>,
+    ): BotMaintenanceRunStep =>
+      result._tag === "Failure"
+        ? { status: "error", reason: result.failure.message }
+        : { status: result.success.status, reason: reasonOf(result.success) };
+    const counts =
+      learning._tag === "Success" && "outcome" in learning.success
+        ? learning.success.outcome
+        : { active: 0, pending: 0 };
+    return {
+      learning: { ...stepOf(learning), active: counts.active, pending: counts.pending },
+      note: stepOf(note),
+      compaction: stepOf(compaction),
+    } satisfies BotMaintenanceRunResult;
+  }, Effect.mapError(failure));
 
   /**
    * One attempt a night per enabled Home, after missed nights too. The night is claimed before
@@ -1257,16 +1330,14 @@ export const make = Effect.gen(function* () {
       if (due === null || DateTime.isGreaterThan(due, now)) continue;
       yield* sql`UPDATE bot_maintenance SET nightly_at = ${DateTime.formatIso(now)} WHERE home_thread_id = ${row.home_thread_id}`;
       const scope = { botId: BotId.make(row.bot_id), projectId: ProjectId.make(row.project_id) };
-      yield* runNow(scope).pipe(Effect.ignore({ log: true }));
-      // The refresh and compaction wait on Home turns, so the other Homes' passes do not wait.
-      yield* FiberMap.run(refreshes, ThreadId.make(row.home_thread_id), maintainHome(scope), {
-        onlyIfMissing: true,
-      });
+      // Homes learn one after another; the refresh and compaction wait on Home turns, so the
+      // next Home does not wait for them. A pass already running there covers this night.
+      yield* (yield* startPass(scope, ThreadId.make(row.home_thread_id))).learned;
     }
   });
   yield* scheduler.register("bot-maintenance", runNightly);
 
-  return BotMaintenance.of({ get, configure, runNow, refreshNote, compactHome });
+  return BotMaintenance.of({ get, configure, runNow, run, refreshNote, compactHome });
 });
 
 export const layer = Layer.effect(BotMaintenance, make).pipe(

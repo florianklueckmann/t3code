@@ -4,6 +4,7 @@ import {
   parseBotContinuationDraft,
   botContinuationWriterLabel,
   botContinuationRefCaption,
+  botMaintenanceRunLabel,
   botMaintenanceStatusLabel,
   canToggleBotMaintenance,
 } from "./bots.ts";
@@ -410,6 +411,27 @@ it("shows a persisted enabled maintenance setting as stopped when the server can
     expect(botMaintenanceStatusLabel(unavailable)).toContain(explanation);
     expect(canToggleBotMaintenance(unavailable, false)).toBe(true);
   }
+});
+
+it("sums up a manual maintenance run, keeping steps and reasons from a newer server readable", () => {
+  expect(
+    botMaintenanceRunLabel({
+      learning: { status: "partial", reason: null, active: 1, pending: 2 },
+      note: { status: "deferred", reason: "home_active" },
+      compaction: { status: "error", reason: "Bot maintenance is off for this project." },
+    }),
+  ).toBe(
+    "Learned 1 lesson, 2 proposals waiting for you, more next run · Notes waited: the conversation was busy · Compaction didn't run: Bot maintenance is off for this project.",
+  );
+  expect(
+    botMaintenanceRunLabel({
+      learning: { status: "deferred", reason: "reason_from_newer_server", active: 0, pending: 0 },
+      note: { status: "status_from_newer_server", reason: null },
+      compaction: { status: "not_needed", reason: "below_threshold" },
+    }),
+  ).toBe(
+    "Learning waited: reason from newer server · Notes status from newer server · No compaction needed",
+  );
 });
 
 it("keeps pausing maintenance reachable while the Bot form is locked", () => {

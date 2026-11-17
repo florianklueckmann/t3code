@@ -29,3 +29,23 @@ export const BotConfigureMaintenanceResult = Schema.Union([
   Schema.TaggedStruct("conflict", { current: BotMaintenanceView }),
 ]);
 export type BotConfigureMaintenanceResult = typeof BotConfigureMaintenanceResult.Type;
+
+/** One step of a pass; strings so new statuses and reasons stay decodable. */
+export const BotMaintenanceRunStep = Schema.Struct({
+  /** `error` when the step could not run at all; `reason` then holds the message. */
+  status: Schema.String,
+  reason: Schema.NullOr(Schema.String),
+});
+export type BotMaintenanceRunStep = typeof BotMaintenanceRunStep.Type;
+
+export const BotMaintenanceRunResult = Schema.Struct({
+  learning: Schema.Struct({
+    ...BotMaintenanceRunStep.fields,
+    /** Lessons recorded as active, and as proposals waiting for the user. */
+    active: NonNegativeInt,
+    pending: NonNegativeInt,
+  }),
+  note: BotMaintenanceRunStep,
+  compaction: BotMaintenanceRunStep,
+});
+export type BotMaintenanceRunResult = typeof BotMaintenanceRunResult.Type;

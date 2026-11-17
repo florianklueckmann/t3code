@@ -223,6 +223,12 @@ is skipped while the Bot's conversation or its tasks are still busy, while the
 conversation is snoozed or archived, while maintenance is paused, or
 while its model can't run.
 
+**Run now**, under the Maintenance switch, runs the same pass right away, for
+example after you corrected the Bot. Each step holds back for the same reasons
+a night is skipped, and when the pass ends it shows what it learned, whether the
+working notes were refreshed and whether the conversation was compacted. It does
+not start while a pass is already running for that project.
+
 Once the lessons and the Bot's working notes are saved, maintenance compacts a
 long Bot conversation's context, so the next day starts small. The conversation
 and its history stay as they were. A message you send before compaction starts

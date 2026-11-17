@@ -2189,6 +2189,11 @@ export function createServerEnvironmentAtoms<R, E>(
       scheduler: configScheduler,
       concurrency: configConcurrency,
     }),
+    // Off the config lane: it answers when the whole pass ends, which can take minutes.
+    runBotMaintenance: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bots:run-maintenance",
+      tag: WS_METHODS.botsRunMaintenance,
+    }),
     configureBotHomeCheck: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:bots:configure-home-check",
       tag: WS_METHODS.botsConfigureHomeCheck,

@@ -2335,6 +2335,7 @@ export const layerWsRpc = (
         [WS_METHODS.botsSaveContinuation]: (input) => botContinuation.save(input, { kind: "user" }),
         [WS_METHODS.botsGetMaintenance]: (input) => botMaintenance.get(input),
         [WS_METHODS.botsConfigureMaintenance]: (input) => botMaintenance.configure(input),
+        [WS_METHODS.botsRunMaintenance]: (input) => botMaintenance.run(input),
         [WS_METHODS.botsGetHomeCheck]: (input) => botHomeCheck.get(input),
         [WS_METHODS.botsConfigureHomeCheck]: (input) => botHomeCheck.configure(input),
         [WS_METHODS.botsGetFailureDiagnosis]: (input) => botFailureDiagnosis.get(input),

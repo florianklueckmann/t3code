@@ -97,6 +97,7 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.mcpConnectionsOAuthCancel]: AuthSettingsWriteScope,
   [WS_METHODS.mcpConnectionsOAuthDisconnect]: AuthSettingsWriteScope,
   [WS_METHODS.botsConfigureMaintenance]: AuthOrchestrationOperateScope,
+  [WS_METHODS.botsRunMaintenance]: AuthOrchestrationOperateScope,
   [WS_METHODS.botsConfigureHomeCheck]: AuthOrchestrationOperateScope,
   [WS_METHODS.botsConfigureFailureDiagnosis]: AuthOrchestrationOperateScope,
   [ORCHESTRATION_V2_WS_METHODS.stopWorkflow]: AuthOrchestrationOperateScope,

@@ -223,6 +223,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   mcpConnectionsOAuth: Schema.optionalKey(Schema.Boolean),
   /** Server answers bots.getMaintenance and bots.configureMaintenance. */
   botMaintenance: Schema.optionalKey(Schema.Boolean),
+  /** Server answers bots.runMaintenance. */
+  botMaintenanceRun: Schema.optionalKey(Schema.Boolean),
   /** Server answers bots.getHomeCheck and bots.configureHomeCheck. */
   botHomeCheck: Schema.optionalKey(Schema.Boolean),
   /** Server answers bots.getFailureDiagnosis and bots.configureFailureDiagnosis. */

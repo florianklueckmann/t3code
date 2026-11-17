@@ -210,6 +210,7 @@ describe("command permissions", () => {
     ORCHESTRATION_V2_WS_METHODS.stopWorkflow,
     WS_METHODS.botsSaveContinuation,
     WS_METHODS.botsConfigureMaintenance,
+    WS_METHODS.botsRunMaintenance,
     WS_METHODS.botsConfigureHomeCheck,
     WS_METHODS.botsConfigureFailureDiagnosis,
   ])("uses the target grant for both availability and execution of %s", (method) =>

@@ -1,7 +1,9 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
   BOT_MAINTENANCE_DESCRIPTION,
+  botMaintenanceRunLabel,
   botMaintenanceStatusLabel,
+  canRunBotMaintenance,
   canToggleBotMaintenance,
 } from "@t3tools/client-runtime/bots";
 import {
@@ -14,6 +16,7 @@ import { useState } from "react";
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { Button } from "../ui/button";
 import { Label } from "../ui/label";
 import { Switch } from "../ui/switch";
 import { stackedThreadToast, toastManager } from "../ui/toast";
@@ -25,12 +28,14 @@ export function BotMaintenanceSetting({
   projectId,
   title,
   formLocked,
+  runSupported,
 }: {
   readonly environmentId: EnvironmentId;
   readonly botId: BotId;
   readonly projectId: ProjectId;
   readonly title: string;
   readonly formLocked: boolean;
+  readonly runSupported: boolean;
 }) {
   const scope = { botId, projectId };
   const query = useEnvironmentQuery(
@@ -42,10 +47,38 @@ export function BotMaintenanceSetting({
   const canConfigure = useAtomValue(
     serverEnvironment.configureBotMaintenance.permissionAtom(environmentId),
   );
+  const runCommand = useAtomCommand(serverEnvironment.runBotMaintenance, {
+    label: "bot maintenance run",
+  });
+  const canRunCommand = useAtomValue(
+    serverEnvironment.runBotMaintenance.permissionAtom(environmentId),
+  );
   const [busy, setBusy] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [lastRun, setLastRun] = useState<string | null>(null);
   const view = query.data;
   if (view === null) return null;
   const switchId = `bot-maintenance-${projectId}`;
+
+  const run = async () => {
+    setRunning(true);
+    setLastRun(null);
+    const result = await runCommand({ environmentId, input: scope });
+    setRunning(false);
+    if (result._tag === "Success") {
+      setLastRun(botMaintenanceRunLabel(result.value));
+      return;
+    }
+    if (isAtomCommandInterrupted(result)) return;
+    const error = squashAtomCommandFailure(result);
+    toastManager.add(
+      stackedThreadToast({
+        type: "error",
+        title: "Maintenance didn't run",
+        description: error instanceof Error ? error.message : String(error),
+      }),
+    );
+  };
 
   const toggle = async (enabled: boolean) => {
     setBusy(true);
@@ -84,6 +117,23 @@ export function BotMaintenanceSetting({
         <p className="text-xs text-muted-foreground" id={`${switchId}-status`}>
           {botMaintenanceStatusLabel(view)}
         </p>
+        {runSupported ? (
+          <div className="flex flex-wrap items-center gap-2 pt-1">
+            <Button
+              size="xs"
+              variant="outline"
+              disabled={running || !canRunCommand || !canRunBotMaintenance(view)}
+              onClick={() => void run()}
+            >
+              {running ? "Running…" : "Run now"}
+            </Button>
+            {lastRun !== null ? (
+              <p className="text-xs text-muted-foreground" role="status">
+                {lastRun}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
       </div>
       <Switch
         id={switchId}
