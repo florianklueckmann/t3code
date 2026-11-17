@@ -1075,13 +1075,15 @@ const homeThread = Effect.fn("fixture.homeThread")(function* (lifecycle: {
       ${JSON.stringify({ settledAt: lifecycle.settledAt ?? null, snoozedUntil: lifecycle.snoozedUntil ?? null })})`;
 });
 
+/** A fork's transfer leaves the Home; the others arrive in it. */
 const homeTransfer = Effect.fn("fixture.homeTransfer")(function* (
-  type: "merge_back" | "provider_handoff",
+  type: "merge_back" | "provider_handoff" | "fork",
   status: string,
 ) {
   const main = yield* SqlClient.SqlClient;
+  const [source, target] = type === "fork" ? [home, "fork"] : ["other", home];
   yield* main`INSERT INTO orchestration_v2_projection_context_transfers (context_transfer_id, source_thread_id, target_thread_id, type, status, updated_at, payload_json)
-    VALUES (${`transfer-${type}`}, 'other', ${home}, ${type}, ${status}, ${now}, '{}')`;
+    VALUES (${`transfer-${type}`}, ${source}, ${target}, ${type}, ${status}, ${now}, '{}')`;
 });
 
 const homeEffect = Effect.fn("fixture.homeEffect")(function* (type: string, status: string) {
@@ -1136,6 +1138,11 @@ it.effect.each<{
     name: "a pending provider switch",
     activity: "transfer",
     arrange: () => homeTransfer("provider_handoff", "pending"),
+  },
+  {
+    name: "only an unused fork",
+    activity: null,
+    arrange: () => homeTransfer("fork", "pending"),
   },
   {
     name: "a pending rollback",

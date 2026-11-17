@@ -280,9 +280,9 @@ export const make = Effect.gen(function* () {
 
   /**
    * What keeps the Home busy or unavailable, or null when it is idle. Mirrors the orchestrator's
-   * idle-child check plus the Home's lifecycle and owned work. Workspace setup runs while the run
-   * is `preparing`; rollback, restart and delegated continuations wait as outbox effects.
-   * Settling only tidies the sidebar, so a settled idle Home is still maintained.
+   * idle-child check plus lifecycle and owned work; setup runs while a run is `preparing`, and
+   * rollback, restart and delegated continuations wait as outbox effects. A settled idle Home is
+   * still maintained, and a pending transfer holds only its target, so an unused fork is not work.
    */
   const homeActivity = Effect.fn("BotMaintenance.homeActivity")(function* (home: ThreadId) {
     const now = DateTime.formatIso(yield* DateTime.now);
@@ -314,7 +314,7 @@ export const make = Effect.gen(function* () {
         EXISTS (SELECT 1 FROM orchestration_v2_projection_provider_threads WHERE thread_id = ${home}
           AND (status = 'active' OR json_array_length(payload_json, '$.pendingBackgroundTasks') > 0)) AS provider,
         EXISTS (SELECT 1 FROM orchestration_v2_projection_context_transfers WHERE status = 'pending'
-          AND ${home} IN (source_thread_id, target_thread_id)) AS transfer,
+          AND target_thread_id = ${home}) AS transfer,
         EXISTS (SELECT 1 FROM orchestration_v2_effect_outbox WHERE thread_id = ${home}
           AND status IN ('pending', 'running') AND effect_type NOT IN (SELECT value FROM json_each(${housekeepingEffects}))) AS effect`;
     if (projected?.lifecycle === 1) return { activity: "lifecycle", runtimes: [] } as const;
