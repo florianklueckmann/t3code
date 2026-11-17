@@ -23,6 +23,7 @@ import * as DateTime from "effect/DateTime";
 import * as Ref from "effect/Ref";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerConfig from "../config.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
@@ -1262,6 +1263,77 @@ it.effect("keeps facts in their project by default and shares them when explicit
           .pipe(Effect.flip);
         assert.include(refused.message, "not attached");
         assert.lengthOf(detached.learning, 7);
+      }),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect("reports each project the learning selection its next turn receives", () =>
+  Effect.gen(function* () {
+    yield* seedProjects;
+    const world = yield* makeThreadWorld;
+    yield* withServices(world.threadLayer, ({ bots, turnContext }) =>
+      Effect.gen(function* () {
+        yield* createCampaignBot(bots);
+        yield* bots.attachProject({ botId, projectId: campaignA });
+        const attached = yield* bots.attachProject({ botId, projectId: campaignB });
+        const [homeA, homeB] = attached.projects.map((project) => project.homeThreadId);
+        const instruction = {
+          ...correction,
+          origin: "instruction" as const,
+          source: { kind: "user" as const },
+          botId,
+        };
+        for (let index = 0; index < 9; index++) {
+          yield* TestClock.adjust("1 second");
+          yield* bots.recordLearning({
+            ...instruction,
+            projectId: campaignA,
+            text: `Rule ${index}: ${"x".repeat(950)}`,
+          });
+        }
+        yield* TestClock.adjust("1 second");
+        yield* bots.recordLearning({
+          ...instruction,
+          projectId: campaignA,
+          scope: "bot",
+          text: "Answer in English.",
+        });
+        const other = yield* bots.recordLearning({
+          ...instruction,
+          projectId: campaignB,
+          text: "Only in campaign B.",
+        });
+
+        // The ids the turn's context lists are the ones the Bot's detail marks as selected.
+        const selectionOf = Effect.fn("BotServiceTest.selectionOf")(function* (
+          home: ThreadId | undefined,
+          projectId: ProjectId,
+        ) {
+          const detail = yield* bots.get({ botId });
+          const turn =
+            detail.projects.find((project) => project.projectId === projectId)?.turnLearning ??
+            assert.fail("no turn learning");
+          const instructions = yield* instructionsFor(turnContext, home ?? assert.fail());
+          assert.deepEqual(
+            [...instructions.matchAll(/^- \[(\S+) r\d+;/gm)].map((match) => match[1]),
+            [...turn.selected],
+          );
+          return turn;
+        });
+        const inA = yield* selectionOf(homeA, campaignA);
+        assert.equal(inA.eligible, 10);
+        assert.lengthOf(inA.selected, 8);
+        assert.notInclude(inA.selected, other.learned.entryId);
+        const inB = yield* selectionOf(homeB, campaignB);
+        assert.equal(inB.eligible, 2);
+        assert.include(inB.selected, other.learned.entryId);
+
+        // Retiring an entry in context makes room for one the budget left on demand.
+        yield* bots.retireLearning({ botId, entryId: inA.selected[1] ?? assert.fail() });
+        const retired = yield* selectionOf(homeA, campaignA);
+        assert.equal(retired.eligible, 9);
+        assert.lengthOf(retired.selected, 8);
       }),
     );
   }).pipe(Effect.provide(layerDatabase)),

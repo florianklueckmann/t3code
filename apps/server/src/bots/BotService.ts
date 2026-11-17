@@ -172,9 +172,16 @@ const make = Effect.gen(function* () {
     const contexts = yield* store.listContexts(botId).pipe(Effect.mapError(storeError(botId)));
     const learning = yield* store.listLearning(botId).pipe(Effect.mapError(storeError(botId)));
     const grants = yield* store.listMcpGrants(botId).pipe(Effect.mapError(storeError(botId)));
-    return yield* BotStore.toDetail(bot, contexts, learning, grants.get(botId)).pipe(
+    const detail = yield* BotStore.toDetail(bot, contexts, learning, grants.get(botId)).pipe(
       Effect.mapError(storeError(botId)),
     );
+    return {
+      ...detail,
+      projects: detail.projects.map((project) => ({
+        ...project,
+        turnLearning: BotLearning.turnLearning(learning, project.projectId).summary,
+      })),
+    } satisfies BotDetail;
   });
 
   const requireActiveBot = Effect.fn("BotService.requireActiveBot")(function* (botId: BotId) {

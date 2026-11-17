@@ -1,4 +1,5 @@
 import {
+  BOT_TURN_LEARNING_LIMITS,
   BotError,
   type BotDecideLearningInput,
   BotLearningEntryId,
@@ -12,7 +13,7 @@ import {
   type BotRetireLearningInput,
   type BotTaskId,
   type BotTaskStatus,
-  selectBotTurnLearning,
+  type BotTurnLearning,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
@@ -437,22 +438,43 @@ const duplicateOf = (row: BotStore.BotLearningRow): RecordLearningResult => ({
   duplicate: true,
 });
 
-export function activeLearningLines(
-  rows: ReadonlyArray<BotStore.BotLearningRow>,
-  projectId: string,
-): { readonly lines: ReadonlyArray<string>; readonly omitted: number } {
-  const { lines, omitted } = selectBotTurnLearning(
-    rows.map((row) => ({
-      entryId: row.entry_id,
-      revision: row.revision,
-      projectId: row.project_id,
-      kind: row.kind,
-      origin: row.origin,
-      status: row.status,
-      text: row.text,
-      createdAt: row.created_at,
-    })),
-    projectId,
-  );
-  return { lines, omitted: omitted.length };
+/**
+ * The active learning one turn in a project includes: its own entries and the Bot's shared ones,
+ * standing instructions first and then the newest, until either limit is reached. The turn's
+ * context and the Bot's detail both read it, so what settings show cannot drift from a turn.
+ */
+export function turnLearning(rows: ReadonlyArray<BotStore.BotLearningRow>, projectId: string) {
+  const eligible = rows
+    .filter(
+      (row) => row.status === "active" && (row.project_id === null || row.project_id === projectId),
+    )
+    .toSorted(
+      (a, b) =>
+        Number(b.origin === "instruction") - Number(a.origin === "instruction") ||
+        b.created_at.localeCompare(a.created_at),
+    );
+  const lines: Array<string> = [];
+  let chars = 0;
+  for (const row of eligible) {
+    const line = `- [${row.entry_id} r${row.revision}; ${row.kind}${
+      row.project_id === null ? ", all projects" : ""
+    }${row.origin === "instruction" ? ", standing instruction" : ""}] ${row.text}`;
+    if (
+      lines.length >= BOT_TURN_LEARNING_LIMITS.entries ||
+      chars + line.length > BOT_TURN_LEARNING_LIMITS.chars
+    ) {
+      break;
+    }
+    lines.push(line);
+    chars += line.length;
+  }
+  return {
+    lines,
+    omitted: eligible.length - lines.length,
+    summary: {
+      selected: eligible.slice(0, lines.length).map((row) => BotLearningEntryId.make(row.entry_id)),
+      eligible: eligible.length,
+      chars,
+    } satisfies BotTurnLearning,
+  };
 }
