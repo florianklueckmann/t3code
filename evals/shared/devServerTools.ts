@@ -166,10 +166,11 @@ export const runTurn = Effect.fn("evals.runTurn")(function* (
   call: Call,
   threadId: string,
   prompt: string,
+  options?: { readonly freshContext?: boolean },
 ) {
   const sent = yield* call(
     "t3_thread_send",
-    { threadId, message: prompt },
+    { threadId, message: prompt, ...(options?.freshContext ? { freshContext: true } : {}) },
     OrchestratorMcpThreadSendResult,
   );
   yield* waitForRun(call, threadId, sent.runId);

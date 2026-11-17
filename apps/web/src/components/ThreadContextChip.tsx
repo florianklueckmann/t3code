@@ -1,11 +1,13 @@
-import { scopeProjectRef } from "@t3tools/client-runtime/environment";
+import { scopedThreadKey, scopeProjectRef } from "@t3tools/client-runtime/environment";
 import type { ThreadContextRecord, ProjectId } from "@t3tools/contracts";
+import type { ThreadLinkMessage } from "@t3tools/shared/threadLinks";
 import { Link } from "@tanstack/react-router";
 import { MessagesSquareIcon } from "lucide-react";
 
 import { useProject, useThreadShell } from "~/state/entities";
 import { orchestrationEnvironment } from "~/state/orchestration";
 import { useEnvironmentQuery } from "~/state/query";
+import { openThreadFindOnQuery } from "./chat/threadFindStore";
 import { ContextChip, ContextChipLabel } from "./ContextChip";
 import { ProjectFavicon } from "./ProjectFavicon";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
@@ -15,8 +17,11 @@ export function ThreadContextChip(props: {
   projectId?: ProjectId | null;
   copyMarkdown?: string;
   unreadable?: boolean;
+  /** Opens the thread with find at this message, so the message is in view. */
+  openAt?: ThreadLinkMessage | undefined;
 }) {
   const { environmentId, threadId } = props.record;
+  const openAt = props.openAt;
   const shell = useThreadShell({ environmentId, threadId });
   const lookup = useEnvironmentQuery(
     shell === null && props.projectId === undefined
@@ -42,6 +47,15 @@ export function ThreadContextChip(props: {
                 to="/$environmentId/$threadId"
                 params={{ environmentId, threadId }}
                 draggable={false}
+                {...(openAt === undefined
+                  ? {}
+                  : {
+                      onClick: () =>
+                        openThreadFindOnQuery(scopedThreadKey({ environmentId, threadId }), {
+                          query: openAt.find,
+                          start: { entryId: openAt.messageId, occurrence: 0 },
+                        }),
+                    })}
               />
             }
             aria-label={`Thread, ${title}`}

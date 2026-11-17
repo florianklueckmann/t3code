@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vite-plus/test";
-import { EnvironmentId, ThreadId, type ScopedThreadRef } from "@t3tools/contracts";
+import { EnvironmentId, MessageId, ThreadId, type ScopedThreadRef } from "@t3tools/contracts";
 
 import {
   formatHostedThreadLink,
@@ -191,6 +191,27 @@ describe("thread links", () => {
     expect(link).toBe("<t3-thread://v2/env-1/thread:delegated-task:mcp%3A1>");
     expect(parseThreadLinkHref(link.slice(1, -1))).toEqual(
       ref("env-1", "thread:delegated-task:mcp%3A1"),
+    );
+  });
+
+  it("keeps a message to open at through writing, reading and relabeling", () => {
+    const at = {
+      ...ref("env-1", "bot-home:b:p"),
+      message: { messageId: MessageId.make("msg:1 (a)"), find: "brass lantern" },
+    };
+    const link = formatThreadLink(at, "Home");
+    expect(link).toBe(
+      "[Home](t3-thread://v2/env-1/bot-home:b:p#message=msg%3A1%20%28a%29&find=brass%20lantern)",
+    );
+    expect(parseThreadLinkHref(link.slice(7, -1))).toEqual(at);
+    expect(threadLinkRefs(link, local)).toEqual([ref("env-1", "bot-home:b:p")]);
+    expect(
+      relabelThreadLinks(link, local, titlesIn({ "env-1": { "bot-home:b:p": "Renamed" } })),
+    ).toBe(link.replace("[Home]", "[Renamed]"));
+    // A malformed anchor still opens the thread.
+    expect(parseThreadLinkHref("t3-thread://v2/env-1/t1#message=m1")).toEqual(ref("env-1", "t1"));
+    expect(parseThreadLinkHref("t3-thread://v2/env-1/t1#message=%E0&find=x")).toEqual(
+      ref("env-1", "t1"),
     );
   });
 

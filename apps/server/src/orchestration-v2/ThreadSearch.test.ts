@@ -291,7 +291,7 @@ it.layer(layerTest)("ThreadSearch", (it) => {
       for (const match of ['"needle"', null]) {
         const plan = yield* sql<{
           readonly detail: string;
-        }>`EXPLAIN QUERY PLAN ${ThreadSearch.messageHitsQuery(sql, { match, substrings: "[]", shortSpellings: "[]", projectId: null, excludedThreadIds: "[]" })}`;
+        }>`EXPLAIN QUERY PLAN ${ThreadSearch.messageHitsQuery(sql, { match, substrings: "[]", shortSpellings: "[]", projectId: null, threadId: null, excludedThreadIds: "[]" })}`;
         assert.isFalse(
           plan.some((row) => row.detail.includes("TEMP B-TREE")),
           plan.map((row) => row.detail).join("\n"),
@@ -1290,6 +1290,84 @@ it.layer(layerTest)("ThreadSearch.searchThreadsWithOlderSettledRows", (it) => {
             projections.readShellSnapshot({ location: "active", threadIds }),
           latestSequence: Effect.succeed(7),
         })).threads,
+      );
+    }),
+  );
+});
+
+it.layer(layerTest)("ThreadSearch.searchThreadMessages", (it) => {
+  it.effect("returns the finished matches of that one thread only, and null once archived", () =>
+    Effect.gen(function* () {
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const search = yield* ThreadSearch.ThreadSearch;
+      const project = ProjectId.make("project:cellar");
+      const otherProject = ProjectId.make("project:other-cellar");
+      yield* createProject(project);
+      yield* createProject(otherProject);
+      const home = ThreadId.make("bot-home:bot:cellar");
+      const otherBotHome = ThreadId.make("bot-home:other-bot:cellar");
+      const elsewhere = ThreadId.make("thread:other-project");
+      const archived = ThreadId.make("bot-home:bot:archived");
+      yield* Effect.forEach(
+        [
+          thread(home, project),
+          message(home, "home-said", "user", "The cellar password is brass lantern.", {
+            minute: 1,
+          }),
+          message(home, "home-ack", "assistant", "Noted: brass lantern.", { minute: 2 }),
+          message(home, "home-other", "user", "Who rules Waterdeep?", { minute: 3 }),
+          // The turn asking right now is not earlier conversation.
+          {
+            id: EventId.make("run:home-asking"),
+            type: "run.created",
+            threadId: home,
+            runId: RunId.make("run:home-asking"),
+            nodeId: NodeId.make("node:home-asking"),
+            providerInstanceId,
+            occurredAt: at(7),
+            payload: {
+              id: RunId.make("run:home-asking"),
+              threadId: home,
+              ordinal: 2,
+              providerInstanceId,
+              modelSelection: { instanceId: providerInstanceId, model: "gpt-5" },
+              providerThreadId: null,
+              userMessageId: MessageId.make("home-asking"),
+              rootNodeId: NodeId.make("node:home-asking"),
+              activeAttemptId: null,
+              status: "running",
+              requestedAt: at(7),
+              startedAt: at(7),
+              completedAt: null,
+              checkpointId: null,
+              contextHandoffId: null,
+            },
+          } satisfies OrchestrationV2DomainEvent,
+          message(home, "home-asking", "user", "What was the brass lantern password?", {
+            minute: 7,
+            runId: RunId.make("run:home-asking"),
+          }),
+          thread(otherBotHome, project),
+          message(otherBotHome, "other-bot", "user", "brass lantern again", { minute: 4 }),
+          thread(elsewhere, otherProject),
+          message(elsewhere, "elsewhere", "user", "a brass lantern elsewhere", { minute: 5 }),
+          thread(archived, project, { archivedAt: at(9) }),
+          message(archived, "archived", "user", "brass lantern archived", { minute: 6 }),
+        ],
+        projections.apply,
+        { discard: true },
+      );
+      const hits = yield* search.searchThreadMessages({ threadId: home, query: "brass lantern" });
+      assert.deepStrictEqual(
+        hits?.map((hit) => [hit.messageId, hit.source, hit.text.slice(hit.offset, hit.offset + 5)]),
+        [
+          ["home-said", "user", "brass"],
+          ["home-ack", "assistant", "brass"],
+        ],
+      );
+      assert.isNull(yield* search.searchThreadMessages({ threadId: archived, query: "brass" }));
+      assert.isNull(
+        yield* search.searchThreadMessages({ threadId: ThreadId.make("missing"), query: "brass" }),
       );
     }),
   );

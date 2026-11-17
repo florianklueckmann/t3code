@@ -14,6 +14,7 @@ import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { BotDetail, OrchestratorMcpThreadReadResult, Project } from "@t3tools/contracts";
 import * as Net from "@t3tools/shared/Net";
+import { parseThreadLinkHref } from "@t3tools/shared/threadLinks";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -29,6 +30,7 @@ import {
   toolActivity,
   withTools,
 } from "../shared/devServerTools.ts";
+import { noteOf } from "../shared/botHome.ts";
 import {
   BOT_INSTRUCTIONS,
   BOT_NAME,
@@ -43,6 +45,8 @@ import {
 
 export interface SampleRun {
   readonly answers: ReadonlyArray<string>;
+  /** The message ids of each turn's run, user and assistant. */
+  readonly turnMessageIds?: ReadonlyArray<ReadonlyArray<string>>;
   readonly tools: ReadonlyArray<ToolActivity>;
   /** Source locations per Bot and project after the turns. */
   readonly sources: {
@@ -78,6 +82,13 @@ const decodeToolCall = Schema.decodeUnknownOption(
   ),
 );
 
+/** The messages an answer's thread links open at. */
+export const linkedMessageIds = (answer: string): ReadonlyArray<string> =>
+  [...answer.matchAll(/t3-thread:\/\/v2\/[^\s<>()[\]]+/g)].flatMap((match) => {
+    const message = parseThreadLinkHref(match[0])?.message;
+    return message === undefined ? [] : [message.messageId];
+  });
+
 const sameSet = (left: ReadonlyArray<string>, right: ReadonlyArray<string>) =>
   left.length === right.length &&
   left.every((item) => right.includes(item)) &&
@@ -94,6 +105,13 @@ export const gradeSample = (testCase: BotSourcesCase, run: SampleRun) => {
       add(`turn ${index + 1} textMust /${p}/i`, new RegExp(p, "i").test(answer));
     for (const p of turn.textMustNot ?? [])
       add(`turn ${index + 1} textMustNot /${p}/i`, !new RegExp(p, "i").test(answer));
+    if (turn.citesTurn !== undefined) {
+      const cited = run.turnMessageIds?.[turn.citesTurn - 1] ?? [];
+      add(
+        `turn ${index + 1} links a message of turn ${turn.citesTurn}`,
+        linkedMessageIds(answer).some((id) => cited.includes(id)),
+      );
+    }
   });
   for (const key of ["a", "b"] as const) {
     const expected = testCase.sourcesAfter?.[key] ?? locations(PROJECTS[key].sources);
@@ -220,6 +238,7 @@ const runSample = Effect.fn("botSources.runSample")(function* (
         )).learned;
 
   const answers: Array<string> = [];
+  const turnMessageIds: Array<ReadonlyArray<string>> = [];
   for (const turn of testCase.turns) {
     if (turn.adoptSeedFirst === true && seeded !== undefined) {
       yield* call(
@@ -228,11 +247,18 @@ const runSample = Effect.fn("botSources.runSample")(function* (
         Schema.Unknown,
       );
     }
-    const runId = yield* runTurn(call, home.homeThreadId, turn.prompt);
+    const runId = yield* runTurn(call, home.homeThreadId, turn.prompt, {
+      freshContext: turn.freshContext === true,
+    });
     const messages = yield* readItems(call, home.homeThreadId, "messages");
     answers.push(
       messages.findLast((item) => item.runId === runId && item.type === "assistant_message")
         ?.text ?? "",
+    );
+    turnMessageIds.push(
+      messages.flatMap((item) =>
+        item.runId === runId && item.messageId !== null ? [item.messageId] : [],
+      ),
     );
   }
   const tools = toolActivity(yield* readItems(call, home.homeThreadId, "activity"));
@@ -251,6 +277,7 @@ const runSample = Effect.fn("botSources.runSample")(function* (
     locations(detail.projects.find((p) => p.projectId === projectIds[key])?.sources ?? []);
   const run: SampleRun = {
     answers,
+    turnMessageIds,
     tools,
     sources: {
       bot: { a: sourcesOf(bot, "a"), b: sourcesOf(bot, "b") },
@@ -282,6 +309,8 @@ const runSample = Effect.fn("botSources.runSample")(function* (
   return {
     ...run,
     homeThreadId: home.homeThreadId,
+    // Not graded: a fact the working note carries is in the Bot's context after a fresh start.
+    note: yield* noteOf(call, { botId, projectId: home.projectId }),
     twinId,
     // Not graded: tool calls that touched the user's home, where real memories and notes live,
     // make the sample less synthetic. The summary reports them.

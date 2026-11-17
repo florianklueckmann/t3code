@@ -77,6 +77,8 @@ const SearchRequest = Schema.Struct({
   /** For each short word outside ASCII, the spellings a hit must contain one of. */
   shortSpellings: Schema.fromJsonString(Schema.Array(Schema.Array(Schema.String))),
   projectId: Schema.NullOr(ProjectId),
+  /** One thread only, for a caller already scoped to it. */
+  threadId: Schema.NullOr(ThreadId),
   /** Threads the caller already lists, left out before the hit limit. */
   excludedThreadIds: TokenList,
 });
@@ -163,7 +165,7 @@ function accentInsensitiveGlob(token: string): string {
 function buildMessageSearch(
   query: string,
   hasIndex: boolean,
-): Omit<typeof SearchRequest.Type, "projectId" | "excludedThreadIds"> | null {
+): Omit<typeof SearchRequest.Type, "projectId" | "threadId" | "excludedThreadIds"> | null {
   const { long, short } = messageSearchTokens(query);
   if (long.length === 0) return null;
   // Two-character CJK words are too short for trigrams.
@@ -189,25 +191,29 @@ const SNIPPET_LEAD = 24;
 const isLowSurrogate = (code: number) => code >= 0xdc00 && code <= 0xdfff;
 
 /**
- * Up to 240 characters starting a few words before the match at `matchStart`,
+ * Up to `length` (240) characters starting a few words before the match at `matchStart`,
  * whitespace collapsed, with ellipses where the text was cut. The client finds
  * the highlights again in the result.
  */
-export function buildSearchSnippet(text: string, matchStart: number): string {
-  let start = Math.max(0, matchStart - SNIPPET_LEAD);
+export function buildSearchSnippet(
+  text: string,
+  matchStart: number,
+  { length = SNIPPET_LENGTH, lead = SNIPPET_LEAD } = {},
+): string {
+  let start = Math.max(0, matchStart - lead);
   const wordStart = text.slice(start, matchStart).search(/\s/);
   if (start > 0 && wordStart !== -1) start += wordStart + 1;
   // Cut between characters, not inside an emoji's surrogate pair.
   if (isLowSurrogate(text.charCodeAt(start))) start++;
   // Collapsing whitespace shortens the text, so read more of it.
-  const rawEnd = Math.min(text.length, start + SNIPPET_LENGTH * 2);
+  const rawEnd = Math.min(text.length, start + length * 2);
   // Emphasis and code marks do not show in a thread either.
   const shown = text
     .slice(start, rawEnd)
     .replace(/\*\*|`+/g, "")
     .replace(/\s+/g, " ")
     .trim();
-  let end = Math.min(shown.length, SNIPPET_LENGTH - 2);
+  let end = Math.min(shown.length, length - 2);
   if (isLowSurrogate(shown.charCodeAt(end))) end--;
   const cut = end < shown.length || rawEnd < text.length;
   return `${start > 0 ? "…" : ""}${shown.slice(0, end)}${cut ? "…" : ""}`;
@@ -219,7 +225,14 @@ export function buildSearchSnippet(text: string, matchStart: number): string {
 // accented queries and non-Latin case can still miss: "fermée"/"fermee", "ОШИБКА"/"ошибка".
 export const messageHitsQuery = (
   sql: SqlClient.SqlClient,
-  { match, substrings, shortSpellings, projectId, excludedThreadIds }: typeof SearchRequest.Encoded,
+  {
+    match,
+    substrings,
+    shortSpellings,
+    projectId,
+    threadId,
+    excludedThreadIds,
+  }: typeof SearchRequest.Encoded,
 ) => sql`
     WITH eligible AS MATERIALIZED (
       SELECT threads.thread_id, threads.project_id
@@ -230,6 +243,7 @@ export const messageHitsQuery = (
         AND threads.archived_at IS NULL
         AND projects.deleted_at IS NULL
         AND (${projectId} IS NULL OR threads.project_id = ${projectId})
+        AND (${threadId} IS NULL OR threads.thread_id = ${threadId})
         AND threads.thread_id NOT IN (SELECT value FROM json_each(${excludedThreadIds}))
         AND json_extract(threads.payload_json, '$.lineage.relationshipToParent')
           IS NOT 'subagent'
@@ -327,6 +341,33 @@ const TitleCandidateRow = Schema.Struct({
   latestUserMessageAt: Schema.NullOr(IsoDateTime),
 });
 
+interface MessageHit {
+  readonly row: typeof SearchRow.Type;
+  /** The message as it reads, links as their text. */
+  readonly text: string;
+  readonly quality: number;
+  readonly offset: number;
+}
+
+// The best word match, then what the user wrote, since that is what they
+// remember asking, then the newest by when it was written. Row order is not
+// age: imported histories arrive in one batch.
+const compareHits = (left: MessageHit, right: MessageHit) =>
+  right.quality - left.quality ||
+  Number(left.row.source !== "user") - Number(right.row.source !== "user") ||
+  (right.row.messageCreatedAt ?? "").localeCompare(left.row.messageCreatedAt ?? "");
+
+/** A matching message of one thread. */
+export interface ThreadMessageHit {
+  readonly messageId: MessageId;
+  readonly source: OrchestrationThreadSearchSource;
+  readonly messageCreatedAt: string | null;
+  /** The message as it reads, links as their text. */
+  readonly text: string;
+  /** Where the match starts in `text`. */
+  readonly offset: number;
+}
+
 export interface ThreadSearchHit {
   readonly threadId: ThreadId;
   readonly projectId: ProjectId;
@@ -350,6 +391,14 @@ export class ThreadSearch extends Context.Service<
     readonly searchThreads: (
       input: OrchestrationSearchThreadsInput & { readonly projectId?: ProjectId | undefined },
     ) => Effect.Effect<{ readonly matches: ReadonlyArray<ThreadSearchHit> }, ThreadSearchError>;
+    /**
+     * Every matching message of one thread's finished turns, best first, under the same limits
+     * as message search; null when the thread is archived, deleted or missing.
+     */
+    readonly searchThreadMessages: (input: {
+      readonly threadId: ThreadId;
+      readonly query: string;
+    }) => Effect.Effect<ReadonlyArray<ThreadMessageHit> | null, ThreadSearchError>;
     /**
      * The settled threads before `before` that clients omitting older settled threads should
      * receive for a query: the best title, branch, pull request and project matches, ranked as
@@ -497,6 +546,30 @@ export const make = Effect.gen(function* () {
       ),
     );
 
+  /** The matching messages in scope, as they read; JS checks word starts. */
+  const messageHits = (
+    query: string,
+    scope: Pick<typeof SearchRequest.Type, "projectId" | "threadId" | "excludedThreadIds">,
+  ) =>
+    read(
+      Effect.gen(function* () {
+        const index = yield* sql`
+          SELECT 1 FROM sqlite_master WHERE name = 'orchestration_v2_message_search'
+        `;
+        const messageSearch = buildMessageSearch(query, index.length > 0);
+        return messageSearch === null ? [] : yield* searchRows({ ...messageSearch, ...scope });
+      }),
+    ).pipe(
+      Effect.map((rows) => {
+        const matchMessage = messageMatcher(query);
+        return rows.flatMap((row): ReadonlyArray<MessageHit> => {
+          const text = row.text.replace(MARKDOWN_LINK, "$1");
+          const match = matchMessage(text);
+          return match === null ? [] : [{ row, text, ...match }];
+        });
+      }),
+    );
+
   // A project scope applies before ranking, so other projects' stronger hits
   // cannot use up the limit.
   const searchMessages = Effect.fn("ThreadSearch.search")(function* (
@@ -508,50 +581,21 @@ export const make = Effect.gen(function* () {
       readonly picks?: boolean;
     },
   ) {
-    // One message per thread: the best word match, then what the user wrote,
-    // since that is what they remember asking, then the newest by when it was
-    // written. Row order is not age: imported histories arrive in one batch.
+    // One message per thread, the best by `compareHits`.
     // Text relevance (bm25) would cost a pass over every hit in history.
-    type Hit = {
-      readonly row: typeof SearchRow.Type;
-      /** The message as it reads, links as their text. */
-      readonly text: string;
-      readonly quality: number;
-      readonly offset: number;
-    };
-    const newer = (left: Hit, right: Hit) =>
-      (right.row.messageCreatedAt ?? "").localeCompare(left.row.messageCreatedAt ?? "");
-    const compareHits = (left: Hit, right: Hit) =>
-      right.quality - left.quality ||
-      Number(left.row.source !== "user") - Number(right.row.source !== "user") ||
-      newer(left, right);
-    const rows = yield* read(
-      Effect.gen(function* () {
-        const index = yield* sql`
-          SELECT 1 FROM sqlite_master WHERE name = 'orchestration_v2_message_search'
-        `;
-        const messageSearch = buildMessageSearch(input.query, index.length > 0);
-        return messageSearch === null
-          ? []
-          : yield* searchRows({
-              ...messageSearch,
-              projectId: input.projectId,
-              excludedThreadIds: [...(input.excludedThreadIds ?? [])],
-            });
-      }),
-    );
-    const best = new Map<ThreadId, Hit>();
+    const hits = yield* messageHits(input.query, {
+      projectId: input.projectId,
+      threadId: null,
+      excludedThreadIds: [...(input.excludedThreadIds ?? [])],
+    });
+    const best = new Map<ThreadId, MessageHit>();
     // Matching messages per thread at its best quality: a thread that keeps
     // using the word ranks above a passing mention, and weaker hits ("Trust"
     // for "rust") never add to a whole word's count.
     const hitCounts = new Map<ThreadId, number>();
     const hitCount = (threadId: ThreadId) => hitCounts.get(threadId) ?? 1;
-    const matchMessage = messageMatcher(input.query);
-    for (const row of rows) {
-      const text = row.text.replace(MARKDOWN_LINK, "$1");
-      const match = matchMessage(text);
-      if (match === null) continue;
-      const hit = { row, text, ...match };
+    for (const hit of hits) {
+      const { row } = hit;
       const current = best.get(row.threadId);
       if (current === undefined || hit.quality > current.quality) {
         hitCounts.set(row.threadId, 1);
@@ -714,7 +758,42 @@ export const make = Effect.gen(function* () {
     ];
   });
 
-  return ThreadSearch.of({ search, searchThreads, searchOlderSettled });
+  const searchThreadMessages: ThreadSearch["Service"]["searchThreadMessages"] = Effect.fn(
+    "ThreadSearch.searchThreadMessages",
+  )(function* ({ threadId, query }) {
+    const searchable = yield* read(sql`
+      SELECT 1 FROM orchestration_v2_projection_threads AS threads
+      INNER JOIN projection_projects AS projects ON projects.project_id = threads.project_id
+      WHERE threads.thread_id = ${threadId}
+        AND threads.deleted_at IS NULL
+        AND threads.archived_at IS NULL
+        AND projects.deleted_at IS NULL
+    `);
+    if (searchable.length === 0) return null;
+    const hits = yield* messageHits(query, { projectId: null, threadId, excludedThreadIds: [] });
+    // A turn still in progress, such as the one asking, is not earlier conversation.
+    const unfinished = new Set(
+      (yield* read(sql<{ readonly messageId: string }>`
+        SELECT messages.message_id AS "messageId"
+        FROM orchestration_v2_projection_messages AS messages
+        INNER JOIN orchestration_v2_projection_runs AS runs ON runs.run_id = messages.run_id
+        WHERE messages.thread_id = ${threadId}
+          AND runs.status IN ('preparing', 'queued', 'starting', 'running', 'waiting')
+      `)).map((row) => row.messageId),
+    );
+    return [...hits]
+      .filter((hit) => !unfinished.has(hit.row.messageId))
+      .sort(compareHits)
+      .map(({ row, text, offset }) => ({
+        messageId: row.messageId,
+        source: row.source,
+        messageCreatedAt: row.messageCreatedAt,
+        text,
+        offset,
+      }));
+  });
+
+  return ThreadSearch.of({ search, searchThreads, searchOlderSettled, searchThreadMessages });
 });
 
 export const layer = Layer.effect(ThreadSearch, make);

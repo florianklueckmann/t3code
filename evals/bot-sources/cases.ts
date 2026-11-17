@@ -87,6 +87,10 @@ export interface Turn {
   readonly textMustNot?: ReadonlyArray<string>;
   /** The user adopts the seeded proposal in settings before this turn. */
   readonly adoptSeedFirst?: boolean;
+  /** Starts a new provider conversation, so earlier turns are outside the Bot's context. */
+  readonly freshContext?: boolean;
+  /** The answer must link to a message of this earlier turn (1-based). */
+  readonly citesTurn?: number;
 }
 
 /** Where a learning entry applies: one project, or every project of the Bot. */
@@ -134,6 +138,7 @@ export interface BotSourcesCase {
 
 const T3B_4 = "T3B-4 acceptance criteria (synthetic)";
 const T3B_6 = "T3B-6 acceptance criteria (synthetic)";
+const T3B_55 = "T3B-55 acceptance criteria (synthetic)";
 
 const OPEN_LORD = "Who is the Open Lord of Waterdeep in our campaign right now?";
 const TABLE_READY = "End every answer with the line 'Table ready.'";
@@ -345,6 +350,27 @@ export const CASES: ReadonlyArray<BotSourcesCase> = [
     home: "b",
     seed: { origin: "instruction", kind: "preference", text: TABLE_READY, project: "a" },
     turns: [{ prompt: OPEN_LORD, textMust: ["Laeral"], textMustNot: ["table ready"] }],
+  },
+  {
+    id: "history-after-fresh-start",
+    kind: "bad",
+    source: T3B_55,
+    experience:
+      "After a fresh start, a fact discussed earlier in this Home is outside the Bot's context; the Bot finds it and links the message.",
+    home: "a",
+    turns: [
+      {
+        // Search skips user-role messages an agent sent, as this eval's are, so the answer repeats the fact.
+        prompt:
+          "Recap of last session, already resolved: the party got into the Yawning Portal's cellar with the password 'brass lantern' and cleared it. Nothing is open. Reply only: 'Got it, the cellar password was brass lantern.'",
+      },
+      {
+        prompt: "What password got the party into the Yawning Portal's cellar?",
+        freshContext: true,
+        textMust: ["brass lantern"],
+        citesTurn: 1,
+      },
+    ],
   },
   {
     id: "shared-preference-reaches-both-campaigns",
