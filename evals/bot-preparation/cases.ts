@@ -67,24 +67,40 @@ export type PreparationCase =
       readonly world: WorldKey;
       readonly trigger: "home";
       readonly prompt: string;
+      /** Further Home turns, sent in order after `prompt`; the last answer is graded. */
+      readonly laterTurns?: ReadonlyArray<string>;
       readonly answerMust: ReadonlyArray<string>;
       readonly returnToHome?: boolean;
       /** The reasoningEffort the started task must run at, on the Bot's model; the Bot keeps its own. */
       readonly taskEffort?: string;
       readonly expectedFiles?: Readonly<Record<string, string>>;
       readonly existingRoutine?: { readonly title: string; readonly allowChanges: boolean };
-      /** The routine the turn should set up, or none. */
-      readonly routine: {
-        readonly sessionAt: string;
-        readonly leadHours: number;
-        readonly allowChanges?: boolean;
-        readonly title?: string;
-      } | null;
+      /** The routine the turn should set up, or none. A plain reminder: its Berlin date and a regex for its title or brief. */
+      readonly routine:
+        | {
+            readonly sessionAt: string;
+            readonly leadHours: number;
+            readonly allowChanges?: boolean;
+            readonly title?: string;
+          }
+        | { readonly runOn: string; readonly about: string }
+        | null;
       /** Whether the turn should start a separate task. */
       readonly startsTask: boolean;
     };
 
 const RESULT_SECTIONS = ["reminder", "recap", "open questions?", "proposal"];
+
+/** A bulky reference paste with nothing to act on, about 17,000 characters like the original. */
+const referenceExport = (prefix: string) => {
+  const items = ["flour", "lentils", "oats", "rice", "salt", "butter"];
+  const rows = Array.from(
+    { length: 228 },
+    (_, i) =>
+      `[${prefix} ${String(i).padStart(5, "0")}] shelf ${"ABCDEF"[i % 6]}${i % 9}: ${items[i % 6]} ${100 + ((37 * i) % 900)} g, checked ${(i % 28) + 1}.11.2026, no action needed.`,
+  );
+  return rows.join("\n").slice(0, 16_900);
+};
 
 export const CASES: ReadonlyArray<PreparationCase> = [
   // T3B-24: completion delivery continues authorized work without turning completion into authority.
@@ -257,6 +273,22 @@ export const CASES: ReadonlyArray<PreparationCase> = [
       allowChanges: true,
       title: "Campaign recap",
     },
+    startsTask: false,
+  },
+  // T3B-62: the Home set the reminder, then set it again on the next, unrelated message.
+  {
+    id: "reminder-set-once",
+    kind: "new",
+    world: "with-records",
+    trigger: "home",
+    prompt:
+      "Heads up: friends come for dinner on Thursday 2027-11-18 and I have not decided between pancakes and lentil soup yet. If we go with the soup I must buy red lentils before Wednesday. I will need to decide by Tuesday evening.",
+    laterTurns: [
+      `Pantry inventory export for the notebook (reference data, nothing in it needs a decision). One open request from me: please remind me on Friday 2027-11-19 to descale the oven.\n\n${referenceExport("INV-A")}`,
+      `Second reference export (shopping history). Decision from me: from now on all quantities in this notebook are metric only, no cups or ounces.\n\n${referenceExport("INV-B")}`,
+    ],
+    answerMust: [],
+    routine: { runOn: "2027-11-19", about: "descal" },
     startsTask: false,
   },
   {

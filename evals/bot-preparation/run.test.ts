@@ -116,6 +116,42 @@ it("checks the routine a home turn sets up against the session and lead time", (
       }),
     ),
   ).toEqual(["routine title"]);
+  const reminder = {
+    botId: "bp-1",
+    sessionAt: undefined,
+    runAt: "2027-11-19T08:00:00.000Z",
+    title: "Descale oven",
+    prompt: "Remind the user to descale the oven.",
+  };
+  const once = byId("reminder-set-once");
+  const set = { ...base, routinesBeforeLastTurn: [reminder] };
+  expect(failed(gradeSample(once, { ...set, routines: [reminder] }))).toEqual([]);
+  expect(
+    failed(gradeSample(once, { ...set, routines: [reminder, { ...reminder, title: "Again" }] })),
+  ).toEqual(["one routine for this Bot", "exactly one routine for the reminder"]);
+  expect(
+    failed(
+      gradeSample(once, {
+        ...set,
+        routines: [reminder, { ...reminder, runAt: "2027-11-16T17:00:00.000Z" }],
+      }),
+    ),
+  ).toEqual(["one routine for this Bot"]);
+  const lentils = { ...reminder, title: "Buy lentils", prompt: "Remind me to buy red lentils." };
+  expect(failed(gradeSample(once, { ...base, routines: [lentils] }))).toEqual([
+    "reminder set before the last turn",
+    "exactly one routine for the reminder",
+  ]);
+  expect(failed(gradeSample(once, { ...base, routines: [reminder] }))).toEqual([
+    "reminder set before the last turn",
+  ]);
+  // Midnight in Berlin is still the previous day in UTC.
+  const midnight = { ...reminder, runAt: "2027-11-18T23:00:00.000Z" };
+  expect(
+    failed(
+      gradeSample(once, { ...base, routinesBeforeLastTurn: [midnight], routines: [midnight] }),
+    ),
+  ).toEqual([]);
 });
 
 it("keeps missing Home returns as failed checks with task and file evidence", () => {
