@@ -3968,7 +3968,11 @@ describe("OrchestratorMcpService provider resolution", () => {
           lastRunAt: runAt,
           lastRunStatus: "succeeded",
           runCount: 1,
-          bot: { botId: BotId.make("home"), allowChanges: false },
+          bot: {
+            botId: BotId.make("home"),
+            allowChanges: false,
+            sessionAt: "2026-11-20T10:00:00.000Z",
+          },
         };
         const tasks = yield* Ref.make<ReadonlyArray<ScheduledTask>>([usedUp]);
         const mcp = yield* OrchestratorMcpService.OrchestratorMcpService.pipe(
@@ -4045,7 +4049,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           prompt: "  Remind me to descale\n the oven.",
           // The scheduler reads an offset-free time as UTC.
           schedule: { type: "once", runAt: "2026-11-20T09:00:00" },
-          sessionAt: "2026-11-20T11:00:00+01:00",
+          sessionAt: "2026-11-20T10:00:00",
           allowChanges: false,
         });
         assert.equal(second.scheduledTaskId, first.scheduledTaskId);
