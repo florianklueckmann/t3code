@@ -838,8 +838,10 @@ function toFeedActivity(
         ? readPaths.join("\n") || null
         : item.type === "notification"
           ? item.detail?.trim() || null
-          : item.type === "system_notice" && item.detail
-            ? `${item.message}\n\n${item.detail}`
+          : item.type === "system_notice"
+            ? item.detail?.trim()
+              ? `${item.message}\n\n${item.detail}`
+              : item.message
             : formatItemFullDetail(row, item),
   );
   const getCopyText = memoizeValue(() =>

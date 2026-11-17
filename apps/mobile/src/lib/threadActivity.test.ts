@@ -39,22 +39,27 @@ const threadId = ThreadId.make("thread-1");
 const sourceThreadId = ThreadId.make("thread-source");
 const runId = RunId.make("run-1");
 
-it.each(["info", "warning", "error", undefined] as const)(
-  "renders %s system notice severity",
-  (level) => {
-    const item = {
-      ...base("notice", "2026-08-29T00:00:00.000Z", 1),
-      type: "system_notice" as const,
-      message: "Extension notice",
-      ...(level === undefined ? {} : { level }),
-    };
-    const activity = buildThreadFeed([projected(item, 0)]).flatMap((entry) =>
-      entry.type === "activity-group" ? entry.activities : [],
-    )[0];
-    expect(activity?.icon).toBe(level === "info" ? "zap" : "warning");
-    expect(activity?.summary).toBe(item.message);
-  },
-);
+it.each([
+  ["info", undefined, "Extension notice"],
+  ["warning", undefined, "Extension notice"],
+  ["error", undefined, "Extension notice"],
+  [undefined, undefined, "Extension notice"],
+  ["info", "Summary text", "Extension notice\n\nSummary text"],
+] as const)("renders %s system notice severity and detail %s", (level, detail, fullDetail) => {
+  const item = {
+    ...base("notice", "2026-08-29T00:00:00.000Z", 1),
+    type: "system_notice" as const,
+    message: "Extension notice",
+    ...(level === undefined ? {} : { level }),
+    ...(detail === undefined ? {} : { detail }),
+  };
+  const activity = buildThreadFeed([projected(item, 0)]).flatMap((entry) =>
+    entry.type === "activity-group" ? entry.activities : [],
+  )[0];
+  expect(activity?.icon).toBe(level === "info" ? "zap" : "warning");
+  expect(activity?.summary).toBe(item.message);
+  expect(activity?.getFullDetail()).toBe(fullDetail);
+});
 
 it("shows a captured MCP app for a failed deferred write", () => {
   const mcpApp = {
