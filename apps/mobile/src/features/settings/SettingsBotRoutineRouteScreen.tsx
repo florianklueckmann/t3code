@@ -160,8 +160,10 @@ function BotRoutineForm(props: {
   const navigation = useNavigation();
   const [baseline] = useState(props.initialDraft);
   const [draft, setDraftState] = useState(props.initialDraft);
-  // Capabilities can arrive after the draft started, so where No changes is not offered it can't be saved.
-  const allowChanges = draft.allowChanges || !props.noChanges.offered;
+  // Capabilities can arrive after the draft started: a new routine follows them until the user
+  // picks, and No changes is never saved where it is not offered.
+  const [accessChosen, setAccessChosen] = useState(task !== null);
+  const allowChanges = !props.noChanges.offered || (accessChosen && draft.allowChanges);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [picker, setPicker] = useState<"date" | "time" | "timeOfDay" | null>(null);
@@ -278,8 +280,11 @@ function BotRoutineForm(props: {
                   { value: "none", label: "No changes" },
                   { value: "allow", label: "Changes allowed" },
                 ]}
-                selected={draft.allowChanges ? "allow" : "none"}
-                onSelect={(value) => setDraft({ ...draft, allowChanges: value === "allow" })}
+                selected={allowChanges ? "allow" : "none"}
+                onSelect={(value) => {
+                  setAccessChosen(true);
+                  setDraft({ ...draft, allowChanges: value === "allow" });
+                }}
               />
             </View>
           ) : (
