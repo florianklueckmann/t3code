@@ -98,10 +98,12 @@ export function SettingsBotRoutineRouteScreen({
                 : null;
 
   const title = taskId === undefined ? "New routine" : "Edit routine";
-  // The form starts from the capabilities of the Bot's current model, so it waits for a matching detail.
+  // The form starts from the capabilities of the Bot's current model, so it waits while a cached
+  // detail for another model reloads. A model changed elsewhere later keeps the open form; the
+  // server refuses what the new model can't run.
   const detailCurrent =
     detail.data !== null &&
-    detail.data.modelSelection.instanceId === bot?.modelSelection.instanceId;
+    (detail.data.modelSelection.instanceId === bot?.modelSelection.instanceId || !detail.isPending);
   if (unavailable === null && bot && detailCurrent && initialDraft && task !== undefined) {
     return (
       <BotRoutineForm
