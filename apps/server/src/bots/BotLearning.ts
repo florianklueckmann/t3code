@@ -199,9 +199,10 @@ export const make = (deps: {
         return kept;
       }
       // The user restating an inferred lesson makes it their instruction, which later
-      // inferred lessons cannot override, so it gets its own revision.
+      // inferred lessons cannot override, so it gets its own revision. A retried edit whose base
+      // has moved on already says what is current, so it is no new proposal either.
       if (
-        !stale &&
+        head !== undefined &&
         head.normalized_text === normalized &&
         head.project_id === projectId &&
         !confirmsInference(input, head)
@@ -231,6 +232,8 @@ export const make = (deps: {
         base_revision: input.replaces.revision,
         conflicts_with_instruction: conflictsWithInstruction ? 1 : 0,
         decided_at: status === "pending" ? null : now,
+        activated_at: status === "active" ? now : null,
+        restored_from: null,
       };
       yield* insertRevision(rows, row);
       return resultOf(row);
@@ -273,6 +276,8 @@ export const make = (deps: {
       base_revision: null,
       conflicts_with_instruction: 0,
       decided_at: status === "pending" ? null : now,
+      activated_at: status === "active" ? now : null,
+      restored_from: null,
     };
     yield* insertRevision(rows, row);
     return resultOf(row);
@@ -406,6 +411,16 @@ export const make = (deps: {
     }
     yield* requireEligible(target);
     const revisions = revisionsOf(rows, input.entryId);
+    const head = activeOf(revisions);
+    // A repeated restore finds the text already in use as an instruction and changes nothing.
+    if (
+      head !== undefined &&
+      head.origin === "instruction" &&
+      head.normalized_text === target.normalized_text &&
+      head.project_id === target.project_id
+    ) {
+      return;
+    }
     const now = yield* deps.now;
     const row: BotStore.BotLearningRow = {
       ...target,
@@ -415,10 +430,12 @@ export const make = (deps: {
       origin: "instruction",
       source_json: BotStore.encodeLearningSource(input.source),
       status: "active",
-      base_revision: activeOf(revisions)?.revision ?? null,
+      base_revision: head?.revision ?? null,
       conflicts_with_instruction: 0,
       created_at: now,
       decided_at: now,
+      activated_at: now,
+      restored_from: target.revision,
     };
     yield* insertRevision(rows, row);
   });

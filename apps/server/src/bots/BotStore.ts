@@ -66,6 +66,10 @@ export interface BotLearningRow {
   readonly conflicts_with_instruction: number;
   readonly created_at: string;
   readonly decided_at: string | null;
+  /** When the revision first became active; later status changes leave it. */
+  readonly activated_at: string | null;
+  /** The earlier revision a restore copied. */
+  readonly restored_from: number | null;
 }
 
 export class BotStoreError extends Schema.TaggedError<BotStoreError>()("BotStoreError", {
@@ -124,6 +128,7 @@ export class BotStore extends Context.Service<
     ) => Effect.Effect<ReadonlyArray<BotLearningRow>, BotStoreError>;
     readonly pendingLearningCounts: Effect.Effect<ReadonlyMap<string, number>, BotStoreError>;
     readonly insertLearning: (row: BotLearningRow) => Effect.Effect<void, BotStoreError>;
+    /** The first change to active also records when the revision came into use. */
     readonly setLearningStatus: (input: {
       readonly entryId: string;
       readonly revision: number;
@@ -425,12 +430,13 @@ export const layer = Layer.effect(
         INSERT INTO bot_learning_revisions (
           entry_id, revision, bot_id, project_id, kind, text, normalized_text, rationale,
           evidence, origin, source_json, learned_in_project_id, status, base_revision,
-          conflicts_with_instruction, created_at, decided_at
+          conflicts_with_instruction, created_at, decided_at, activated_at, restored_from
         ) VALUES (
           ${row.entry_id}, ${row.revision}, ${row.bot_id}, ${row.project_id}, ${row.kind},
           ${row.text}, ${row.normalized_text}, ${row.rationale}, ${row.evidence}, ${row.origin},
           ${row.source_json}, ${row.learned_in_project_id}, ${row.status}, ${row.base_revision},
-          ${row.conflicts_with_instruction}, ${row.created_at}, ${row.decided_at}
+          ${row.conflicts_with_instruction}, ${row.created_at}, ${row.decided_at},
+          ${row.activated_at}, ${row.restored_from}
         )
       `;
       },
@@ -445,7 +451,11 @@ export const layer = Layer.effect(
         readonly decidedAt: string;
       }) {
         yield* sql`
-        UPDATE bot_learning_revisions SET status = ${input.status}, decided_at = ${input.decidedAt}
+        UPDATE bot_learning_revisions SET
+          status = ${input.status},
+          decided_at = ${input.decidedAt},
+          activated_at = CASE WHEN ${input.status} = 'active'
+            THEN COALESCE(activated_at, ${input.decidedAt}) ELSE activated_at END
         WHERE entry_id = ${input.entryId} AND revision = ${input.revision}
       `;
       },

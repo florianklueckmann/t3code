@@ -381,6 +381,63 @@ export const BotRestoreLearningInput = Schema.Struct({
 });
 export type BotRestoreLearningInput = typeof BotRestoreLearningInput.Type;
 
+/**
+ * added: an entry's first revision. adopted: a waiting revision came into use later. retired: the
+ * entry stopped being in use.
+ */
+export const BotLearningNoticeChange = Schema.Literals([
+  "added",
+  "changed",
+  "restored",
+  "adopted",
+  "retired",
+]);
+export type BotLearningNoticeChange = typeof BotLearningNoticeChange.Type;
+
+/**
+ * One committed learning change, shown in the Home it came from. The server derives it from the
+ * stored revision, so it exists once per change and never for a write that failed.
+ */
+export const BotLearningNotice = Schema.Struct({
+  entryId: BotLearningEntryId,
+  revision: PositiveInt,
+  change: BotLearningNoticeChange,
+  at: IsoDateTime,
+  kind: BotLearningKind,
+  /** Null when the revision applies to all of the Bot's projects. */
+  projectId: Schema.NullOr(ProjectId),
+  text: BotLearningText,
+  origin: BotLearningOrigin,
+  source: BotLearningSource,
+  /** The revision's status now, so a proposal reads as adopted or rejected once decided. */
+  status: BotLearningStatus,
+  /** The revision waited for the user, or for its task, instead of applying when recorded. */
+  proposed: Schema.Boolean,
+  /** The revision a change or restore replaced, when its text or scope differs. */
+  previous: Schema.optionalKey(
+    Schema.Struct({
+      revision: PositiveInt,
+      text: BotLearningText,
+      projectId: Schema.NullOr(ProjectId),
+    }),
+  ),
+  /** The earlier revision a restore made current again. */
+  restoredFrom: Schema.optionalKey(PositiveInt),
+  /** The entry's revision in use now; null when nothing is, such as after retirement. */
+  currentRevision: Schema.NullOr(PositiveInt),
+});
+export type BotLearningNotice = typeof BotLearningNotice.Type;
+
+/** A Home's notices: its project's entries, shared ones in use, and shared proposals made there. */
+export const BotLearningNoticesInput = Schema.Struct({ botId: BotId, projectId: ProjectId });
+export type BotLearningNoticesInput = typeof BotLearningNoticesInput.Type;
+
+export const BotLearningNoticesResult = Schema.Struct({
+  /** Newest first. */
+  notices: Schema.Array(BotLearningNotice),
+});
+export type BotLearningNoticesResult = typeof BotLearningNoticesResult.Type;
+
 export class BotError extends Schema.TaggedError<BotError>()("BotError", {
   message: Schema.String,
   botId: Schema.optional(BotId),

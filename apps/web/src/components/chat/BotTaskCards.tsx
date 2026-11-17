@@ -159,7 +159,8 @@ export function BotTaskRow({
   );
 }
 
-const HIDDEN_BOT_TASK_CARDS_STORAGE_KEY = "t3code:hidden-bot-task-cards:v1";
+/** Also holds hidden learning notice groups, whose keys never collide with task keys. */
+export const HIDDEN_BOT_TASK_CARDS_STORAGE_KEY = "t3code:hidden-bot-task-cards:v1";
 
 /** The newest tasks a Bot runs from this home conversation. */
 export function BotTaskCards({

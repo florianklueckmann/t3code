@@ -12,6 +12,7 @@ import {
   BotId,
   type BotLearningEntry,
   BotLearningEntryId,
+  type BotLearningNotice,
   type BotLearningRevision,
   type BotSummary,
   BotTaskId,
@@ -24,6 +25,10 @@ import {
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  type BotLearningNoticeGroup,
+  botLearningNoticeGroupSummary,
+  hideBotHomeCard,
+  homeBotLearningNoticeGroups,
   botLearningRevisionInput,
   botLearningScopeChange,
   botOfHomeThread,
@@ -271,6 +276,76 @@ describe("home Bot task cards", () => {
     expect(bounded).toHaveLength(200);
     expect(bounded[0]).toBe(botTaskCardKey(environmentId, task("bounded-1")));
     expect(bounded.at(-1)).toBe(botTaskCardKey(environmentId, task("bounded-200")));
+  });
+});
+
+describe("home Bot learning notices", () => {
+  const scope = {
+    environmentId: "env-a",
+    botId: BotId.make("companion"),
+    projectId: ProjectId.make("campaign"),
+  };
+  const notice = (
+    entry: string,
+    at: string,
+    overrides: Partial<Pick<BotLearningNotice, "change" | "status">> = {},
+  ): BotLearningNotice => ({
+    entryId: BotLearningEntryId.make(entry),
+    revision: 1,
+    change: "added",
+    at,
+    kind: "preference",
+    projectId: scope.projectId,
+    text: `Lesson ${entry}`,
+    origin: "correction",
+    source: { kind: "agent", label: "Bot maintenance" },
+    status: "active",
+    proposed: false,
+    currentRevision: 1,
+    ...overrides,
+  });
+  const entriesOf = (groups: ReadonlyArray<BotLearningNoticeGroup>) =>
+    groups.map((group) => group.notices.map((each) => each.entryId).join(","));
+  // Newest first, as the server sends them: one maintenance pass, then older single changes.
+  const notices = [
+    notice("p3", "2026-11-17T10:00:00.040Z", { status: "pending" }),
+    notice("p2", "2026-11-17T10:00:00.020Z"),
+    notice("p1", "2026-11-17T10:00:00.000Z", { change: "retired", status: "retired" }),
+    notice("d", "2026-11-17T09:00:00.000Z"),
+    notice("c", "2026-11-17T08:00:00.000Z"),
+    notice("b", "2026-11-17T07:00:00.000Z"),
+    notice("a", "2026-11-16T07:00:00.000Z", { status: "pending" }),
+  ];
+
+  it("reads one maintenance pass as one group and keeps waiting proposals past the limit", () => {
+    const { visible, hiddenKeys } = homeBotLearningNoticeGroups(scope, notices, []);
+    expect(entriesOf(visible)).toEqual(["p3,p2,p1", "d", "c", "a"]);
+    expect(hiddenKeys).toEqual([]);
+    expect(visible.map(botLearningNoticeGroupSummary)).toEqual([
+      "2 new, 1 retired · 1 waiting for you",
+      "1 new",
+      "1 new",
+      "1 new · 1 waiting for you",
+    ]);
+  });
+
+  it("hides a settled group until a newer change joins it", () => {
+    const groups = homeBotLearningNoticeGroups(scope, notices.slice(3, 5), []).visible;
+    const hidden = hideBotHomeCard([], groups[0]!.key);
+    const after = homeBotLearningNoticeGroups(scope, notices.slice(3, 5), hidden);
+    expect(entriesOf(after.visible)).toEqual(["c"]);
+    expect(after.hiddenKeys).toEqual([groups[0]!.key]);
+
+    const joined = [notice("e", "2026-11-17T09:00:30.000Z"), ...notices.slice(3, 5)];
+    expect(entriesOf(homeBotLearningNoticeGroups(scope, joined, hidden).visible)).toEqual([
+      "e,d",
+      "c",
+    ]);
+    // Another Home of the same Bot keeps its own hidden groups.
+    const other = { ...scope, projectId: ProjectId.make("launch") };
+    expect(
+      entriesOf(homeBotLearningNoticeGroups(other, notices.slice(3, 5), hidden).visible),
+    ).toEqual(["d", "c"]);
   });
 });
 

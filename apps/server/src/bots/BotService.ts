@@ -10,6 +10,8 @@ import {
   BotError,
   type BotGetInput,
   BotId,
+  type BotLearningNoticesInput,
+  type BotLearningNoticesResult,
   BotLearningPolicy,
   type BotLearningSource,
   type BotListResult,
@@ -49,6 +51,7 @@ import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as BotLearning from "./BotLearning.ts";
+import * as BotLearningNotices from "./BotLearningNotices.ts";
 import * as BotProjectGuard from "./BotProjectGuard.ts";
 import * as BotStore from "./BotStore.ts";
 import * as BotTaskService from "./BotTaskService.ts";
@@ -61,6 +64,10 @@ export class BotService extends Context.Service<
   {
     readonly list: Effect.Effect<BotListResult, BotError>;
     readonly subscribeList: () => Stream.Stream<BotListResult, BotError>;
+    /** A Home's learning notices, sent again only when they change. */
+    readonly subscribeLearningNotices: (
+      input: BotLearningNoticesInput,
+    ) => Stream.Stream<BotLearningNoticesResult, BotError>;
     readonly get: (input: BotGetInput) => Effect.Effect<BotDetail, BotError>;
     readonly create: (input: BotCreateInput) => Effect.Effect<BotDetail, BotError>;
     readonly update: (input: BotUpdateInput) => Effect.Effect<BotDetail, BotError>;
@@ -160,6 +167,8 @@ const make = Effect.gen(function* () {
   // Subscribers re-read the full list, so only the newest change signal matters.
   const changes = yield* PubSub.sliding<void>(1);
   const notifyChanged = PubSub.publish(changes, undefined).pipe(Effect.asVoid);
+  // Names the Bot whose learning committed, so a Home's notices reread only for their own Bot.
+  const learningChanges = yield* PubSub.unbounded<BotId>();
 
   const syncLocks = yield* KeyedLock.make<ThreadId>();
 
@@ -312,6 +321,28 @@ const make = Effect.gen(function* () {
         );
       }),
     );
+
+  const learningNotices = Effect.fn("BotService.learningNotices")(function* (
+    input: BotLearningNoticesInput,
+  ) {
+    const rows = yield* store.listLearning(input.botId);
+    return yield* BotLearningNotices.forHome(rows, input.projectId);
+  }, Effect.mapError(storeError()));
+
+  // A change to another project's entries leaves this Home's notices as they were; skip resending.
+  const subscribeLearningNotices: BotService["Service"]["subscribeLearningNotices"] = (input) =>
+    Stream.unwrap(
+      Effect.gen(function* () {
+        const subscription = yield* PubSub.subscribe(learningChanges);
+        return Stream.concat(
+          Stream.fromEffect(learningNotices(input)),
+          Stream.fromSubscription(subscription).pipe(
+            Stream.filter((botId) => botId === input.botId),
+            Stream.mapEffect(() => learningNotices(input)),
+          ),
+        );
+      }),
+    ).pipe(Stream.changesWith((a, b) => JSON.stringify(a) === JSON.stringify(b)));
 
   const create: BotService["Service"]["create"] = Effect.fn("BotService.create")(function* (input) {
     yield* requireSupportedSelection(input.botId, input.modelSelection);
@@ -733,6 +764,7 @@ const make = Effect.gen(function* () {
           SqlError: storeError(botId),
         }),
         Effect.tap(() => notifyChanged),
+        Effect.tap(() => PubSub.publish(learningChanges, botId)),
       );
 
   const recordLearning: BotService["Service"]["recordLearning"] = Effect.fn(
@@ -865,6 +897,7 @@ const make = Effect.gen(function* () {
   return BotService.of({
     list,
     subscribeList,
+    subscribeLearningNotices,
     get: Effect.fn("BotService.get")(function* (input: BotGetInput) {
       return yield* readDetail(input.botId);
     }),

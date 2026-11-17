@@ -63,7 +63,7 @@ import {
 import { Fragment, type ReactNode, useContext, useState } from "react";
 
 import { useEnvironmentSettings } from "../../hooks/useSettings";
-import { randomUUID } from "../../lib/utils";
+import { cn, randomUUID } from "../../lib/utils";
 import { getCustomModelOptionsByInstance } from "../../modelSelection";
 import { providerInstanceEntriesFor, type ProviderInstanceEntry } from "../../providerInstances";
 import { useProjects } from "../../state/entities";
@@ -950,13 +950,14 @@ function BotProjectContexts({
   );
 }
 
-function BotLearningList({
+export function BotLearningList({
   environmentId,
   bot,
   projectId,
   titleOf,
   disabled,
   onChanged,
+  focus,
 }: {
   readonly environmentId: EnvironmentId;
   readonly bot: BotDetail;
@@ -965,6 +966,8 @@ function BotLearningList({
   readonly titleOf: (projectId: ProjectId) => string;
   readonly disabled: boolean;
   readonly onChanged: () => void;
+  /** Shows only this entry, with this revision marked, as a Home notice opens it. */
+  readonly focus?: { readonly entryId: string; readonly revision: number };
 }) {
   const record = useAtomCommand(serverEnvironment.recordBotLearning, { label: "bot learning" });
   const decide = useAtomCommand(serverEnvironment.decideBotLearning, { label: "bot learning" });
@@ -977,8 +980,13 @@ function BotLearningList({
   const [shared, setShared] = useState(false);
   const [editing, setEditing] = useState<{ entryId: string; text: string } | null>(null);
   const locked = disabled || busy || !canChange;
-  const views = botLearningViews(bot.learning, projectId);
-  const turn = projectId === null ? null : botTurnLearningView(bot, projectId);
+  const views = botLearningViews(bot.learning, projectId).filter(
+    (view) => focus === undefined || view.entry.id === focus.entryId,
+  );
+  const turn =
+    projectId === null || focus !== undefined ? null : botTurnLearningView(bot, projectId);
+  const marked = (revision: number) =>
+    focus?.revision === revision ? "ring-2 ring-primary/40" : undefined;
 
   const run = async (
     title: string,
@@ -1017,17 +1025,19 @@ function BotLearningList({
     if (revised) setEditing(null);
   };
 
-  if (projectId === null && views.length === 0) return null;
+  if (projectId === null && views.length === 0 && focus === undefined) return null;
   return (
     <div className="space-y-2">
-      <div className="space-y-1">
-        <Label>{projectId === null ? "Learning for all projects" : "Learning"}</Label>
-        <p className="text-xs text-muted-foreground">
-          {projectId === null
-            ? "Applies in every project this Bot serves."
-            : "What the Bot keeps for later work here: your instructions and lessons from your corrections."}
-        </p>
-      </div>
+      {focus === undefined ? (
+        <div className="space-y-1">
+          <Label>{projectId === null ? "Learning for all projects" : "Learning"}</Label>
+          <p className="text-xs text-muted-foreground">
+            {projectId === null
+              ? "Applies in every project this Bot serves."
+              : "What the Bot keeps for later work here: your instructions and lessons from your corrections."}
+          </p>
+        </div>
+      ) : null}
       {turn === null ? null : (
         <div className="space-y-1 rounded-md border p-2 text-sm">
           <p className="font-medium">{turn.summary}</p>
@@ -1048,14 +1058,21 @@ function BotLearningList({
         </div>
       )}
       {views.length === 0 && turn === null ? (
-        <p className="text-sm text-muted-foreground">Nothing learned yet.</p>
+        <p className="text-sm text-muted-foreground" role={focus ? "status" : undefined}>
+          {focus
+            ? "This lesson no longer exists. It was removed with its project."
+            : "Nothing learned yet."}
+        </p>
       ) : null}
       {views.map((view) => {
         const shown = view.current ?? view.latest;
         const entryId = view.entry.id;
         const marker = turn?.markerOf(view.entry) ?? null;
         return (
-          <div key={entryId} className="space-y-2 rounded-md border p-2 text-sm">
+          <div
+            key={entryId}
+            className={cn("space-y-2 rounded-md border p-2 text-sm", marked(shown.revision))}
+          >
             <div className="flex items-start justify-between gap-2">
               <div className="min-w-0 space-y-1">
                 <div className="flex flex-wrap items-center gap-1">
@@ -1152,7 +1169,10 @@ function BotLearningList({
               </div>
             ) : null}
             {view.pending.map((revision) => (
-              <div key={revision.revision} className="space-y-1 rounded-md bg-muted/40 p-2">
+              <div
+                key={revision.revision}
+                className={cn("space-y-1 rounded-md bg-muted/40 p-2", marked(revision.revision))}
+              >
                 <p className="text-xs font-medium">
                   {[
                     view.current ? "Proposed change" : "Proposed",
@@ -1214,13 +1234,22 @@ function BotLearningList({
               </div>
             ))}
             {view.restorable.length === 0 ? null : (
-              <details className="text-xs">
+              <details
+                className="text-xs"
+                open={view.restorable.some((revision) => marked(revision.revision)) || undefined}
+              >
                 <summary className="cursor-pointer text-muted-foreground">
                   History ({view.entry.revisions.length} revisions)
                 </summary>
                 <ul className="mt-1 space-y-1">
                   {view.restorable.map((revision) => (
-                    <li key={revision.revision} className="flex items-start justify-between gap-2">
+                    <li
+                      key={revision.revision}
+                      className={cn(
+                        "flex items-start justify-between gap-2 rounded-sm",
+                        marked(revision.revision),
+                      )}
+                    >
                       <span className="min-w-0 wrap-anywhere">
                         <span className="text-muted-foreground">
                           {[
@@ -1257,7 +1286,7 @@ function BotLearningList({
           </div>
         );
       })}
-      {projectId === null ? null : (
+      {projectId === null || focus !== undefined ? null : (
         <div className="space-y-2">
           <Textarea
             aria-label="New instruction"

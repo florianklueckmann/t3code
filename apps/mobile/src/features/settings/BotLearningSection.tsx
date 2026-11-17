@@ -66,12 +66,15 @@ export function BotLearningSection({
   projectId,
   title,
   disabled,
+  focus,
 }: {
   readonly environmentId: EnvironmentId;
   readonly botId: BotId;
   readonly projectId: ProjectId | null;
   readonly title: string;
   readonly disabled: boolean;
+  /** Shows only this entry, with this revision marked, as a Home notice opens it. */
+  readonly focus?: { readonly entryId: string; readonly revision: number };
 }) {
   const detailAtom = serverEnvironment.botDetail({ environmentId, input: { botId } });
   const detail = useEnvironmentQuery(detailAtom);
@@ -84,9 +87,17 @@ export function BotLearningSection({
   const [text, setText] = useState("");
   const [editing, setEditing] = useState<{ entryId: string; text: string } | null>(null);
   const locked = disabled || busy || !canChange;
-  const views = detail.data ? botLearningViews(detail.data.learning, projectId) : [];
+  const views = detail.data
+    ? botLearningViews(detail.data.learning, projectId).filter(
+        (view) => focus === undefined || view.entry.id === focus.entryId,
+      )
+    : [];
   const turn =
-    detail.data && projectId !== null ? botTurnLearningView(detail.data, projectId) : null;
+    detail.data && projectId !== null && focus === undefined
+      ? botTurnLearningView(detail.data, projectId)
+      : null;
+  const marked = (revision: number) =>
+    focus?.revision === revision ? "rounded-lg bg-subtle px-2 pb-2" : "";
 
   const run = async (
     failureTitle: string,
@@ -117,14 +128,16 @@ export function BotLearningSection({
     if (revised) setEditing(null);
   };
 
-  if (projectId === null && views.length === 0) return null;
+  if (projectId === null && views.length === 0 && focus === undefined) return null;
   return (
     <SettingsSection
       title={title}
       footer={
-        projectId === null
-          ? "Applies in every project this Bot serves."
-          : "Your instructions apply right away. Lessons from your corrections follow the Learning setting."
+        focus !== undefined
+          ? undefined
+          : projectId === null
+            ? "Applies in every project this Bot serves."
+            : "Your instructions apply right away. Lessons from your corrections follow the Learning setting."
       }
     >
       {turn === null ? null : (
@@ -148,7 +161,13 @@ export function BotLearningSection({
         </View>
       )}
       {views.length === 0 && turn === null ? (
-        <Text className="p-4 text-base text-foreground-muted">Nothing learned yet.</Text>
+        <Text className="p-4 text-base text-foreground-muted">
+          {focus === undefined
+            ? "Nothing learned yet."
+            : detail.data
+              ? "This lesson no longer exists. It was removed with its project."
+              : (detail.error ?? "Loading lesson…")}
+        </Text>
       ) : null}
       {views.map((view, index) => {
         const shown = view.current ?? view.latest;
@@ -176,7 +195,7 @@ export function BotLearningSection({
               {shown.text}
             </Text>
             {view.pending.map((revision) => (
-              <View key={revision.revision} className="gap-1 pt-2">
+              <View key={revision.revision} className={`gap-1 pt-2 ${marked(revision.revision)}`}>
                 <Text textRole="footnote" className="text-foreground-muted">
                   {[
                     view.current ? "Proposed change" : "Proposed",
@@ -279,7 +298,10 @@ export function BotLearningSection({
               </View>
             ) : null}
             {view.restorable.map((revision) => (
-              <View key={revision.revision} className="flex-row items-start gap-3 pt-2">
+              <View
+                key={revision.revision}
+                className={`flex-row items-start gap-3 pt-2 ${marked(revision.revision)}`}
+              >
                 <Text textRole="footnote" className="min-w-0 flex-1 text-foreground-muted">
                   {[
                     `r${revision.revision}`,
@@ -307,7 +329,7 @@ export function BotLearningSection({
           </View>
         );
       })}
-      {projectId === null ? null : (
+      {projectId === null || focus !== undefined ? null : (
         <>
           <FormField
             label="New instruction"

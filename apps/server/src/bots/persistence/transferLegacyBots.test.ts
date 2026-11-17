@@ -70,6 +70,15 @@ it.effect.each([78, 79, 80, 81, 82, 83])(
                     diagnoses_run_id: null,
                   }
                 : {}),
+              ...(table === "bot_learning_revisions"
+                ? {
+                    activated_at:
+                      "status" in row && row.status === "active" && "decided_at" in row
+                        ? row.decided_at
+                        : null,
+                    restored_from: null,
+                  }
+                : {}),
             })),
           );
         }
