@@ -1158,6 +1158,23 @@ it.effect(
           { text: "Unreviewed large input message-3: pasted-text.txt" },
         ],
       };
+      // Quoting the visible text elsewhere does not list the unread file as unreviewed.
+      const quotedOnly = yield* notes
+        .save(
+          {
+            ...userSave("quoted", null, {
+              ...kept,
+              waiting: kept.waiting.slice(0, 1),
+              context: [{ text: "The Harbor log arrived as a file.", quote: "The Harbor log:" }],
+            }),
+            basis: read.basis!,
+            acks: seen,
+          },
+          bot,
+        )
+        .pipe(Effect.flip);
+      assert.include(quotedOnly.message, "message-3");
+      assert.notInclude(quotedOnly.message, "message-1");
       const saved = yield* notes.save(
         { ...userSave("listed", null, kept), basis: read.basis!, acks: seen },
         bot,

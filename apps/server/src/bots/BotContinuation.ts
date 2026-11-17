@@ -911,10 +911,8 @@ const make = Effect.gen(function* () {
       // An unread input is kept as a reference to open later, never passed over silently.
       const unlisted = tooLarge.filter(
         (id) =>
-          !BOT_CONTINUATION_SECTIONS.some((section) =>
-            note[section].some((item) =>
-              item.refs.some((ref) => ref.kind === "message" && ref.messageId === id),
-            ),
+          !note.waiting.some((item) =>
+            item.refs.some((ref) => ref.kind === "message" && ref.messageId === id),
           ),
       );
       if (unlisted.length > 0)
