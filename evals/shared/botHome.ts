@@ -125,7 +125,11 @@ export const noteOf = Effect.fn("evals.botNote")(function* (
   call: Call,
   home: { readonly botId: string; readonly projectId: string },
 ) {
-  const read = yield* call("t3_bot", { action: "read_continuation", ...home }, Continuation);
+  const read = yield* call(
+    "t3_bot",
+    { action: "read_continuation", botId: home.botId, projectId: home.projectId },
+    Continuation,
+  );
   return read.continuation.note satisfies ObservedNote;
 });
 
