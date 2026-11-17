@@ -1,4 +1,5 @@
 import {
+  type BotId,
   CommandId,
   type RunId,
   isProviderAvailable,
@@ -121,6 +122,7 @@ import { userFacingDispatchErrorMessage } from "../orchestration-v2/UserFacingEr
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import { BOT_ROUTINE_RUNTIME_MODE, BotRoutineTarget } from "../scheduledTasks/BotRoutineTarget.ts";
+import { isSameSchedule } from "../scheduledTasks/Schedule.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import {
@@ -283,6 +285,14 @@ function agentStopReason(reason: string | undefined): string {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function normalizeBrief(prompt: string): string {
+  return prompt.trim().replace(/\s+/g, " ");
+}
+
+function sameInstant(a: string | null, b: string | null): boolean {
+  return a === null || b === null ? a === b : Date.parse(a) === Date.parse(b);
 }
 
 function scheduledTaskSummary(task: ScheduledTask, mayRun: boolean): OrchestratorMcpScheduledTask {
@@ -2196,6 +2206,43 @@ const make = Effect.gen(function* () {
     return task;
   });
 
+  /**
+   * A live routine of this Bot and project with the same brief, schedule, start time and
+   * changes setting, so an agent that schedules a routine twice gets the first one back.
+   */
+  const findScheduledBotRoutine = Effect.fn("OrchestratorMcpService.findScheduledBotRoutine")(
+    function* (routine: {
+      readonly projectId: ProjectId;
+      readonly botId: BotId;
+      readonly prompt: string;
+      readonly schedule: OrchestratorMcpScheduleTaskInput["schedule"];
+      readonly sessionAt: string | null;
+      readonly allowChanges: boolean;
+    }) {
+      const { schedule } = routine;
+      if (schedule.type === "webhook") return undefined;
+      const { tasks } = yield* scheduledTasks
+        .list()
+        .pipe(
+          Effect.mapError((error) =>
+            failure("orchestration_error", `Could not load scheduled tasks: ${error.message}`),
+          ),
+        );
+      const brief = normalizeBrief(routine.prompt);
+      return tasks.find(
+        (task) =>
+          // Deleted routines are gone from the list; a paused or used-up one has no next run.
+          task.nextRunAt !== null &&
+          task.projectId === routine.projectId &&
+          task.bot?.botId === routine.botId &&
+          (task.bot.allowChanges ?? false) === routine.allowChanges &&
+          sameInstant(task.bot.sessionAt ?? null, routine.sessionAt) &&
+          isSameSchedule(task.schedule, schedule) &&
+          normalizeBrief(task.prompt) === brief,
+      );
+    },
+  );
+
   return OrchestratorMcpService.of({
     scheduleTask: Effect.fn("OrchestratorMcpService.scheduleTask")(function* (scope, input) {
       const { parent, limits } = yield* loadCaller(scope, ["runs"]);
@@ -2248,6 +2295,20 @@ const make = Effect.gen(function* () {
       const derivedTitle = (input.prompt.split("\n")[0]?.trim() ?? "")
         .slice(0, 80)
         .replace(/[\uD800-\uDBFF]$/, "");
+      if (input.botId !== undefined) {
+        const scheduled = yield* findScheduledBotRoutine({
+          projectId,
+          botId: input.botId,
+          prompt: input.prompt,
+          schedule: input.schedule,
+          sessionAt: input.sessionAt ?? null,
+          allowChanges: input.allowChanges ?? false,
+        });
+        if (scheduled !== undefined) {
+          const summary = yield* summarizeScheduledTask(scope, { parent, limits }, scheduled);
+          return { ...summary, alreadyScheduled: true as const };
+        }
+      }
       const title = input.title ?? (derivedTitle.length > 0 ? derivedTitle : "Scheduled task");
       const upsertInput: ScheduledTaskUpsertInput = {
         title,

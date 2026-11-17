@@ -778,7 +778,12 @@ export const OrchestratorMcpScheduledTask = Schema.Struct({
 });
 export type OrchestratorMcpScheduledTask = typeof OrchestratorMcpScheduledTask.Type;
 
-export const OrchestratorMcpScheduleTaskResult = OrchestratorMcpScheduledTask;
+export const OrchestratorMcpScheduleTaskResult = Schema.Struct({
+  ...OrchestratorMcpScheduledTask.fields,
+  alreadyScheduled: Schema.optional(Schema.Literal(true)).annotate({
+    description: "This Bot routine already existed, so no second one was created.",
+  }),
+});
 export type OrchestratorMcpScheduleTaskResult = typeof OrchestratorMcpScheduleTaskResult.Type;
 
 export const OrchestratorMcpListScheduledTasksInput = Schema.Struct({

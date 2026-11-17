@@ -3957,6 +3957,114 @@ describe("OrchestratorMcpService provider resolution", () => {
       }),
     );
 
+    it.effect("returns a live identical Bot routine instead of creating a second one", () =>
+      Effect.gen(function* () {
+        const runAt = "2026-11-20T09:00:00.000Z";
+        const usedUp: ScheduledTask = {
+          ...existing,
+          id: ScheduledTaskId.make("scheduled-task:used-up"),
+          prompt: "Remind me to descale the oven.",
+          schedule: { type: "once", runAt },
+          lastRunAt: runAt,
+          lastRunStatus: "succeeded",
+          runCount: 1,
+          bot: { botId: BotId.make("home"), allowChanges: false },
+        };
+        const tasks = yield* Ref.make<ReadonlyArray<ScheduledTask>>([usedUp]);
+        const mcp = yield* OrchestratorMcpService.OrchestratorMcpService.pipe(
+          Effect.provide(
+            OrchestratorMcpService.layer.pipe(
+              Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
+              Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)(masterRepository)),
+              Layer.provide(
+                Layer.mergeAll(
+                  NodeServices.layer,
+                  NodeCrypto.layer,
+                  Layer.mock(ThreadManagementService.ThreadManagementService)({}),
+                  ServerSettings.layerTest(),
+                  Layer.mock(ProviderRegistry.ProviderRegistry)({
+                    getProviders: Effect.succeed([]),
+                  }),
+                  Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
+                    list: () => Effect.succeed([]),
+                  }),
+                  Layer.mock(ProjectService.ProjectService)({
+                    getById: (id) =>
+                      Effect.succeedSome({
+                        id,
+                        workspaceRoot,
+                        defaultModelSelection: null,
+                      } as never),
+                  }),
+                  Layer.mock(SecretRequests.SecretRequests)({}),
+                  Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+                  Layer.succeed(BotRoutineTarget, {
+                    requireRunnable: () =>
+                      Effect.succeed({ modelSelection: existing.modelSelection }),
+                    admit: () => Effect.die("unused"),
+                  }),
+                  Layer.mock(ScheduledTaskService.ScheduledTaskService)({
+                    list: () => Ref.get(tasks).pipe(Effect.map((all) => ({ tasks: all }))),
+                    upsert: (input) =>
+                      Ref.modify(tasks, (all) => {
+                        const task: ScheduledTask = {
+                          ...existing,
+                          id: ScheduledTaskId.make(`scheduled-task:${all.length}`),
+                          title: input.title,
+                          prompt: input.prompt,
+                          projectId: input.projectId,
+                          schedule: input.schedule as ScheduledTask["schedule"],
+                          nextRunAt: runAt,
+                          ...(input.bot === undefined ? {} : { bot: input.bot }),
+                        };
+                        return [{ task }, [...all, task]];
+                      }),
+                  }),
+                ),
+              ),
+            ),
+          ),
+        );
+        const fullAccess = {
+          ...client,
+          client: { ...client.client!, access: "full-access" },
+        } as McpInvocationScope;
+        const reminder = {
+          projectId,
+          title: "Descale oven reminder",
+          prompt: "Remind me to descale the oven.",
+          schedule: { type: "once", runAt },
+          botId: BotId.make("home"),
+        } as const;
+        const first = yield* mcp.scheduleTask(fullAccess, reminder);
+        assert.isUndefined(first.alreadyScheduled);
+        const second = yield* mcp.scheduleTask(fullAccess, {
+          ...reminder,
+          title: "Descale oven",
+          prompt: "  Remind me to descale\n the oven.",
+          schedule: { type: "once", runAt: "2026-11-20T10:00:00+01:00" },
+          allowChanges: false,
+        });
+        assert.equal(second.scheduledTaskId, first.scheduledTaskId);
+        assert.isTrue(second.alreadyScheduled);
+        assert.lengthOf(yield* Ref.get(tasks), 2);
+
+        for (const difference of [
+          { prompt: "Remind me to descale the dishwasher." },
+          { schedule: { type: "once", runAt: "2026-11-20T10:00:00.000Z" } },
+          { botId: BotId.make("garden") },
+          { projectId: ProjectId.make("project:other") },
+          { allowChanges: true },
+          { sessionAt: "2026-11-20T09:30:00.000Z" },
+        ] as const) {
+          const before = (yield* Ref.get(tasks)).length;
+          const created = yield* mcp.scheduleTask(fullAccess, { ...reminder, ...difference });
+          assert.isUndefined(created.alreadyScheduled, JSON.stringify(difference));
+          assert.lengthOf(yield* Ref.get(tasks), before + 1, JSON.stringify(difference));
+        }
+      }),
+    );
+
     it.effect("follows the default branch when a task is unbound from its thread", () =>
       Effect.gen(function* () {
         const saved = yield* Ref.make<ReadonlyArray<ScheduledTask["workspaceStrategy"]>>([]);
