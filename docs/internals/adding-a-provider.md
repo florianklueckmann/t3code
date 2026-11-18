@@ -102,7 +102,10 @@ produce catches them.
   instructions on that turn, not as quoted context and not only at session start, or edits stop
   reaching resumed sessions. Bot conversations refuse other drivers at turn start
   ([`RunExecutionService`](../../apps/server/src/orchestration-v2/RunExecutionService.ts)) until
-  their adapter does this.
+  their adapter does this. Where each copy stays in the conversation, an unchanged copy per turn
+  fills the context: `applicationInstructionParts` splits off the part that changes every turn,
+  and the lasting part needs resending only when it changed or the history may have lost it
+  (a new process, a compaction), as the Claude adapter does.
 - **Paths and environment.** Test a symlinked workspace, such as macOS `/tmp`; an agent that
   compares canonical paths fails every turn there. Drop inherited credentials the instance did not
   configure. Report unknown sign-in as unknown rather than as signed in.

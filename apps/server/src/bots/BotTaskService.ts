@@ -179,7 +179,7 @@ export class BotTaskService extends Context.Service<
       readonly projectId: ProjectId;
       readonly allowChanges?: boolean | undefined;
     }) => Effect.Effect<{ readonly modelSelection: ModelSelection }, BotError>;
-    /** Refuses a model the Bot cannot run on with its current settings, for itself or one task. */
+    /** Refuses a model the Bot cannot run on with its current settings. */
     readonly requireSupportedModel: (input: {
       readonly botId: BotId;
       readonly modelSelection: ModelSelection;
@@ -262,10 +262,15 @@ const make = Effect.gen(function* () {
       WHERE context.bot_id = ${botId} AND context.detached_at IS NULL AND feature.enabled = 1
     `.pipe(Effect.map((rows) => (rows[0]?.count ?? 0) > 0));
 
-  /** What to change before this Bot's settings fit a provider with this support; empty when they do. */
+  /**
+   * What to change before this Bot's settings fit a provider with this support; empty when they do.
+   * One task's own model needs only the MCP access that task loads: routines, maintenance, the
+   * Home check and diagnosis run on the Bot's model.
+   */
   const unsupportedSettings = Effect.fn("BotTaskService.unsupportedSettings")(function* (
     botId: BotId,
     support: ReturnType<typeof BotProviderSupport.botDriverSupport>,
+    use: "bot" | "task",
   ) {
     const changes: Array<string> = [];
     const grants = (yield* store.listMcpGrants(botId)).get(botId);
@@ -273,6 +278,7 @@ const make = Effect.gen(function* () {
       changes.push("remove its MCP connections");
     if (!support.ownMcpServers && grants?.ownCodexMcpServers === true)
       changes.push('turn off "Use my own Codex MCP servers"');
+    if (use === "task") return changes;
     if (!support.seals) {
       const noChanges = yield* sql<{ readonly task_id: string }>`
         SELECT task_id FROM bot_routines WHERE bot_id = ${botId} AND bot_allow_changes = 0
@@ -301,11 +307,12 @@ const make = Effect.gen(function* () {
 
   /**
    * One rule for every way a Bot gets a model, its own or one task's: Codex or Claude only, and
-   * only where the provider can honor the Bot's current settings. The message lists what to change.
+   * only where the provider can honor the settings that model serves. The message lists what to change.
    */
-  const requireSupportedModel: BotTaskService["Service"]["requireSupportedModel"] = Effect.fn(
-    "BotTaskService.requireSupportedModel",
-  )(function* (input) {
+  const requireModelFor = Effect.fn("BotTaskService.requireSupportedModel")(function* (
+    input: { readonly botId: BotId; readonly modelSelection: ModelSelection },
+    use: "bot" | "task",
+  ) {
     const { instanceId } = input.modelSelection;
     const instance = yield* providerInstances.getInstance(instanceId);
     if (instance === undefined)
@@ -315,6 +322,7 @@ const make = Effect.gen(function* () {
     const changes = yield* unsupportedSettings(
       input.botId,
       BotProviderSupport.botDriverSupport(instance.driverKind),
+      use,
     ).pipe(Effect.mapError(storageError));
     if (changes.length > 0) {
       const provider = instance.driverKind === "claudeAgent" ? "Claude" : instance.driverKind;
@@ -324,6 +332,8 @@ const make = Effect.gen(function* () {
       )();
     }
   });
+  const requireSupportedModel: BotTaskService["Service"]["requireSupportedModel"] = (input) =>
+    requireModelFor(input, "bot");
 
   const toSummary = (row: BotTaskSummaryRow) =>
     decodeSummary({
@@ -578,7 +588,7 @@ const make = Effect.gen(function* () {
     );
     if (provider === undefined)
       return yield* refuse(`Provider instance ${instanceId} is not configured.`);
-    yield* requireSupportedModel({ botId: input.botId, modelSelection: selection });
+    yield* requireModelFor({ botId: input.botId, modelSelection: selection }, "task");
     if (!provider.enabled) return yield* refuse(`Provider instance ${instanceId} is disabled.`);
     if (
       !(yield* threads.isProviderInstanceEnabledForProject({

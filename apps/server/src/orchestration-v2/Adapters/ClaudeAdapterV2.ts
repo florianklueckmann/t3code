@@ -2205,8 +2205,95 @@ function chunkClaudeBotInstructions(text: string): ReadonlyArray<string> {
   return chunks;
 }
 
-const claudeBotInstructionsFit = (text: string) =>
-  chunkClaudeBotInstructions(text).length <= CLAUDE_BOT_INSTRUCTION_HOOKS;
+const CLAUDE_BOT_LASTING_HEADER =
+  "These are your current Bot instructions. They replace any Bot instructions earlier in this conversation.\n";
+const CLAUDE_BOT_TURN_HEADER =
+  "This is your Bot context for this turn. It replaces the one from earlier turns.\n";
+
+function claudeBotInstructionParts(
+  instructions: ProviderAdapter.ApplicationInstructionParts,
+  send: { readonly lasting: boolean; readonly turn: boolean },
+): ReadonlyArray<string> {
+  return [
+    ...(send.lasting
+      ? chunkClaudeBotInstructions(CLAUDE_BOT_LASTING_HEADER + instructions.lasting)
+      : []),
+    ...(send.turn && instructions.turn !== ""
+      ? chunkClaudeBotInstructions(CLAUDE_BOT_TURN_HEADER + instructions.turn)
+      : []),
+  ];
+}
+
+const claudeBotInstructionsOf = (
+  turnInput: ProviderAdapter.ProviderAdapterV2TurnInput,
+): ProviderAdapter.ApplicationInstructionParts | undefined =>
+  turnInput.applicationInstructionParts ??
+  (turnInput.applicationInstructions === undefined
+    ? undefined
+    : { lasting: turnInput.applicationInstructions, turn: "" });
+
+const claudeBotInstructionsFit = (instructions: ProviderAdapter.ApplicationInstructionParts) =>
+  claudeBotInstructionParts(instructions, { lasting: true, turn: true }).length <=
+  CLAUDE_BOT_INSTRUCTION_HOOKS;
+
+/**
+ * A Bot's instructions as one Claude process gives them: the lasting part only while this
+ * process's history lacks it, the turn part once per offered turn. A new process sends both,
+ * since a resumed, forked or rewound transcript may not hold the lasting part.
+ */
+export interface ClaudeBotInstructionDelivery {
+  /** Set when a turn opens Claude or offers its prompt. */
+  current: ProviderAdapter.ApplicationInstructionParts | undefined;
+  turnPending: boolean;
+  /** The lasting part this process's history holds; cleared when a compaction may have dropped it. */
+  delivered: string | undefined;
+  /** Sent but not yet `delivered`: another hook can still veto its prompt until Claude answers. */
+  emitted: string | undefined;
+  /** The hook event being answered: the first hook decides it, each hook sends its part once. */
+  sending:
+    | {
+        readonly lasting: string | undefined;
+        readonly parts: ReadonlyArray<string>;
+        readonly sent: Set<number>;
+      }
+    | undefined;
+}
+
+export const makeClaudeBotInstructionDelivery = (): ClaudeBotInstructionDelivery => ({
+  current: undefined,
+  turnPending: false,
+  delivered: undefined,
+  emitted: undefined,
+  sending: undefined,
+});
+
+/** Claude answered on the main thread, so the prompt that carried the instructions stood. */
+export function confirmClaudeBotInstructions(delivery: ClaudeBotInstructionDelivery): void {
+  if (delivery.emitted === undefined) return;
+  delivery.delivered = delivery.emitted;
+  delivery.emitted = undefined;
+}
+
+export function prepareClaudeBotInstructions(
+  delivery: ClaudeBotInstructionDelivery,
+  instructions: ProviderAdapter.ApplicationInstructionParts,
+): void {
+  delivery.current = instructions;
+  delivery.turnPending = true;
+  // Not answered by the time the next turn starts, so its prompt did not stand.
+  delivery.emitted = undefined;
+}
+
+function claudeBotInstructionsToSend(delivery: ClaudeBotInstructionDelivery) {
+  const current = delivery.current;
+  if (current === undefined) return undefined;
+  const lasting = current.lasting === delivery.delivered ? undefined : current.lasting;
+  const parts = claudeBotInstructionParts(current, {
+    lasting: lasting !== undefined,
+    turn: delivery.turnPending,
+  });
+  return parts.length === 0 ? undefined : { lasting, parts, sent: new Set<number>() };
+}
 
 export class ClaudeBotInstructionsTooLargeError extends Schema.TaggedError<ClaudeBotInstructionsTooLargeError>()(
   "ClaudeBotInstructionsTooLargeError",
@@ -2218,26 +2305,41 @@ export class ClaudeBotInstructionsTooLargeError extends Schema.TaggedError<Claud
 }
 
 /**
- * Delivers a Bot's instructions with every main-thread prompt, read when Claude takes the prompt,
- * so a change applies on the next turn without reopening Claude. Subagents start from their task.
+ * Answers each main-thread prompt, and the session start after a compaction (which may have
+ * summarized the instructions away mid-turn), from the state at that moment, so a change applies
+ * on the next turn without reopening Claude. Subagents start from their task.
  */
-function claudeBotInstructionHooks(read: () => string | undefined): Array<HookCallback> {
+export function claudeBotInstructionHooks(
+  delivery: ClaudeBotInstructionDelivery,
+): Array<HookCallback> {
   return Array.from(
     { length: CLAUDE_BOT_INSTRUCTION_HOOKS },
     (_, index): HookCallback =>
       (input) => {
-        const text = read();
-        const chunk =
-          text === undefined || ("agent_id" in input && input.agent_id !== undefined)
-            ? undefined
-            : chunkClaudeBotInstructions(text)[index];
-        return Promise.resolve(
-          chunk === undefined
-            ? {}
-            : {
-                hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: chunk },
-              },
-        );
+        if ("agent_id" in input && input.agent_id !== undefined) return Promise.resolve({});
+        const compacted = input.hook_event_name === "SessionStart";
+        if (index === 0) {
+          if (compacted) {
+            delivery.delivered = undefined;
+            delivery.turnPending = true;
+          }
+          delivery.sending = claudeBotInstructionsToSend(delivery);
+        }
+        const sending = delivery.sending;
+        const part = sending?.parts[index];
+        if (sending === undefined || part === undefined || sending.sent.has(index))
+          return Promise.resolve({});
+        sending.sent.add(index);
+        if (sending.sent.size === sending.parts.length) {
+          if (sending.lasting !== undefined) delivery.emitted = sending.lasting;
+          delivery.turnPending = false;
+          delivery.sending = undefined;
+        }
+        return Promise.resolve({
+          hookSpecificOutput: compacted
+            ? { hookEventName: "SessionStart" as const, additionalContext: part }
+            : { hookEventName: "UserPromptSubmit" as const, additionalContext: part },
+        });
       },
   );
 }
@@ -2319,8 +2421,7 @@ export function makeClaudeQueryOptions(input: {
   readonly toolSearchOverride?: "true";
   /** A Bot thread: only the MCP servers passed here load, and no launch flag adds any. */
   readonly isolated?: boolean;
-  /** Read when Claude takes each main-thread prompt; see `claudeBotInstructionHooks`. */
-  readonly botInstructions?: () => string | undefined;
+  readonly botInstructions?: ClaudeBotInstructionDelivery;
 }): ClaudeAgentSdkQueryOptions {
   const compiledSelection = compileClaudeModelSelection(input.modelSelection, input.modelCatalog);
   const {
@@ -2413,6 +2514,10 @@ export function makeClaudeQueryOptions(input: {
           },
         } as ClaudeSdkSettings);
   const deviceInstructions = input.mcpServers !== undefined && input.deviceToolsAvailable === true;
+  const botHooks =
+    input.botInstructions === undefined
+      ? undefined
+      : claudeBotInstructionHooks(input.botInstructions);
   const options: ClaudeAgentSdkQueryOptions = {
     model: compiledSelection.apiModelId,
     // T3 names threads; a supplied title skips Claude's redundant naming request.
@@ -2478,17 +2583,18 @@ export function makeClaudeQueryOptions(input: {
         ...launchAppendSystemPrompt,
       ].join("\n\n"),
     },
-    ...(deviceInstructions || input.onStop !== undefined || input.botInstructions !== undefined
+    ...(deviceInstructions || input.onStop !== undefined || botHooks !== undefined
       ? {
           hooks: {
             ...(deviceInstructions
               ? { SubagentStart: [{ hooks: [subagentDeviceInstructions] }] }
               : {}),
             ...(input.onStop === undefined ? {} : { Stop: [{ hooks: [input.onStop] }] }),
-            ...(input.botInstructions === undefined
+            ...(botHooks === undefined
               ? {}
               : {
-                  UserPromptSubmit: [{ hooks: claudeBotInstructionHooks(input.botInstructions) }],
+                  UserPromptSubmit: [{ hooks: botHooks }],
+                  SessionStart: [{ matcher: "compact", hooks: botHooks }],
                 }),
           },
         }
@@ -5237,8 +5343,7 @@ interface ClaudeLiveQueryContext {
   readonly queryPolicyKey: string;
   /** Opened with only T3 Code's MCP server and no plugins, as a Bot thread needs. */
   readonly isolated: boolean;
-  /** The Bot instructions of the prompt last offered; the instruction hooks read them. */
-  readonly botInstructions: { text: string | undefined };
+  readonly botInstructions: ClaudeBotInstructionDelivery;
   selection: CompiledClaudeModelSelection;
   readonly closed: Deferred.Deferred<void, never>;
   lastTurn: ActiveClaudeTurnContext | null;
@@ -10574,6 +10679,15 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             }
             return;
           }
+          const instructions = liveQuery.botInstructions;
+          if (message.type === "assistant" && message.parent_tool_use_id === null)
+            confirmClaudeBotInstructions(instructions);
+          // In case Claude skips the post-compaction session start, the next prompt sends them again.
+          if (message.type === "system" && message.subtype === "compact_boundary") {
+            instructions.delivered = undefined;
+            instructions.emitted = undefined;
+            instructions.turnPending = true;
+          }
           // Track before routing: idle-wake Monitors report tasks before replaying their tool calls.
           yield* trackClaudeMonitorCalls(message);
           yield* trackClaudeScheduledWakeup(liveQuery.nativeThreadId, message);
@@ -12936,7 +13050,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           const querySettings = isolated
             ? claudeIsolatedSettings(memorySettings, pluginIds)
             : memorySettings;
-          const instructionHolder: { text: string | undefined } = { text: undefined };
+          const instructionDelivery = makeClaudeBotInstructionDelivery();
+          const botInstructions = claudeBotInstructionsOf(turnInput);
+          // A resumed interrupted turn starts from Claude's own empty prompt, before any offer.
+          if (botInstructions !== undefined)
+            prepareClaudeBotInstructions(instructionDelivery, botInstructions);
           const closedExistingNativeThreadId = existing !== null ? existing.nativeThreadId : null;
           clearedNativeSessions.delete(nativeThreadId);
           if (existing !== null) {
@@ -12999,7 +13117,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             ...(appendSystemPromptFileText === undefined ? {} : { appendSystemPromptFileText }),
             ...(toolSearchOverride === undefined ? {} : { toolSearchOverride }),
             ...(isolated ? { isolated } : {}),
-            ...(botThread ? { botInstructions: () => instructionHolder.text } : {}),
+            ...(botThread ? { botInstructions: instructionDelivery } : {}),
           });
           const resolvedTurnCwd = yield* fileSystem
             .realPath(turnInput.runtimePolicy.cwd ?? ".")
@@ -13053,7 +13171,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             query: querySession,
             queryPolicyKey,
             isolated,
-            botInstructions: instructionHolder,
+            botInstructions: instructionDelivery,
             selection: compiledSelection,
             closed,
             lastTurn: null,
@@ -13187,12 +13305,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           function* (turnInput: ProviderAdapter.ProviderAdapterV2TurnInput) {
             const refusal = claudeBotPolicyRefusal(turnInput.runtimePolicy);
             if (refusal !== undefined) return yield* refusal;
-            if (
-              turnInput.applicationInstructions !== undefined &&
-              !claudeBotInstructionsFit(turnInput.applicationInstructions)
-            )
+            const botInstructions = claudeBotInstructionsOf(turnInput);
+            if (botInstructions !== undefined && !claudeBotInstructionsFit(botInstructions))
               return yield* new ClaudeBotInstructionsTooLargeError({
-                length: turnInput.applicationInstructions.length,
+                length: botInstructions.lasting.length + botInstructions.turn.length,
               });
             modelCatalog = yield* loadModelCatalog;
             const startedAt = yield* DateTime.now;
@@ -13465,7 +13581,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     // The hooks read these when Claude takes this prompt; one turn offers at a time.
                     Effect.tap(() =>
                       Effect.sync(() => {
-                        querySession.botInstructions.text = turnInput.applicationInstructions;
+                        if (botInstructions !== undefined)
+                          prepareClaudeBotInstructions(
+                            querySession.botInstructions,
+                            botInstructions,
+                          );
                       }),
                     ),
                     Effect.andThen(

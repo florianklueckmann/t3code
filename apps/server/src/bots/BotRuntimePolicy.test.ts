@@ -64,6 +64,7 @@ const activeScope = (id: ThreadId) =>
   ({
     _tag: "active",
     instructions: "",
+    instructionParts: { lasting: "", turn: "" },
     scope: {
       botId: BotId.make("companion"),
       projectId: ProjectId.make("campaign"),

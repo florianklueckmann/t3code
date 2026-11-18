@@ -2311,6 +2311,8 @@ const claude = { instanceId: ProviderInstanceId.make("claude"), model: "gpt-5" }
 it.effect.each<{
   readonly setting: string;
   readonly change: string;
+  /** A task loads the Bot's MCP access; everything else acts on the Home or the Bot's model. */
+  readonly refusesTask: boolean;
   readonly apply: (input: {
     readonly services: Services;
     readonly home: ThreadId;
@@ -2320,23 +2322,27 @@ it.effect.each<{
   {
     setting: "MCP connections",
     change: "remove its MCP connections",
+    refusesTask: true,
     apply: ({ sql }) =>
       sql`INSERT INTO bot_mcp_grants (bot_id, connection_id) VALUES (${botId}, '2a2a2a2a-0000-4000-8000-00000000002a')`,
   },
   {
     setting: "the own servers switch",
     change: 'turn off "Use my own Codex MCP servers"',
+    refusesTask: true,
     apply: ({ sql }) => sql`UPDATE bots SET mcp_own_codex_servers = 1 WHERE bot_id = ${botId}`,
   },
   {
     setting: "an active No changes routine",
     change: "pause its No changes routines or set them to Changes allowed",
+    refusesTask: false,
     apply: ({ services }) =>
       services.routines.upsert(routineInput({ type: "fixed_time", timeOfDay: "18:00" })),
   },
   {
     setting: "maintenance",
     change: "turn off Maintenance",
+    refusesTask: false,
     apply: ({ sql, home }) =>
       sql`INSERT INTO bot_maintenance (home_thread_id, settings_revision, enabled, updated_at)
           VALUES (${home}, 1, 1, ${iso(START)})`,
@@ -2344,6 +2350,7 @@ it.effect.each<{
   {
     setting: "the Home check",
     change: "turn off the Daily Home check",
+    refusesTask: false,
     apply: ({ sql, home }) =>
       sql`INSERT INTO bot_home_checks
           (home_thread_id, settings_revision, enabled, time_of_day, done_through, updated_at)
@@ -2352,34 +2359,43 @@ it.effect.each<{
   {
     setting: "failure diagnosis",
     change: "turn off Diagnose failed routines",
+    refusesTask: false,
     apply: ({ sql, home }) =>
       sql`INSERT INTO bot_failure_diagnosis
           (home_thread_id, settings_revision, enabled, brief, enabled_at, updated_at)
           VALUES (${home}, 1, 1, 'Why?', ${iso(START)}, ${iso(START)})`,
   },
-])("keeps a Bot with $setting off Claude, for itself and for one task", ({ change, apply }) =>
-  Effect.gen(function* () {
-    yield* TestClock.setTime(START);
-    yield* seedProject;
-    const world = yield* makeThreadWorld;
-    const sql = yield* BotDatabase.BotDatabase;
-    yield* withServices(world, (services) =>
-      Effect.gen(function* () {
-        const home = yield* attachBot(services);
-        yield* apply({ services, home, sql }).pipe(Effect.orDie);
-        const switched = yield* services.bots
-          .update({ botId, modelSelection: claude })
-          .pipe(Effect.flip);
-        assert.include(switched.message, `Claude can't enforce some of this Bot's settings yet`);
-        assert.include(switched.message, change);
-        assert.deepEqual((yield* services.bots.get({ botId })).modelSelection, codex);
-        const task = yield* services.tasks
-          .start({ botId, projectId: campaign, prompt: "Recap.", modelSelection: claude })
-          .pipe(Effect.flip);
-        assert.include(task.message, change);
-      }),
-    );
-  }).pipe(Effect.provide(layerDatabase)),
+])(
+  "keeps a Bot with $setting off Claude, and one task only if it needs it",
+  ({ change, refusesTask, apply }) =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(START);
+      yield* seedProject;
+      const world = yield* makeThreadWorld;
+      const sql = yield* BotDatabase.BotDatabase;
+      yield* withServices(world, (services) =>
+        Effect.gen(function* () {
+          const home = yield* attachBot(services);
+          yield* apply({ services, home, sql }).pipe(Effect.orDie);
+          const switched = yield* services.bots
+            .update({ botId, modelSelection: claude })
+            .pipe(Effect.flip);
+          assert.include(switched.message, `Claude can't enforce some of this Bot's settings yet`);
+          assert.include(switched.message, change);
+          assert.deepEqual((yield* services.bots.get({ botId })).modelSelection, codex);
+          const task = yield* services.tasks
+            .start({ botId, projectId: campaign, prompt: "Recap.", modelSelection: claude })
+            .pipe(Effect.result);
+          if (refusesTask) {
+            if (task._tag === "Success") return assert.fail("the task started");
+            assert.include(task.failure.message, change);
+          } else {
+            if (task._tag === "Failure") return assert.fail(task.failure.message);
+            assert.deepEqual(yield* launchedSelection(world, task.success.workThreadId), claude);
+          }
+        }),
+      );
+    }).pipe(Effect.provide(layerDatabase)),
 );
 
 it.effect("runs a Bot on Claude with what Claude can enforce and refuses No changes routines", () =>
