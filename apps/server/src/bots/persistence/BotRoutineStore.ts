@@ -189,7 +189,9 @@ export const layer = Layer.effect(
           };
           yield* bots`INSERT INTO bot_routine_intent ${bots.insert({ singleton: 1, ...intent })}`;
           // The main transaction rolled back, so the caller's failure leaves nothing to finish.
-          const rows = yield* writeMain<A>(intent).pipe(Effect.tapError(() => clearIntent));
+          const rows = yield* writeMain<A>(intent).pipe(
+            Effect.tapError(() => clearIntent.pipe(Effect.ignore({ log: true }))),
+          );
           yield* finish(intent, rows);
           return rows;
         }),
