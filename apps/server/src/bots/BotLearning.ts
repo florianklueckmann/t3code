@@ -199,13 +199,14 @@ export const make = (deps: {
         return kept;
       }
       // The user restating an inferred lesson makes it their instruction, which later
-      // inferred lessons cannot override, so it gets its own revision. A retried edit whose base
-      // has moved on already says what is current, so it is no new proposal either.
+      // inferred lessons cannot override, so it gets its own revision. A retried edit or move
+      // whose base has moved on already says what is current, so it is no new proposal either.
+      const replayedMove = input.scope === "bot" && head?.base_revision === input.replaces.revision;
       if (
         head !== undefined &&
         head.normalized_text === normalized &&
         head.project_id === projectId &&
-        !confirmsInference(input, head)
+        (!confirmsInference(input, head) || replayedMove)
       ) {
         return duplicateOf(head);
       }
@@ -222,8 +223,15 @@ export const make = (deps: {
             policy,
             fromTask,
           });
+      // The user moving an entry changes where it applies, not who it came from.
+      const moved =
+        !stale &&
+        input.origin === "instruction" &&
+        head.project_id !== projectId &&
+        head.normalized_text === normalized;
       const row: BotStore.BotLearningRow = {
         ...base,
+        ...(moved ? { origin: head.origin, source_json: head.source_json } : {}),
         entry_id: first.entry_id,
         revision: Math.max(...revisions.map((revision) => revision.revision)) + 1,
         project_id: projectId,
