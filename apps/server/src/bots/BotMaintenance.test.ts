@@ -452,7 +452,8 @@ it.effect(
         readonly migration_id: number;
         readonly name: string;
       }>`SELECT migration_id, name FROM effect_sql_migrations ORDER BY migration_id`;
-      assert.deepEqual(history.slice(-11), [
+      assert.deepEqual(history.slice(-12), [
+        { migration_id: 11, name: "BotMaintenance" },
         { migration_id: 12, name: "BotMaintenanceReceipts" },
         { migration_id: 13, name: "BotMaintenanceNightly" },
         { migration_id: 14, name: "BotHomeCheck" },

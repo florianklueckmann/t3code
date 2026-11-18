@@ -23,7 +23,6 @@ import * as Schema from "effect/Schema";
 
 import { APP_OVERRIDE_ENV } from "../../apps/server/src/calendar/MacCalendarHelper.ts";
 import { resolveCliAuthConfig } from "../../apps/server/src/cli/config.ts";
-import { readPersistedServerRuntimeState } from "../../apps/server/src/serverRuntimeState.ts";
 import { createBotHome } from "../shared/botHome.ts";
 import { type WsClient, withRpc } from "../shared/devServerRpc.ts";
 import {
@@ -217,65 +216,60 @@ const runSample = Effect.fn("botCalendar.runSample")(function* (
 });
 
 /**
- * Selecting calendars launches the server's helper to read their names, so before any RPC prove
- * from the server process itself that its helper is this eval's fake, never a real one.
+ * Writes the fixture's selection into the eval server's own settings, which it reloads, instead
+ * of selecting through Settings: that would ask the server's helper for every calendar's name.
+ * So no request reveals a calendar, even on a server that runs a real helper: the turns' reads
+ * name only fixture ids, which a real helper refuses as a whole.
  */
-const requireFakeHelper = Effect.fn("botCalendar.requireFakeHelper")(function* (baseDir: string) {
-  const config = yield* resolveCliAuthConfig({ baseDir: Option.some(baseDir) }, Option.none(), {
-    quietLogs: true,
-  });
-  const state = yield* readPersistedServerRuntimeState(config.serverRuntimeStatePath);
-  const environment = Option.isNone(state)
-    ? ""
-    : NodeChildProcess.execFileSync(
-        "ps",
-        ["eww", "-p", String(state.value.pid), "-o", "command="],
-        {
-          encoding: "utf8",
-        },
-      );
-  // A whole entry: not a longer variable name ending in it, nor a longer path starting with it.
-  const entry = ` ${APP_OVERRIDE_ENV}=${fakeAppPath(baseDir)}`;
-  const at = environment.indexOf(entry);
-  const after = environment.charAt(at + entry.length);
-  if (Option.isNone(state) || at < 0 || (after !== " " && after !== "\n" && after !== "")) {
-    return yield* Effect.die(
-      new Error(
-        `The server on ${baseDir} does not use this eval's fake calendar helper. Start it with ${APP_OVERRIDE_ENV} as README.md says.`,
-      ),
-    );
-  }
-  return { pid: state.value.pid, origin: state.value.origin };
-});
+const decodeSettings = Schema.decodeUnknownSync(
+  Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown)),
+);
 
-/** Selects the fixture's calendars through Settings' RPC, which reads them from the fake helper. */
 const selectCalendars = Effect.fn("botCalendar.selectCalendars")(function* (
   rpc: WsClient,
   baseDir: string,
-  verified: { readonly pid: number; readonly origin: string },
 ) {
   const failed = (step: string) => (cause: unknown) =>
     new SampleError({ message: `${step}: ${String(cause)}` });
-  const { calendar } = yield* rpc["mcpConnections.list"]({}).pipe(
-    Effect.mapError(failed("mcpConnections.list")),
+  const config = yield* resolveCliAuthConfig({ baseDir: Option.some(baseDir) }, Option.none(), {
+    quietLogs: true,
+  });
+  const stored = NodeFS.existsSync(config.settingsPath)
+    ? decodeSettings(NodeFS.readFileSync(config.settingsPath, "utf8"))
+    : {};
+  const revision = Date.now();
+  const staged = `${config.settingsPath}.bot-calendar`;
+  NodeFS.writeFileSync(
+    staged,
+    encodeJson({
+      ...stored,
+      macCalendar: {
+        enabled: true,
+        revision,
+        calendars: CALENDARS.filter((calendar) => SELECTED.includes(calendar.id as never)).map(
+          ({ id, title }) => ({ id, title }),
+        ),
+      },
+    }),
   );
-  if (calendar?.availability !== "available") {
-    return yield* Effect.die(
-      new Error(
-        `The server has no fake calendar helper (${calendar?.availability ?? "no calendar"}). Start it with ${APP_OVERRIDE_ENV} as README.md says.`,
-      ),
+  NodeFS.renameSync(staged, config.settingsPath);
+  for (let attempt = 0; ; attempt++) {
+    const { calendar } = yield* rpc["mcpConnections.list"]({}).pipe(
+      Effect.mapError(failed("mcpConnections.list")),
     );
+    if (calendar?.revision === revision) {
+      if (calendar.availability === "available") return;
+      return yield* Effect.die(
+        new Error(
+          `The server has no fake calendar helper (${calendar.availability}). Start it with ${APP_OVERRIDE_ENV} as README.md says.`,
+        ),
+      );
+    }
+    if (attempt >= 50) {
+      return yield* Effect.die(new Error("The server did not reload its settings."));
+    }
+    yield* Effect.sleep("100 millis");
   }
-  // The server this client reached must still be the one checked, not a restarted one.
-  const current = yield* requireFakeHelper(baseDir);
-  if (current.pid !== verified.pid || current.origin !== verified.origin) {
-    return yield* Effect.die(new Error("The server restarted during the run. Run the eval again."));
-  }
-  yield* rpc["mcpConnections.calendarUpdate"]({
-    expectedRevision: calendar.revision,
-    enabled: true,
-    calendarIds: [...SELECTED],
-  }).pipe(Effect.mapError(failed("mcpConnections.calendarUpdate")));
 });
 
 const main = Effect.gen(function* () {
@@ -296,7 +290,6 @@ const main = Effect.gen(function* () {
   if (out === undefined || baseDir === undefined) {
     return yield* Effect.die(new Error("Pass --out <dir> and --base-dir <dev server .t3>."));
   }
-  const verified = yield* requireFakeHelper(baseDir);
   const today = new Date();
   const { calls } = writeFakeHelper(baseDir, today);
   const selected = CASES.filter((c) => values.case === undefined || values.case.includes(c.id));
@@ -317,7 +310,7 @@ const main = Effect.gen(function* () {
           model: values.model,
           effort: values.effort,
         });
-        yield* selectCalendars(rpc, baseDir, verified);
+        yield* selectCalendars(rpc, baseDir);
         // One at a time: the fake helper's request log has no Bot to tell samples apart.
         return yield* Effect.forEach(jobs, ({ testCase, sample }) =>
           runSample(call, rpc, testCase, { work, modelSelection, calls }).pipe(

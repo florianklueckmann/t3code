@@ -13,7 +13,7 @@ The calendar is a fake: `fakeHelper.ts`, wrapped in an app bundle that the serve
      T3CODE_CODEX_LAUNCH_ARGS="--disable memories" vp run dev --no-seed
    ```
 
-   The run writes the app there, so it need not exist when the server starts. Before any request, it checks the server process's environment for exactly this path and stops otherwise, so it never launches a real helper.
+   The run writes the app there, so it need not exist when the server starts.
 
 2. From `evals/`, check the setup with one sample:
 
@@ -23,7 +23,7 @@ The calendar is a fake: `fakeHelper.ts`, wrapped in an app bundle that the serve
 
 3. Then each model: `pnpm bot-calendar --base-dir ../.t3 --out runs/<name>`, and `--instance claudeAgent --model claude-haiku-5-5` for Claude.
 
-Flags: `--model` (default `gpt-6-luna`), `--effort` (default `medium`), `--samples` (default 3), `--case <id>` (repeatable), `--work <dir>` (default `<out>/work`), `--instance` (default `codex`). Samples run one at a time, because the fake helper's request log cannot tell Bots apart. The run selects the fixture's calendars through `mcpConnections.calendarUpdate` and grants each sample's Bot the calendar through `bots.setMcpGrants`, as Settings does.
+Flags: `--model` (default `gpt-6-luna`), `--effort` (default `medium`), `--samples` (default 3), `--case <id>` (repeatable), `--work <dir>` (default `<out>/work`), `--instance` (default `codex`). Samples run one at a time, because the fake helper's request log cannot tell Bots apart. The run writes the fixture's calendar selection into the server's `settings.json`, which the server reloads, rather than selecting through Settings, which would ask the helper for every calendar's name. Its only helper requests are the turns' `list-events` with fixture ids, which a real helper refuses as a whole, so a server started without the fake reveals no calendar. It grants each sample's Bot the calendar through `bots.setMcpGrants`, as Settings does.
 
 ## Cases
 
