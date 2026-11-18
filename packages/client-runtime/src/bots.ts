@@ -9,6 +9,8 @@ import {
   type BotMaintenanceRunStep,
   type BotMaintenanceView,
   type BotHomeCheckView,
+  BOT_ALERT_DAILY_LIMIT_MAX,
+  type BotAttentionView,
   type BotFailureDiagnosisView,
   type BotRecordLearningInput,
 } from "@t3tools/contracts";
@@ -1084,6 +1086,25 @@ export function canToggleBotHomeCheckEarly(view: BotHomeCheckView, formLocked: b
     view.unavailableReason === null &&
     (view.early === true || !formLocked)
   );
+}
+
+export const BOT_ALERTS_DESCRIPTION =
+  "Phone alerts for work you didn't start yourself, such as routines and diagnoses. Results of work you start always alert at once. Held alerts arrive as one alert when quiet hours end, or when the next day starts.";
+export const BOT_REMIT_DESCRIPTION =
+  "In your words, what deserves a Waiting item from the Home check and what doesn't. It guides the check and gives the Bot no other permissions.";
+export const BOT_ALERT_LIMIT_OPTIONS = Array.from(
+  { length: BOT_ALERT_DAILY_LIMIT_MAX + 1 },
+  (_, limit) => limit,
+);
+/** Today's alerts and what waits for the digest, with the digest time in the viewer's clock. */
+export function botAlertsStatusLabel(view: BotAttentionView): string {
+  const sent = `${view.sentToday} of ${view.dailyLimit} sent today`;
+  if (view.held === 0 || view.digestAt === null) return sent;
+  const at = DateTime.formatLocal(DateTime.makeUnsafe(view.digestAt), {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  return `${sent} · ${view.held} held, sent together at ${at}`;
 }
 
 export const BOT_FAILURE_DIAGNOSIS_DESCRIPTION =

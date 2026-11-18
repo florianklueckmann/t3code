@@ -13,6 +13,12 @@ import {
   BotMaintenanceView,
 } from "./botMaintenance.ts";
 import {
+  BotAttentionInput,
+  BotAttentionView,
+  BotConfigureAttentionInput,
+  BotConfigureAttentionResult,
+} from "./botAttention.ts";
+import {
   BotConfigureHomeCheckInput,
   BotConfigureHomeCheckResult,
   BotHomeCheckView,
@@ -642,6 +648,8 @@ export const WS_METHODS = {
   botsRunMaintenance: "bots.runMaintenance",
   botsGetHomeCheck: "bots.getHomeCheck",
   botsConfigureHomeCheck: "bots.configureHomeCheck",
+  botsGetAttention: "bots.getAttention",
+  botsConfigureAttention: "bots.configureAttention",
   botsGetFailureDiagnosis: "bots.getFailureDiagnosis",
   botsConfigureFailureDiagnosis: "bots.configureFailureDiagnosis",
   botsCreate: "bots.create",
@@ -2255,6 +2263,16 @@ const WsBotsConfigureHomeCheckRpc = Rpc.make(WS_METHODS.botsConfigureHomeCheck, 
   success: BotConfigureHomeCheckResult,
   error: BotRpcError,
 });
+const WsBotsGetAttentionRpc = Rpc.make(WS_METHODS.botsGetAttention, {
+  payload: BotAttentionInput,
+  success: BotAttentionView,
+  error: BotRpcError,
+});
+const WsBotsConfigureAttentionRpc = Rpc.make(WS_METHODS.botsConfigureAttention, {
+  payload: BotConfigureAttentionInput,
+  success: BotConfigureAttentionResult,
+  error: BotRpcError,
+});
 const WsBotsGetFailureDiagnosisRpc = Rpc.make(WS_METHODS.botsGetFailureDiagnosis, {
   payload: BotContinuationScope,
   success: BotFailureDiagnosisView,
@@ -2522,6 +2540,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsBotsRunMaintenanceRpc,
   WsBotsGetHomeCheckRpc,
   WsBotsConfigureHomeCheckRpc,
+  WsBotsGetAttentionRpc,
+  WsBotsConfigureAttentionRpc,
   WsBotsGetFailureDiagnosisRpc,
   WsBotsConfigureFailureDiagnosisRpc,
   WsBotsCreateRpc,

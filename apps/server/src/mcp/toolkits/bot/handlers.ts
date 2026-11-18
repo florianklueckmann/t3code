@@ -205,7 +205,10 @@ const write = Effect.fn("mcp.bot.write")(function* (input: BotToolInput) {
         ...(input.title === undefined ? {} : { title: input.title }),
         ...(input.modelSelection === undefined ? {} : { modelSelection: input.modelSelection }),
       },
-      input.returnToHome === true ? { returnToHomeFrom: caller.thread!.threadId } : undefined,
+      {
+        requestedIn: caller.thread?.threadId ?? null,
+        ...(input.returnToHome === true ? { returnToHomeFrom: caller.thread!.threadId } : {}),
+      },
     );
     return { task: yield* started.pipe(Effect.mapError(botFailure)) };
   }

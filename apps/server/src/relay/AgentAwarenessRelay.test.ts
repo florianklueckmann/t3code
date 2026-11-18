@@ -31,7 +31,12 @@ import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as BotAttention from "../bots/BotAttention.ts";
 import * as BotTaskService from "../bots/BotTaskService.ts";
+import * as BotDatabase from "../bots/persistence/BotDatabase.ts";
+import * as ServerConfig from "../config.ts";
+import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as EnvironmentKeys from "../cloud/environmentKeys.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import {
@@ -167,10 +172,34 @@ describe("startup agent activity", () => {
   });
 });
 
+/**
+ * Just before the default quiet hours (22:00 to 07:00, UTC) start: the completion is confirmed,
+ * and only then admitted, inside them. And the moment they end.
+ */
+const QUIET_NIGHT = "2026-09-04T21:59:58.000Z";
+const QUIET_END = "2026-09-05T07:00:00.000Z";
+const botDatabase = SqlitePersistence.layerMemory.pipe(
+  Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "relay-bot-alerts-test-" })),
+  Layer.provideMerge(NodeServices.layer),
+  Layer.provideMerge(NodeCrypto.layer),
+);
+const seedBot = Effect.gen(function* () {
+  const sql = yield* BotDatabase.BotDatabase;
+  yield* sql`INSERT INTO bots (bot_id, name, instructions, model_selection_json, learning_policy, created_at, updated_at)
+    VALUES ('bot', 'Companion', '', '{"instanceId":"codex","model":"gpt-6-luna"}', 'after_adoption', ${NOW}, ${NOW})`;
+});
+
+/** A task the user started unless `byHand` says otherwise, so the alert budget stays out. */
+type TestTask = Omit<BotTaskService.BotTaskAwareness, "botId" | "homeThreadId" | "byHand"> & {
+  byHand?: boolean;
+};
+const HOME_THREAD_ID = ThreadId.make("bot-home:bot:relay-project");
+
 const makeTestRelay = Effect.fnUntraced(function* (
   options: {
     readonly taskChanges?: Stream.Stream<BotTaskId>;
-    readonly botTasks?: ReadonlyArray<BotTaskService.BotTaskAwareness>;
+    readonly botTasks?: ReadonlyArray<TestTask>;
+    readonly attention?: BotAttention.BotAttention["Service"];
     readonly respond?: (attempt: number) => Response;
     readonly failSecretRead?: (name: string) => boolean;
     readonly linked?: boolean;
@@ -210,6 +239,7 @@ const makeTestRelay = Effect.fnUntraced(function* (
     getOrCreateRandom: unused,
   });
   const currentShell = yield* Ref.make<OrchestrationV2ThreadShell | null>(shell());
+  const digestTick = yield* Ref.make<Effect.Effect<void>>(Effect.void);
   const shellReads: ThreadId[] = [];
   const catchUp = { activitySnapshotReads: 0 };
   const threads = ThreadManagementService.ThreadManagementService.of({
@@ -350,11 +380,40 @@ const makeTestRelay = Effect.fnUntraced(function* (
       changes: Effect.succeed(options.taskChanges ?? Stream.empty),
       getAwarenessTasks: (threadId) =>
         Effect.succeed(
-          (options.botTasks ?? []).filter(
-            (task) => threadId === undefined || task.workThreadId === threadId,
-          ),
+          (options.botTasks ?? [])
+            .filter((task) => threadId === undefined || task.workThreadId === threadId)
+            .map((task) => ({
+              ...task,
+              botId: BotId.make("bot"),
+              homeThreadId: HOME_THREAD_ID,
+              byHand: task.byHand ?? true,
+            })),
         ),
     }),
+    Effect.provideService(
+      BotAttention.BotAttention,
+      options.attention ??
+        BotAttention.BotAttention.of({
+          get: unused,
+          configure: unused,
+          admit: () => Effect.die("results of work the user started skip the budget"),
+          hasHeldAlerts: Effect.succeed(false),
+          claimDigests: Effect.succeed([]),
+          canSendDigest: unused,
+          markDigestSent: unused,
+        }),
+    ),
+    Effect.provideService(
+      Scheduler.Scheduler,
+      Scheduler.Scheduler.of({
+        register: <E, R>(_name: string, run: Effect.Effect<void, E, R>) =>
+          Effect.context<R>().pipe(
+            Effect.flatMap((context) =>
+              Ref.set(digestTick, run.pipe(Effect.provideContext(context), Effect.orDie)),
+            ),
+          ),
+      }),
+    ),
     Effect.provide(EnvironmentKeys.layer),
     Effect.provideService(ServerSecretStore.ServerSecretStore, secrets),
     Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
@@ -378,7 +437,16 @@ const makeTestRelay = Effect.fnUntraced(function* (
     Effect.provideService(FetchHttpClient.Fetch, fetch),
     Effect.provide(NodeCrypto.layer),
   );
-  return { relay, secrets, secretReads, currentShell, shellReads, publications, catchUp };
+  return {
+    relay,
+    secrets,
+    secretReads,
+    currentShell,
+    shellReads,
+    publications,
+    catchUp,
+    digestTick: Effect.flatten(Ref.get(digestTick)),
+  };
 });
 
 describe("AgentAwarenessRelay", () => {
@@ -1210,7 +1278,7 @@ describe("AgentAwarenessRelay", () => {
     "publishes one saved Bot result through the work-thread identity after reconciliation",
     () =>
       Effect.gen(function* () {
-        const botTasks: BotTaskService.BotTaskAwareness[] = [
+        const botTasks: TestTask[] = [
           {
             taskId: BotTaskId.make("bot-task:saved"),
             projectId: PROJECT_ID,
@@ -1263,7 +1331,7 @@ describe("AgentAwarenessRelay", () => {
     Effect.gen(function* () {
       const changes = yield* Queue.unbounded<BotTaskId>();
       const pulls = yield* Queue.unbounded<void>();
-      const botTasks: BotTaskService.BotTaskAwareness[] = [
+      const botTasks: TestTask[] = [
         {
           taskId: BotTaskId.make("bot-task:changed"),
           projectId: PROJECT_ID,
@@ -1313,7 +1381,7 @@ describe("AgentAwarenessRelay", () => {
     ({ completedAt, expectedPublications }) =>
       Effect.gen(function* () {
         yield* TestClock.setTime(DateTime.toEpochMillis(DateTime.makeUnsafe(NOW)));
-        const botTasks: BotTaskService.BotTaskAwareness[] = [
+        const botTasks: TestTask[] = [
           {
             taskId: BotTaskId.make("bot-task:restart"),
             projectId: PROJECT_ID,
@@ -1430,6 +1498,95 @@ describe("AgentAwarenessRelay", () => {
         assert.equal(terminal?.deepLink.includes("botTaskId=") ?? false, savedLink);
         if (terminal !== null) assert.equal(terminal.projectTitle, "Project");
       }),
+  );
+
+  it.effect.each([
+    { byHand: false, alerts: 0 },
+    { byHand: true, alerts: 1 },
+  ])(
+    "holds a proactive Bot result in quiet hours and sends one digest as they end (by hand: $byHand)",
+    ({ byHand, alerts }) =>
+      Effect.gen(function* () {
+        yield* seedBot;
+        yield* TestClock.setTime(DateTime.toEpochMillis(DateTime.makeUnsafe(QUIET_NIGHT)));
+        const attention = yield* BotAttention.make.pipe(
+          Effect.provide(DateTime.layerCurrentZoneOffset(0)),
+        );
+        const botTasks: TestTask[] = [
+          {
+            taskId: BotTaskId.make("bot-task:night"),
+            projectId: PROJECT_ID,
+            workThreadId: THREAD_ID,
+            status: "running",
+            resultRunId: null,
+            completedAt: null,
+            byHand,
+          },
+        ];
+        const { relay, currentShell, publications } = yield* makeTestRelay({
+          botTasks,
+          attention,
+        });
+        yield* relay.start();
+        yield* relay.publishThread(THREAD_ID);
+        yield* Ref.set(
+          currentShell,
+          shell({
+            status: "completed",
+            latestRunId: RunId.make("saved"),
+            latestRunCompletedAt: DateTime.makeUnsafe(QUIET_NIGHT),
+          }),
+        );
+        Object.assign(botTasks[0]!, {
+          status: "completed",
+          resultRunId: RunId.make("saved"),
+          completedAt: QUIET_NIGHT,
+        });
+        yield* relay.publishThread(THREAD_ID);
+        yield* TestClock.adjust("5 seconds");
+        yield* relay.drain;
+        const completed = (all: typeof publications) =>
+          all.filter((p) => p.state?.phase === "completed");
+        assert.lengthOf(completed(publications), alerts);
+        if (!byHand) assert.isNull(publications.at(-1)?.state ?? null);
+
+        // A restart forgets what was published but not what was decided.
+        const restarted = yield* makeTestRelay({
+          botTasks,
+          attention: yield* BotAttention.make.pipe(
+            Effect.provide(DateTime.layerCurrentZoneOffset(0)),
+          ),
+        });
+        yield* Ref.set(restarted.currentShell, yield* Ref.get(currentShell));
+        yield* restarted.relay.start();
+        yield* restarted.relay.publishThread(THREAD_ID);
+        yield* TestClock.adjust("5 seconds");
+        yield* restarted.relay.drain;
+        assert.lengthOf(completed(restarted.publications), alerts);
+        assert.deepInclude(yield* attention.get(BotId.make("bot")), {
+          sentToday: 0,
+          held: byHand ? 0 : 1,
+        });
+
+        yield* TestClock.setTime(DateTime.toEpochMillis(DateTime.makeUnsafe(QUIET_END)));
+        yield* restarted.digestTick;
+        yield* restarted.relay.drain;
+        yield* restarted.digestTick;
+        yield* restarted.relay.drain;
+        const digests = completed(restarted.publications).slice(alerts);
+        assert.lengthOf(digests, byHand ? 0 : 1);
+        if (!byHand) {
+          const digest = digests[0]!.state!;
+          assert.deepInclude(digest, {
+            threadId: ThreadId.make(`bot-alert-digest:bot:${QUIET_END}`),
+            threadTitle: "Companion: 1 alert held",
+            phase: "completed",
+            updatedAt: QUIET_END,
+            deepLink: `/threads/relay-environment/${encodeURIComponent(HOME_THREAD_ID)}`,
+          });
+          assert.equal((yield* attention.get(BotId.make("bot"))).held, 0);
+        }
+      }).pipe(Effect.scoped, Effect.provide(botDatabase)),
   );
 });
 

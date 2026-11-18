@@ -645,7 +645,10 @@ it.effect(
           assert.deepEqual(yield* services.tasks.getAwarenessTasks(workThreadId), [
             {
               taskId: task.id,
+              botId,
               projectId: campaign,
+              homeThreadId: task.homeThreadId,
+              byHand: true,
               workThreadId,
               status: "completed",
               resultRunId: runId,
@@ -972,6 +975,44 @@ it.effect.each([
           .pipe(Effect.exit);
         assert.equal(started._tag, "Failure");
         assert.lengthOf((yield* services.tasks.list({ botId })).tasks, 0);
+      }),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect.each([
+  { caller: "client", byHand: true },
+  { caller: "ui", byHand: true },
+  { caller: "external-mcp", byHand: false },
+  { caller: "automatic", byHand: false },
+  { caller: "scheduled-ui", byHand: false },
+  { caller: "outside-agent", byHand: false },
+  { caller: "other-thread", byHand: false },
+] as const)("records whether the user started a direct task: $caller", ({ caller, byHand }) =>
+  Effect.gen(function* () {
+    yield* seedProject;
+    const world = yield* makeThreadWorld;
+    yield* withServices(world, (services) =>
+      Effect.gen(function* () {
+        const home = yield* attachBot(services);
+        if (caller !== "client" && caller !== "outside-agent" && caller !== "other-thread")
+          yield* seedHomeRun(world, home, caller);
+        else yield* seedHomeRun(world, home);
+        const task = yield* services.tasks.start(
+          { botId, projectId: campaign, prompt: "Prepare." },
+          caller === "client"
+            ? undefined
+            : {
+                requestedIn:
+                  caller === "outside-agent"
+                    ? null
+                    : caller === "other-thread"
+                      ? ThreadId.make("other")
+                      : home,
+              },
+        );
+        const [awareness] = yield* services.tasks.getAwarenessTasks(task.workThreadId!);
+        assert.equal(awareness?.byHand, byHand);
       }),
     );
   }).pipe(Effect.provide(layerDatabase)),

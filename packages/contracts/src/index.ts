@@ -79,4 +79,5 @@ export * from "./clientRpcPermissions.ts";
 export * from "./botContinuation.ts";
 export * from "./botMaintenance.ts";
 export * from "./botHomeCheck.ts";
+export * from "./botAttention.ts";
 export * from "./botFailureDiagnosis.ts";

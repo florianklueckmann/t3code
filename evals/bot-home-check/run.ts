@@ -99,6 +99,13 @@ const botDatabase = (path: string) => {
           VALUES (?, 1, 1, ?, ?, ?, ?)`,
       ).run(home, slot.timeOfDay, slot.now, slot.now, slot.now);
     },
+    /** The remit as Bot settings would save it; no MCP tool sets it. */
+    remit: (botId: string, remit: string, now: string) => {
+      db.prepare(
+        `INSERT INTO bot_attention (bot_id, revision, daily_limit, quiet_start, quiet_end, remit, updated_at)
+          VALUES (?, 1, 3, '22:00', '07:00', ?, ?)`,
+      ).run(botId, remit, now);
+    },
     read: (home: string) =>
       db
         .prepare(
@@ -119,9 +126,12 @@ const setUp = Effect.fn("botHomeCheckEval.setUp")(function* (
   work: string,
   modelSelection: BotModelSelection,
   db: BotDatabase,
+  omitRemit: boolean,
 ) {
   const tag = `bhc-${testCase.id}-${sample}-${NodeCrypto.randomBytes(3).toString("hex")}`;
   const home = yield* createBotHome(call, { tag, work, modelSelection });
+  if (testCase.remit !== undefined && !omitRemit)
+    db.remit(tag, testCase.remit, DateTime.formatIso(yield* DateTime.now));
   const { homeThreadId } = home;
   const userMessageIds: string[] = [];
   for (const text of testCase.seed) {
@@ -276,6 +286,7 @@ const main = Effect.gen(function* () {
       samples: { type: "string", default: "3" },
       case: { type: "string", multiple: true },
       baseline: { type: "string" },
+      "omit-remit": { type: "boolean", default: false },
     },
   });
   if (values.out === undefined || values["base-dir"] === undefined)
@@ -307,6 +318,7 @@ const main = Effect.gen(function* () {
       model: values.model,
       effort: values.effort,
       samples,
+      omitRemit: values["omit-remit"],
       prompt: HOME_CHECK_PROMPT,
       baseline: values.baseline === undefined ? null : NodeFS.readFileSync(values.baseline, "utf8"),
     }),
@@ -323,7 +335,9 @@ const main = Effect.gen(function* () {
       const fixtures: Fixture[] = [];
       for (const testCase of selected)
         for (let sample = 0; sample < samples; sample += 1)
-          fixtures.push(yield* setUp(call, testCase, sample, work, modelSelection, db));
+          fixtures.push(
+            yield* setUp(call, testCase, sample, work, modelSelection, db, values["omit-remit"]),
+          );
       const setup = new Map(fixtures.map((fixture) => [fixture, [] as string[]]));
 
       // The control's first check proposes; the user then removes it before the graded check.
