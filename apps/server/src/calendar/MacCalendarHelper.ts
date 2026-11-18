@@ -56,15 +56,16 @@ const make = Effect.gen(function* () {
   }).pipe(Effect.withSpan("MacCalendarHelper.availability"));
 
   // The helper reads requests only from the per-user Darwin temp directory, not $TMPDIR.
+  // Asked on first use only, so a server that never reads a calendar never runs it.
   const tempRoot = yield* Effect.cached(
-    spawner
-      .string(
+    Effect.suspend(() =>
+      spawner.string(
         ChildProcess.make("getconf", ["DARWIN_USER_TEMP_DIR"], {
           stdin: "ignore",
           stderr: "ignore",
         }),
-      )
-      .pipe(Effect.map((output) => output.trim())),
+      ),
+    ).pipe(Effect.map((output) => output.trim())),
   );
 
   const exchange = Effect.fn("MacCalendarHelper.exchange")(

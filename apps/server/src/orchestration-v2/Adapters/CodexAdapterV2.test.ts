@@ -4905,7 +4905,10 @@ describe("CodexAdapterV2 post-settle continuation", () => {
   const privateMail = McpConnectionId.make("2a2a2a2a-0000-4000-8000-00000000002a");
   const workMail = McpConnectionId.make("2b2b2b2b-0000-4000-8000-00000000002b");
   /** What the catalog delivers, as the test sets it; each value stands for a credential. */
-  const grantedLoad = (token: string): McpConnectionDelivery.McpConnectionLoad => ({
+  const grantedLoad = (
+    token: string,
+    calendar = true,
+  ): McpConnectionDelivery.McpConnectionLoad => ({
     identity: `identity-${token}`,
     connections: [
       {
@@ -4929,12 +4932,16 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           headers: Redacted.make({ Authorization: "Bearer work-header" }),
         },
       },
-      {
-        id: MAC_CALENDAR_CONNECTION_ID,
-        label: "Calendar (this Mac)",
-        revision: 1,
-        transport: { type: "t3", toolset: "calendar" },
-      },
+      ...(calendar
+        ? [
+            {
+              id: MAC_CALENDAR_CONNECTION_ID,
+              label: "Calendar (this Mac)",
+              revision: 1,
+              transport: { type: "t3", toolset: "calendar" } as const,
+            },
+          ]
+        : []),
     ],
   });
   type DeliveryResult = Effect.Effect<
@@ -5408,7 +5415,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             NodeServices.layer,
             NodeCrypto.layer,
             Layer.succeed(McpConnectionDelivery.McpConnectionDelivery, {
-              resolve: () => Effect.succeed(grantedLoad("token-1")),
+              resolve: () => Effect.succeed(grantedLoad("token-1", false)),
               markRefused: (id, source) => Effect.sync(() => void refused.push([id, source])),
             }),
           ),
