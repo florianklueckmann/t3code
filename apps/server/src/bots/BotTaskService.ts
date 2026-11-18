@@ -1301,9 +1301,12 @@ const make = Effect.gen(function* () {
         );
     }
     // When the result run ended: work that ended before early checks were on is not owed one.
-    const endedAt = (yield* requestsHomeCheck(current).pipe(Effect.mapError(storageError)))
-      ? yield* resultEndedAt(current)
-      : null;
+    const asks = yield* Effect.gen(function* () {
+      const [early] = yield* sql`SELECT 1 FROM bot_home_checks
+        WHERE home_thread_id = ${current.home_thread_id} AND early_since IS NOT NULL`;
+      return early !== undefined && (yield* requestsHomeCheck(current));
+    }).pipe(Effect.mapError(storageError));
+    const endedAt = asks ? yield* resultEndedAt(current) : null;
     const now = yield* nowIso;
     yield* sql
       .withTransaction(
