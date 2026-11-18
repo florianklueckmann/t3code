@@ -56,6 +56,15 @@ type CompactionLabelItem = Pick<
   "status" | "beforeTokenCount" | "afterTokenCount"
 >;
 
+type SystemNoticeItem = Extract<OrchestrationV2TurnItem, { readonly type: "system_notice" }>;
+
+/** A notice without a level is a runtime warning, except a recovery notice recorded before levels. */
+export function systemNoticeLevel(
+  item: Pick<SystemNoticeItem, "level" | "conversationRecovery">,
+): NonNullable<SystemNoticeItem["level"]> {
+  return item.level ?? (item.conversationRecovery === undefined ? "warning" : "info");
+}
+
 export function contextCompactionTokenCounts(
   item: CompactionLabelItem,
 ): { readonly before: string; readonly after: string } | null {

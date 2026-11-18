@@ -29,6 +29,7 @@ import {
   toolGroupAction,
   resolveWorkEntryToolPresentation,
   summarizeToolGroup,
+  systemNoticeLevel,
   toolGroupSummaryKind,
   workEntriesViewedImagePaths,
   type ToolGroupSummaryKind,
@@ -566,7 +567,7 @@ function itemIcon(item: OrchestrationV2TurnItem): ThreadFeedActivity["icon"] {
     case "subagent":
       return "hammer";
     case "system_notice":
-      return item.level === "info" ? "zap" : "warning";
+      return systemNoticeLevel(item) === "info" ? "zap" : "warning";
     case "run_interrupt_request":
     case "run_interrupt_result":
       return "stop";

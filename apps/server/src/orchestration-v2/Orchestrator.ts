@@ -50,6 +50,7 @@ import {
   type OrchestrationV2ConversationRecovery,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ExecutionNode,
+  type OrchestrationV2FreshConversationPreparation,
   type OrchestrationV2ProviderSession,
   type OrchestrationV2ProviderThread,
   type OrchestrationV2ProviderTurn,
@@ -123,6 +124,7 @@ import {
 import { CommandReceiptStoreV2, type CommandReceiptV2 } from "./CommandReceiptStore.ts";
 import {
   conversationRecoveryHandoffItems,
+  freshConversationNotice,
   rewindKeptProviderTurn,
 } from "./ConversationRecovery.ts";
 import { conversationRecoveryOffer } from "@t3tools/shared/conversationRecovery";
@@ -699,6 +701,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "checkpoint.rollback":
     case "checkpoint.rollback.fail":
     case "thread.conversation.recover":
+    case "thread.conversation.summary.record":
     case "thread.background-work.settle":
     case "thread.interrupt.unresponsive":
     case "message.steer.accept":
@@ -783,6 +786,15 @@ function delegatedTasksStopEffect(command: {
     },
   };
 }
+
+// A rewind, archive or delete means no turn will use the fresh start's summary.
+const freshSummaryCancellation = {
+  effectTypes: ["conversation-recovery.summarize"],
+  reason: "The thread no longer waits for this fresh conversation.",
+} satisfies {
+  readonly effectTypes: ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
+  readonly reason: string;
+};
 
 const WORKSPACE_PREPARATION_INPUT = "Preparing workspace";
 const RUNTIME_REQUEST_DELIVERY_FAILED_MESSAGE =
@@ -14255,12 +14267,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
   /**
    * Records a recovery the next turn applies on the provider thread, so the native work happens
-   * where the session is already loaded. A rewind hands the dropped runs' messages over now.
+   * where the session is already loaded. A rewind hands the dropped runs' messages over now; a
+   * fresh start prepares its summary in an effect the next turn's start waits behind.
    */
   const dispatchConversationRecover = Effect.fn("Orchestrator.dispatchConversationRecover")(
     function* (
       command: Extract<OrchestrationV2Command, { readonly type: "thread.conversation.recover" }>,
       events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+      effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
     ) {
       const reject = (cause: string) =>
         new OrchestratorDispatchError({
@@ -14275,6 +14289,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       );
       if (projection.thread.archivedAt !== null || projection.thread.deletedAt !== null) {
         return yield* reject(`Thread ${command.threadId} is not active.`);
+      }
+      // Another click or client asked for the same fresh start, which may already hold a message
+      // waiting for its summary.
+      const pending = projection.providerThreads.find(
+        (candidate) => candidate.id === projection.thread.activeProviderThreadId,
+      )?.conversationRecovery;
+      if (
+        command.mode === "fresh" &&
+        pending?.type === "fresh" &&
+        pending.requestId !== undefined &&
+        pending.prepared?.type !== "failed"
+      ) {
+        return;
       }
       if (projection.runs.some(isActiveRun)) {
         return yield* reject("Stop the running turn before recovering the conversation.");
@@ -14306,8 +14333,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         return yield* reject("This thread has no provider conversation to recover yet.");
       }
       const now = yield* DateTime.now;
-      let recovery: OrchestrationV2ConversationRecovery = { type: "fresh" };
-      let message = "Your next message starts a fresh conversation with a summary of this thread.";
+      let recovery: OrchestrationV2ConversationRecovery = {
+        type: "fresh",
+        requestId: command.commandId,
+      };
+      let { message, level } = freshConversationNotice(undefined);
       if (command.mode === "rewind" && offer !== null) {
         const capabilities = yield* providerAdapters.get(providerThread.providerInstanceId).pipe(
           Effect.flatMap((adapter) => adapter.getCapabilities()),
@@ -14402,6 +14432,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         const turns = droppedRuns.length === 1 ? "turn" : "turns";
         const messages = items.length === 1 ? "message" : "messages";
         message = `Rewound the conversation to before the last turn the provider accepted. Your next message continues from there with ${items.length} ${messages} from the ${droppedRuns.length} dropped ${turns} as context, without tool calls or their output.`;
+        level = "info";
+      } else {
+        const summarize: PendingOrchestrationEffectV2 = {
+          id: `effect:${command.commandId}:conversation-recovery.summarize`,
+          commandId: command.commandId,
+          threadId: command.threadId,
+          request: {
+            type: "conversation-recovery.summarize",
+            throughRunOrdinal: latestRun.ordinal,
+          },
+        };
+        yield* Ref.update(effects, (existing) => [...existing, summarize]);
       }
       yield* emit(
         events,
@@ -14444,11 +14486,139 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           updatedAt: now,
           type: "system_notice",
           message,
+          level,
           conversationRecovery: recovery.type,
         },
       });
     },
   );
+
+  /** Writes what a fresh start prepared, unless the thread no longer waits for that fresh start. */
+  const dispatchConversationSummaryRecord = Effect.fn(
+    "Orchestrator.dispatchConversationSummaryRecord",
+  )(function* (
+    command: Extract<
+      OrchestrationV2InternalCommand,
+      { readonly type: "thread.conversation.summary.record" }
+    >,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+  ) {
+    yield* settleFreshStart(command, events, (requestId) =>
+      requestId === command.requestId ? command.prepared : undefined,
+    );
+  });
+
+  /**
+   * Settles fresh starts that wait for their summary: records what one prepared, or with "retire"
+   * leaves the summary to the next turn's start, as before preparation existed.
+   */
+  const settleFreshStart = Effect.fn("Orchestrator.settleFreshStart")(function* (
+    command: Extract<
+      OrchestrationV2ServerCommand,
+      { readonly type: "thread.conversation.summary.record" | "thread.archive" }
+    >,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    settle: (
+      requestId: CommandId,
+    ) => OrchestrationV2FreshConversationPreparation | "retire" | undefined,
+  ) {
+    const projection = yield* projectionStore
+      .getThreadRecords(command.threadId, ["providerThreads", "turnItems"], {
+        turnItemTypes: ["system_notice"],
+      })
+      .pipe(mapDispatchError(command));
+    if (projection.thread.archivedAt !== null || projection.thread.deletedAt !== null) return;
+    const now = yield* DateTime.now;
+    for (const providerThread of projection.providerThreads) {
+      const recovery = providerThread.conversationRecovery;
+      const requestId =
+        recovery?.type === "fresh" && recovery.prepared === undefined
+          ? recovery.requestId
+          : undefined;
+      const outcome = requestId === undefined ? undefined : settle(requestId);
+      if (requestId === undefined || outcome === undefined) continue;
+      yield* settleOneFreshStart(
+        command,
+        events,
+        projection,
+        providerThread,
+        requestId,
+        outcome,
+        now,
+      );
+    }
+  });
+
+  const settleOneFreshStart = Effect.fn("Orchestrator.settleOneFreshStart")(function* (
+    command: Extract<
+      OrchestrationV2ServerCommand,
+      { readonly type: "thread.conversation.summary.record" | "thread.archive" }
+    >,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    projection: Pick<OrchestrationV2ThreadProjection, "thread" | "turnItems">,
+    providerThread: OrchestrationV2ProviderThread,
+    requestId: CommandId,
+    outcome: OrchestrationV2FreshConversationPreparation | "retire",
+    now: DateTime.Utc,
+  ) {
+    // Writing a provider thread makes it the active one. Another provider took over since the
+    // click, so this one's next turn summarizes at its start instead.
+    const isActive = providerThread.id === projection.thread.activeProviderThreadId;
+    const settled = isActive ? outcome : "retire";
+    if (isActive) {
+      yield* emit(
+        events,
+        command,
+      )({
+        type: "provider-thread.updated",
+        threadId: command.threadId,
+        driver: providerThread.driver,
+        providerInstanceId: providerThread.providerInstanceId,
+        occurredAt: now,
+        payload: {
+          ...providerThread,
+          conversationRecovery:
+            settled === "retire"
+              ? { type: "fresh" }
+              : { type: "fresh", requestId, prepared: settled },
+          updatedAt: now,
+        },
+      });
+    }
+    const notice = projection.turnItems.find(
+      (item) =>
+        item.type === "system_notice" &&
+        item.runId !== null &&
+        item.id ===
+          idAllocator.derive.runSignalTurnItem({
+            runId: item.runId,
+            signal: `conversation-recovery:${requestId}`,
+          }),
+    );
+    if (notice?.type !== "system_notice" || notice.runId === null) return;
+    const next =
+      settled === "retire"
+        ? {
+            level: "info" as const,
+            message: "Your next message starts a fresh conversation with a summary of this thread.",
+          }
+        : freshConversationNotice(settled);
+    // A fresh start another provider left behind is retired again on every archive.
+    if (notice.message === next.message) return;
+    const { detail: _previousDetail, ...rest } = notice;
+    yield* emit(
+      events,
+      command,
+    )({
+      type: "turn-item.updated",
+      threadId: command.threadId,
+      runId: notice.runId,
+      ...(notice.nodeId === null ? {} : { nodeId: notice.nodeId }),
+      providerInstanceId: providerThread.providerInstanceId,
+      occurredAt: now,
+      payload: { ...rest, ...next, updatedAt: now },
+    });
+  });
 
   /**
    * Thread lineage and fork origin are immutable, so this
@@ -15452,6 +15622,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         return {
           events: plans.flatMap((plan) => plan.events),
           effects: plans.flatMap((plan) => plan.effects),
+          cancelUnsettledEffects: freshSummaryCancellation,
         };
       }
       case "thread.archive":
@@ -15478,6 +15649,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "thread.model-selection.set":
       case "provider.switch":
         yield* dispatchThreadMutation(command, events, effects);
+        if (command.type === "thread.archive") {
+          yield* settleFreshStart(command, events, () => "retire");
+          cancelUnsettledEffects = freshSummaryCancellation;
+        }
         break;
       case "thread.metadata.update": {
         const continuation = metadataUpdateContinuation(command);
@@ -15732,7 +15907,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         yield* dispatchCheckpointRollbackFail(command, events);
         break;
       case "thread.conversation.recover":
-        yield* dispatchConversationRecover(command, events);
+        yield* dispatchConversationRecover(command, events, effects);
+        if (command.mode === "rewind") cancelUnsettledEffects = freshSummaryCancellation;
+        break;
+      case "thread.conversation.summary.record":
+        yield* dispatchConversationSummaryRecord(command, events);
         break;
       case "runtime-request.delivery.fail":
         yield* dispatchRuntimeRequestDeliveryFail(command, events);
@@ -16030,7 +16209,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           command.type === "subagent.stop" ||
           // Closing a share again, or after it ended, is not an error.
           command.type === "thread.guest-share.close" ||
-          (command.type === "thread.delete" && command.onlyIfUnused === true),
+          (command.type === "thread.delete" && command.onlyIfUnused === true) ||
+          // A second fresh start joins the one in preparation; a summary nobody waits for is dropped.
+          (command.type === "thread.conversation.recover" && command.mode === "fresh") ||
+          command.type === "thread.conversation.summary.record",
         (_planned) =>
           new OrchestratorDispatchError({
             commandId: command.commandId,

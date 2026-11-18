@@ -1137,6 +1137,24 @@ export const OrchestrationV2ConversationRecoveryMode = Schema.Literals(["rewind"
 export type OrchestrationV2ConversationRecoveryMode =
   typeof OrchestrationV2ConversationRecoveryMode.Type;
 
+/** A generated summary of a conversation's messages through a run; a later summary extends it. */
+export const OrchestrationV2ConversationSummary = Schema.Struct({
+  text: Schema.String,
+  throughRunOrdinal: PositiveInt,
+});
+
+/** What a fresh start prepared for its next turn: a summary, no need for one, or why it failed. */
+export const OrchestrationV2FreshConversationPreparation = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("summary"),
+    summary: OrchestrationV2ConversationSummary,
+  }),
+  Schema.Struct({ type: Schema.Literal("verbatim") }),
+  Schema.Struct({ type: Schema.Literal("failed"), reason: Schema.String }),
+]);
+export type OrchestrationV2FreshConversationPreparation =
+  typeof OrchestrationV2FreshConversationPreparation.Type;
+
 /** Applied by the next turn on this provider thread before it prompts. */
 export const OrchestrationV2ConversationRecovery = Schema.Union([
   Schema.Struct({
@@ -1144,7 +1162,13 @@ export const OrchestrationV2ConversationRecovery = Schema.Union([
     /** Native turns after this one are dropped; null drops them all. */
     keepProviderTurnId: Schema.NullOr(ProviderTurnId),
   }),
-  Schema.Struct({ type: Schema.Literal("fresh") }),
+  Schema.Struct({
+    type: Schema.Literal("fresh"),
+    /** The recover command that asked for it; absent on fresh starts recorded before preparation. */
+    requestId: Schema.optional(CommandId),
+    /** Absent while the summary is still being prepared. */
+    prepared: Schema.optional(OrchestrationV2FreshConversationPreparation),
+  }),
 ]);
 export type OrchestrationV2ConversationRecovery = typeof OrchestrationV2ConversationRecovery.Type;
 
@@ -1228,9 +1252,7 @@ export const OrchestrationV2ContextHandoff = Schema.Struct({
       omittedItems: NonNegativeInt,
       omittedItemIds: Schema.optional(Schema.Array(TurnItemId)),
       /** A generated summary of the omitted messages through this run; a later summary extends it. */
-      summary: Schema.optional(
-        Schema.Struct({ text: Schema.String, throughRunOrdinal: PositiveInt }),
-      ),
+      summary: Schema.optional(OrchestrationV2ConversationSummary),
     }),
   ),
   delivery: Schema.optional(
@@ -3798,6 +3820,14 @@ const OrchestrationV2InternalCommand = Schema.Union([
     threadId: ThreadId,
     requestId: CommandId,
     message: TrimmedNonEmptyString,
+  }),
+  /** Records what fresh start `requestId` prepared for its next turn. */
+  Schema.Struct({
+    type: Schema.Literal("thread.conversation.summary.record"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    requestId: CommandId,
+    prepared: OrchestrationV2FreshConversationPreparation,
   }),
   /** Delivering the answer to request `requestId` failed on its last attempt. */
   Schema.Struct({

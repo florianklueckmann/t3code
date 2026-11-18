@@ -720,6 +720,35 @@ export const layerExecutor: Layer.Layer<
                     }),
                 ),
               );
+          case "conversation-recovery.summarize":
+            return providerTurnStart
+              .prepareFreshConversation({
+                threadId: effect.threadId,
+                requestId: effect.commandId,
+                throughRunOrdinal: effect.request.throughRunOrdinal,
+              })
+              .pipe(
+                Effect.flatMap((prepared) =>
+                  prepared === undefined
+                    ? Effect.void
+                    : threads.dispatch({
+                        type: "thread.conversation.summary.record",
+                        commandId: CommandId.make(`${effect.commandId}:summary-record`),
+                        threadId: effect.threadId,
+                        requestId: effect.commandId,
+                        prepared,
+                      }),
+                ),
+                Effect.asVoid,
+                Effect.mapError(
+                  (cause) =>
+                    new OrchestrationEffectExecutionError({
+                      effectId: effect.id,
+                      effectType: effect.request.type,
+                      cause,
+                    }),
+                ),
+              );
           case "delegated-tasks.stop":
             return threads
               .stopDelegatedTasks({
