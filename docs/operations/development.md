@@ -196,6 +196,68 @@ startup and keeps its own SQLite data, signing key, and revocation state. Deskto
 servers ignore the value. See [environment authentication](../internals/environment-auth.md#reusable-dev-credential)
 for the security model.
 
+## macOS Calendar Helper
+
+From the repository root on macOS 14 or later, run the following command in the logged-in user's
+session. Use a checkout on the same volume as `~/Applications` and a valid Apple Development
+identity in the login keychain.
+
+```sh
+node native/calendar-helper/install.mjs
+```
+
+The command runs the Swift tests and installs the signed
+`~/Applications/T3 Calendar Helper.app`. Its bundle ID is
+`com.florianklueckmann.t3code.calendar-helper`. This install is separate from the Electron launcher
+and desktop release build. The signature uses the signing team's ID so a certificate renewal within
+the same team keeps the designated requirement. If the keychain has multiple valid Apple Development
+identities, use `security find-identity -v -p codesigning` to find the chosen identity's SHA-1 hash
+and set `T3_CALENDAR_SIGNING_IDENTITY` to that hash when running the install command.
+
+Send one JSON request per LaunchServices invocation. Create a fresh mode `0700` directory under the
+user's Darwin temp directory and write a mode `0600` `request.json`. Pass the directory basename to
+`open` and wait for the helper to exit before reading `response.json`.
+
+```sh
+request_dir=$(mktemp -d "$(getconf DARWIN_USER_TEMP_DIR)t3-calendar.XXXXXXXX")
+(umask 077; printf '%s\n' '{"command":"status"}' > "$request_dir/request.json")
+open -n -W -g -a "$HOME/Applications/T3 Calendar Helper.app" --args "${request_dir##*/}"
+cat "$request_dir/response.json"
+```
+
+Use a new directory for each call and remove the files and directory after reading the response.
+The helper accepts up to 32 KiB of JSON. Treat a missing, empty, or malformed response as a
+transport failure even if `open` exits successfully. The helper allows 30 seconds for status and
+reads, and three minutes for setup. It returns `error.code: "timeout"` if it can write a response
+before exiting.
+
+Any process running as this macOS user can run `setup`. Once the user grants Full Access, any
+process running as that user can request events from any calendar. T3's per-Bot grant constrains
+the calendar IDs T3 passes to the helper. The helper's transport isolates macOS user accounts.
+
+- `status` returns `{"status":{"authorization":"notDetermined"}}` before an access decision. The other
+  authorization values are `fullAccess`, `writeOnly`, `denied`, `restricted`, and `unknown`.
+  Use `setup` in the logged-in user's session to request Full Access explicitly. It returns the same
+  response shape. If access was denied, change it in System Settings under Privacy & Security >
+  Calendars.
+- `list-calendars` returns `calendars.items` with each calendar's `id`, `title`, `sourceName`,
+  and `writable` flag. It lists every calendar, and `sourceName` can be the account's email address.
+  Keep this response in the setup flow and expose only the granted event results to models.
+- `list-events` requires RFC 3339 `start` and `end` timestamps with offsets and a nonempty
+  `calendarIds` array. The window may span at most 14 × 24 × 60 × 60 elapsed seconds, including
+  across daylight saving changes. The optional integer `limit`
+  defaults to 50 and accepts 1 through 100. The response contains `events.items` in start-time
+  order and includes `events.truncated: true` when the limit leaves out matching events. Each item
+  has `title`, `calendar` (`id` and `title`), `start`, `end`, `allDay`, the host's IANA
+  `timeZone`, and an opaque `reference`. Timed events use RFC 3339 timestamps with the host's
+  offset at each boundary. All-day events use local dates with an exclusive end. For an event on
+  November 18, those dates are `2026-11-18` and `2026-11-19`. Treat the reference as temporary.
+  Its format will change when the helper supports writes, and it can change when an event
+  moves or the calendar syncs.
+- Errors return `error.code` with `notAuthorized`, `invalidRequest`, `unknownCalendar`,
+  `storeUnavailable`, or `timeout`. The helper validates the request before checking authorization.
+  Reads require Full Access. An unknown calendar ID fails the entire request.
+
 ## Checks
 
 `vp run check:changed` runs CI's fast checks for your branch's changes: format and lint of the
