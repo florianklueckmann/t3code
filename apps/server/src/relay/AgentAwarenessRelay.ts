@@ -206,6 +206,7 @@ function resolveAgentActivityPublishingStartupState(input: {
   return input.publishEnabled ? "enabled" : "disabled";
 }
 
+const DIGEST_THREAD_PREFIX = "bot-alert-digest:";
 const RELAY_AGENT_ACTIVITY_DETAIL_MAX_LENGTH = 160;
 const REDACTED_RELAY_AGENT_FAILURE_DETAIL = "The agent run failed.";
 const RELAY_AGENT_ACTIVITY_RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 16_000] as const;
@@ -585,10 +586,11 @@ export const make = Effect.gen(function* () {
       });
     });
 
-    const digest = pendingDigests.get(threadId);
-    if (digest !== undefined) {
-      // A digest has its own relay row, so no thread update can replace it before delivery.
-      if (yield* attention.isDigestPending(digest)) {
+    if (threadId.startsWith(DIGEST_THREAD_PREFIX)) {
+      // A digest has its own relay row, so no thread update can replace it; a retry of a failed
+      // publish waits for the scheduler's next claim, which keeps or renews its identity.
+      const digest = pendingDigests.get(threadId);
+      if (digest !== undefined && (yield* attention.canSendDigest(digest))) {
         const project =
           digest.projectId === null
             ? Option.none<Project>()
@@ -713,7 +715,12 @@ export const make = Effect.gen(function* () {
         homeThreadId: task.homeThreadId,
         phase: state.phase,
       });
-      return decision === "hold" ? null : state;
+      if (decision === "hold") return null;
+      // Pinned to the run's end, as a saved result is, so a later rename cannot ring again.
+      const endedAt = Option.isSome(thread) ? thread.value.latestRunCompletedAt : null;
+      return state.phase === "failed" && endedAt != null
+        ? { ...state, updatedAt: DateTime.formatIso(endedAt) }
+        : state;
     });
     snapshot = { ...snapshot, state: projectTaskState(snapshot.state) };
     const publishedStateByThread = yield* Ref.get(publishedStateByThreadRef);
@@ -1118,11 +1125,14 @@ export const make = Effect.gen(function* () {
           // Held alerts wait while publishing is off or unlinked, and go out once it is back.
           if (!(yield* readPublishAgentActivityEnabled) || (yield* readRelayConfig) === null)
             return;
+          // The next tick claims only after these publishes ended, so a renewal never races one.
           for (const digest of yield* attention.claimDigests) {
-            const id = ThreadId.make(`bot-alert-digest:${digest.botId}:${digest.digestAt}`);
+            const id = ThreadId.make(`${DIGEST_THREAD_PREFIX}${digest.botId}:${digest.digestAt}`);
             pendingDigests.set(id, digest);
             yield* worker.enqueue(id);
           }
+          yield* worker.drain;
+          pendingDigests.clear();
         }),
       );
       const taskChanges = yield* botTasks.changes;

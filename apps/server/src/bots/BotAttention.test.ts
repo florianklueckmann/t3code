@@ -163,7 +163,8 @@ it.effect(
       yield* at("2026-11-04T07:02:04.000Z");
       const [reclaimed] = yield* attention.claimDigests;
       assert.deepInclude(reclaimed!, { held: 1, digestAt: "2026-11-04T07:02:04.000Z" });
-      assert.isFalse(yield* attention.isDigestPending(digest!));
+      assert.isFalse(yield* attention.canSendDigest(digest!));
+      assert.isTrue(yield* attention.canSendDigest(reclaimed!));
       yield* attention.markDigestSent(reclaimed!);
       assert.deepInclude(yield* attention.get(botId), {
         held: 1,

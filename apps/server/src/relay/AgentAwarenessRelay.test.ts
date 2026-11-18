@@ -399,7 +399,7 @@ const makeTestRelay = Effect.fnUntraced(function* (
           admit: () => Effect.die("results of work the user started skip the budget"),
           hasHeldAlerts: Effect.succeed(false),
           claimDigests: Effect.succeed([]),
-          isDigestPending: unused,
+          canSendDigest: unused,
           markDigestSent: unused,
         }),
     ),

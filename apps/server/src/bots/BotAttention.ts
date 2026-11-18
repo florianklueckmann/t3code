@@ -80,13 +80,16 @@ export class BotAttention extends Context.Service<
      * digest; an unsent claim comes back as it was until it is too old to alert.
      */
     readonly claimDigests: Effect.Effect<ReadonlyArray<BotAlertDigest>, BotError>;
-    readonly isDigestPending: (digest: BotAlertDigest) => Effect.Effect<boolean, BotError>;
+    /** Unsent and still young enough for the relay to ring. */
+    readonly canSendDigest: (digest: BotAlertDigest) => Effect.Effect<boolean, BotError>;
     readonly markDigestSent: (digest: BotAlertDigest) => Effect.Effect<void, BotError>;
   }
 >()("t3/bots/BotAttention") {}
 
 /** The relay rings for a completion at most this old; an older unsent claim gets a new identity. */
 const DIGEST_RECLAIM_MS = 2 * 60_000;
+const isFresh = (digestAt: string, now: DateTime.DateTime) =>
+  DateTime.toEpochMillis(now) - Date.parse(digestAt) < DIGEST_RECLAIM_MS;
 
 const isBotError = Schema.is(BotError);
 const failure = (cause: unknown) =>
@@ -244,25 +247,23 @@ export const make = Effect.gen(function* () {
     const nowIso = DateTime.formatIso(now);
     const digests: Array<BotAlertDigest> = [];
     for (const botId of new Set(rows.map((row) => row.bot_id))) {
+      const { quietHours } = yield* settings(botId);
+      if (inQuietHours(now, quietHours)) continue;
       const held = rows.filter((row) => row.bot_id === botId);
       const claimed = held.find((row) => row.digest_at !== null)?.digest_at ?? null;
       let digestAt = claimed;
       let batch = held.filter((row) => row.digest_at === claimed);
-      if (claimed === null) {
-        const { quietHours } = yield* settings(botId);
-        if (inQuietHours(now, quietHours)) continue;
+      if (claimed === null || !isFresh(claimed, now)) {
         // Each alert waits for its own release, so one held a moment ago waits for the next.
         batch = held.filter(
-          (row) => !DateTime.isGreaterThan(digestDueAt(local(row.decided_at), quietHours), now),
+          (row) =>
+            row.digest_at !== null ||
+            !DateTime.isGreaterThan(digestDueAt(local(row.decided_at), quietHours), now),
         );
         if (batch.length === 0) continue;
         digestAt = nowIso;
         yield* sql`UPDATE bot_alerts SET digest_at = ${digestAt}
           WHERE alert_key IN ${sql.in(batch.map((row) => row.alert_key))}`;
-      } else if (DateTime.toEpochMillis(now) - Date.parse(claimed) >= DIGEST_RECLAIM_MS) {
-        digestAt = nowIso;
-        yield* sql`UPDATE bot_alerts SET digest_at = ${digestAt}
-          WHERE bot_id = ${botId} AND digest_at = ${claimed} AND digest_sent_at IS NULL`;
       }
       const newest = batch.at(-1)!;
       digests.push({
@@ -278,12 +279,12 @@ export const make = Effect.gen(function* () {
     return digests;
   }).pipe(Effect.mapError(failure));
 
-  const isDigestPending = (digest: BotAlertDigest) =>
-    sql`SELECT 1 FROM bot_alerts WHERE bot_id = ${digest.botId} AND digest_at = ${digest.digestAt}
-      AND digest_sent_at IS NULL LIMIT 1`.pipe(
-      Effect.map((rows) => rows.length > 0),
-      Effect.mapError(failure),
-    );
+  const canSendDigest = Effect.fn("BotAttention.canSendDigest")(function* (digest: BotAlertDigest) {
+    if (!isFresh(digest.digestAt, yield* localNow)) return false;
+    const rows = yield* sql`SELECT 1 FROM bot_alerts WHERE bot_id = ${digest.botId}
+        AND digest_at = ${digest.digestAt} AND digest_sent_at IS NULL LIMIT 1`;
+    return rows.length > 0;
+  }, Effect.mapError(failure));
 
   const markDigestSent = Effect.fn("BotAttention.markDigestSent")(function* (
     digest: BotAlertDigest,
@@ -299,7 +300,7 @@ export const make = Effect.gen(function* () {
     admit,
     hasHeldAlerts,
     claimDigests,
-    isDigestPending,
+    canSendDigest,
     markDigestSent,
   });
 });
