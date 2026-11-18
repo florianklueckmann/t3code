@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   formatDayAwareTimestamp,
   formatRelativeTimeLabel,
+  formatScheduledRelativeTimeLabel,
   formatUpcomingTimestamp,
 } from "./timestampFormat";
 
@@ -10,6 +11,14 @@ it("reads a save stamped ahead of this clock as just now, never as upcoming", ()
   const now = Date.parse("2026-11-18T07:41:30.000Z");
   expect(formatRelativeTimeLabel("2026-11-18T07:41:50.000Z", now)).toBe("just now");
   expect(formatRelativeTimeLabel("2026-11-18T07:38:00.000Z", now)).toBe("3m ago");
+});
+
+it("treats a webhook received ahead of this clock as just now and keeps upcoming run labels", () => {
+  const now = Date.parse("2026-11-18T07:41:30.000Z");
+  const timestamp = "2026-11-18T07:41:50.000Z";
+  expect(formatScheduledRelativeTimeLabel(timestamp, now, "past")).toBe("just now");
+  expect(formatScheduledRelativeTimeLabel(timestamp, now, "upcoming")).toBe("in under a minute");
+  expect(formatScheduledRelativeTimeLabel("2026-11-18T07:38:00.000Z", now, "past")).toBe("3m ago");
 });
 
 describe("timestamps in an explicit time zone", () => {

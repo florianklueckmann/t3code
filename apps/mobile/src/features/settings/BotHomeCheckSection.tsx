@@ -16,6 +16,7 @@ import { Platform, View } from "react-native";
 import { AppText as Text } from "../../components/ui/AppText";
 import * as Dialog from "../../components/ui/Dialog";
 import { ThemedSwitch } from "../../components/ui/ThemedSwitch";
+import { cn } from "../../lib/cn";
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -56,6 +57,8 @@ export function BotHomeCheckSection(props: {
   const view = query.data;
   if (view === null) return null;
   const last = botHomeCheckLastLabel(view);
+  const earlyDisabled =
+    busy || !canConfigure || !canToggleBotHomeCheckEarly(view, props.formLocked);
 
   const save = async (change: {
     readonly enabled: boolean;
@@ -121,7 +124,12 @@ export function BotHomeCheckSection(props: {
       />
       {hasBotHomeCheckEarly(view) ? (
         <View className="min-h-14 flex-row items-center gap-3 border-t border-border-subtle px-4 py-3">
-          <View className="min-w-0 flex-1 gap-1">
+          <View
+            className={cn(
+              "min-w-0 flex-1 gap-1",
+              Platform.OS === "ios" && earlyDisabled && "opacity-50",
+            )}
+          >
             <Text textRole="body" className="text-foreground">
               Check early after finished work
             </Text>
@@ -132,7 +140,7 @@ export function BotHomeCheckSection(props: {
           <ThemedSwitch
             accessibilityLabel="Check early after finished work"
             value={view.early === true}
-            disabled={busy || !canConfigure || !canToggleBotHomeCheckEarly(view, props.formLocked)}
+            disabled={earlyDisabled}
             onValueChange={(early) => void save({ enabled: view.enabled, early })}
           />
         </View>

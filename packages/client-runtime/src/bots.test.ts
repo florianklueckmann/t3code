@@ -321,10 +321,18 @@ describe("home Bot learning notices", () => {
   ];
 
   it("reads one maintenance pass as one group and keeps waiting proposals past the limit", () => {
-    const { visible, hiddenKeys, folded } = homeBotLearningNoticeGroups(scope, notices, []);
+    const { visible, hiddenKeys, folded, showGroupSummaries } = homeBotLearningNoticeGroups(
+      scope,
+      notices,
+      [],
+    );
     expect(entriesOf(visible)).toEqual(["p3,p2,p1", "d", "c", "a"]);
     expect(hiddenKeys).toEqual([]);
     expect(folded).toBe("5 new, 1 retired · 2 waiting for you");
+    expect(showGroupSummaries).toBe(true);
+    expect(homeBotLearningNoticeGroups(scope, notices.slice(0, 3), []).showGroupSummaries).toBe(
+      false,
+    );
     expect(visible.map(botLearningNoticeGroupSummary)).toEqual([
       "2 new, 1 retired · 1 waiting for you",
       "1 new",
@@ -337,6 +345,7 @@ describe("home Bot learning notices", () => {
     const before = homeBotLearningNoticeGroups(scope, notices.slice(3, 5), []);
     // Two notices still show as they are; a third folds them into one row.
     expect(before.folded).toBeNull();
+    expect(before.showGroupSummaries).toBe(true);
     const groups = before.visible;
     const hidden = hideBotHomeCard([], groups[0]!.key);
     const after = homeBotLearningNoticeGroups(scope, notices.slice(3, 5), hidden);

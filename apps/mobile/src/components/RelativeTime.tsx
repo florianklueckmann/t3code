@@ -1,8 +1,9 @@
+import { formatRelativeTimeLabel, msUntilRelativeTimeChange } from "@t3tools/client-runtime/clock";
 import { useSyncExternalStore } from "react";
-import { msUntilRelativeTimeChange, relativeTime } from "../lib/time";
+import { relativeTime } from "../lib/time";
 
 // The React Compiler caches inline relativeTime calls on the timestamp alone.
-export function RelativeTime(props: { timestamp: string }) {
+export function RelativeTime(props: { timestamp: string; withAgo?: boolean }) {
   const subscribe = (onChange: () => void) => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const schedule = () => {
@@ -16,6 +17,7 @@ export function RelativeTime(props: { timestamp: string }) {
     schedule();
     return () => clearTimeout(timer);
   };
-  const getSnapshot = () => relativeTime(props.timestamp);
+  const getSnapshot = () =>
+    props.withAgo ? formatRelativeTimeLabel(props.timestamp) : relativeTime(props.timestamp);
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }

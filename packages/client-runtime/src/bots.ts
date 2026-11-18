@@ -570,6 +570,7 @@ export function homeBotLearningNoticeGroups(
   readonly visible: ReadonlyArray<BotLearningNoticeGroup>;
   readonly hiddenKeys: ReadonlyArray<string>;
   readonly folded: string | null;
+  readonly showGroupSummaries: boolean;
 } {
   const runs: Array<Array<BotLearningNotice>> = [];
   for (const notice of notices) {
@@ -616,7 +617,7 @@ export function homeBotLearningNoticeGroups(
           notices: shown,
           waiting: visible.reduce((sum, group) => sum + group.waiting, 0),
         });
-  return { visible, hiddenKeys, folded };
+  return { visible, hiddenKeys, folded, showGroupSummaries: folded === null || visible.length > 1 };
 }
 
 export function hideBotHomeCard(hidden: HiddenBotTaskCards, key: string): HiddenBotTaskCards {

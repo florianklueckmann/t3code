@@ -17,6 +17,7 @@ import { useState } from "react";
 import { Platform, TextInput, View } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";
+import { Button } from "../../components/ui/Button";
 import * as Dialog from "../../components/ui/Dialog";
 import { ThemedSwitch } from "../../components/ui/ThemedSwitch";
 import { useEnvironmentQuery } from "../../state/query";
@@ -32,6 +33,7 @@ import {
 } from "./scheduledTaskPresentation";
 
 type Edge = "start" | "end";
+type TimeDraft = { readonly edge: Edge; readonly time: string };
 
 /** A Bot's alert budget and remit; each control saves apart from the Bot form. */
 export function BotAttentionSection(props: {
@@ -53,16 +55,14 @@ export function BotAttentionSection(props: {
     serverEnvironment.configureBotAttention.permissionAtom(environmentId),
   );
   const [busy, setBusy] = useState(false);
-  // The iOS spinner reports every step, so a time saves when the picker closes.
-  const [picking, setPicking] = useState<{ readonly edge: Edge; readonly time: string } | null>(
-    null,
-  );
-  // The remit saves when editing ends, so each keystroke is not a save.
+  const [picking, setPicking] = useState<TimeDraft | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
   const view = query.data;
   if (view === null) return null;
   const disabled = busy || !canConfigure || props.formLocked || !view.writable;
   const quiet = view.quietHours;
+  const remit = editing ?? view.remit;
+  const remitChanged = remit.trim() !== view.remit;
 
   const save = async (
     change: Partial<Pick<BotAttentionView, "dailyLimit" | "quietHours" | "remit">>,
@@ -80,18 +80,26 @@ export function BotAttentionSection(props: {
     });
     setBusy(false);
     query.refresh();
-    if (result._tag === "Failure") reportBotFailure("Could not change the Bot's alerts", result);
-    else if (result.value._tag === "conflict")
+    if (result._tag === "Failure") {
+      reportBotFailure("Could not change the Bot's alerts", result);
+      return false;
+    }
+    if (result.value._tag === "conflict") {
       Dialog.alert(
         "Alerts changed elsewhere",
         "Check the current settings, then change them again if you still want to.",
       );
+      return false;
+    }
+    return true;
   };
-  const pick = (next: { readonly edge: Edge; readonly time: string } | null) => {
+  const timeChanged = (next: TimeDraft | null) =>
+    next !== null && quiet !== null && next.time !== quiet[next.edge];
+  const pick = (next: TimeDraft | null) => {
     setPicking(next);
-    props.onDraftChange(next !== null && quiet !== null && next.time !== quiet[next.edge]);
+    props.onDraftChange(remitChanged || timeChanged(next));
   };
-  const closePicker = (next: { readonly edge: Edge; readonly time: string } | null) => {
+  const closePicker = (next: TimeDraft | null) => {
     pick(null);
     if (next === null || quiet === null || next.time === quiet[next.edge]) return;
     const hours = { ...quiet, [next.edge]: next.time };
@@ -101,24 +109,40 @@ export function BotAttentionSection(props: {
   };
   const edit = (remit: string | null) => {
     setEditing(remit);
-    props.onDraftChange(remit !== null && remit.trim() !== view.remit);
+    props.onDraftChange(timeChanged(picking) || (remit !== null && remit.trim() !== view.remit));
   };
-  const finishEditing = () => {
-    const remit = editing?.trim() ?? view.remit;
-    edit(null);
-    if (remit !== view.remit) void save({ remit });
+  const saveRemit = async () => {
+    if (!disabled && remitChanged && (await save({ remit: remit.trim() }))) edit(null);
   };
   const timeRow = (edge: Edge, label: string) =>
     quiet === null ? null : (
-      <PickerRow
-        label={label}
-        value={formatTimeOfDay(picking?.edge === edge ? picking.time : quiet[edge])}
-        borderTop
-        disabled={disabled}
-        onPress={() =>
-          picking?.edge === edge ? closePicker(picking) : pick({ edge, time: quiet[edge] })
-        }
-      />
+      <>
+        <PickerRow
+          label={label}
+          value={formatTimeOfDay(picking?.edge === edge ? picking.time : quiet[edge])}
+          borderTop
+          disabled={disabled}
+          onPress={() =>
+            picking?.edge === edge ? closePicker(picking) : pick({ edge, time: quiet[edge] })
+          }
+        />
+        {picking?.edge === edge ? (
+          <View className="px-4 pb-3">
+            <DateTimePicker
+              value={timeOfDayPickerValue(picking.time)}
+              mode="time"
+              display={Platform.OS === "ios" ? "compact" : "default"}
+              disabled={disabled}
+              onDismiss={() => pick(null)}
+              onValueChange={(_, selected) => {
+                const next = { edge, time: timeOfDayFromPicker(selected) };
+                if (Platform.OS === "android") closePicker(next);
+                else pick(next);
+              }}
+            />
+          </View>
+        ) : null}
+      </>
     );
 
   return (
@@ -170,10 +194,8 @@ export function BotAttentionSection(props: {
         <TextInput
           accessibilityLabel="Remit"
           placeholder="e.g. Only school deadlines and bills need me."
-          value={editing ?? view.remit}
-          onFocus={() => edit(view.remit)}
+          value={remit}
           onChangeText={edit}
-          onBlur={finishEditing}
           readOnly={disabled}
           maxLength={BOT_REMIT_MAX_LENGTH}
           multiline
@@ -181,20 +203,19 @@ export function BotAttentionSection(props: {
           textAlignVertical="top"
           className="max-h-40 min-h-20 font-sans text-base text-foreground"
         />
+        <View className="flex-row flex-wrap items-center justify-between gap-2">
+          <Text textRole="footnote" className="text-foreground-muted">
+            {`${remit.length} / ${BOT_REMIT_MAX_LENGTH}`}
+          </Text>
+          <Button
+            label="Save changes"
+            accessibilityLabel="Save remit changes"
+            size="compact"
+            disabled={disabled || !remitChanged}
+            onPress={() => void saveRemit()}
+          />
+        </View>
       </View>
-      {picking === null ? null : (
-        <DateTimePicker
-          value={timeOfDayPickerValue(picking.time)}
-          mode="time"
-          display={Platform.OS === "ios" ? "spinner" : "default"}
-          onDismiss={() => pick(null)}
-          onValueChange={(_, selected) => {
-            const next = { edge: picking.edge, time: timeOfDayFromPicker(selected) };
-            if (Platform.OS === "android") closePicker(next);
-            else pick(next);
-          }}
-        />
-      )}
     </SettingsSection>
   );
 }

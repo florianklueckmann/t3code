@@ -7,6 +7,7 @@ import {
   emptyMcpConnectionDraft,
   MAC_CALENDAR_CONNECT_ELSEWHERE_TEXT,
   MAC_CALENDAR_UNSUPPORTED_TEXT,
+  macCalendarAuthorizationText,
   macCalendarStatusText,
   MCP_CONNECTIONS_NOTICE,
   mcpConnectionDraft,
@@ -40,7 +41,7 @@ import {
   type SettingsSecretValue,
 } from "@t3tools/contracts";
 import Constants from "expo-constants";
-import { useEffect, useState } from "react";
+import { useEffect, useEffectEvent, useState } from "react";
 import { Platform, View } from "react-native";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -147,7 +148,11 @@ function EnvironmentMcpConnections({ environment }: { readonly environment: Sett
   return (
     <>
       {statuses.data?.calendar === undefined ? null : (
-        <MacCalendarRow calendar={statuses.data.calendar} usage={usage} />
+        <MacCalendarRow
+          environmentId={environmentId}
+          calendar={statuses.data.calendar}
+          usage={usage}
+        />
       )}
       {entries.length === 0 ? (
         <Text className="p-4 text-base text-foreground-muted">
@@ -252,28 +257,60 @@ function McpConnectionRow({
 
 /** Read-only here: macOS asks for Calendar permission on the host Mac, so setup happens there. */
 function MacCalendarRow({
+  environmentId,
   calendar,
   usage,
 }: {
+  readonly environmentId: EnvironmentId;
   readonly calendar: MacCalendarSummary;
   readonly usage: McpConnectionUsage;
 }) {
-  const parts =
-    calendar.availability === "unsupported"
-      ? [MAC_CALENDAR_UNSUPPORTED_TEXT]
-      : [
-          "Read only",
-          macCalendarStatusText(calendar).text,
-          mcpConnectionUsedByText(usage, calendar.id),
-          MAC_CALENDAR_CONNECT_ELSEWHERE_TEXT,
-        ];
+  const canInspect = useAtomValue(
+    serverEnvironment.inspectMacCalendar.permissionAtom(environmentId),
+  );
+  const inspect = useAtomCommand(serverEnvironment.inspectMacCalendar, { reportFailure: false });
+  const [access, setAccess] = useState<string | null>(null);
+  const checkAccess = useEffectEvent(() => inspect({ environmentId, input: {} }));
+  const available = calendar.availability === "available";
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Read host Calendar permission when its connection is shown.
+  useEffect(() => {
+    if (!available || !canInspect) return;
+    let active = true;
+    void checkAccess().then((result) => {
+      if (!active) return;
+      if (result._tag === "Failure") setAccess("Could not check Calendar access.");
+      else if (result.value.authorization === "fullAccess") setAccess("Connected");
+      else setAccess(macCalendarAuthorizationText(result.value.authorization).text);
+    });
+    return () => {
+      active = false;
+    };
+  }, [available, canInspect]);
+  const status = available
+    ? canInspect
+      ? (access ?? "Checking Calendar access…")
+      : "Calendar access status requires settings permission."
+    : macCalendarStatusText(calendar).text;
+  const count = calendar.calendars.length;
+  const details = [
+    "Read only",
+    calendar.enabled ? null : "Disabled",
+    status,
+    `${count} ${count === 1 ? "calendar" : "calendars"} selected`,
+    mcpConnectionUsedByText(usage, calendar.id),
+  ];
   return (
     <View className="min-h-14 gap-1 border-b border-border-subtle px-4 py-3">
       <Text textRole="body" className="text-foreground">
         {calendar.label}
       </Text>
       <Text textRole="footnote" className="text-foreground-muted">
-        {parts.filter((part) => part !== null).join(" · ")}
+        {details.filter((part) => part !== null).join(" · ")}
+      </Text>
+      <Text textRole="footnote" className="text-foreground-muted">
+        {calendar.availability === "unsupported"
+          ? MAC_CALENDAR_UNSUPPORTED_TEXT
+          : MAC_CALENDAR_CONNECT_ELSEWHERE_TEXT}
       </Text>
     </View>
   );

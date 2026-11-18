@@ -13,6 +13,7 @@ export function ThemedSwitch(props: ThemedSwitchProps) {
   return (
     <Switch
       {...props}
+      accessibilityState={{ checked: Boolean(props.value), disabled: Boolean(props.disabled) }}
       ios_backgroundColorClassName="accent-switch-inactive-track"
       trackColorOffClassName="accent-switch-inactive-track"
       trackColorOnClassName="accent-switch-active-track"

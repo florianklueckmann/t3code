@@ -19,6 +19,7 @@ import { Platform, Pressable, View } from "react-native";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { RelativeTime } from "../../components/RelativeTime";
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
 import * as Dialog from "../../components/ui/Dialog";
@@ -40,7 +41,6 @@ import {
   useSaveBotNotes,
   type BotNoteConflict,
 } from "./botContinuationNotes";
-import { formatBotInstant } from "./botRoutineDraft";
 import { FormField } from "./components/SettingsFormRows";
 import { SettingsScreen } from "./components/SettingsScreen";
 import { SettingsSection } from "./components/SettingsSection";
@@ -405,7 +405,7 @@ function RevisionRow(props: {
         >
           <Text textRole="footnote" className="text-foreground-muted">
             r{revision.revision} · {botContinuationWriterLabel(revision.updatedBy)} ·{" "}
-            {formatBotInstant(revision.updatedAt)}
+            <RelativeTime timestamp={revision.updatedAt} withAgo />
             {revision.restoredFrom === null ? "" : ` · restored from r${revision.restoredFrom}`}
             {empty ? " · Empty" : ""}
           </Text>
