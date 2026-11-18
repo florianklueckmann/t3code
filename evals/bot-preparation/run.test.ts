@@ -79,13 +79,13 @@ it("checks the routine a home turn sets up against the session and lead time", (
   const testCase = byId("schedules-session-preparation");
   const routine = {
     botId: "bp-1",
-    sessionAt: "2026-11-13T19:00:00+01:00",
-    runAt: "2026-11-12T18:00:00.000Z",
+    sessionAt: "2027-11-12T19:00:00+01:00",
+    runAt: "2027-11-11T18:00:00.000Z",
   };
   expect(failed(gradeSample(testCase, { ...base, routines: [routine] }))).toEqual([]);
   expect(
     failed(
-      gradeSample(testCase, { ...base, routines: [{ ...routine, runAt: "2026-11-13T18:00:00Z" }] }),
+      gradeSample(testCase, { ...base, routines: [{ ...routine, runAt: "2027-11-12T18:00:00Z" }] }),
     ),
   ).toEqual(["runs the lead time before the session"]);
   expect(failed(gradeSample(testCase, { ...base, routines: [] }))).toContain(
@@ -152,6 +152,33 @@ it("checks the routine a home turn sets up against the session and lead time", (
       gradeSample(once, { ...base, routinesBeforeLastTurn: [midnight], routines: [midnight] }),
     ),
   ).toEqual([]);
+  const agreed = byId("reminder-after-agreement");
+  const decide = {
+    ...reminder,
+    runAt: "2027-11-16T15:00:00.000Z",
+    title: "Decide dinner",
+    prompt: "Remind the user to decide between pancakes and lentil soup.",
+  };
+  expect(failed(gradeSample(agreed, { ...base, routines: [decide] }))).toEqual([]);
+  expect(
+    failed(gradeSample(agreed, { ...base, routinesBeforeLastTurn: [decide], routines: [decide] })),
+  ).toEqual(["no routine before the user agreed"]);
+  expect(
+    failed(
+      gradeSample(agreed, {
+        ...base,
+        routines: [{ ...decide, runAt: "2027-11-17T08:00:00.000Z" }],
+      }),
+    ),
+  ).toEqual(["exactly one routine for the reminder"]);
+  const errand = {
+    ...decide,
+    title: "Buy red lentils if you choose soup",
+    prompt: "Remind me to buy red lentils if I decide on lentil soup.",
+  };
+  expect(failed(gradeSample(agreed, { ...base, routines: [errand] }))).toEqual([
+    "exactly one routine for the reminder",
+  ]);
 });
 
 it("keeps missing Home returns as failed checks with task and file evidence", () => {

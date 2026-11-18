@@ -200,15 +200,23 @@ export const gradeSample = (testCase: PreparationCase, run: SampleRun) => {
   const [routine, ...others] = run.routines;
   add("one routine for this Bot", routine?.botId === run.botId && others.length === 0);
   if ("runOn" in testCase.routine) {
-    const { runOn, about } = testCase.routine;
+    const { runOn, about, askedInLastTurn } = testCase.routine;
+    const [from, to] = typeof runOn === "string" ? [runOn, runOn] : runOn;
     const reminders = (routines: ReadonlyArray<Routine>) =>
-      routines.filter(
-        (r) =>
-          r.runAt != null &&
-          berlinDate.format(Date.parse(r.runAt)) === runOn &&
-          new RegExp(about, "i").test(`${r.title ?? ""}\n${r.prompt ?? ""}`),
-      ).length;
-    add("reminder set before the last turn", reminders(run.routinesBeforeLastTurn ?? []) === 1);
+      routines.filter((r) => {
+        const day = r.runAt == null ? null : berlinDate.format(Date.parse(r.runAt));
+        return (
+          day !== null &&
+          day >= from &&
+          day <= to &&
+          new RegExp(about, "i").test(`${r.title ?? ""}\n${r.prompt ?? ""}`)
+        );
+      }).length;
+    if (askedInLastTurn === true) {
+      add("no routine before the user agreed", (run.routinesBeforeLastTurn ?? []).length === 0);
+    } else {
+      add("reminder set before the last turn", reminders(run.routinesBeforeLastTurn ?? []) === 1);
+    }
     add("exactly one routine for the reminder", reminders(run.routines) === 1);
     return checks;
   }

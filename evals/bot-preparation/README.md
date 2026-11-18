@@ -55,4 +55,9 @@ next, unrelated message. It sends three turns: a dated matter with no request, a
 large reference paste carrying one reminder request, and another paste with a
 standing instruction. It grades that the reminder exists before the last turn,
 that exactly one routine is about it afterwards, and that there is no other routine. The duplicate has not reproduced in the eval yet; the "no other
-routine" check catches gpt-6-luna scheduling the dated matter unasked.
+routine" check covers T3B-71: a deadline the user only mentions goes into the working
+notes with an offered reminder, not into a routine.
+
+`reminder-after-agreement` is its control: the same first turn, then "Yes, please remind me."
+It grades that no routine exists before the agreement and that one reminder about the decision
+runs in the week before the Tuesday deadline.
