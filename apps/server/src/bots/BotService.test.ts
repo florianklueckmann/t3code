@@ -1616,10 +1616,12 @@ it.effect("shows a shared change from a detached Home once, in the Home most act
         );
         assert.deepEqual(yield* shownIn, [0, 1, 0]);
 
+        // Chatting in A after the change, before or after the detach, leaves it where it landed.
+        yield* messageAt(homeA, "1970-01-01T00:01:30.000Z");
+        yield* TestClock.adjust("1 minute");
         yield* bots.detachProject({ botId, projectId: campaignB });
         assert.deepEqual(yield* shownIn, [0, 0, 1]);
-        // Chatting in A afterwards leaves the change where it landed.
-        yield* messageAt(homeA, "1970-01-01T00:02:00.000Z");
+        yield* messageAt(homeA, "1970-01-01T00:03:00.000Z");
         assert.deepEqual(yield* shownIn, [0, 0, 1]);
       }),
     );

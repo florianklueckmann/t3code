@@ -324,38 +324,50 @@ const make = Effect.gen(function* () {
     );
     const attached = new Set(attachedContexts.map((context) => context.project_id));
     // Read as of the change itself, so later chatting, detaching or deleting never moves it.
-    const fallback = new Map<string, string | null>();
-    for (const row of rows) {
-      if (row.project_id !== null || attached.has(row.learned_in_project_id)) continue;
-      if (!fallback.has(row.created_at))
-        fallback.set(row.created_at, yield* mostActiveHomeAt(attachedContexts, row.created_at));
-    }
+    const cutoffs = [
+      ...new Set(
+        rows
+          .filter((row) => row.project_id === null && !attached.has(row.learned_in_project_id))
+          .map((row) => row.created_at),
+      ),
+    ].sort();
+    const fallback = yield* mostActiveHomesAt(attachedContexts, cutoffs);
     return yield* BotLearningNotices.forHome(rows, input.projectId, { attached, fallback });
   }, Effect.mapError(storeError()));
 
   /**
-   * The Home where the user wrote last, up to `at`; a tie goes to the Home attached last. Agent
-   * and maintenance prompts do not count.
+   * For each cutoff, the Home where the user wrote last up to then; a tie goes to the Home
+   * attached last. Agent and maintenance prompts do not count. One read, swept in time order.
    */
-  const mostActiveHomeAt = Effect.fn("BotService.mostActiveHomeAt")(function* (
+  const mostActiveHomesAt = Effect.fn("BotService.mostActiveHomesAt")(function* (
     contexts: ReadonlyArray<BotStore.BotContextRow>,
-    at: string,
+    cutoffs: ReadonlyArray<string>,
   ) {
-    if (contexts.length === 0) return null;
-    const activity = yield* main<{ readonly thread_id: string; readonly at: string }>`
-      SELECT thread_id, MAX(created_at) AS at FROM orchestration_v2_projection_messages
-      WHERE role = 'user' AND json_extract(payload_json, '$.createdBy') = 'user'
-        AND created_at <= ${at}
-        AND thread_id IN ${main.in(contexts.map((context) => context.home_thread_id))}
-      GROUP BY thread_id`;
-    const lastAt = new Map(activity.map((row) => [row.thread_id, row.at]));
-    let latest: { readonly projectId: string; readonly at: string } | null = null;
-    for (const context of contexts) {
-      const contextAt = lastAt.get(context.home_thread_id) ?? "";
-      if (latest === null || contextAt >= latest.at)
-        latest = { projectId: context.project_id, at: contextAt };
+    const fallback = new Map<string, string | null>();
+    const last = cutoffs.at(-1);
+    if (last === undefined) return fallback;
+    const messages =
+      contexts.length === 0
+        ? []
+        : yield* main<{ readonly thread_id: string; readonly created_at: string }>`
+            SELECT thread_id, created_at FROM orchestration_v2_projection_messages
+            WHERE thread_id IN ${main.in(contexts.map((context) => context.home_thread_id))}
+              AND role = 'user' AND json_extract(payload_json, '$.createdBy') = 'user'
+              AND created_at <= ${last}
+            ORDER BY created_at`;
+    const lastAt = new Map<string, string>();
+    let next = 0;
+    for (const cutoff of cutoffs) {
+      for (; next < messages.length && messages[next]!.created_at <= cutoff; next++)
+        lastAt.set(messages[next]!.thread_id, messages[next]!.created_at);
+      let latest: { readonly projectId: string; readonly at: string } | null = null;
+      for (const context of contexts) {
+        const at = lastAt.get(context.home_thread_id) ?? "";
+        if (latest === null || at >= latest.at) latest = { projectId: context.project_id, at };
+      }
+      fallback.set(cutoff, latest?.projectId ?? null);
     }
-    return latest?.projectId ?? null;
+    return fallback;
   });
 
   // A change to another project's entries leaves this Home's notices as they were; skip resending.
