@@ -279,6 +279,13 @@ it.effect(
           const home = yield* turnContext.forThread(homes.a);
           if (home._tag !== "active") return assert.fail(home._tag);
           assert.include(home.instructionParts.turn, "Prepare the Amber Temple encounter");
+          // Claude gets the turn part alone on later turns, so it names the ids its saves need.
+          assert.include(
+            home.instructionParts.turn,
+            `botId "${botId}" and projectId "${campaignA}": pass both ids`,
+          );
+          assert.include(home.instructionParts.turn, "do not record that it was resolved");
+          assert.notInclude(home.instructions, "do not record that it was resolved");
           assert.notInclude(home.instructionParts.lasting, "Working notes");
           assert.include(home.instructionParts.lasting, "Strahd is alive");
           const b = yield* instructionsFor(turnContext, homes.b);

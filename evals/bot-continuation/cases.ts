@@ -35,7 +35,11 @@ export const CASES: readonly ContinuationCase[] = [
     request: "Harbor",
     waiting: [],
     absent: "(Lantern|blue packaging)",
-    answer: ["Harbor", "(resolved|discarded|no longer|removed|closed)"],
+    // T3B-75: Claude answers the question as asked ("neither has returned", "both are gone").
+    answer: [
+      "Harbor",
+      "(resolved|discarded|no longer|removed|closed|gone|(not|n't|neither).*(returned|come back))",
+    ],
   },
   {
     id: "ordinary-answer-control",

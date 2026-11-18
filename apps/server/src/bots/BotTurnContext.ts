@@ -162,10 +162,17 @@ function buildBotInstructions(input: {
     `<t3_bot>\n${sections.filter((section) => section !== null && section !== "").join("\n\n")}\n</t3_bot>`;
   return {
     instructions: block([input.continuation, ...lasting]),
-    // The working notes carry this turn's save basis, so they change every Home turn.
+    // The working notes carry this turn's save basis, so they change every Home turn. Claude gets
+    // them resent alone, far from the identity line, so they name the ids their saves need.
     parts: {
       lasting: block(lasting),
-      turn: input.continuation === "" ? "" : block([input.continuation]),
+      turn:
+        input.continuation === ""
+          ? ""
+          : block([
+              `Working notes of botId "${input.botId}" and projectId "${input.projectId}": pass both ids to every t3_bot read_continuation and save_continuation call. When a request, question or proposal is resolved or dropped, remove it from the note entirely; do not record that it was resolved.`,
+              input.continuation,
+            ]),
     },
   };
 }
