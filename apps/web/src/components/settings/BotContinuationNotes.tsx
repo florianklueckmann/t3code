@@ -44,7 +44,7 @@ import { Button } from "../ui/button";
 import { Label } from "../ui/label";
 import { Textarea } from "../ui/textarea";
 import { stackedThreadToast, toastManager } from "../ui/toast";
-import { ScheduledRelativeLabel } from "./ScheduledTasksSettings";
+import { RelativeTime } from "../RelativeTime";
 
 type Section = (typeof BOT_CONTINUATION_SECTIONS)[number];
 
@@ -176,7 +176,8 @@ function RevisionMeta({
 }: Pick<BotContinuationRevision, "updatedBy" | "updatedAt" | "restoredFrom">) {
   return (
     <>
-      {botContinuationWriterLabel(updatedBy)} · <ScheduledRelativeLabel value={updatedAt} />
+      {/* A save is always past, even when the server's clock runs ahead of this one. */}
+      {botContinuationWriterLabel(updatedBy)} · <RelativeTime timestamp={updatedAt} />
       {restoredFrom === null ? null : ` · restored from r${restoredFrom}`}
     </>
   );

@@ -1579,10 +1579,15 @@ it.effect("shows a shared change from a detached Home once, in the Home most act
     yield* seedProjects;
     const world = yield* makeThreadWorld;
     const sql = yield* SqlClient.SqlClient;
-    const userMessageAt = (threadId: ThreadId | undefined, at: string) => sql`
+    const messageAt = (
+      threadId: ThreadId | undefined,
+      at: string,
+      createdBy: "user" | "agent" = "user",
+    ) => sql`
       INSERT INTO orchestration_v2_projection_messages (
         message_id, thread_id, run_id, node_id, role, streaming, created_at, updated_at, payload_json
-      ) VALUES (${`${threadId}:${at}`}, ${threadId ?? assert.fail()}, NULL, NULL, 'user', 0, ${at}, ${at}, '{}')
+      ) VALUES (${`${threadId}:${at}`}, ${threadId ?? assert.fail()}, NULL, NULL, 'user', 0, ${at}, ${at},
+        ${`{"createdBy":"${createdBy}"}`})
     `;
     yield* withServices(world.threadLayer, ({ bots }) =>
       Effect.gen(function* () {
@@ -1591,6 +1596,12 @@ it.effect("shows a shared change from a detached Home once, in the Home most act
         yield* bots.attachProject({ botId, projectId: campaignB });
         const detail = yield* bots.attachProject({ botId, projectId: campaignC });
         const [homeA, , homeC] = detail.projects.map((project) => project.homeThreadId);
+        // TestClock starts at the epoch; the change below is recorded a minute later.
+        yield* messageAt(homeA, "1970-01-01T00:00:01.000Z");
+        yield* messageAt(homeC, "1970-01-01T00:00:02.000Z");
+        // A maintenance prompt is not the user being active there.
+        yield* messageAt(homeA, "1970-01-01T00:00:03.000Z", "agent");
+        yield* TestClock.adjust("1 minute");
         yield* bots.recordLearning({
           ...correction,
           origin: "instruction",
@@ -1605,14 +1616,10 @@ it.effect("shows a shared change from a detached Home once, in the Home most act
         );
         assert.deepEqual(yield* shownIn, [0, 1, 0]);
 
-        // TestClock starts at the epoch, so these all precede the detach a minute later.
-        yield* userMessageAt(homeA, "1970-01-01T00:00:01.000Z");
-        yield* userMessageAt(homeC, "1970-01-01T00:00:02.000Z");
-        yield* TestClock.adjust("1 minute");
         yield* bots.detachProject({ botId, projectId: campaignB });
         assert.deepEqual(yield* shownIn, [0, 0, 1]);
         // Chatting in A afterwards leaves the change where it landed.
-        yield* userMessageAt(homeA, "1970-01-01T00:02:00.000Z");
+        yield* messageAt(homeA, "1970-01-01T00:02:00.000Z");
         assert.deepEqual(yield* shownIn, [0, 0, 1]);
       }),
     );

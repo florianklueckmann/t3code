@@ -10,8 +10,8 @@ const HOME_LEARNING_NOTICE_LIMIT = 30;
 const decodeResult = Schema.decodeUnknownEffect(BotLearningNoticesResult);
 
 /**
- * The Bot's attached Homes, and for each project whose Home is gone, the Home that was most
- * recently active when it went.
+ * The Bot's attached Homes, and by revision time, the Home most recently active then: where a
+ * shared revision shows when the Home it was made in is not attached.
  */
 export interface NoticeHomes {
   readonly attached: ReadonlySet<string>;
@@ -24,7 +24,7 @@ const showsIn = (row: BotStore.BotLearningRow, projectId: string, homes: NoticeH
     ? row.project_id === projectId
     : (homes.attached.has(row.learned_in_project_id)
         ? row.learned_in_project_id
-        : homes.fallback.get(row.learned_in_project_id)) === projectId;
+        : homes.fallback.get(row.created_at)) === projectId;
 
 /**
  * A Home's learning notices, newest first, read from the committed revisions: when each was

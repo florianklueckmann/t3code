@@ -319,24 +319,24 @@ const make = Effect.gen(function* () {
     input: BotLearningNoticesInput,
   ) {
     const rows = yield* store.listLearning(input.botId);
-    const contexts = yield* store.listContexts(input.botId);
-    const attachedContexts = contexts.filter((context) => context.detached_at === null);
+    const attachedContexts = (yield* store.listContexts(input.botId)).filter(
+      (context) => context.detached_at === null,
+    );
     const attached = new Set(attachedContexts.map((context) => context.project_id));
-    // Fixed at the moment the change lost its Home, so later chatting never moves it.
+    // Read as of the change itself, so later chatting, detaching or deleting never moves it.
     const fallback = new Map<string, string | null>();
     for (const row of rows) {
-      const home = row.learned_in_project_id;
-      if (row.project_id !== null || attached.has(home) || fallback.has(home)) continue;
-      const left = contexts.find((context) => context.project_id === home);
-      fallback.set(
-        home,
-        yield* mostActiveHomeAt(attachedContexts, left?.detached_at ?? row.created_at),
-      );
+      if (row.project_id !== null || attached.has(row.learned_in_project_id)) continue;
+      if (!fallback.has(row.created_at))
+        fallback.set(row.created_at, yield* mostActiveHomeAt(attachedContexts, row.created_at));
     }
     return yield* BotLearningNotices.forHome(rows, input.projectId, { attached, fallback });
   }, Effect.mapError(storeError()));
 
-  /** The Home with the newest user message up to `at`; a tie goes to the Home attached last. */
+  /**
+   * The Home where the user wrote last, up to `at`; a tie goes to the Home attached last. Agent
+   * and maintenance prompts do not count.
+   */
   const mostActiveHomeAt = Effect.fn("BotService.mostActiveHomeAt")(function* (
     contexts: ReadonlyArray<BotStore.BotContextRow>,
     at: string,
@@ -344,7 +344,8 @@ const make = Effect.gen(function* () {
     if (contexts.length === 0) return null;
     const activity = yield* main<{ readonly thread_id: string; readonly at: string }>`
       SELECT thread_id, MAX(created_at) AS at FROM orchestration_v2_projection_messages
-      WHERE role = 'user' AND created_at <= ${at}
+      WHERE role = 'user' AND json_extract(payload_json, '$.createdBy') = 'user'
+        AND created_at <= ${at}
         AND thread_id IN ${main.in(contexts.map((context) => context.home_thread_id))}
       GROUP BY thread_id`;
     const lastAt = new Map(activity.map((row) => [row.thread_id, row.at]));

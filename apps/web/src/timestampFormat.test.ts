@@ -2,24 +2,14 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   formatDayAwareTimestamp,
-  formatScheduleRelativeLabel,
+  formatRelativeTimeLabel,
   formatUpcomingTimestamp,
 } from "./timestampFormat";
 
-describe("formatScheduleRelativeLabel", () => {
-  const clock = Date.parse("2026-11-18T07:41:30.000Z");
-
-  it("reads a save earlier in the current minute as past, and a run later in it as upcoming", () => {
-    expect(formatScheduleRelativeLabel("2026-11-18T07:41:20.000Z", "2026-11-18T07:41", clock)).toBe(
-      "just now",
-    );
-    expect(formatScheduleRelativeLabel("2026-11-18T07:41:50.000Z", "2026-11-18T07:41", clock)).toBe(
-      "in under a minute",
-    );
-    expect(formatScheduleRelativeLabel("2026-11-18T07:38:00.000Z", "2026-11-18T07:41", clock)).toBe(
-      "3m ago",
-    );
-  });
+it("reads a save stamped ahead of this clock as just now, never as upcoming", () => {
+  const now = Date.parse("2026-11-18T07:41:30.000Z");
+  expect(formatRelativeTimeLabel("2026-11-18T07:41:50.000Z", now)).toBe("just now");
+  expect(formatRelativeTimeLabel("2026-11-18T07:38:00.000Z", now)).toBe("3m ago");
 });
 
 describe("timestamps in an explicit time zone", () => {
