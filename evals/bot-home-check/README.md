@@ -18,6 +18,8 @@ pnpm bot-home-check --base-dir /synthetic/home --out runs/check --case nothing-u
 
 Then the full set: `pnpm bot-home-check --base-dir /synthetic/home --out runs/<name>`. A full run waits about 25 minutes of wall time for quiet periods, plus the turns. It costs about 48 Codex turns on the chosen model: per sample one seed turn and one check, with a separate task for the decision case, and for the removal control a second check and turn.
 
+A case with a `remit` writes it into the Bot's `bot_attention` row as Bot settings would. `--omit-remit` leaves it out, which shows what the remit decides: `remit-rules-out-event` must fail that way, as the same appointment goes to Waiting.
+
 Flags: `--model` (default `gpt-6.1-terra`), `--effort` (default `high`), `--samples` (default 3), `--case <id>` (repeatable), `--work <dir>` for the synthetic project folders, `--baseline <results.jsonl>` to keep an earlier run beside this one. It never falls back to another model. `--instance` (default `codex`) must name a Codex instance: the check is a sealed run only Codex enforces, and the run refuses other providers.
 
 ## Baseline
@@ -26,7 +28,7 @@ The baseline is the same restricted run with a plain prompt. Start a second synt
 
 ## Cases
 
-`cases.ts` holds seven cases: the ticket's three scenarios (a task waiting on the user's choice, an upcoming event that needs preparation, nothing worth saying), the same decision reached through an early check, and three controls that catch a prompt which overcorrects into spam (the event is after the next check, Waiting already holds it, the user removed what an earlier check proposed). A case fails when half or more of its samples fail. A sample whose precondition did not hold, such as a first check that proposed nothing for the removal control, fails with `setup held`.
+`cases.ts` holds eight cases: the ticket's three scenarios (a task waiting on the user's choice, an upcoming event that needs preparation, nothing worth saying), the same decision reached through an early check, the same upcoming event under a remit (T3B-81) that says appointments never need the user, and three controls that catch a prompt which overcorrects into spam (the event is after the next check, Waiting already holds it, the user removed what an earlier check proposed). A case fails when half or more of its samples fail. A sample whose precondition did not hold, such as a first check that proposed nothing for the removal control, fails with `setup held`.
 
 The decision case seeds a neutral ordinary Home turn and starts a task with a generic title. The choice appears only in the task result. The server supplies excerpts from up to ten recent completed tasks of that Home, capped at 2000 characters each, through `BotTaskService.getResult`. The grader requires both options from the result in the new Waiting item, along with its task reference.
 

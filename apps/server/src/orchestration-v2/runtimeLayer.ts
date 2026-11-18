@@ -4,6 +4,7 @@ import * as UsageLimitRecoveryWorker from "./UsageLimitRecoveryWorker.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as BotProjectGuard from "../bots/BotProjectGuard.ts";
 import * as BotContinuation from "../bots/BotContinuation.ts";
+import * as BotAttention from "../bots/BotAttention.ts";
 import * as BotHomeCheck from "../bots/BotHomeCheck.ts";
 import * as BotFailureDiagnosis from "../bots/BotFailureDiagnosis.ts";
 import * as BotMaintenance from "../bots/BotMaintenance.ts";
@@ -452,6 +453,7 @@ export const layerProduction = Layer.mergeAll(
     Layer.provide(Layer.merge(layerThreadManagementProvided, layerBotTaskProvided)),
   ),
   BotFailureDiagnosis.layer,
+  BotAttention.layer,
   layerBotTaskProvided,
   // The MCP schedule tool reads it to set up routines on a Bot's model.
   BotTaskService.layerRoutineTarget.pipe(Layer.provide(layerBotTaskProvided)),
@@ -476,6 +478,7 @@ export const layerProduction = Layer.mergeAll(
 ).pipe(
   Layer.provide(ResourceCleanupService.layer.pipe(Layer.provide(layerScheduledTaskProvided))),
   Layer.provideMerge(layerProjectService),
-  Layer.provide(Scheduler.layer),
+  // Merged so the relay's digest registers with the same scheduler as the Bot sources.
+  Layer.provideMerge(Scheduler.layer),
   Layer.provideMerge(layerEventInfrastructure),
 );

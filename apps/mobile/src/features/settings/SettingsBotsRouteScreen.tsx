@@ -29,6 +29,7 @@ import { useSelectWorkspaceDetail } from "../layout/workspace/useSelectWorkspace
 import { useBotEditor, startBotEditor, startNewBotEditor } from "./bot-editor";
 import { BotContinuationSection } from "./BotContinuationSection";
 import { BotFailureDiagnosisSection } from "./BotFailureDiagnosisSection";
+import { BotAttentionSection } from "./BotAttentionSection";
 import { BotHomeCheckSection } from "./BotHomeCheckSection";
 import { BotMaintenanceSection } from "./BotMaintenanceSection";
 import { BotMcpGrantsSection } from "./BotMcpGrantsSection";
@@ -628,6 +629,14 @@ function BotForm({
             environmentLabel={environmentLabel ?? "this environment"}
             botId={draft.botId}
             formLocked={saving || archiving || environmentUnavailable}
+          />
+        ) : null}
+        {baseline.created ? (
+          <BotAttentionSection
+            environmentId={environmentId}
+            botId={draft.botId}
+            formLocked={readOnly}
+            onDraftChange={(unsaved) => onSettingDraftChange("attention", unsaved)}
           />
         ) : null}
         {draft.projects.map((project) => (

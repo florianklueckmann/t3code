@@ -100,6 +100,7 @@ import { stackedThreadToast, toastManager } from "../ui/toast";
 import { BotAppearancePicker } from "./BotAppearancePicker";
 import { BotContinuationNotes } from "./BotContinuationNotes";
 import { BotFailureDiagnosisSetting } from "./BotFailureDiagnosisSetting";
+import { BotAttentionSetting } from "./BotAttentionSetting";
 import { BotHomeCheckSetting } from "./BotHomeCheckSetting";
 import { BotMcpGrantsSetting } from "./BotMcpGrantsSetting";
 import { BotMaintenanceSetting } from "./BotMaintenanceSetting";
@@ -771,6 +772,15 @@ function BotEditorForm({
             />
           ) : null}
         </fieldset>
+        {current !== null ? (
+          <div className="mt-5">
+            <BotAttentionSetting
+              environmentId={environmentId}
+              botId={current.id}
+              formLocked={saving || archived}
+            />
+          </div>
+        ) : null}
         {/* Outside the fieldset so pausing stays reachable for an archived Bot or a detached project. */}
         {current !== null && maintenanceSupported ? (
           <div className="mt-5 space-y-3">

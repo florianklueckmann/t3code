@@ -229,6 +229,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   botMaintenanceRun: Schema.optionalKey(Schema.Boolean),
   /** Server answers bots.getHomeCheck and bots.configureHomeCheck. */
   botHomeCheck: Schema.optionalKey(Schema.Boolean),
+  /** Server answers bots.getAttention and bots.configureAttention. */
+  botAttention: Schema.optionalKey(Schema.Boolean),
   /** Server answers bots.getFailureDiagnosis and bots.configureFailureDiagnosis. */
   botFailureDiagnosis: Schema.optionalKey(Schema.Boolean),
   /** Server answers bots.subscribeLearningNotices. */

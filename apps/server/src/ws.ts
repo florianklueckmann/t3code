@@ -126,6 +126,7 @@ import * as ThreadLaunchService from "./orchestration-v2/ThreadLaunchService.ts"
 import * as ThreadMessageIntake from "./orchestration-v2/ThreadMessageIntake.ts";
 import * as DocumentText from "./provider/DocumentText.ts";
 import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
+import * as BotAttention from "./bots/BotAttention.ts";
 import * as BotHomeCheck from "./bots/BotHomeCheck.ts";
 import * as BotFailureDiagnosis from "./bots/BotFailureDiagnosis.ts";
 import * as BotMaintenance from "./bots/BotMaintenance.ts";
@@ -1486,6 +1487,7 @@ export const layerWsRpc = (
       const mcpConnectionOAuth = yield* McpConnectionOAuth.McpConnectionOAuth;
       const botMaintenance = yield* BotMaintenance.BotMaintenance;
       const botHomeCheck = yield* BotHomeCheck.BotHomeCheck;
+      const botAttention = yield* BotAttention.BotAttention;
       const botFailureDiagnosis = yield* BotFailureDiagnosis.BotFailureDiagnosis;
       const secretRequests = yield* SecretRequests.SecretRequests;
       const guestShares = yield* GuestShareService.GuestShareService;
@@ -2338,6 +2340,8 @@ export const layerWsRpc = (
         [WS_METHODS.botsRunMaintenance]: (input) => botMaintenance.run(input),
         [WS_METHODS.botsGetHomeCheck]: (input) => botHomeCheck.get(input),
         [WS_METHODS.botsConfigureHomeCheck]: (input) => botHomeCheck.configure(input),
+        [WS_METHODS.botsGetAttention]: (input) => botAttention.get(input.botId),
+        [WS_METHODS.botsConfigureAttention]: (input) => botAttention.configure(input),
         [WS_METHODS.botsGetFailureDiagnosis]: (input) => botFailureDiagnosis.get(input),
         [WS_METHODS.botsConfigureFailureDiagnosis]: (input) => botFailureDiagnosis.configure(input),
         [WS_METHODS.botsCreate]: (input) => bots.create(input),

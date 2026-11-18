@@ -68,6 +68,7 @@ it.effect.each([78, 79, 80, 81, 82, 83])(
                     model_selection_json: null,
                     diagnoses_task_id: null,
                     diagnoses_run_id: null,
+                    by_hand: 0,
                   }
                 : {}),
               ...(table === "bot_learning_revisions"

@@ -105,7 +105,9 @@ settings. Tapping a result notification opens its saved result in the task's wor
 thread. Result alerts use a generic title and do not include the prompt or answer text.
 If the Bot continues in its conversation after a result, that follow-up may notify separately.
 
-Cancelled and skipped tasks do not alert. Work-thread failures follow the existing failure
+Results of work you didn't start yourself, such as routines and diagnoses, count against the
+Bot's alert budget (see [Alerts and remit](#alerts-and-remit)); results of tasks you asked for
+always alert at once. Cancelled and skipped tasks do not alert. Work-thread failures follow the existing failure
 notification preference. If delivery is unavailable, the result card and unread
 conversation remain; reconnecting can deliver a recent result, but results older
 than two minutes do not trigger a delayed alert. Each registered device follows
@@ -185,6 +187,29 @@ rolled-back runs, routines that could not start, and tasks you asked for
 directly are not diagnosed, and neither are runs that failed before you turned
 the setting on. Turning it off, detaching or archiving starts no new diagnoses;
 cancel a running one from its card.
+
+### Alerts and remit
+
+**Alerts**, in a Bot's settings, limits how often its own work may notify your
+phone. It counts results of work you didn't start yourself: routines, diagnoses,
+and tasks the Bot started without a message from you. A task you asked for in
+the conversation always alerts at once and never counts.
+
+- **Alerts per day** (3 by default, 0 to 10) counts per day in the server's
+  time zone.
+- **Quiet hours** (22:00 to 07:00 server time by default) hold every counted
+  alert. You can change the times or turn them off.
+
+Held alerts are not dropped. They arrive as one alert for the Bot when quiet
+hours end, or at the start of the next day when quiet hours are off. That alert
+does not count against the next day's limit, and tapping it opens the Bot's
+conversation. The settings show how many alerts went out today and how many
+are held.
+
+**Remit** is up to 500 characters, in your words, on what deserves a Waiting
+item and what doesn't, for example "Only school deadlines and bills need me".
+The Daily Home check and early checks follow it when they choose what to add
+to Waiting. It gives the Bot no other permissions.
 
 ## Working notes
 

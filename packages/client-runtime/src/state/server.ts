@@ -5,6 +5,8 @@ import {
   type BotContinuationHistory,
   type BotMaintenanceView,
   type BotHomeCheckView,
+  type BotAttentionInput,
+  type BotAttentionView,
   type BotFailureDiagnosisView,
   type EnvironmentId,
   type BotSummary,
@@ -1567,6 +1569,25 @@ export function createServerEnvironmentAtoms<R, E>(
       (refresh) => refresh(query),
     );
   });
+  const botAttentionQuery = createEnvironmentRpcQueryAtomFamily(runtime, {
+    label: "environment-data:server:bots:botAttention",
+    tag: WS_METHODS.botsGetAttention,
+    staleTimeMs: 0,
+    idleTtlMs: 0,
+  });
+  const botAttentionFamily = Atom.family((key: string) => {
+    const [environmentId, input] = JSON.parse(key) as [EnvironmentId, BotAttentionInput];
+    const query = botAttentionQuery({ environmentId, input });
+    return Atom.readable(
+      (get): AsyncResult.AsyncResult<BotAttentionView | null, unknown> => {
+        const config = get(configValueAtom(environmentId));
+        if (config === null) return AsyncResult.initial(true);
+        if (config.environment.capabilities.botAttention !== true) return AsyncResult.success(null);
+        return get(query);
+      },
+      (refresh) => refresh(query),
+    );
+  });
   const botFailureDiagnosisQuery = createEnvironmentRpcQueryAtomFamily(runtime, {
     label: "environment-data:server:bots:botFailureDiagnosis",
     tag: WS_METHODS.botsGetFailureDiagnosis,
@@ -1843,6 +1864,10 @@ export function createServerEnvironmentAtoms<R, E>(
       readonly environmentId: EnvironmentId;
       readonly input: BotContinuationScope;
     }) => botHomeCheckFamily(JSON.stringify([target.environmentId, target.input])),
+    botAttention: (target: {
+      readonly environmentId: EnvironmentId;
+      readonly input: BotAttentionInput;
+    }) => botAttentionFamily(JSON.stringify([target.environmentId, target.input])),
     botFailureDiagnosis: (target: {
       readonly environmentId: EnvironmentId;
       readonly input: BotContinuationScope;
@@ -2218,6 +2243,12 @@ export function createServerEnvironmentAtoms<R, E>(
     configureBotHomeCheck: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:bots:configure-home-check",
       tag: WS_METHODS.botsConfigureHomeCheck,
+      scheduler: configScheduler,
+      concurrency: configConcurrency,
+    }),
+    configureBotAttention: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bots:configure-attention",
+      tag: WS_METHODS.botsConfigureAttention,
       scheduler: configScheduler,
       concurrency: configConcurrency,
     }),

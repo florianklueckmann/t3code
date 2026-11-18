@@ -56,7 +56,7 @@ import { isNoChangesTask } from "./BotExecutionConstraint.ts";
 import * as FailureDiagnosis from "./BotFailureDiagnosis.ts";
 import * as BotProviderSupport from "./BotProviderSupport.ts";
 import * as BotStore from "./BotStore.ts";
-import { isDirectHomeInput, latestDirectHomeInput } from "./homeReturn.ts";
+import { isDirectHomeInput, isUserHomeInput, latestDirectHomeInput } from "./homeReturn.ts";
 
 const LIST_LIMIT = 50;
 
@@ -90,6 +90,8 @@ interface BotTaskRow {
   /** A diagnosis: the failed routine task and run it was admitted for. */
   readonly diagnoses_task_id: string | null;
   readonly diagnoses_run_id: string | null;
+  /** 1 when the user started it: from their client, or a Home turn their own message began. */
+  readonly by_hand: number;
   readonly created_at: string;
   readonly updated_at: string;
 }
@@ -154,7 +156,11 @@ export function deriveTaskStatus(input: {
 
 export interface BotTaskAwareness {
   readonly taskId: BotTaskId;
+  readonly botId: BotId;
   readonly projectId: ProjectId;
+  readonly homeThreadId: ThreadId;
+  /** Results of work the user started push at once; the rest go through the alert budget. */
+  readonly byHand: boolean;
   readonly workThreadId: ThreadId;
   readonly status: BotTaskStatus;
   readonly resultRunId: RunId | null;
@@ -164,10 +170,17 @@ export interface BotTaskAwareness {
 export class BotTaskService extends Context.Service<
   BotTaskService,
   {
-    /** Admits a direct request as a task in a new work thread of the Bot's project. */
+    /**
+     * Admits a direct request as a task in a new work thread of the Bot's project. Without
+     * options the user's own client asked; `requestedIn` is the thread whose turn asked, null
+     * for an agent outside T3 Code's threads.
+     */
     readonly start: (
       input: BotStartTaskInput,
-      options?: { readonly returnToHomeFrom: ThreadId },
+      options?: {
+        readonly returnToHomeFrom?: ThreadId;
+        readonly requestedIn?: ThreadId | null;
+      },
     ) => Effect.Effect<BotTaskSummary, BotError>;
     /** The same admission for a routine occurrence; idempotent per occurrence key. */
     readonly admitRoutine: (
@@ -517,7 +530,7 @@ const make = Effect.gen(function* () {
         scheduled_task_id, occurrence_key, occurrence_due_at, session_at, allow_changes, runtime_mode, status,
         detail, dispatched_at, cancel_requested_at, result_run_id, completed_at, notified_at,
         created_at, updated_at, return_home_run_id, return_home_message_id, return_finished_at,
-        model_selection_json, diagnoses_task_id, diagnoses_run_id
+        model_selection_json, diagnoses_task_id, diagnoses_run_id, by_hand
       ) VALUES (
         ${row.task_id}, ${row.bot_id}, ${row.project_id}, ${row.home_thread_id},
         ${row.work_thread_id}, ${row.origin}, ${row.title}, ${row.prompt},
@@ -526,7 +539,8 @@ const make = Effect.gen(function* () {
         ${row.dispatched_at}, ${row.cancel_requested_at}, ${row.result_run_id},
         ${row.completed_at}, ${row.notified_at}, ${row.created_at}, ${row.updated_at},
         ${row.return_home_run_id}, ${row.return_home_message_id}, ${row.return_finished_at},
-        ${row.model_selection_json}, ${row.diagnoses_task_id}, ${row.diagnoses_run_id}
+        ${row.model_selection_json}, ${row.diagnoses_task_id}, ${row.diagnoses_run_id},
+        ${row.by_hand}
       )
       ON CONFLICT DO NOTHING
     `;
@@ -572,6 +586,7 @@ const make = Effect.gen(function* () {
     model_selection_json: null,
     diagnoses_task_id: null,
     diagnoses_run_id: null,
+    by_hand: 0,
     created_at: input.now,
     updated_at: input.now,
   });
@@ -614,6 +629,29 @@ const make = Effect.gen(function* () {
       );
   });
 
+  const readHomeTurn = Effect.fnUntraced(function* (
+    input: BotStartTaskInput,
+    homeThreadId: ThreadId,
+    runId: RunId,
+  ) {
+    const records = yield* threads
+      .getProjectThreadRecords(
+        { projectId: input.projectId, threadId: homeThreadId },
+        ["runs", "messages", "turnItems"],
+        {
+          runIds: [runId],
+          messageRunIds: [runId],
+          messageRoles: ["user"],
+          turnItemRunIds: [runId],
+          turnItemTypes: ["user_message"],
+        },
+      )
+      .pipe(Effect.mapError(botError("Failed to read the Home user turn.", input.botId)));
+    const run = records.runs.find((candidate) => candidate.id === runId);
+    const message = records.messages.find((candidate) => candidate.id === run?.userMessageId);
+    return { records, run, message };
+  });
+
   const start: BotTaskService["Service"]["start"] = Effect.fn("BotTaskService.start")(
     function* (input, options) {
       const suffix =
@@ -638,39 +676,34 @@ const make = Effect.gen(function* () {
       const home = yield* threads
         .getThreadShell(ThreadId.make(context.context.home_thread_id))
         .pipe(Effect.mapError(botError("Failed to read the Bot conversation.", input.botId)));
+      // No options: the user's own client asked. Otherwise the thread whose turn asked, if any.
+      const requestedIn =
+        options === undefined ? undefined : (options.requestedIn ?? options.returnToHomeFrom);
+      const homeTurn =
+        requestedIn !== undefined &&
+        requestedIn === context.context.home_thread_id &&
+        home !== null &&
+        home.id === requestedIn &&
+        home.projectId === input.projectId &&
+        home.deletedAt === null &&
+        home.archivedAt === null &&
+        home.status === "running" &&
+        home.activeRunId !== null &&
+        home.activeRunId === home.latestRunId
+          ? yield* readHomeTurn(input, home.id, home.activeRunId)
+          : undefined;
+      const byHand =
+        options === undefined ||
+        (homeTurn?.run?.status === "running" && isUserHomeInput(homeTurn.message));
       let returnHomeRunId: string | null = null;
       let returnHomeMessageId: string | null = null;
-      if (options !== undefined) {
-        if (
-          options.returnToHomeFrom !== context.context.home_thread_id ||
-          home === null ||
-          home.id !== options.returnToHomeFrom ||
-          home.projectId !== input.projectId ||
-          home.deletedAt !== null ||
-          home.archivedAt !== null ||
-          home.status !== "running" ||
-          home.activeRunId === null ||
-          home.activeRunId !== home.latestRunId
-        )
+      if (options?.returnToHomeFrom !== undefined) {
+        if (options.returnToHomeFrom !== requestedIn || homeTurn === undefined)
           return yield* botError(
             "A result can return only from the Bot's active Home user turn.",
             input.botId,
           )();
-        const records = yield* threads
-          .getProjectThreadRecords(
-            { projectId: input.projectId, threadId: options.returnToHomeFrom },
-            ["runs", "messages", "turnItems"],
-            {
-              runIds: [home.activeRunId],
-              messageRunIds: [home.activeRunId],
-              messageRoles: ["user"],
-              turnItemRunIds: [home.activeRunId],
-              turnItemTypes: ["user_message"],
-            },
-          )
-          .pipe(Effect.mapError(botError("Failed to read the Home user turn.", input.botId)));
-        const run = records.runs.find((candidate) => candidate.id === home.activeRunId);
-        const message = records.messages.find((candidate) => candidate.id === run?.userMessageId);
+        const { records, run, message } = homeTurn;
         if (
           run?.status !== "running" ||
           run.threadId !== options.returnToHomeFrom ||
@@ -701,6 +734,7 @@ const make = Effect.gen(function* () {
         return_home_run_id: returnHomeRunId,
         return_home_message_id: returnHomeMessageId,
         model_selection_json: BotStore.encodeModelSelection(modelSelection),
+        by_hand: byHand ? 1 : 0,
       };
       yield* sql
         .withTransaction(
@@ -801,10 +835,19 @@ const make = Effect.gen(function* () {
     const rows = yield* sql<
       Pick<
         BotTaskRow,
-        "task_id" | "project_id" | "work_thread_id" | "status" | "result_run_id" | "completed_at"
+        | "task_id"
+        | "bot_id"
+        | "project_id"
+        | "home_thread_id"
+        | "work_thread_id"
+        | "by_hand"
+        | "status"
+        | "result_run_id"
+        | "completed_at"
       >
     >`
-      SELECT task_id, project_id, work_thread_id, status, result_run_id, completed_at
+      SELECT task_id, bot_id, project_id, home_thread_id, work_thread_id, by_hand, status,
+        result_run_id, completed_at
       FROM bot_tasks WHERE work_thread_id IS NOT NULL
         AND ${
           workThreadId === undefined
@@ -818,7 +861,10 @@ const make = Effect.gen(function* () {
         : [
             {
               taskId: BotTaskId.make(row.task_id),
+              botId: row.bot_id as BotId,
               projectId: ProjectId.make(row.project_id),
+              homeThreadId: ThreadId.make(row.home_thread_id),
+              byHand: row.by_hand === 1,
               workThreadId: ThreadId.make(row.work_thread_id),
               status: row.status as BotTaskStatus,
               resultRunId: row.result_run_id === null ? null : RunId.make(row.result_run_id),

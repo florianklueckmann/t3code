@@ -33,6 +33,11 @@ export function isDirectHomeInput(message: OrchestrationV2ConversationMessage | 
   );
 }
 
+/** A direct Home input the user typed, not one an agent sent over MCP. */
+export function isUserHomeInput(message: OrchestrationV2ConversationMessage | undefined) {
+  return isDirectHomeInput(message) && message?.createdBy === "user";
+}
+
 export function latestDirectHomeInput(
   projection: Pick<OrchestrationV2ThreadProjection, "messages" | "turnItems">,
 ) {

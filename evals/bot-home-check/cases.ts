@@ -19,6 +19,8 @@ export interface HomeCheckCase {
   readonly expect: ExpectedItem | null;
   /** The finished task requests the check (early checks on) instead of a passed daily time. */
   readonly early?: true;
+  /** The user's remit for the Bot; `--omit-remit` leaves it out to show what it decides. */
+  readonly remit?: string;
 }
 
 const appointment =
@@ -65,6 +67,18 @@ export const CASES: readonly HomeCheckCase[] = [
     between: null,
     waitingBefore: null,
     expect: { pattern: "passport|lease|notary", source: "quote" },
+  },
+  {
+    id: "remit-rules-out-event",
+    source:
+      "T3B-81: the same appointment as upcoming-event-preparation, but the user's remit says appointments never need them",
+    seed: [`Heads-up: tomorrow at 10:00 I have ${appointment}. ${noteThisTurnOnly}`],
+    task: null,
+    between: null,
+    waitingBefore: null,
+    remit:
+      "My assistant handles every appointment, including what to bring. Appointments and what to bring to them never need me.",
+    expect: null,
   },
   {
     id: "nothing-useful-noop",

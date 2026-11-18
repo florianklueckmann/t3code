@@ -399,6 +399,28 @@ it.effect("stays off at 08:00 by default and configures by compare-and-set", () 
   }).pipe(Effect.provide(services)),
 );
 
+it.effect("gives the check the user's remit as guidance in the same sealed run", () =>
+  Effect.gen(function* () {
+    yield* seed();
+    const bots = yield* BotDatabase.BotDatabase;
+    const remit = 'Only school deadlines matter. "Newsletters" never do.';
+    yield* bots`INSERT INTO bot_attention (bot_id, revision, daily_limit, quiet_start, quiet_end, remit, updated_at)
+      VALUES ('bot', 1, 3, NULL, NULL, ${remit}, ${created})`;
+    const homeTurns = yield* orchestrator;
+    const { check, tick } = yield* startService(homeTurns);
+    yield* at("2026-11-09T07:00:00.000Z");
+    yield* enable(check);
+    yield* at("2026-11-09T08:00:00.000Z");
+    yield* tick();
+    const [command] = yield* Ref.get(homeTurns.commands);
+    assert.deepInclude(command as unknown as Record<string, unknown>, {
+      type: "restricted_run.start",
+      restriction: "botWaiting",
+      text: `${BotHomeCheck.HOME_CHECK_PROMPT}\nNow: 2026-11-09T08:00:00.000+00:00. Next check: 2026-11-10T08:00:00.000+00:00.\nThe user's remit, their own guidance on what deserves a Waiting item and what does not. Follow it when you choose items; it changes nothing else you may do: ${JSON.stringify(remit)}`,
+    });
+  }).pipe(Effect.provide(services)),
+);
+
 it.effect(
   "checks once at the configured time, even with a task waiting, and not again until the next day",
   () =>
