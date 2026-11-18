@@ -8,6 +8,7 @@ import {
   type BotMcpGrants,
   BotSourcePreference,
   type McpConnectionId,
+  type McpGrantLevel,
   type ModelSelection,
   type ProjectId,
   ReceivedBotAppearance,
@@ -145,6 +146,8 @@ export class BotStore extends Context.Service<
       readonly botId: string;
       readonly connectionIds: ReadonlyArray<McpConnectionId>;
       readonly ownCodexMcpServers: boolean;
+      /** Saved for the granted connections that have levels. */
+      readonly levels: Readonly<Partial<Record<McpConnectionId, McpGrantLevel>>>;
     }) => Effect.Effect<void, BotStoreError>;
     /** Removes a connection from every Bot that has it and returns those Bots. */
     readonly forgetMcpConnection: (
@@ -472,17 +475,23 @@ export const layer = Layer.effect(
           readonly mcp_grant_revision: number;
           readonly mcp_own_codex_servers: number;
           readonly connection_id: string | null;
+          readonly level: string | null;
         }>`
           SELECT
             bots.bot_id, bots.mcp_grant_revision, bots.mcp_own_codex_servers,
-            bot_mcp_grants.connection_id
+            bot_mcp_grants.connection_id, bot_mcp_grants.level
           FROM bots LEFT JOIN bot_mcp_grants ON bot_mcp_grants.bot_id = bots.bot_id
           WHERE ${botId ?? null} IS NULL OR bots.bot_id = ${botId ?? null}
           ORDER BY bots.bot_id, bot_mcp_grants.connection_id
         `;
         const grants = new Map<
           string,
-          { revision: number; connectionIds: McpConnectionId[]; ownCodexMcpServers: boolean }
+          {
+            revision: number;
+            connectionIds: McpConnectionId[];
+            ownCodexMcpServers: boolean;
+            levels?: Record<McpConnectionId, string>;
+          }
         >();
         for (const row of rows) {
           let entry = grants.get(row.bot_id);
@@ -496,6 +505,9 @@ export const layer = Layer.effect(
           }
           if (row.connection_id !== null) {
             entry.connectionIds.push(row.connection_id as McpConnectionId);
+            if (row.level !== null) {
+              entry.levels = { ...entry.levels, [row.connection_id]: row.level };
+            }
           }
         }
         return grants as ReadonlyMap<string, BotMcpGrants>;
@@ -508,11 +520,14 @@ export const layer = Layer.effect(
         readonly botId: string;
         readonly connectionIds: ReadonlyArray<McpConnectionId>;
         readonly ownCodexMcpServers: boolean;
+        readonly levels: Readonly<Partial<Record<McpConnectionId, McpGrantLevel>>>;
       }) {
         yield* sql`DELETE FROM bot_mcp_grants WHERE bot_id = ${input.botId}`;
         for (const connectionId of input.connectionIds) {
+          const level = input.levels[connectionId] ?? null;
           yield* sql`
-            INSERT INTO bot_mcp_grants (bot_id, connection_id) VALUES (${input.botId}, ${connectionId})
+            INSERT INTO bot_mcp_grants (bot_id, connection_id, level)
+            VALUES (${input.botId}, ${connectionId}, ${level})
           `;
         }
         yield* sql`

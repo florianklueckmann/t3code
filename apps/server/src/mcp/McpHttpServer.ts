@@ -57,6 +57,8 @@ import * as EnvironmentHandlers from "./toolkits/environment/handlers.ts";
 import { ThemeToolkit } from "./toolkits/theme/tools.ts";
 import * as ThemeHandlers from "./toolkits/theme/handlers.ts";
 import { BotToolkit } from "./toolkits/bot/tools.ts";
+import * as CalendarHandlers from "./toolkits/calendar/handlers.ts";
+import { CALENDAR_LIST_EVENTS_TOOL, CalendarToolkit } from "./toolkits/calendar/tools.ts";
 import * as BotHandlers from "./toolkits/bot/handlers.ts";
 import { ProjectToolkit } from "./toolkits/project/tools.ts";
 import * as ProjectHandlers from "./toolkits/project/handlers.ts";
@@ -1412,4 +1414,25 @@ export const layerToolSearch = Layer.mergeAll(
   layerDeferredListing,
 ).pipe(Layer.provide(layerToolExposure));
 
-export const layer = layerMcpTransport(Layer.mergeAll(layerTools, layerToolSearch));
+/**
+ * A granted Calendar (this Mac) is its own server entry on this endpoint: a session that sends
+ * `TOOLSET_HEADER` reaches only the calendar tool, and no other session reaches it.
+ */
+const layerToolsets = McpServer.visibility(
+  ({ target, headers }: McpServer.MiddlewareOptions) =>
+    Effect.succeed(
+      (headers[McpInvocationContext.TOOLSET_HEADER] === McpInvocationContext.CALENDAR_TOOLSET) ===
+        (target === CALENDAR_LIST_EVENTS_TOOL),
+    ),
+  { global: true },
+);
+
+/** Outside layerTools: only a granted Calendar (this Mac) server lists it. */
+export const layerCalendarToolkit = Layer.mergeAll(
+  toolkitRegistration(CalendarToolkit, CalendarHandlers.layer),
+  layerToolsets,
+);
+
+export const layer = layerMcpTransport(
+  Layer.mergeAll(layerTools, layerToolSearch, layerCalendarToolkit),
+);

@@ -26,7 +26,12 @@ import { UsageLimitSourceId } from "./usageLimitSourceId.ts";
 import { UsageModelFilter } from "./usage.ts";
 import { SecretProviderId, SecretProviderSlug } from "./secretReference.ts";
 import { SettingsSecretValue } from "./settingsSecretValue.ts";
-import { McpConnectionDefinition, McpConnectionId } from "./mcpConnection.ts";
+import {
+  DEFAULT_MAC_CALENDAR_SETTINGS,
+  MacCalendarSettings,
+  McpConnectionDefinition,
+  McpConnectionId,
+} from "./mcpConnection.ts";
 import { EnvironmentMachineKind, ThreadEnvMode, WorktreeSubmodules } from "./environment.ts";
 import { KeybindingShortcut } from "./keybindings.ts";
 import {
@@ -1589,6 +1594,10 @@ export const ServerSettings = Schema.Struct({
   /** Removed connection ids, kept so a retried or replayed create cannot reuse one. */
   retiredMcpConnectionIds: Schema.Array(McpConnectionId).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  /** Calendar (this Mac). Written only through the calendar service, never a settings patch. */
+  macCalendar: MacCalendarSettings.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_MAC_CALENDAR_SETTINGS)),
   ),
 
   usagePriceOverrides: Schema.Record(TrimmedNonEmptyString, UsageModelPriceOverride).pipe(

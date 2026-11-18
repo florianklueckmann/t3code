@@ -4,6 +4,9 @@ import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import {
   botMcpGrantsChange,
   emptyMcpConnectionDraft,
+  MAC_CALENDAR_CONNECT_ELSEWHERE_TEXT,
+  MAC_CALENDAR_UNSUPPORTED_TEXT,
+  macCalendarStatusText,
   MCP_CONNECTIONS_NOTICE,
   mcpConnectionDraft,
   mcpConnectionOAuthCallback,
@@ -31,6 +34,7 @@ import {
   type EnvironmentId,
   type McpConnectionDefinition,
   type McpConnectionSummary,
+  type MacCalendarSummary,
   type SecretProviderId,
   type SettingsSecretValue,
 } from "@t3tools/contracts";
@@ -141,6 +145,9 @@ function EnvironmentMcpConnections({ environment }: { readonly environment: Sett
   const summaries = new Map(statuses.data?.connections.map((summary) => [summary.id, summary]));
   return (
     <>
+      {statuses.data?.calendar === undefined ? null : (
+        <MacCalendarRow calendar={statuses.data.calendar} usage={usage} />
+      )}
       {entries.length === 0 ? (
         <Text className="p-4 text-base text-foreground-muted">
           No MCP connections. Add one connection per account.
@@ -239,6 +246,35 @@ function McpConnectionRow({
         .join(" · ")}
       onPress={onPress}
     />
+  );
+}
+
+/** Read-only here: macOS asks for Calendar permission on the host Mac, so setup happens there. */
+function MacCalendarRow({
+  calendar,
+  usage,
+}: {
+  readonly calendar: MacCalendarSummary;
+  readonly usage: McpConnectionUsage;
+}) {
+  const parts =
+    calendar.availability === "unsupported"
+      ? [MAC_CALENDAR_UNSUPPORTED_TEXT]
+      : [
+          "Read only",
+          macCalendarStatusText(calendar).text,
+          mcpConnectionUsedByText(usage, calendar.id),
+          MAC_CALENDAR_CONNECT_ELSEWHERE_TEXT,
+        ];
+  return (
+    <View className="min-h-14 gap-1 border-b border-border-subtle px-4 py-3">
+      <Text textRole="body" className="text-foreground">
+        {calendar.label}
+      </Text>
+      <Text textRole="footnote" className="text-foreground-muted">
+        {parts.filter((part) => part !== null).join(" · ")}
+      </Text>
+    </View>
   );
 }
 

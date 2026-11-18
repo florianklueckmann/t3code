@@ -44,6 +44,14 @@ export interface McpThreadCaller {
 /** Only narrows what a thread credential may do, so a caller gains nothing by sending it. */
 export const SEALED_LOAD_HEADER = "t3-sealed-load";
 
+/**
+ * `T3-Toolset: calendar` turns a thread's `/mcp` session into its granted Calendar (this Mac)
+ * server: it lists only the calendar tool, which every other session hides. Listing only; the
+ * calendar service checks the grant on each call.
+ */
+export const TOOLSET_HEADER = "t3-toolset";
+export const CALENDAR_TOOLSET = "calendar";
+
 export interface McpClientCaller {
   readonly sessionId: string;
   readonly label: string;

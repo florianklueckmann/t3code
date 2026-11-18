@@ -8,6 +8,8 @@ import {
   type BotSetMcpGrantsInput,
   type BotSummary,
   type ExecutionEnvironmentPlatformOs,
+  MAC_CALENDAR_CONNECTION_ID,
+  type MacCalendarSummary,
   type McpConnectionCreateInput,
   type McpConnectionDefinition,
   type McpConnectionId,
@@ -314,12 +316,61 @@ export function mcpConnectionOAuthView(
 export const MCP_CONNECTIONS_NOTICE =
   "A Bot uses the connections you grant it in its settings, and so does work it starts. Your own threads use none of them. Refresh checks that credentials resolve; it does not start or contact the servers.";
 
+/** Shown where Calendar (this Mac) would be when this environment can't have it. */
+export const MAC_CALENDAR_UNSUPPORTED_TEXT =
+  "Calendar (this Mac) is available when this environment runs on macOS 14 or later with the T3 Calendar Helper installed.";
+/** Shown in place of "Connect Calendar" in a session that is not on the host Mac. */
+export const MAC_CALENDAR_CONNECT_ELSEWHERE_TEXT =
+  "Connect Calendar on the Mac that runs this environment: macOS asks for permission there.";
+
+/** The connection's state in Settings, from what the catalog lists; never launches the helper. */
+export function macCalendarStatusText(calendar: MacCalendarSummary): McpConnectionStatusText {
+  if (calendar.availability === "unsupported") return { tone: "muted", text: "Not available" };
+  if (calendar.availability === "helper-missing") {
+    return { tone: "warning", text: "The T3 Calendar Helper is not installed on this Mac." };
+  }
+  if (!calendar.enabled) {
+    return { tone: "muted", text: "Disabled. Bots don't load it until you enable it." };
+  }
+  if (calendar.calendars.length === 0) {
+    return { tone: "warning", text: "No calendars selected, so Bots don't load it." };
+  }
+  return {
+    tone: "ok",
+    text: `Bots granted it read ${listNames(calendar.calendars.map((calendar) => calendar.title))}`,
+  };
+}
+
+/** The helper's Calendar permission, as the setup step shows it. */
+export function macCalendarAuthorizationText(authorization: string): McpConnectionStatusText {
+  switch (authorization) {
+    case "fullAccess":
+      return { tone: "ok", text: "Full Access" };
+    case "notDetermined":
+      return { tone: "muted", text: "Not connected yet" };
+    case "denied":
+      return {
+        tone: "error",
+        text: "Denied. Allow T3 Calendar Helper in System Settings > Privacy & Security > Calendars.",
+      };
+    case "writeOnly":
+      return {
+        tone: "warning",
+        text: "Add-only access. Reading needs Full Access in System Settings > Privacy & Security > Calendars.",
+      };
+    case "restricted":
+      return { tone: "error", text: "Restricted on this Mac, for example by a profile." };
+    default:
+      return { tone: "warning", text: "Unknown. Try again." };
+  }
+}
+
 /** A catalog connection, or a granted one the catalog no longer has, as a Bot's settings list it. */
 export interface BotMcpGrantRow {
   readonly id: McpConnectionId;
   readonly label: string;
-  /** Null when the connection was removed. */
-  readonly transport: McpConnectionSummary["transport"] | null;
+  /** Null when the connection was removed; "calendar" for Calendar (this Mac). */
+  readonly transport: McpConnectionSummary["transport"] | "calendar" | null;
   readonly granted: boolean;
   readonly status: McpConnectionStatusText;
   /** An enabled OAuth connection's sign-in state, which the row can reconnect. */
@@ -379,6 +430,8 @@ export function botMcpGrantsSection(input: {
   /** From `codexMcpServerNames`. */
   readonly codexMcpServerNames: ReadonlyArray<string> | null;
   readonly catalog: ReadonlyArray<McpConnectionSummary>;
+  /** Calendar (this Mac), absent on servers without it. */
+  readonly calendar?: MacCalendarSummary | undefined;
   /** From the Bot's detail; absent on servers that run Bots on Codex only. */
   readonly capabilities: BotCapabilities | undefined;
   readonly providerDriver: ProviderDriverKind | undefined;
@@ -391,8 +444,28 @@ export function botMcpGrantsSection(input: {
   readonly now: number;
 }): BotMcpGrantsSection {
   const granted = new Set(input.grants.connectionIds);
-  const listed = new Set(input.catalog.map((connection) => connection.id));
+  const calendar =
+    input.calendar === undefined ||
+    (input.calendar.availability === "unsupported" && !granted.has(input.calendar.id))
+      ? undefined
+      : input.calendar;
+  const listed = new Set([
+    ...input.catalog.map((connection) => connection.id),
+    ...(calendar === undefined ? [] : [calendar.id]),
+  ]);
   const rows: ReadonlyArray<BotMcpGrantRow> = [
+    ...(calendar === undefined
+      ? []
+      : [
+          {
+            id: calendar.id,
+            label: calendar.label,
+            transport: "calendar" as const,
+            granted: granted.has(calendar.id),
+            status: macCalendarStatusText(calendar),
+            oauth: null,
+          },
+        ]),
     ...input.catalog.map((connection) => {
       const oauth = connection.enabled ? (connection.oauth ?? null) : null;
       const view = oauth === null ? null : mcpConnectionOAuthView(oauth, input.now, "bot");
@@ -450,7 +523,7 @@ export function botMcpGrantsSection(input: {
       text: `MCP connections apply only to Codex on macOS and Linux. ${unenforceable} A Bot with connections does not run there.`,
     });
   }
-  if (input.catalog.length === 0) {
+  if (input.catalog.length === 0 && calendar === undefined) {
     notes.push({ tone: "muted", text: "No connections yet. Add one to grant it to this Bot." });
   }
   const ownServersOn = input.grants.ownCodexMcpServers === true;
@@ -506,7 +579,7 @@ export function botMcpGrantsSection(input: {
 export function botMcpGrantsChange(
   botId: BotId,
   grants: BotMcpGrants,
-  catalog: ReadonlyArray<McpConnectionSummary>,
+  catalog: ReadonlyArray<Pick<McpConnectionSummary, "id">>,
   change:
     | { readonly connectionId: McpConnectionId; readonly granted: boolean }
     | { readonly ownCodexMcpServers: boolean },
@@ -530,7 +603,40 @@ export function botMcpGrantsChange(
       ...added,
     ],
     ...("ownCodexMcpServers" in change ? { ownCodexMcpServers: change.ownCodexMcpServers } : {}),
+    // Read is the only level so far; the next one is chosen here.
+    ...(next.has(MAC_CALENDAR_CONNECTION_ID)
+      ? { levels: { [MAC_CALENDAR_CONNECTION_ID]: "read" as const } }
+      : {}),
   };
+}
+
+/** The badge a granted row shows: its transport, or Calendar (this Mac)'s grant level. */
+export function botMcpGrantRowBadge(
+  row: Pick<BotMcpGrantRow, "transport">,
+  levels: BotMcpGrants["levels"],
+): string | null {
+  switch (row.transport) {
+    case null:
+      return null;
+    case "http":
+      return "HTTP";
+    case "stdio":
+      return "stdio";
+    case "calendar": {
+      const level = levels?.[MAC_CALENDAR_CONNECTION_ID] ?? "read";
+      return level === "read" ? "Read" : level;
+    }
+  }
+}
+
+/** The ids a Bot's grants can hold: the catalog's and Calendar (this Mac) where it is listed. */
+export function botMcpGrantableIds(list: {
+  readonly connections: ReadonlyArray<Pick<McpConnectionSummary, "id">>;
+  readonly calendar?: Pick<MacCalendarSummary, "id" | "availability"> | undefined;
+}): ReadonlyArray<Pick<McpConnectionSummary, "id">> {
+  return list.calendar === undefined || list.calendar.availability === "unsupported"
+    ? list.connections
+    : [list.calendar, ...list.connections];
 }
 
 /**

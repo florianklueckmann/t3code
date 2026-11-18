@@ -2,6 +2,8 @@ import { useAtomValue } from "@effect/atom-react";
 import { useNavigation } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import {
+  botMcpGrantableIds,
+  botMcpGrantRowBadge,
   botMcpGrantsChange,
   botMcpGrantsSection,
   codexMcpServerNames,
@@ -77,12 +79,13 @@ export function BotMcpGrantsSection(props: {
       </SettingsSection>
     );
   }
-  const connections = catalog.data.connections;
+  const list = catalog.data;
   const view = botMcpGrantsSection({
     botId,
     grants,
     codexMcpServerNames: codexMcpServerNames(config.providers),
-    catalog: connections,
+    catalog: list.connections,
+    calendar: list.calendar,
     capabilities: detail.data?.capabilities,
     providerDriver: config.providers.find(
       (provider) => provider.instanceId === bot.modelSelection.instanceId,
@@ -101,7 +104,7 @@ export function BotMcpGrantsSection(props: {
     setBusy(true);
     const result = await setGrants({
       environmentId,
-      input: botMcpGrantsChange(botId, grants, connections, next),
+      input: botMcpGrantsChange(botId, grants, botMcpGrantableIds(list), next),
     });
     setBusy(false);
     if (result._tag === "Success") setAcknowledged(result.value.mcpGrants ?? null);
@@ -113,6 +116,7 @@ export function BotMcpGrantsSection(props: {
     <SettingsSection title="MCP connections">
       {view.rows.map((row, index) => {
         const oauth = oauthSupported ? row.oauth : null;
+        const badge = botMcpGrantRowBadge(row, grants.levels);
         return (
           <View key={row.id} className={index === 0 ? "" : "border-t border-border-subtle"}>
             <View className="min-h-14 flex-row items-center gap-3 px-4 py-3">
@@ -124,11 +128,11 @@ export function BotMcpGrantsSection(props: {
                   textRole="footnote"
                   className={oauth === null ? TONE_CLASS[row.status.tone] : "text-foreground-muted"}
                 >
-                  {row.transport === null
+                  {badge === null
                     ? row.status.text
                     : oauth !== null
                       ? "HTTP · OAuth"
-                      : `${row.transport === "http" ? "HTTP" : "stdio"} · ${row.status.text}`}
+                      : `${badge} · ${row.status.text}`}
                 </Text>
               </View>
               <ThemedSwitch

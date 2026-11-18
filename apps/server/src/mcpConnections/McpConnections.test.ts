@@ -2,6 +2,9 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   BotError,
+  DEFAULT_MAC_CALENDAR_SETTINGS,
+  MAC_CALENDAR_CONNECTION_ID,
+  MAC_CALENDAR_LABEL,
   McpConnectionId,
   type McpConnectionOAuth as McpConnectionOAuthSetup,
   type McpConnectionTransport,
@@ -20,6 +23,7 @@ import * as Schema from "effect/Schema";
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as BotService from "../bots/BotService.ts";
+import * as MacCalendar from "../calendar/MacCalendar.ts";
 import * as ServerConfig from "../config.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
@@ -108,6 +112,16 @@ const harness = Effect.gen(function* () {
         Layer.provide(Layer.succeed(SecretResolver.SecretResolver, resolver)),
         Layer.provide(bots),
         Layer.provide(oauth),
+        Layer.provide(
+          Layer.mock(MacCalendar.MacCalendar)({
+            summary: Effect.succeed({
+              id: MAC_CALENDAR_CONNECTION_ID,
+              label: MAC_CALENDAR_LABEL,
+              availability: "unsupported",
+              ...DEFAULT_MAC_CALENDAR_SETTINGS,
+            }),
+          }),
+        ),
       ),
     ),
   );
@@ -479,7 +493,9 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("MCP connections"
           first.connections.map(({ id, label, transport }) =>
             transport.type === "stdio"
               ? [id, label, transport.command, transport.args, Redacted.value(transport.env)]
-              : [id, label, transport.url, Redacted.value(transport.headers)],
+              : transport.type === "http"
+                ? [id, label, transport.url, Redacted.value(transport.headers)]
+                : [id, label, transport.toolset],
           ),
           [
             [
@@ -509,6 +525,35 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("MCP connections"
           (yield* delivery.resolve([accountA, unknown]).pipe(Effect.flip)).reason,
           "missing",
         );
+
+        // Calendar (this Mac) loads only while on with a selection, served by T3 Code itself.
+        const withCalendar = () =>
+          delivery
+            .resolve([accountA, MAC_CALENDAR_CONNECTION_ID])
+            .pipe(
+              Effect.map((load) =>
+                load.connections.map(({ id, transport }) => [id, transport.type]),
+              ),
+            );
+        const setCalendar = (
+          enabled: boolean,
+          calendars: ReadonlyArray<{ id: string; title: string }>,
+        ) =>
+          settings.updateMcpConnections((current) =>
+            Effect.succeed({
+              mcpConnections: current.mcpConnections,
+              retiredMcpConnectionIds: current.retiredMcpConnectionIds,
+              macCalendar: { enabled, revision: current.macCalendar.revision + 1, calendars },
+            }),
+          );
+        assert.deepEqual(yield* withCalendar(), [[accountA, "http"]]);
+        yield* setCalendar(true, [{ id: "cal-work", title: "Work" }]);
+        assert.deepEqual(yield* withCalendar(), [
+          [accountA, "http"],
+          [MAC_CALENDAR_CONNECTION_ID, "t3"],
+        ]);
+        yield* setCalendar(false, [{ id: "cal-work", title: "Work" }]);
+        assert.deepEqual(yield* withCalendar(), [[accountA, "http"]]);
 
         // An OAuth account sends its current access token beside its other headers.
         yield* connections.create({

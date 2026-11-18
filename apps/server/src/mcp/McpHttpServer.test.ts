@@ -51,6 +51,7 @@ import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerHttp from "../http.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as MacCalendar from "../calendar/MacCalendar.ts";
 import { advertisedJsonSchema } from "./advertisedJsonSchema.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpToolAccess from "./McpToolAccess.ts";
@@ -2066,6 +2067,159 @@ it.effect("lists optional tools to a deferring client only after tool_search loa
       ).toEqual({ tools: [{ name: "preview_open", description: "Opens a browser preview." }] });
       expect(yield* deferring.listed).toEqual(["delegate_task", "preview_open", "tool_search"]);
       expect(yield* other.listed).toEqual(["delegate_task", "preview_open", "schedule_task"]);
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("serves the calendar tool only on a thread's Calendar (this Mac) session", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const reads: Array<string> = [];
+      const scopes = new Map<string, McpInvocationContext.McpInvocationScope>([
+        [
+          "threadToken",
+          {
+            environmentId,
+            requestNamespace: "threadToken",
+            thread: {
+              threadId: ThreadId.make("thread-calendar"),
+              providerSessionId: "threadToken",
+              providerInstanceId: ProviderInstanceId.make("codex"),
+            },
+            client: undefined,
+            capabilities: new Set(["orchestration"]),
+            issuedAt: 1,
+          },
+        ],
+        [
+          "clientToken",
+          {
+            environmentId,
+            requestNamespace: "clientToken",
+            thread: undefined,
+            client: { sessionId: "client", label: "Outside", access: "full-access" },
+            capabilities: new Set(["orchestration"]),
+            issuedAt: 1,
+          },
+        ],
+      ]);
+      const OtherToolkit = Toolkit.make(
+        Tool.make("t3_thread_read", {
+          description: "Reads a thread.",
+          success: Schema.Struct({}),
+          failure: OrchestratorMcpFailure,
+          failureMode: "return",
+        }),
+      );
+      const serverLayer = McpHttpServer.layerMcpTransport(
+        Layer.mergeAll(
+          McpHttpServer.toolkitRegistration(
+            OtherToolkit,
+            McpToolAccess.toLayer(OtherToolkit, {
+              t3_thread_read: McpToolAccess.reads(() => Effect.succeed({})),
+            }),
+          ),
+          McpHttpServer.layerCalendarToolkit,
+        ),
+      ).pipe(
+        Layer.provide(
+          Layer.mock(MacCalendar.MacCalendar)({
+            listEvents: (caller) =>
+              Effect.sync(() => {
+                reads.push(caller.threadId);
+                return { timeZone: "Europe/Berlin", calendars: [], events: [], truncated: false };
+              }),
+          }),
+        ),
+        Layer.provide(ServerSettings.layerTest()),
+        Layer.provide(McpToolAccessTestkit.liveThreadsLayer),
+        Layer.provide(
+          Layer.mock(McpSessionRegistry.McpSessionRegistry)({
+            resolve: (token) => Effect.succeed(scopes.get(token)),
+          }),
+        ),
+      );
+      yield* HttpRouter.serve(serverLayer, { disableListenLog: true, disableLogger: true }).pipe(
+        Layer.build,
+      );
+      const httpClient = yield* HttpClient.HttpClient;
+      const session = (token: string, toolset: string | undefined) =>
+        Effect.gen(function* () {
+          const headers = {
+            accept: "application/json, text/event-stream",
+            authorization: `Bearer ${token}`,
+            ...(toolset === undefined ? {} : { "t3-toolset": toolset }),
+          };
+          const initialize = yield* httpClient.post("/mcp", {
+            headers,
+            body: HttpBody.text(
+              `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"probe","version":"1.0.0"}}}`,
+              "application/json",
+            ),
+          });
+          const rpc = (method: string, params: object) =>
+            httpClient
+              .post("/mcp", {
+                headers: {
+                  ...headers,
+                  "mcp-session-id": initialize.headers["mcp-session-id"]!,
+                  "mcp-protocol-version": "2025-06-18",
+                },
+                body: HttpBody.text(
+                  JSON.stringify({ jsonrpc: "2.0", id: 2, method, params }),
+                  "application/json",
+                ),
+              })
+              .pipe(
+                Effect.flatMap((response) => response.text),
+                Effect.map(
+                  (text) =>
+                    JSON.parse(
+                      text
+                        .split("\n")
+                        .find((line) => line.startsWith("data: ") || line.startsWith("{"))!
+                        .replace(/^data: /u, ""),
+                    ) as {
+                      result?: {
+                        tools?: ReadonlyArray<{
+                          name: string;
+                          annotations?: { readOnlyHint?: boolean };
+                        }>;
+                        isError?: boolean;
+                      };
+                      error?: { message: string };
+                    },
+                ),
+              );
+          return {
+            listed: rpc("tools/list", {}).pipe(
+              Effect.map((body) => body.result?.tools?.map((tool) => tool.name) ?? []),
+            ),
+            tools: rpc("tools/list", {}).pipe(Effect.map((body) => body.result?.tools ?? [])),
+            call: (name: string) =>
+              rpc("tools/call", {
+                name,
+                arguments: name === "list_events" ? { start: "2026-11-18", end: "2026-11-19" } : {},
+              }),
+          };
+        });
+
+      // T3 Code's own server, as every thread loads it: no calendar tool, listed or called.
+      const t3 = yield* session("threadToken", undefined);
+      expect(yield* t3.listed).toEqual(["t3_thread_read"]);
+      expect((yield* t3.call("list_events")).error?.message).toBe("Tool 'list_events' not found");
+      // The granted calendar's server entry: only the calendar tool, marked read-only.
+      const calendar = yield* session("threadToken", "calendar");
+      expect(yield* calendar.listed).toEqual(["list_events"]);
+      expect((yield* calendar.tools)[0]?.annotations?.readOnlyHint).toBe(true);
+      expect((yield* calendar.call("t3_thread_read")).error?.message).toBe(
+        "Tool 't3_thread_read' not found",
+      );
+      expect((yield* calendar.call("list_events")).result?.isError).toBe(false);
+      expect(reads).toEqual(["thread-calendar"]);
+      // An outside client never sees it, whatever it sends.
+      const outside = yield* session("clientToken", "calendar");
+      expect(yield* outside.listed).toEqual([]);
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );

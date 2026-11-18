@@ -1,5 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
+  botMcpGrantableIds,
+  botMcpGrantRowBadge,
   botMcpGrantsChange,
   botMcpGrantsSection,
   codexMcpServerNames,
@@ -87,12 +89,14 @@ export function BotMcpGrantsSetting({
       <p className="text-xs text-destructive">{catalog.error}</p>
     );
   }
-  const connections = catalog.data.connections;
+  const list = catalog.data;
+  const connections = list.connections;
   const view = botMcpGrantsSection({
     botId,
     grants,
     codexMcpServerNames: codexMcpServerNames(providers),
     catalog: connections,
+    calendar: list.calendar,
     capabilities,
     providerDriver: providers.find(
       (provider) => provider.instanceId === bot.modelSelection.instanceId,
@@ -111,7 +115,7 @@ export function BotMcpGrantsSetting({
     setBusy(true);
     const result = await setGrants({
       environmentId,
-      input: botMcpGrantsChange(botId, grants, connections, next),
+      input: botMcpGrantsChange(botId, grants, botMcpGrantableIds(list), next),
     });
     setBusy(false);
     if (result._tag === "Success") setAcknowledged(result.value.mcpGrants ?? null);
@@ -143,39 +147,40 @@ export function BotMcpGrantsSetting({
       </div>
       {view.rows.length > 0 ? (
         <ul className="space-y-2">
-          {view.rows.map((row) => (
-            <li key={row.id} className="space-y-1">
-              <label className="flex items-start gap-3 text-sm">
-                <Checkbox
-                  checked={row.granted}
-                  disabled={disabled || (!row.granted && !view.canGrant)}
-                  onCheckedChange={(checked) =>
-                    void change({ connectionId: row.id, granted: checked === true })
-                  }
-                />
-                <span className="min-w-0 space-y-1">
-                  <span className="flex flex-wrap items-center gap-2">
-                    <span className="min-w-0 font-medium wrap-anywhere">{row.label}</span>
-                    {row.transport === null ? null : (
-                      <Badge variant="outline">{row.transport === "http" ? "HTTP" : "stdio"}</Badge>
+          {view.rows.map((row) => {
+            const badge = botMcpGrantRowBadge(row, grants.levels);
+            return (
+              <li key={row.id} className="space-y-1">
+                <label className="flex items-start gap-3 text-sm">
+                  <Checkbox
+                    checked={row.granted}
+                    disabled={disabled || (!row.granted && !view.canGrant)}
+                    onCheckedChange={(checked) =>
+                      void change({ connectionId: row.id, granted: checked === true })
+                    }
+                  />
+                  <span className="min-w-0 space-y-1">
+                    <span className="flex flex-wrap items-center gap-2">
+                      <span className="min-w-0 font-medium wrap-anywhere">{row.label}</span>
+                      {badge === null ? null : <Badge variant="outline">{badge}</Badge>}
+                    </span>
+                    {oauthSupported && row.oauth !== null ? null : (
+                      <Badge variant={STATUS_BADGE[row.status.tone]}>{row.status.text}</Badge>
                     )}
                   </span>
-                  {oauthSupported && row.oauth !== null ? null : (
-                    <Badge variant={STATUS_BADGE[row.status.tone]}>{row.status.text}</Badge>
-                  )}
-                </span>
-              </label>
-              {oauthSupported && row.oauth !== null ? (
-                <BotMcpGrantSignIn
-                  environmentId={environmentId}
-                  connectionId={row.id}
-                  label={row.label}
-                  fallback={row.oauth}
-                  disabled={formLocked}
-                />
-              ) : null}
-            </li>
-          ))}
+                </label>
+                {oauthSupported && row.oauth !== null ? (
+                  <BotMcpGrantSignIn
+                    environmentId={environmentId}
+                    connectionId={row.id}
+                    label={row.label}
+                    fallback={row.oauth}
+                    disabled={formLocked}
+                  />
+                ) : null}
+              </li>
+            );
+          })}
         </ul>
       ) : null}
       {view.ownServers === null ? null : (

@@ -395,6 +395,30 @@ service, add a second connection and sign in with the other account.
 - A sign-in that expires in the middle of a long turn fails that connection's
   later calls in that turn. The next turn renews it.
 
+### Calendar (this Mac)
+
+On a Mac with macOS 14 or later and the T3 Calendar Helper installed,
+**Settings → MCP connections** lists **Calendar (this Mac)**. It reads the
+calendars in Apple Calendar on that Mac, including Google and other accounts
+synced into it. Elsewhere it explains why it is missing.
+
+1. On the Mac itself, choose **Set up**, then **Check**. If access was never
+   decided, choose **Connect Calendar** and allow Full Access for T3 Calendar
+   Helper. From a phone or another computer, the dialog shows the state but
+   setup has to happen on the Mac. A denied request is changed in System
+   Settings > Privacy & Security > Calendars.
+2. Select the calendars Bots may read and choose **Save selection**. One
+   selection applies to every Bot.
+3. Grant **Calendar (this Mac)** in a Bot's **MCP connections**. The grant reads
+   only, shown as **Read**.
+
+The Bot can then list events from the selected calendars, at most 14 days and
+100 events per request: in its conversation, tasks, routines and No changes
+routines, but not in the Daily Home check. It sees each event's title,
+calendar, start, end and whether it lasts all day, never notes, attendees,
+locations or links. Without a selection, or while disabled, the Bot runs
+without it.
+
 ## Current limits
 
 - Bots run on Codex and Claude only.
@@ -407,7 +431,8 @@ service, add a second connection and sign in with the other account.
   load, in No changes routines too. Own MCP servers, maintenance and the Daily
   Home check are not available yet.
 - Bots turn off Claude's automatic memory.
-- Built-in email and calendar connections are not available.
+- Built-in email connections are not available. Calendar (this Mac) reads only,
+  and only on the Mac that runs the environment.
 
 ## Detach and archive
 

@@ -2,6 +2,8 @@
 import * as NodeCrypto from "node:crypto";
 
 import {
+  MAC_CALENDAR_CONNECTION_ID,
+  MAC_CALENDAR_LABEL,
   mcpConnectionBindings,
   mcpConnectionBindingValueProblem,
   mcpConnectionDefinitionProblem,
@@ -18,6 +20,7 @@ import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 
+import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 import { requireSettingsSecret } from "../secrets/settingsSecretValue.ts";
 import * as Settings from "../serverSettings.ts";
 import * as McpConnectionOAuth from "./McpConnectionOAuth.ts";
@@ -77,7 +80,9 @@ export interface DeliveredMcpConnection {
         readonly type: "http";
         readonly url: string;
         readonly headers: Redacted.Redacted<Readonly<Record<string, string>>>;
-      };
+      }
+    /** Served by T3 Code's own MCP endpoint with the thread's credential, as `toolset`. */
+    | { readonly type: "t3"; readonly toolset: "calendar" };
 }
 
 export interface McpConnectionLoad {
@@ -88,6 +93,21 @@ export interface McpConnectionLoad {
    */
   readonly identity: string;
 }
+
+/**
+ * Where a T3-served grant connects: the thread's own MCP session, narrowed to the toolset. The
+ * header only selects what lists; the toolset's service checks the grant on every call.
+ */
+export const t3ServedEndpoint = (
+  toolset: "calendar",
+  session: { readonly endpoint: string; readonly authorizationHeader: string },
+) => ({
+  url: session.endpoint,
+  headers: {
+    Authorization: session.authorizationHeader,
+    [McpInvocationContext.TOOLSET_HEADER]: toolset,
+  },
+});
 
 /** Names the connection and its problem, never a value. */
 export class McpConnectionDeliveryError extends Schema.TaggedError<McpConnectionDeliveryError>()(
@@ -152,6 +172,19 @@ const make = Effect.gen(function* () {
     const connections: Array<DeliveredMcpConnection> = [];
     const canonical: Array<unknown> = [];
     for (const id of [...new Set(ids)].toSorted()) {
+      if (id === MAC_CALENDAR_CONNECTION_ID) {
+        // Off or without calendars it has nothing to read, so the Bot runs without it.
+        const calendar = current.macCalendar;
+        if (!calendar.enabled || calendar.calendars.length === 0) continue;
+        connections.push({
+          id,
+          label: MAC_CALENDAR_LABEL,
+          revision: calendar.revision,
+          transport: { type: "t3", toolset: "calendar" },
+        });
+        canonical.push([id, MAC_CALENDAR_LABEL, ["t3", "calendar"], []]);
+        continue;
+      }
       const definition = current.mcpConnections[id];
       if (definition === undefined) {
         if (current.retiredMcpConnectionIds.includes(id)) continue;

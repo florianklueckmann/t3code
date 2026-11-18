@@ -7,6 +7,7 @@ import {
   BotError,
   BotId,
   BotTaskId,
+  MAC_CALENDAR_CONNECTION_ID,
   McpConnectionId,
   type OrchestrationV2AppThreadLineage,
   type OrchestrationV2ServerCommand,
@@ -18,6 +19,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as DateTime from "effect/DateTime";
@@ -621,6 +623,49 @@ it.effect("grants only catalog connections, as a whole set guarded by its revisi
           ownCodexMcpServers: false,
         });
       }),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect("grants Calendar (this Mac) on a Mac only, with the read level", () =>
+  Effect.gen(function* () {
+    const world = yield* makeThreadWorld;
+    yield* withServices(world.threadLayer, ({ bots, settings }) =>
+      Effect.gen(function* () {
+        yield* seedCatalog(settings);
+        yield* createCampaignBot(bots);
+        const elsewhere = yield* bots
+          .setMcpGrants({
+            botId,
+            expectedRevision: 0,
+            connectionIds: [MAC_CALENDAR_CONNECTION_ID],
+          })
+          .pipe(Effect.provideService(HostProcess.Platform, "linux"), Effect.flip);
+        assert.include(elsewhere.message, "no longer exists");
+        const granted = yield* bots
+          .setMcpGrants({
+            botId,
+            expectedRevision: 0,
+            connectionIds: [privateMail, MAC_CALENDAR_CONNECTION_ID],
+          })
+          .pipe(Effect.provideService(HostProcess.Platform, "darwin"));
+        assert.deepEqual(granted.mcpGrants, {
+          revision: 1,
+          connectionIds: [privateMail, MAC_CALENDAR_CONNECTION_ID].toSorted(),
+          ownCodexMcpServers: false,
+          levels: { [MAC_CALENDAR_CONNECTION_ID]: "read" },
+        });
+        const revoked = yield* bots.setMcpGrants({
+          botId,
+          expectedRevision: 1,
+          connectionIds: [privateMail],
+        });
+        assert.deepEqual(revoked.mcpGrants, {
+          revision: 2,
+          connectionIds: [privateMail],
+          ownCodexMcpServers: false,
+        });
+      }).pipe(Effect.scoped),
     );
   }).pipe(Effect.provide(layerDatabase)),
 );

@@ -27,6 +27,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 
 import * as BotService from "../bots/BotService.ts";
+import * as MacCalendar from "../calendar/MacCalendar.ts";
 import * as McpConnectionOAuth from "./McpConnectionOAuth.ts";
 import * as Settings from "../serverSettings.ts";
 import { requireSettingsSecret } from "../secrets/settingsSecretValue.ts";
@@ -97,6 +98,7 @@ const make = Effect.gen(function* () {
   const resolver = yield* SecretResolver.SecretResolver;
   const bots = yield* BotService.BotService;
   const oauth = yield* McpConnectionOAuth.McpConnectionOAuth;
+  const macCalendar = yield* MacCalendar.MacCalendar;
   // Results of the last explicit refresh, valid only for the revision they checked.
   const checks = new Map<
     McpConnectionId,
@@ -183,11 +185,16 @@ const make = Effect.gen(function* () {
 
   const list = Effect.gen(function* () {
     const current = yield* getSettings;
+    const calendar = yield* macCalendar.summary.pipe(
+      Effect.mapError((cause) => new McpConnectionError({ reason: "settings-unavailable", cause })),
+    );
     return {
       connections: yield* Effect.forEach(
         Object.entries(current.mcpConnections),
         ([id, definition]) => summaryOf(id as McpConnectionId, definition),
       ),
+      // Elsewhere than a Mac it is listed as unsupported, so clients can say why it is missing.
+      calendar,
     };
   }).pipe(Effect.withSpan("McpConnections.list"));
 

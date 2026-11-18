@@ -70,6 +70,7 @@ import {
   type McpConnectionSignIn,
 } from "./McpConnectionSignIn";
 import { SecretSourceInput, useSecretSources } from "./SecretSourceInput";
+import { MacCalendarRow } from "./MacCalendarSettings";
 import { useSettingsScope } from "./SettingsScopeContext";
 import { searchableSetting } from "./settingsSearch";
 import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsLayout";
@@ -188,6 +189,14 @@ function EnvironmentMcpConnections({
         }
       >
         <p className="px-4 pt-3 text-xs text-muted-foreground">{MCP_CONNECTIONS_NOTICE}</p>
+        {statuses.data?.calendar === undefined ? null : (
+          <MacCalendarRow
+            environmentId={environmentId}
+            calendar={statuses.data.calendar}
+            usage={usage}
+            canEdit={canEdit}
+          />
+        )}
         {entries.length === 0 ? (
           <SettingsRow
             title="No MCP connections"
