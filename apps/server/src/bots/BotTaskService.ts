@@ -1297,7 +1297,8 @@ const make = Effect.gen(function* () {
               JOIN bot_project_contexts c ON c.home_thread_id = h.home_thread_id
               JOIN bots b ON b.bot_id = c.bot_id
               WHERE h.home_thread_id = ${current.home_thread_id} AND h.enabled = 1
-                AND h.early_enabled = 1 AND c.detached_at IS NULL AND b.archived_at IS NULL
+                AND h.early_since <= ${current.completed_at} AND c.detached_at IS NULL
+                AND b.archived_at IS NULL
             `;
         }),
       )

@@ -3,7 +3,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* sql`ALTER TABLE bot_home_checks ADD COLUMN early_enabled INTEGER NOT NULL DEFAULT 0`;
+  // When early checks were turned on, null while off; work that ended before does not count.
+  yield* sql`ALTER TABLE bot_home_checks ADD COLUMN early_since TEXT`;
   // The two latest early checks this Home started; the Bot-wide limit reads them across its Homes.
   yield* sql`ALTER TABLE bot_home_checks ADD COLUMN early_started_at TEXT`;
   yield* sql`ALTER TABLE bot_home_checks ADD COLUMN early_previous_at TEXT`;

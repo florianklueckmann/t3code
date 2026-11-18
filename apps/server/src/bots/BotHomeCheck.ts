@@ -63,7 +63,7 @@ interface Row {
   readonly done_through: string;
   readonly check_message_id: string | null;
   readonly last_outcome_json: string | null;
-  readonly early_enabled: number;
+  readonly early_since: string | null;
   readonly early_started_at: string | null;
   readonly early_previous_at: string | null;
 }
@@ -161,7 +161,7 @@ export const make = Effect.gen(function* () {
       revision: row?.settings_revision ?? 0,
       enabled: row?.enabled === 1,
       timeOfDay: row?.time_of_day ?? BOT_HOME_CHECK_DEFAULT_TIME,
-      early: row?.early_enabled === 1,
+      early: row?.early_since != null,
       unavailableReason: yield* unsupported(home, bot),
       writable: active,
       lastCheck:
@@ -191,7 +191,7 @@ export const make = Effect.gen(function* () {
     const currentTime = current?.time_of_day ?? BOT_HOME_CHECK_DEFAULT_TIME;
     const timeOfDay = input.timeOfDay ?? currentTime;
     const wasEnabled = current?.enabled === 1;
-    const wasEarly = current?.early_enabled === 1;
+    const wasEarly = current?.early_since != null;
     if (input.early === true && !input.enabled)
       return yield* invalid("The early check needs the Daily Home check on.");
     const early = input.enabled && (input.early ?? wasEarly);
@@ -206,15 +206,16 @@ export const make = Effect.gen(function* () {
     const now = DateTime.formatIso(yield* DateTime.now);
     // Turning on, resuming or moving the time starts the schedule over, so nothing runs at once.
     const restart = (input.enabled && !wasEnabled) || timeOfDay !== currentTime;
+    const earlySince = early ? (current?.early_since ?? now) : null;
     const committed = yield* sql.withTransaction(
       Effect.gen(function* () {
         const latest = yield* rowOf(home);
         if ((latest?.settings_revision ?? 0) !== input.baseRevision) return false;
-        yield* sql`INSERT INTO bot_home_checks (home_thread_id, settings_revision, enabled, time_of_day, done_through, early_enabled, updated_at)
-          VALUES (${home}, 1, ${input.enabled ? 1 : 0}, ${timeOfDay}, ${now}, ${early ? 1 : 0}, ${now})
+        yield* sql`INSERT INTO bot_home_checks (home_thread_id, settings_revision, enabled, time_of_day, done_through, early_since, updated_at)
+          VALUES (${home}, 1, ${input.enabled ? 1 : 0}, ${timeOfDay}, ${now}, ${earlySince}, ${now})
           ON CONFLICT (home_thread_id) DO UPDATE SET settings_revision = settings_revision + 1,
             enabled = excluded.enabled, time_of_day = excluded.time_of_day,
-            early_enabled = excluded.early_enabled,
+            early_since = excluded.early_since,
             done_through = CASE WHEN ${restart ? 1 : 0} = 1 THEN excluded.done_through ELSE done_through END,
             updated_at = excluded.updated_at`;
         // Turning early checks on starts with work that finishes from now on.
@@ -366,6 +367,11 @@ export const make = Effect.gen(function* () {
     const messageId = MessageId.make(
       early ? `${EARLY_PREFIX}${home}:${at}` : `bot-home-check:${home}:${row.done_through}`,
     );
+    // A daily check that started with nothing claimed left no claim to recover; adopt it as is.
+    if (!early && (yield* threads.hasReceipt(CommandId.make(messageId)))) {
+      retryAfter.delete(home);
+      return yield* started(home, messageId, at);
+    }
     yield* sql`UPDATE bot_home_check_outcomes SET check_message_id = ${messageId}
       WHERE home_thread_id = ${home} AND check_message_id IS NULL`;
     const outcomes = yield* sql<ClaimedOutcome>`SELECT o.task_id, t.title, t.status, t.result_run_id
@@ -465,7 +471,11 @@ export const make = Effect.gen(function* () {
       FROM bot_home_checks h
       JOIN bot_project_contexts c ON c.home_thread_id = h.home_thread_id
       JOIN bots b ON b.bot_id = c.bot_id
-      WHERE h.enabled = 1 OR (h.check_message_id IS NOT NULL AND h.last_outcome_json IS NULL)`;
+      WHERE h.enabled = 1 OR (h.check_message_id IS NOT NULL AND h.last_outcome_json IS NULL)
+        OR EXISTS (SELECT 1 FROM bot_home_check_outcomes o WHERE o.home_thread_id = h.home_thread_id AND o.check_message_id IS NOT NULL)`;
+    // Every Home settles first, so an early check a crash left unrecorded counts against its Bot
+    // before any of the Bot's Homes starts another.
+    const idle: Array<(typeof rows)[number] & { readonly owed: number }> = [];
     for (const row of rows) {
       const home = row.home_thread_id;
       const running = row.last_outcome_json === null ? row.check_message_id : null;
@@ -473,7 +483,11 @@ export const make = Effect.gen(function* () {
       if (running !== null && !(yield* reconcile(home, running, at))) continue;
       // Outside a running check, a claim is one a crash cut short; what is not adopted is pending.
       if (running === null && row.claimed > 0 && (yield* recover(home, at))) continue;
-      const pending = row.pending + (running === null ? row.claimed : 0);
+      idle.push({ ...row, owed: row.pending + (running === null ? row.claimed : 0) });
+    }
+    for (const row of idle) {
+      const home = row.home_thread_id;
+      const pending = row.owed;
       if (row.active !== 1) {
         if (pending > 0)
           yield* sql`DELETE FROM bot_home_check_outcomes WHERE home_thread_id = ${home} AND check_message_id IS NULL`;
@@ -485,7 +499,7 @@ export const make = Effect.gen(function* () {
         DateTime.setZone(DateTime.makeUnsafe(row.done_through), zone),
       );
       if (due !== null && !DateTime.isGreaterThan(due, now)) yield* start(row, now, false);
-      else if (row.early_enabled === 1 && pending > 0) yield* start(row, now, true);
+      else if (row.early_since !== null && pending > 0) yield* start(row, now, true);
     }
   });
   yield* scheduler.register("bot-home-check", tick);

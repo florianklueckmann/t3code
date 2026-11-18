@@ -237,6 +237,7 @@ const make = Effect.gen(function* () {
     yield* store.clearThreadSync({ homeThreadId, revision: context.revision });
   });
 
+  /** Archive and detach owe Home nothing: no pending returns and no pending early Home checks. */
   const revokeHomeReturns = Effect.fn("BotService.revokeHomeReturns")(function* (
     botId: BotId,
     projectId?: ProjectId,
@@ -244,6 +245,9 @@ const make = Effect.gen(function* () {
     yield* sql`UPDATE bot_tasks SET return_home_run_id = NULL
       WHERE bot_id = ${botId} AND return_finished_at IS NULL
         AND (${projectId ?? null} IS NULL OR project_id = ${projectId ?? null})`;
+    yield* sql`DELETE FROM bot_home_check_outcomes WHERE check_message_id IS NULL
+      AND home_thread_id IN (SELECT home_thread_id FROM bot_project_contexts
+        WHERE bot_id = ${botId} AND (${projectId ?? null} IS NULL OR project_id = ${projectId ?? null}))`;
   });
 
   /**

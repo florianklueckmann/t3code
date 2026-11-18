@@ -133,6 +133,15 @@ it.each([
     ["one item added"],
   ],
   [
+    "a daily check standing in for the early one",
+    "early-decision-to-waiting",
+    proposed({
+      text: "Choose Harbor Hall or Lantern Loft for the offsite",
+      refs: [{ kind: "task", taskId: "task-1" }],
+    }),
+    ["finished work started the check"],
+  ],
+  [
     "a change outside Waiting",
     "nothing-useful-noop",
     run({ after: { ...note(), context: [{ text: "Offsite is in May", refs: [] }] } }),

@@ -541,26 +541,37 @@ it.effect("waits for a quiet Home and retries a refused start without a Bot writ
   }).pipe(Effect.provide(services)),
 );
 
-it.effect("replays the same start after a crash before its Bot write", () =>
+it.effect("adopts a start a crash left unrecorded, without what ended after it", () =>
   Effect.gen(function* () {
     yield* seed();
     const homeTurns = yield* orchestrator;
-    const first = yield* startService(homeTurns);
+    const first = yield* startService(homeTurns, results);
     yield* at("2026-11-09T07:00:00.000Z");
-    yield* enable(first.check);
+    yield* enable(first.check, { early: true });
     yield* at("2026-11-09T08:00:00.000Z");
     yield* Ref.set(homeTurns.crashAfter, "restricted_run.start");
     assert.isTrue(Exit.hasDies(yield* Effect.exit(first.tick())));
     assert.equal(yield* outcomeOf(first.check), null);
+    yield* at("2026-11-09T08:05:00.000Z");
+    yield* finished("late");
 
-    const restarted = yield* startService(homeTurns);
+    const restarted = yield* startService(homeTurns, results);
     // The started run is Home activity; the retry waits for the quiet period like any other.
-    yield* at("2026-11-09T08:10:00.000Z");
+    yield* at("2026-11-09T08:15:00.000Z");
     yield* restarted.tick();
-    const sent = yield* homeTurns.sent("restricted_run.start");
-    assert.deepEqual(sent, [`bot-home-check:${home}:2026-11-09T07:00:00.000Z`, sent[0]]);
+    assert.deepEqual(yield* homeTurns.sent("restricted_run.start"), [
+      `bot-home-check:${home}:2026-11-09T07:00:00.000Z`,
+    ]);
     assert.lengthOf(yield* homeTurns.runs, 1);
     assert.equal((yield* outcomeOf(restarted.check))?.outcome, "running");
+    assert.deepEqual(yield* outcomes, [{ task_id: "late", check_message_id: null }]);
+    // The started check never saw it, so the next check gets it.
+    yield* endCheck("completed");
+    yield* restarted.tick();
+    const [daily, next] = yield* startTexts(homeTurns);
+    assert.notInclude(daily?.text, '"taskId":"late"');
+    assert.equal(next?.id, earlyId("2026-11-09T08:15:00.000Z"));
+    assert.include(next?.text, '"taskId":"late"');
   }).pipe(Effect.provide(services)),
 );
 
@@ -1024,14 +1035,18 @@ it.effect("limits a Bot to two early checks an hour apart across its projects", 
     yield* at("2026-11-09T11:09:59.000Z");
     yield* tick();
     assert.lengthOf(yield* startTexts(homeTurns), 1);
+    // The second check starts, then the server dies before recording it.
     yield* at("2026-11-09T11:10:00.000Z");
-    yield* tick();
-    yield* endCheck("completed");
-    yield* at("2026-11-09T12:00:00.000Z");
+    yield* Ref.set(homeTurns.crashAfter, "restricted_run.start");
+    assert.isTrue(Exit.hasDies(yield* Effect.exit(tick())));
+    yield* at("2026-11-09T11:15:00.000Z");
     yield* finished("again");
-    for (const time of ["2026-11-09T12:10:00.000Z", "2026-11-09T22:59:00.000Z"]) {
+    // After the restart, the first project is read first; the unrecorded check still counts.
+    const restarted = yield* startService(homeTurns, results);
+    for (const time of ["2026-11-09T11:30:00.000Z", "2026-11-09T22:59:00.000Z"]) {
       yield* at(time);
-      yield* tick();
+      yield* restarted.tick();
+      yield* endCheck("completed");
     }
     assert.deepEqual(
       (yield* startTexts(homeTurns)).map((sent) => sent.thread),

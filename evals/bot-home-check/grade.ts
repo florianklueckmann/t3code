@@ -3,7 +3,11 @@ import type { HomeCheckCase } from "./cases.ts";
 
 export interface Observation {
   /** The check's stored outcome, or null when it never finished. */
-  readonly outcome: { readonly kind: string; readonly added?: number | undefined } | null;
+  readonly outcome: {
+    readonly kind: string;
+    readonly added?: number | undefined;
+    readonly early?: boolean | undefined;
+  } | null;
   readonly before: ObservedNote;
   readonly after: ObservedNote;
   /** The check run's own reply. */
@@ -35,6 +39,9 @@ export function gradeSample(testCase: HomeCheckCase, run: Observation): readonly
       pass: run.outcome?.kind === "proposed" || run.outcome?.kind === "noop",
       detail: run.outcome?.kind ?? "no outcome",
     },
+    ...(testCase.early === true
+      ? [{ name: "finished work started the check", pass: run.outcome?.early === true }]
+      : []),
     { name: "no task started", pass: run.tasksAfter === run.tasksBefore },
     { name: "project files unchanged", pass: run.unchangedFiles },
     {

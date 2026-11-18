@@ -1837,6 +1837,7 @@ it.effect("detach and archive pause routines and stop their work until resumed",
     yield* TestClock.setTime(START);
     yield* seedProject;
     const world = yield* makeThreadWorld;
+    const sql = yield* BotDatabase.BotDatabase;
     yield* withServices(world, (services) =>
       Effect.gen(function* () {
         const home = yield* attachBot(services);
@@ -1846,8 +1847,14 @@ it.effect("detach and archive pause routines and stop their work until resumed",
         const run = yield* services.routines.runNow({ id: routine.id });
         const workThreadId = run.threadId ?? assert.fail("no work thread");
         yield* world.update(workThreadId, { status: "running" });
+        // Work that ended earlier and still waits for an early Home check.
+        const owed = sql`INSERT INTO bot_home_check_outcomes (task_id, home_thread_id) VALUES ('owed', ${home})`;
+        const outcomes = sql`SELECT task_id FROM bot_home_check_outcomes`;
+        yield* owed;
 
         yield* services.bots.detachProject({ botId, projectId: campaign });
+        // Nothing is owed after a reattach, even one before the next scheduler tick.
+        assert.deepEqual(yield* outcomes, []);
         const paused = (yield* services.routines.list()).tasks[0];
         assert.isFalse(paused?.enabled);
         assert.isNull(paused?.nextRunAt);
@@ -1877,7 +1884,9 @@ it.effect("detach and archive pause routines and stop their work until resumed",
           (yield* services.routines.setEnabled({ id: routine.id, enabled: true })).task.enabled,
         );
 
+        yield* owed;
         yield* services.bots.setArchived({ botId, archived: true });
+        assert.deepEqual(yield* outcomes, []);
         assert.isFalse((yield* services.routines.list()).tasks[0]?.enabled);
         yield* services.bots.setArchived({ botId, archived: false });
         assert.isFalse((yield* services.routines.list()).tasks[0]?.enabled);
@@ -2260,7 +2269,8 @@ it.effect.each<{
 
 it.effect.each<{
   readonly name: string;
-  readonly early?: false;
+  /** When early checks were turned on, null while off; default START. */
+  readonly early?: string | null;
   /** Runs the work; the ids of the tasks that should ask for an early Home check. */
   readonly run: (
     services: Services,
@@ -2379,7 +2389,17 @@ it.effect.each<{
   },
   {
     name: "a completed routine run while early checks are off",
-    early: false,
+    early: null,
+    run: (services, world) =>
+      Effect.gen(function* () {
+        const routine = yield* runRoutine(services, true);
+        yield* world.update(routine.workThreadId, { status: "completed" });
+        return [];
+      }),
+  },
+  {
+    name: "a routine run that ended before early checks were turned on",
+    early: iso(START + HOUR),
     run: (services, world) =>
       Effect.gen(function* () {
         const routine = yield* runRoutine(services, true);
@@ -2396,8 +2416,9 @@ it.effect.each<{
     yield* withServices(world, (services) =>
       Effect.gen(function* () {
         const home = yield* attachBot(services);
-        yield* sql`INSERT INTO bot_home_checks (home_thread_id, settings_revision, enabled, time_of_day, done_through, early_enabled, updated_at)
-          VALUES (${home}, 1, 1, '08:00', ${iso(START)}, ${early === false ? 0 : 1}, ${iso(START)})`;
+        // A notification that waits for Home can land after early checks were turned on.
+        yield* sql`INSERT INTO bot_home_checks (home_thread_id, settings_revision, enabled, time_of_day, done_through, early_since, updated_at)
+          VALUES (${home}, 1, 1, '08:00', ${iso(START)}, ${early === undefined ? iso(START) : early}, ${iso(START)})`;
         const expected = yield* run(services, world, home).pipe(
           Effect.provideService(BotDatabase.BotDatabase, sql),
         );

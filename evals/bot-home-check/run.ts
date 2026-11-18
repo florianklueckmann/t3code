@@ -45,7 +45,11 @@ const QUIET_WAIT = "11 minutes";
 const POLL = "15 seconds";
 const POLLS = 80;
 
-const Outcome = Schema.Struct({ kind: Schema.String, added: Schema.optional(Schema.Number) });
+const Outcome = Schema.Struct({
+  kind: Schema.String,
+  added: Schema.optional(Schema.Number),
+  early: Schema.optional(Schema.Boolean),
+});
 const decodeOutcome = Schema.decodeUnknownSync(Schema.fromJsonString(Outcome));
 
 const inThreeWeeks = DateTime.now.pipe(
@@ -91,9 +95,9 @@ const botDatabase = (path: string) => {
     /** Daily and early checks on, with the daily time just passed, so only finished work starts one. */
     early: (home: string, slot: Effect.Success<typeof passedSlot>) => {
       db.prepare(
-        `INSERT INTO bot_home_checks (home_thread_id, settings_revision, enabled, time_of_day, done_through, early_enabled, updated_at)
-          VALUES (?, 1, 1, ?, ?, 1, ?)`,
-      ).run(home, slot.timeOfDay, slot.now, slot.now);
+        `INSERT INTO bot_home_checks (home_thread_id, settings_revision, enabled, time_of_day, done_through, early_since, updated_at)
+          VALUES (?, 1, 1, ?, ?, ?, ?)`,
+      ).run(home, slot.timeOfDay, slot.now, slot.now, slot.now);
     },
     read: (home: string) =>
       db
@@ -155,6 +159,11 @@ const setUp = Effect.fn("botHomeCheckEval.setUp")(function* (
     userMessageIds,
     taskId,
     filesBefore: files(home.root),
+    // An early check may start ten minutes after the task, before later fixtures are set up.
+    baseline:
+      testCase.early === true
+        ? { note: yield* noteOf(call, home), tasks: (yield* taskList(call, tag)).length }
+        : null,
   };
 });
 type Fixture = Effect.Success<ReturnType<typeof setUp>>;
@@ -352,7 +361,10 @@ const main = Effect.gen(function* () {
           note.waiting.some((item) => /passport|lease/i.test(item.text))
         )
           setup.get(fixture)!.push("the user's removal did not leave Waiting");
-        baselines.set(fixture, { note, tasks: (yield* taskList(call, fixture.botId)).length });
+        baselines.set(
+          fixture,
+          fixture.baseline ?? { note, tasks: (yield* taskList(call, fixture.botId)).length },
+        );
       }
       yield* runChecks(
         db,
