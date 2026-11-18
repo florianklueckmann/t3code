@@ -2258,6 +2258,171 @@ it.effect.each<{
   }).pipe(Effect.provide(layerDatabase)),
 );
 
+it.effect.each<{
+  readonly name: string;
+  readonly early?: false;
+  /** Runs the work; the ids of the tasks that should ask for an early Home check. */
+  readonly run: (
+    services: Services,
+    world: ThreadWorld,
+    home: ThreadId,
+  ) => Effect.Effect<
+    ReadonlyArray<string>,
+    BotError | ScheduledTaskError,
+    Scope.Scope | BotDatabase.BotDatabase
+  >;
+}>([
+  {
+    name: "a completed routine run",
+    run: (services, world) =>
+      Effect.gen(function* () {
+        const routine = yield* runRoutine(services, true);
+        yield* world.update(routine.workThreadId, { status: "completed" });
+        return [routine.taskId];
+      }),
+  },
+  {
+    name: "a failed routine run without a diagnosis",
+    run: (services, world) =>
+      Effect.gen(function* () {
+        const routine = yield* runRoutine(services, true);
+        yield* endRun(world, routine.workThreadId, "failed");
+        return [routine.taskId];
+      }),
+  },
+  {
+    name: "a failed routine run a diagnosis takes on, then the diagnosis",
+    run: (services, world) =>
+      Effect.gen(function* () {
+        yield* enableDiagnosis(services);
+        const routine = yield* runRoutine(services, true);
+        yield* TestClock.adjust("1 second");
+        yield* endRun(world, routine.workThreadId, "failed");
+        yield* services.tasks.reconcile;
+        const [diagnosis] = yield* diagnosesOf(services, routine.taskId);
+        if (diagnosis?.workThreadId == null) return assert.fail("no diagnosis");
+        yield* world.update(diagnosis.workThreadId, { status: "completed" });
+        return [diagnosis.id];
+      }),
+  },
+  {
+    name: "a completed direct task",
+    run: (services, world) =>
+      Effect.gen(function* () {
+        const task = yield* services.tasks.start({ botId, projectId: campaign, prompt: "Pick." });
+        yield* world.update(task.workThreadId ?? assert.fail("no work thread"), {
+          status: "completed",
+        });
+        return [task.id];
+      }),
+  },
+  {
+    name: "a completed direct task that returns to Home",
+    run: (services, world, home) =>
+      Effect.gen(function* () {
+        yield* seedHomeRun(world, home, "external-mcp");
+        const task = yield* services.tasks.start(
+          { botId, projectId: campaign, prompt: "Pick." },
+          { returnToHomeFrom: home },
+        );
+        yield* world.update(home, { status: "completed" });
+        yield* world.update(task.workThreadId ?? assert.fail("no work thread"), {
+          status: "completed",
+        });
+        return [];
+      }),
+  },
+  {
+    name: "a failed direct task that was to return to Home",
+    run: (services, world, home) =>
+      Effect.gen(function* () {
+        yield* seedHomeRun(world, home, "external-mcp");
+        const task = yield* services.tasks.start(
+          { botId, projectId: campaign, prompt: "Pick." },
+          { returnToHomeFrom: home },
+        );
+        yield* world.update(home, { status: "completed" });
+        yield* endRun(world, task.workThreadId ?? assert.fail("no work thread"), "failed");
+        return [task.id];
+      }),
+  },
+  {
+    name: "a cancelled routine run",
+    run: (services, world) =>
+      Effect.gen(function* () {
+        const routine = yield* runRoutine(services, true);
+        yield* world.update(routine.workThreadId, { status: "running" });
+        yield* services.tasks.cancel({ taskId: BotTaskId.make(routine.taskId) });
+        yield* world.update(routine.workThreadId, { status: "cancelled" });
+        return [];
+      }),
+  },
+  {
+    name: "an interrupted routine run",
+    run: (services, world) =>
+      Effect.gen(function* () {
+        const routine = yield* runRoutine(services, true);
+        yield* endRun(world, routine.workThreadId, "interrupted");
+        return [];
+      }),
+  },
+  {
+    name: "a skipped routine occurrence",
+    run: (_services, _world, home) =>
+      Effect.gen(function* () {
+        const sql = yield* BotDatabase.BotDatabase;
+        const now = iso(START);
+        yield* sql`INSERT INTO bot_tasks (task_id, bot_id, project_id, home_thread_id, origin, title, prompt, runtime_mode, status, completed_at, created_at, updated_at)
+          VALUES ('skipped', ${botId}, ${campaign}, ${home}, 'routine', 'Prepare', 'Prepare', 'full-access', 'skipped', ${now}, ${now}, ${now})`;
+        return [];
+      }).pipe(Effect.orDie),
+  },
+  {
+    name: "a completed routine run while early checks are off",
+    early: false,
+    run: (services, world) =>
+      Effect.gen(function* () {
+        const routine = yield* runRoutine(services, true);
+        yield* world.update(routine.workThreadId, { status: "completed" });
+        return [];
+      }),
+  },
+])("records whether $name asks for an early Home check", ({ early, run }) =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(START);
+    yield* seedProject;
+    const world = yield* makeThreadWorld;
+    const sql = yield* BotDatabase.BotDatabase;
+    yield* withServices(world, (services) =>
+      Effect.gen(function* () {
+        const home = yield* attachBot(services);
+        yield* sql`INSERT INTO bot_home_checks (home_thread_id, settings_revision, enabled, time_of_day, done_through, early_enabled, updated_at)
+          VALUES (${home}, 1, 1, '08:00', ${iso(START)}, ${early === false ? 0 : 1}, ${iso(START)})`;
+        const expected = yield* run(services, world, home).pipe(
+          Effect.provideService(BotDatabase.BotDatabase, sql),
+        );
+        yield* services.tasks.reconcile;
+        yield* services.tasks.reconcile;
+        // Every task reached the point where its outcome is recorded.
+        assert.deepEqual(yield* sql`SELECT task_id FROM bot_tasks WHERE notified_at IS NULL`, []);
+        const recorded = yield* sql<{
+          readonly task_id: string;
+          readonly home_thread_id: string;
+          readonly check_message_id: string | null;
+        }>`SELECT * FROM bot_home_check_outcomes ORDER BY task_id`;
+        assert.deepEqual(
+          recorded,
+          expected.map((taskId) => ({
+            task_id: taskId,
+            home_thread_id: home,
+            check_message_id: null,
+          })),
+        );
+      }),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
 it.effect("saves the failure diagnosis rule only from its current revision and while active", () =>
   Effect.gen(function* () {
     yield* TestClock.setTime(START);

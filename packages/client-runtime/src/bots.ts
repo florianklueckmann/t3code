@@ -1016,24 +1016,34 @@ export function botHomeCheckStatusLabel(view: BotHomeCheckView): string {
 export function botHomeCheckLastLabel(view: BotHomeCheckView): string | null {
   const last = view.lastCheck;
   if (last === null) return null;
+  const name = last.early === true ? "Last early check" : "Last check";
   switch (last.outcome) {
     case "running":
-      return "Checking now";
+      return last.early === true ? "Checking early now" : "Checking now";
     case "proposed":
-      return `Last check: added ${last.added ?? 0} to Waiting on you`;
+      return `${name}: added ${last.added ?? 0} to Waiting on you`;
     case "noop":
-      return "Last check: nothing to add";
+      return `${name}: nothing to add`;
     case "failed":
     case "interrupted":
     case "stopped":
     case "unsupported":
-      return "Last check: couldn't check";
+      return `${name}: couldn't check`;
     default:
-      return "Last check finished";
+      return `${name} finished`;
   }
 }
 export function canToggleBotHomeCheck(view: BotHomeCheckView, formLocked: boolean): boolean {
   return view.enabled || (!formLocked && view.writable && view.unavailableReason === null);
+}
+
+export const BOT_HOME_CHECK_EARLY_DESCRIPTION =
+  "When a routine or task here finishes or fails, check then instead of waiting for the daily check. At most twice a day per Bot, an hour apart.";
+/** Whether the early check switch shows; servers without early checks omit the setting. */
+export const hasBotHomeCheckEarly = (view: BotHomeCheckView): boolean => view.early !== undefined;
+/** Early checks ride on the daily check: they turn on only while it is on. */
+export function canToggleBotHomeCheckEarly(view: BotHomeCheckView, formLocked: boolean): boolean {
+  return view.early === true || (view.enabled && canToggleBotHomeCheck(view, formLocked));
 }
 
 export const BOT_FAILURE_DIAGNOSIS_DESCRIPTION =

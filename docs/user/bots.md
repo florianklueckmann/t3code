@@ -284,6 +284,18 @@ nothing. A check waits until the conversation has been quiet for ten minutes,
 skips while it is snoozed or archived, and runs only once after days the server
 was off. It needs a Codex model on a Mac server.
 
+**Check early after finished work**, under the Daily Home check, runs the same
+check soon after a routine, a diagnosis or a task you asked for finishes or
+fails, so a decision it needs reaches Waiting on you the same day. Work that
+finishes close together gets one check, once the conversation has been quiet
+for ten minutes. A task that reports back to the conversation on its own, and
+work that was cancelled, skipped or interrupted, do not count, and a failed
+routine that **Diagnose failed routines** looks into waits for its diagnosis. A
+Bot gets at most two early checks a day across its projects, at least an hour
+apart; what does not fit waits for the daily check, which also covers anything
+still pending when it runs. It only works while the Daily Home check is on and
+starts with work that finishes after you turn it on.
+
 The Bot gets its current learning at the start of each turn, not its whole
 history: at most 40 entries or 8,000 characters, your instructions first and
 then the newest. Each project's **Learning** section previews the next turn

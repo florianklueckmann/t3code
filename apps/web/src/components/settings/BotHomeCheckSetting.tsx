@@ -1,9 +1,12 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
   BOT_HOME_CHECK_DESCRIPTION,
+  BOT_HOME_CHECK_EARLY_DESCRIPTION,
   botHomeCheckLastLabel,
   botHomeCheckStatusLabel,
   canToggleBotHomeCheck,
+  canToggleBotHomeCheckEarly,
+  hasBotHomeCheckEarly,
 } from "@t3tools/client-runtime/bots";
 import {
   isAtomCommandInterrupted,
@@ -50,7 +53,11 @@ export function BotHomeCheckSetting({
   const switchId = `bot-home-check-${projectId}`;
   const last = botHomeCheckLastLabel(view);
 
-  const save = async (change: { readonly enabled: boolean; readonly timeOfDay?: string }) => {
+  const save = async (change: {
+    readonly enabled: boolean;
+    readonly timeOfDay?: string;
+    readonly early?: boolean;
+  }) => {
     setBusy(true);
     const result = await configure({
       environmentId,
@@ -80,40 +87,56 @@ export function BotHomeCheckSetting({
   };
 
   return (
-    <div className="flex items-start justify-between gap-3 rounded-lg border p-3">
-      <div className="min-w-0 space-y-1">
-        <Label htmlFor={switchId}>{`${title} · Daily Home check`}</Label>
-        <p className="text-xs text-muted-foreground">{BOT_HOME_CHECK_DESCRIPTION}</p>
-        <p className="text-xs text-muted-foreground" id={`${switchId}-status`}>
-          {botHomeCheckStatusLabel(view)}
-          {last === null ? null : ` · ${last}`}
-        </p>
-        <div className="flex items-center gap-2 pt-1">
-          <Label htmlFor={`${switchId}-time`}>Check at</Label>
-          {/* Saved on blur: a time input reports each edited segment as its own change. */}
-          <Input
-            key={view.timeOfDay}
-            type="time"
-            id={`${switchId}-time`}
-            nativeInput
-            className="w-32"
-            defaultValue={view.timeOfDay}
-            disabled={busy || !canConfigure || formLocked || !view.writable}
-            onBlur={(event) => {
-              const timeOfDay = event.currentTarget.value;
-              if (/^\d{2}:\d{2}$/.test(timeOfDay) && timeOfDay !== view.timeOfDay)
-                void save({ enabled: view.enabled, timeOfDay });
-            }}
+    <div className="space-y-3 rounded-lg border p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 space-y-1">
+          <Label htmlFor={switchId}>{`${title} · Daily Home check`}</Label>
+          <p className="text-xs text-muted-foreground">{BOT_HOME_CHECK_DESCRIPTION}</p>
+          <p className="text-xs text-muted-foreground" id={`${switchId}-status`}>
+            {botHomeCheckStatusLabel(view)}
+            {last === null ? null : ` · ${last}`}
+          </p>
+          <div className="flex items-center gap-2 pt-1">
+            <Label htmlFor={`${switchId}-time`}>Check at</Label>
+            {/* Saved on blur: a time input reports each edited segment as its own change. */}
+            <Input
+              key={view.timeOfDay}
+              type="time"
+              id={`${switchId}-time`}
+              nativeInput
+              className="w-32"
+              defaultValue={view.timeOfDay}
+              disabled={busy || !canConfigure || formLocked || !view.writable}
+              onBlur={(event) => {
+                const timeOfDay = event.currentTarget.value;
+                if (/^\d{2}:\d{2}$/.test(timeOfDay) && timeOfDay !== view.timeOfDay)
+                  void save({ enabled: view.enabled, timeOfDay });
+              }}
+            />
+          </div>
+        </div>
+        <Switch
+          id={switchId}
+          aria-describedby={`${switchId}-status`}
+          checked={view.enabled}
+          disabled={busy || !canConfigure || !canToggleBotHomeCheck(view, formLocked)}
+          onCheckedChange={(enabled) => void save({ enabled })}
+        />
+      </div>
+      {hasBotHomeCheckEarly(view) ? (
+        <div className="flex items-start justify-between gap-3 border-t pt-3">
+          <div className="min-w-0 space-y-1">
+            <Label htmlFor={`${switchId}-early`}>Check early after finished work</Label>
+            <p className="text-xs text-muted-foreground">{BOT_HOME_CHECK_EARLY_DESCRIPTION}</p>
+          </div>
+          <Switch
+            id={`${switchId}-early`}
+            checked={view.early === true}
+            disabled={busy || !canConfigure || !canToggleBotHomeCheckEarly(view, formLocked)}
+            onCheckedChange={(early) => void save({ enabled: view.enabled, early })}
           />
         </div>
-      </div>
-      <Switch
-        id={switchId}
-        aria-describedby={`${switchId}-status`}
-        checked={view.enabled}
-        disabled={busy || !canConfigure || !canToggleBotHomeCheck(view, formLocked)}
-        onCheckedChange={(enabled) => void save({ enabled })}
-      />
+      ) : null}
     </div>
   );
 }

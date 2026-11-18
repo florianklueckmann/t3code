@@ -200,6 +200,7 @@ it.effect.each(
             [17, "ScheduledTaskProvenance"],
             [18, "BotFailureDiagnosis"],
             [19, "BotLearningNotices"],
+            [20, "BotHomeCheckEarly"],
           ],
         );
         return { ...current, botHistory };

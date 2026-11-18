@@ -16,6 +16,11 @@ export const BotHomeCheckView = Schema.Struct({
   revision: NonNegativeInt,
   enabled: Schema.Boolean,
   timeOfDay: BotHomeCheckTimeOfDay,
+  /**
+   * Also check early when Bot work in this project finishes or fails; only with the daily check
+   * on. Absent from servers without early checks.
+   */
+  early: Schema.optionalKey(Schema.Boolean),
   /** Why the check cannot be turned on here; a string so new reasons stay decodable. */
   unavailableReason: Schema.NullOr(Schema.String),
   /** False while the Bot is archived or the project detached. */
@@ -26,6 +31,8 @@ export const BotHomeCheckView = Schema.Struct({
       at: IsoDateTime,
       outcome: Schema.String,
       added: Schema.optionalKey(NonNegativeInt),
+      /** True when finished Bot work requested this check ahead of the daily one. */
+      early: Schema.optionalKey(Schema.Boolean),
     }),
   ),
 });
@@ -36,6 +43,8 @@ export const BotConfigureHomeCheckInput = Schema.Struct({
   baseRevision: NonNegativeInt,
   enabled: Schema.Boolean,
   timeOfDay: Schema.optionalKey(BotHomeCheckTimeOfDay),
+  /** Omitted keeps the current choice; turning the daily check off turns this off too. */
+  early: Schema.optionalKey(Schema.Boolean),
 });
 export type BotConfigureHomeCheckInput = typeof BotConfigureHomeCheckInput.Type;
 
