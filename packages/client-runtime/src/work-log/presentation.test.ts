@@ -5,6 +5,7 @@ import * as DateTime from "effect/DateTime";
 
 import {
   resolveWorkEntryToolPresentation,
+  systemNoticeLevel,
   toolItemForDisplay,
   type WorkLogPresentationEntry,
   workEntryIndicatesToolFailure,
@@ -34,6 +35,16 @@ function commandItem(
     ...fields,
   };
 }
+
+it.each([
+  [{}, "warning"],
+  [{ conversationRecovery: "fresh" }, "info"],
+  [{ conversationRecovery: "rewind" }, "info"],
+  [{ level: "warning", conversationRecovery: "fresh" }, "warning"],
+  [{ level: "info" }, "info"],
+] as const)("system notice %o reads as %s", (notice, level) => {
+  expect(systemNoticeLevel(notice)).toBe(level);
+});
 
 describe("workEntryIndicatesToolFailure", () => {
   const base = {

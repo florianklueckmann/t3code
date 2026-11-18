@@ -134,6 +134,7 @@ function layerExecutorFor(input: {
       ProviderTurnStartService.ProviderTurnStartServiceV2,
       ProviderTurnStartService.ProviderTurnStartServiceV2.of({
         failStartingRun: () => Effect.void,
+        prepareFreshConversation: () => Effect.undefined,
         start: () =>
           Effect.gen(function* () {
             yield* record("start");

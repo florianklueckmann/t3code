@@ -136,6 +136,12 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
     type: Schema.Literal("delegated-tasks.stop"),
     reason: Schema.optional(Schema.String),
   }),
+  /** Runs in the thread's effect order, so a turn sent while it runs starts after it. */
+  Schema.Struct({
+    type: Schema.Literal("conversation-recovery.summarize"),
+    /** The newest run when the user asked; a message sent since then is not summarized. */
+    throughRunOrdinal: NonNegativeInt,
+  }),
 ]);
 export type OrchestrationEffectRequestV2 = typeof OrchestrationEffectRequestV2.Type;
 
@@ -150,6 +156,7 @@ export const REPLAY_SAFE_EFFECT_TYPES_AFTER_PROCESS_LOSS = [
   "attachment.cleanup",
   "thread-title.generate",
   "delegated-tasks.stop",
+  "conversation-recovery.summarize",
 ] as const satisfies ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
 
 export const PROCESS_BOUND_EFFECT_TYPES = [

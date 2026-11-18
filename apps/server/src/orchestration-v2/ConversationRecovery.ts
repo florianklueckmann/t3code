@@ -1,6 +1,7 @@
 import {
   isCompactionCommandMessage,
   type OrchestrationV2ContextHandoff,
+  type OrchestrationV2FreshConversationPreparation,
   type OrchestrationV2HistoricalMessage,
   type OrchestrationV2ProviderTurn,
   type OrchestrationV2Run,
@@ -75,6 +76,38 @@ export function conversationRecoveryHandoffItems(
           attachments: item.attachments,
         })),
   );
+}
+
+/** The fresh-start notice as its preparation stands. Only a failure is a warning. */
+export function freshConversationNotice(
+  prepared: OrchestrationV2FreshConversationPreparation | undefined,
+): { readonly message: string; readonly level: "info" | "warning"; readonly detail?: string } {
+  switch (prepared?.type) {
+    case undefined:
+      return {
+        level: "info",
+        message:
+          "Preparing a summary of this thread for a fresh conversation. A message you send now starts once the summary is ready.",
+      };
+    case "summary":
+      return {
+        level: "info",
+        message:
+          "The summary is ready. Your next message starts a fresh conversation with a summary of this thread.",
+        detail: prepared.summary.text,
+      };
+    case "verbatim":
+      return {
+        level: "info",
+        message:
+          "Your next message starts a fresh conversation with this thread's messages, which are short enough to need no summary.",
+      };
+    case "failed":
+      return {
+        level: "warning",
+        message: `Could not summarize the earlier conversation (${prepared.reason}), so your next message starts a fresh conversation from only the newest messages. Start a fresh conversation again to retry.`,
+      };
+  }
 }
 
 /** The newest summary a fresh conversation wrote, unless a checkpoint restore undid its last run. */

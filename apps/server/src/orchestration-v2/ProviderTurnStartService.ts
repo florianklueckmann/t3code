@@ -7,12 +7,14 @@ import {
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ContextHandoff,
   type OrchestrationV2ExecutionNode,
+  type OrchestrationV2FreshConversationPreparation,
   type OrchestrationV2ProviderThread,
   type OrchestrationV2Run,
   type OrchestrationV2RunAttempt,
   type OrchestrationV2TurnItem,
   isCompactionCommandMessage,
   parseGoalCommand,
+  type ProjectId,
   type ProviderTurnId,
   RunId,
   RunAttemptId,
@@ -174,6 +176,18 @@ export interface ProviderTurnStartServiceV2Shape {
     readonly attemptId: RunAttemptId;
     readonly rootNodeId: NodeId;
   }) => Effect.Effect<void, ProviderTurnStartError | ProviderTurnStartRunStateMissingError>;
+  /**
+   * What the next turn of fresh start `requestId` hands over, prepared ahead of it. Undefined when
+   * that fresh start is no longer pending or already prepared.
+   */
+  readonly prepareFreshConversation: (input: {
+    readonly threadId: ThreadId;
+    readonly requestId: CommandId;
+    readonly throughRunOrdinal: number;
+  }) => Effect.Effect<
+    OrchestrationV2FreshConversationPreparation | undefined,
+    ProjectionStore.ProjectionStoreV2Error
+  >;
 }
 
 export class ProviderTurnStartServiceV2 extends Context.Service<
@@ -220,6 +234,79 @@ export const layer: Layer.Layer<
     const textGeneration = yield* TextGeneration.TextGeneration;
     const serverSettings = yield* ServerSettings.ServerSettingsService;
     const serverConfig = yield* ServerConfig.ServerConfig;
+
+    /** Summarizes the older messages a fresh conversation would not hand over verbatim. */
+    const summarizeFreshConversation = Effect.fn(
+      "ProviderTurnStartService.summarizeFreshConversation",
+    )(function* (input: {
+      readonly threadId: ThreadId;
+      readonly projectId: ProjectId;
+      readonly cwd: string;
+      readonly runs: ReadonlyArray<OrchestrationV2Run>;
+      readonly items: ReadonlyArray<OrchestrationV2TurnItem>;
+      readonly coveredRunOrdinals: OrchestrationV2ContextHandoff["coveredRunOrdinals"];
+      readonly tokenCap: number;
+      readonly previousSummary: HandoffConversationSummary | undefined;
+    }) {
+      const plan = freshConversationPlan({
+        messages: ContextHandoffService.providerHandoffMessages(input.items, input.runs),
+        coverage: handoffCoverage({
+          threadId: input.threadId,
+          coveredRunOrdinals: input.coveredRunOrdinals,
+          items: input.items,
+        }),
+        tokenCap: input.tokenCap,
+        previousSummary: input.previousSummary,
+      });
+      if (plan.type === "verbatim") return plan;
+      if (plan.type === "reuse") return { type: "summary", summary: plan.summary } as const;
+      const generated = yield* Effect.result(
+        Effect.gen(function* () {
+          const { settings } = resolveProjectSettings(
+            yield* serverSettings.getSettings,
+            input.projectId,
+          );
+          let summary = plan.previousSummary;
+          for (const chunk of conversationSummaryChunks(plan.messages)) {
+            const generated = yield* textGeneration
+              .generateConversationSummary({
+                cwd: input.cwd,
+                modelSelection: settings.textGenerationModelSelection,
+                previousSummary: summary,
+                messages: chunk.map(({ role, runOrdinal, text }) => ({ role, runOrdinal, text })),
+              })
+              .pipe(Effect.timeout(FRESH_CONVERSATION_SUMMARY_TIMEOUT));
+            // An empty update would drop what the earlier calls summarized.
+            if (generated.summary.trim() === "") {
+              return yield* new TextGenerationError({
+                operation: "generateConversationSummary",
+                detail: "the model returned an empty summary",
+              });
+            }
+            summary = generated.summary;
+          }
+          return summary ?? "";
+        }),
+      );
+      if (generated._tag === "Success") {
+        const summary: HandoffConversationSummary = {
+          text: generated.success,
+          throughRunOrdinal: plan.throughRunOrdinal,
+        };
+        return { type: "summary", summary } as const;
+      }
+      const reason =
+        generated.failure._tag === "TimeoutError"
+          ? "it took longer than two minutes"
+          : generated.failure._tag === "TextGenerationError"
+            ? generated.failure.detail
+            : generated.failure.message;
+      yield* Effect.logWarning("Fresh conversation summary failed", {
+        threadId: input.threadId,
+        reason,
+      });
+      return { type: "failed", reason } as const;
+    });
 
     // Build draining callbacks outside startup scope so they cannot retain full thread history.
     const makeRunControls = (input: {
@@ -1154,68 +1241,28 @@ export const layer: Layer.Layer<
           return retryHandoff;
         },
       );
-      const summarizeForFreshConversation = Effect.fn(
-        "ProviderTurnStartService.summarizeForFreshConversation",
-      )(function* (
+      // A fresh start prepares its summary right away; this turn reuses it, or its failure.
+      const summarizeForFreshConversation = (
         items: ReadonlyArray<OrchestrationV2TurnItem>,
         coveredRunOrdinals: OrchestrationV2ContextHandoff["coveredRunOrdinals"],
-      ) {
-        const plan = freshConversationPlan({
-          messages: ContextHandoffService.providerHandoffMessages(items, projection.runs),
-          coverage: handoffCoverage({ threadId: projection.thread.id, coveredRunOrdinals, items }),
-          tokenCap,
-          previousSummary: previousConversationSummary(projection.contextHandoffs, projection.runs),
-        });
-        if (plan.type === "verbatim") return plan;
-        if (plan.type === "reuse") return { type: "summary", summary: plan.summary } as const;
-        const generated = yield* Effect.result(
-          Effect.gen(function* () {
-            const { settings } = resolveProjectSettings(
-              yield* serverSettings.getSettings,
-              projection.thread.projectId,
-            );
-            let summary = plan.previousSummary;
-            for (const chunk of conversationSummaryChunks(plan.messages)) {
-              const generated = yield* textGeneration
-                .generateConversationSummary({
-                  cwd: resolvedRuntimePolicy.cwd ?? serverConfig.stateDir,
-                  modelSelection: settings.textGenerationModelSelection,
-                  previousSummary: summary,
-                  messages: chunk.map(({ role, runOrdinal, text }) => ({ role, runOrdinal, text })),
-                })
-                .pipe(Effect.timeout(FRESH_CONVERSATION_SUMMARY_TIMEOUT));
-              // An empty update would drop what the earlier calls summarized.
-              if (generated.summary.trim() === "") {
-                return yield* new TextGenerationError({
-                  operation: "generateConversationSummary",
-                  detail: "the model returned an empty summary",
-                });
-              }
-              summary = generated.summary;
-            }
-            return summary ?? "";
-          }),
-        );
-        if (generated._tag === "Success") {
-          const summary: HandoffConversationSummary = {
-            text: generated.success,
-            throughRunOrdinal: plan.throughRunOrdinal,
-          };
-          return { type: "summary", summary } as const;
-        }
-        const reason =
-          generated.failure._tag === "TimeoutError"
-            ? "it took longer than two minutes"
-            : generated.failure._tag === "TextGenerationError"
-              ? generated.failure.detail
-              : generated.failure.message;
-        yield* Effect.logWarning("Fresh conversation summary failed", {
+      ) => {
+        const recovery = providerThread.conversationRecovery;
+        const prepared = recovery?.type === "fresh" ? recovery.prepared : undefined;
+        if (prepared?.type === "failed") return Effect.succeed(prepared);
+        return summarizeFreshConversation({
           threadId: projection.thread.id,
-          runId,
-          reason,
+          projectId: projection.thread.projectId,
+          cwd: resolvedRuntimePolicy.cwd ?? serverConfig.stateDir,
+          runs: projection.runs,
+          items,
+          coveredRunOrdinals,
+          tokenCap,
+          previousSummary:
+            prepared?.type === "summary"
+              ? prepared.summary
+              : previousConversationSummary(projection.contextHandoffs, projection.runs),
         });
-        return { type: "failed", reason } as const;
-      });
+      };
       const prepareRecoveryHandoff = Effect.fn("ProviderTurnStartService.prepareRecoveryHandoff")(
         function* () {
           const transferId = yield* idAllocator.allocate.contextTransfer({
@@ -1732,6 +1779,7 @@ export const layer: Layer.Layer<
                   title: "Fresh conversation",
                   message:
                     "The rewound conversation could not continue, so this turn starts a fresh conversation with a summary of this thread.",
+                  level: "info" as const,
                   conversationRecovery: "fresh" as const,
                 },
               ]
@@ -1742,6 +1790,7 @@ export const layer: Layer.Layer<
                   signal: "conversation-recovery:summary",
                   title: "Conversation summary",
                   message: `This fresh conversation starts from a summary of the conversation through run ${summary.summary.throughRunOrdinal} and the ${verbatim}.`,
+                  level: "info" as const,
                   detail: summary.summary.text,
                 },
               ]
@@ -1751,6 +1800,7 @@ export const layer: Layer.Layer<
                     signal: "conversation-recovery:summary",
                     title: "Conversation summary failed",
                     message: `Could not summarize the earlier conversation (${summary.reason}), so this fresh conversation starts from only the ${verbatim}.`,
+                    level: "warning" as const,
                   },
                 ]
               : []),
@@ -2314,6 +2364,59 @@ export const layer: Layer.Layer<
                 : new ProviderTurnStartError({ runId, cause }),
             ),
           ),
+      ),
+      prepareFreshConversation: Effect.fn("ProviderTurnStartService.prepareFreshConversation")(
+        function* ({ threadId, requestId, throughRunOrdinal }) {
+          const records = yield* projectionStore.getThreadRecords(threadId, [
+            "runs",
+            "providerThreads",
+            "contextHandoffs",
+          ]);
+          if (records.thread.archivedAt !== null || records.thread.deletedAt !== null) return;
+          const recovery = records.providerThreads.find(
+            (candidate) =>
+              candidate.conversationRecovery?.type === "fresh" &&
+              candidate.conversationRecovery.requestId === requestId,
+          )?.conversationRecovery;
+          if (recovery?.type !== "fresh" || recovery.prepared !== undefined) return;
+          // The same history the next turn reads: every run before it.
+          const settledRuns = records.runs.filter(
+            (run) => run.status !== "queued" && run.ordinal <= throughRunOrdinal,
+          );
+          const settledRunIds = new Set(settledRuns.map((run) => run.id));
+          const items = conversationRecoveryHandoffItems(
+            (yield* projectionStore.getTurnStartHistory(threadId)).filter(
+              (item) => item.runId === null || settledRunIds.has(item.runId),
+            ),
+          );
+          const workspace =
+            records.thread.worktreePath ??
+            (yield* projects.getById(records.thread.projectId, { includeDeleted: true }).pipe(
+              Effect.map((project) => Option.getOrUndefined(project)?.workspaceRoot),
+              Effect.orElseSucceed(() => undefined),
+            ));
+          // CLIs cannot spawn in a missing cwd, and storage cleanup removes idle worktrees.
+          const cwd =
+            workspace !== undefined &&
+            (yield* fileSystem.exists(workspace).pipe(Effect.orElseSucceed(() => false)))
+              ? workspace
+              : serverConfig.stateDir;
+          return yield* summarizeFreshConversation({
+            threadId,
+            projectId: records.thread.projectId,
+            cwd,
+            runs: records.runs,
+            items,
+            coveredRunOrdinals: {
+              from: 1,
+              to: Math.max(1, ...settledRuns.map((run) => run.ordinal)),
+            },
+            tokenCap: yield* handoffTokenCapConfig.pipe(
+              Effect.orElseSucceed(() => DEFAULT_HANDOFF_TOKEN_CAP),
+            ),
+            previousSummary: previousConversationSummary(records.contextHandoffs, records.runs),
+          });
+        },
       ),
     });
   }),

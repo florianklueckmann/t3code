@@ -23,6 +23,7 @@ import {
   ProjectId,
   TextGenerationError,
   TurnItemId,
+  type OrchestrationV2FreshConversationPreparation,
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2TurnItem,
   OrchestrationV2DomainEvent,
@@ -421,6 +422,10 @@ function makeLocalCommandHarness(input: {
   readonly recoveryRequest?: string;
   /** A summary an earlier fresh conversation wrote. */
   readonly previousSummary?: { readonly text: string; readonly throughRunOrdinal: number };
+  /** What the fresh start prepared before this turn. */
+  readonly prepared?: OrchestrationV2FreshConversationPreparation;
+  /** This run's own request is already in the recorded history. */
+  readonly nextRequestInHistory?: boolean;
   readonly summaryFailure?: "error" | "empty";
   readonly interruptOpen?: boolean;
   readonly interruptRunBeforeOpenFailure?: boolean;
@@ -459,6 +464,7 @@ function makeLocalCommandHarness(input: {
   const now = DateTime.makeUnsafe("2026-09-04T12:00:00Z");
   const threadId = ThreadId.make("thread-native-account-command");
   const runId = RunId.make("run-native-account-command");
+  const freshRequestId = CommandId.make("fresh-conversation-request");
   const rootNodeId = NodeId.make("root-native-account-command");
   const attemptId = RunAttemptId.make("attempt-native-account-command");
   const providerThreadId = ProviderThreadId.make("new-provider-thread");
@@ -526,6 +532,8 @@ function makeLocalCommandHarness(input: {
       projectId: ProjectId.make("project-native-account-command"),
       branch: input.worktreePath === undefined ? null : "feature/restore",
       worktreePath: input.worktreePath ?? null,
+      archivedAt: null,
+      deletedAt: null,
       lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
     } as OrchestrationV2ThreadProjection["thread"],
     runs: [
@@ -982,7 +990,11 @@ function makeLocalCommandHarness(input: {
               ...candidate,
               conversationRecovery:
                 input.recovery === "fresh"
-                  ? { type: "fresh" }
+                  ? {
+                      type: "fresh",
+                      requestId: freshRequestId,
+                      ...(input.prepared === undefined ? {} : { prepared: input.prepared }),
+                    }
                   : { type: "rewind", keepProviderTurnId: keptTurnId },
             }
           : candidate,
@@ -1512,7 +1524,21 @@ function makeLocalCommandHarness(input: {
           getNextTurnItemOrdinal: () => Effect.succeed(100),
           getTurnStartHistory: () =>
             input.recovery !== undefined
-              ? Effect.succeed(recoveryHistory)
+              ? Effect.succeed(
+                  input.nextRequestInHistory === true
+                    ? [
+                        ...recoveryHistory,
+                        {
+                          ...recoveryHistory[0]!,
+                          id: TurnItemId.make("next-request"),
+                          runId,
+                          ordinal: 10,
+                          // Too long for the verbatim tail, so a summary would take it in.
+                          text: `NEXT_REQUEST ${"Keep going. ".repeat(20_000)}`,
+                        } as OrchestrationV2TurnItem,
+                      ]
+                    : recoveryHistory,
+                )
               : input.sideChat !== undefined || input.resumeFailure !== undefined
                 ? Effect.succeed([])
                 : Effect.fail(
@@ -1591,6 +1617,13 @@ function makeLocalCommandHarness(input: {
         threadId,
         runId,
         willRetry: true,
+      });
+    }).pipe(Effect.provide(layer)),
+    prepareFreshConversation: Effect.gen(function* () {
+      return yield* (yield* ProviderTurnStart.ProviderTurnStartServiceV2).prepareFreshConversation({
+        threadId,
+        requestId: freshRequestId,
+        throughRunOrdinal: 1,
       });
     }).pipe(Effect.provide(layer)),
   };
@@ -3266,6 +3299,14 @@ effectIt.effect.each([
     { summaryFailure: "empty", recoveryRequest: "Keep the logs. ".repeat(20_000) },
   ],
   ["reuses the previous summary", { previousSummary: { text: "PREVIOUS", throughRunOrdinal: 1 } }],
+  [
+    "starts from the summary its fresh start prepared",
+    { prepared: { type: "summary", summary: { text: "PREPARED", throughRunOrdinal: 1 } } },
+  ],
+  [
+    "falls back on the failure its fresh start recorded",
+    { prepared: { type: "failed", reason: "model unavailable" } },
+  ],
   ["summarizes a failed rewind", { recovery: "failing rewind" }],
 ] as const)(
   "fresh conversation recovery %s when the oldest request does not fit verbatim",
@@ -3287,12 +3328,31 @@ effectIt.effect.each([
       const notices = harness
         .projection()
         .turnItems.filter((item) => item.type === "system_notice")
-        .map(({ title, message, detail }) => ({ title, message, detail }));
+        .map(({ title, message, detail, level }) => ({ title, message, detail, level }));
       expect(harness.startTurn).toHaveBeenCalledOnce();
       if ("previousSummary" in options) {
         expect(summaryRequests).toEqual([]);
         expect(handoffInput?.summary).toEqual(options.previousSummary);
         expect(notices.at(-1)?.detail).toBe("PREVIOUS");
+        return;
+      }
+      if ("prepared" in options) {
+        expect(summaryRequests).toEqual([]);
+        if (options.prepared.type === "summary") {
+          expect(handoffInput?.summary).toEqual(options.prepared.summary);
+          expect(notices).toMatchObject([
+            { title: "Conversation summary", detail: "PREPARED", level: "info" },
+          ]);
+        } else {
+          expect(handoffInput?.summary).toBeUndefined();
+          expect(notices).toMatchObject([
+            {
+              title: "Conversation summary failed",
+              message: expect.stringContaining("model unavailable"),
+              level: "warning",
+            },
+          ]);
+        }
         return;
       }
       // The request falls out of the verbatim tail, so its whole run is summarized; the command
@@ -3337,6 +3397,45 @@ effectIt.effect.each([
       });
       expect(notices).toHaveLength("recovery" in options ? 2 : 1);
     }),
+);
+
+effectIt.effect("a fresh start prepares the summary its turn hands over, with one model call", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text: "Reply with OK.",
+      recovery: "fresh",
+      recoveryRequest: `Stop the controller. ${"Keep the logs. ".repeat(2_000)}`,
+      nextRequestInHistory: true,
+    });
+    const atTurn = harness.projection();
+
+    // The next message was sent after the click but before the summary read the history.
+    const prepared = yield* harness.prepareFreshConversation;
+    expect(prepared).toEqual({
+      type: "summary",
+      summary: { text: "## Goals\n- Stop the controller", throughRunOrdinal: 1 },
+    });
+    expect(JSON.stringify(harness.generateConversationSummary.mock.calls)).not.toContain(
+      "NEXT_REQUEST",
+    );
+    harness.setProjection({
+      ...atTurn,
+      providerThreads: atTurn.providerThreads.map((candidate) =>
+        candidate.conversationRecovery?.type === "fresh"
+          ? { ...candidate, conversationRecovery: { ...candidate.conversationRecovery, prepared } }
+          : candidate,
+      ),
+    });
+    // A replayed effect finds it prepared and does not generate again.
+    expect(yield* harness.prepareFreshConversation).toBeUndefined();
+    yield* harness.start;
+
+    expect(harness.generateConversationSummary).toHaveBeenCalledOnce();
+    expect(harness.startTurn).toHaveBeenCalledOnce();
+    expect(harness.prepareProviderHandoff.mock.calls[0]?.[0].summary).toEqual(
+      prepared?.type === "summary" ? prepared.summary : undefined,
+    );
+  }),
 );
 
 effectIt.effect.each(["state", "interrupt"] as const)(
