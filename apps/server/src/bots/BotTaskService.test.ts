@@ -2601,15 +2601,6 @@ it.effect.each<{
       sql`INSERT INTO bot_maintenance (home_thread_id, settings_revision, enabled, updated_at)
           VALUES (${home}, 1, 1, ${iso(START)})`,
   },
-  {
-    setting: "the Home check",
-    change: "turn off the Daily Home check",
-    refusesTask: false,
-    apply: ({ sql, home }) =>
-      sql`INSERT INTO bot_home_checks
-          (home_thread_id, settings_revision, enabled, time_of_day, done_through, updated_at)
-          VALUES (${home}, 1, 1, '08:00', ${iso(START)}, ${iso(START)})`,
-  },
 ])(
   "keeps a Bot with $setting off Claude, and one task only if it needs it",
   ({ change, refusesTask, apply }) =>
@@ -2652,7 +2643,10 @@ it.effect("runs a Bot on Claude with what Claude can enforce, No changes include
     yield* withServices(world, (services) =>
       Effect.gen(function* () {
         const home = yield* attachBot(services);
-        // No changes routines, paused or active, and failure diagnosis switch along.
+        // No changes routines, paused or active, failure diagnosis and the Home check switch along.
+        yield* sql`INSERT INTO bot_home_checks
+          (home_thread_id, settings_revision, enabled, time_of_day, done_through, updated_at)
+          VALUES (${home}, 1, 1, '08:00', ${iso(START)}, ${iso(START)})`;
         const paused = yield* services.routines.upsert({
           ...routineInput({ type: "fixed_time", timeOfDay: "18:00" }),
           enabled: false,
@@ -2680,7 +2674,7 @@ it.effect("runs a Bot on Claude with what Claude can enforce, No changes include
           ownMcpServers: "claude_unsupported",
           noChangesRoutines: null,
           maintenance: "claude_unsupported",
-          homeCheck: "claude_unsupported",
+          homeCheck: null,
           failureDiagnosis: null,
         });
         const task = yield* services.tasks.start({ botId, projectId: campaign, prompt: "Recap." });

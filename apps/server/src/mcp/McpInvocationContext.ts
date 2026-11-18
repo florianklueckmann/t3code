@@ -45,6 +45,24 @@ export interface McpThreadCaller {
 export const SEALED_LOAD_HEADER = "t3-sealed-load";
 
 /**
+ * The only tools a sealed load lists or calls: t3_bot plus T3 Code's reads. Leaves out
+ * task_status (it acknowledges results) and t3_thread_wait (it would hold the Home's next message).
+ */
+export const SEALED_LOAD_TOOLS: ReadonlyArray<string> = [
+  "t3_bot",
+  "t3_thread_read",
+  "t3_thread_list",
+  "t3_thread_search",
+  "list_scheduled_tasks",
+  "t3_project_list",
+  "t3_project_read",
+  "t3_environment_read",
+  "t3_environment_links",
+  "t3_worktree_list",
+  "list_thread_pull_requests",
+];
+
+/**
  * `T3-Toolset: calendar` turns a thread's `/mcp` session into its granted Calendar (this Mac)
  * server: it lists only the calendar tool, which every other session hides. Listing only; the
  * calendar service checks the grant on each call.

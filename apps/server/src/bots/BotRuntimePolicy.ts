@@ -21,8 +21,8 @@ const driverOf = (providerInstances: ProviderInstances, instanceId: ProviderInst
     .pipe(Effect.map((instance) => instance?.driverKind as string | undefined));
 
 /**
- * Why a sealed Bot run cannot be enforced on this instance here, or undefined. Codex seals both
- * modes, Claude only No changes, each only where that was verified natively.
+ * Why a sealed Bot run cannot be enforced on this instance here, or undefined. Codex and Claude
+ * seal both modes, each only where that was verified natively.
  */
 export const restrictionUnenforceable = Effect.fn("BotRuntimePolicy.restrictionUnenforceable")(
   function* (

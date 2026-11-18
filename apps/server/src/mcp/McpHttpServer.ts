@@ -1442,6 +1442,20 @@ export const layerCalendarToolkit = Layer.mergeAll(
   layerToolsets,
 );
 
+const SEALED_LOAD_TOOLS: ReadonlySet<string> = new Set(McpInvocationContext.SEALED_LOAD_TOOLS);
+
+/** A sealed load neither lists nor calls a tool outside its set, whatever its provider exposes. */
+export const layerSealedLoadTools = McpServer.visibility(
+  Effect.fnUntraced(function* ({ method, target }: McpServer.MiddlewareOptions) {
+    if (method !== "tools/list" && method !== "tools/call") return true;
+    const scope = yield* Effect.serviceOption(McpInvocationContext.McpInvocationContext);
+    return (
+      Option.getOrUndefined(scope)?.thread?.sealedLoad !== true || SEALED_LOAD_TOOLS.has(target)
+    );
+  }),
+  { global: true },
+);
+
 export const layer = layerMcpTransport(
-  Layer.mergeAll(layerTools, layerToolSearch, layerCalendarToolkit),
+  Layer.mergeAll(layerTools, layerToolSearch, layerCalendarToolkit, layerSealedLoadTools),
 );

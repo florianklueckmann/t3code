@@ -49,7 +49,7 @@ Some features need a Codex model for now. On a Claude Bot, **Settings → Bots**
 shows them as unavailable and says why:
 
 - **Use my own Codex MCP servers**
-- Maintenance and the Daily Home check
+- Maintenance
 
 To switch a Bot from Codex to Claude, first turn off what Claude can't do yet.
 Otherwise the switch is refused, the message lists what to change, and the Bot
@@ -307,7 +307,10 @@ does nothing else: it starts no task and sends nothing. When it adds something,
 the conversation turns unread; when there is nothing to add, you notice
 nothing. A check waits until the conversation has been quiet for ten minutes,
 skips while it is snoozed or archived, and runs only once after days the server
-was off. It needs a Codex model on a Mac server.
+was off. It needs a Mac server, with Codex or with Claude Code 2.1.327 or later.
+On Claude the check has no built-in tools at all, only T3 Code's tools for
+reading the Home and adding to Waiting on you; your Claude MCP servers, plugins,
+hooks, skills and permission rules can't give it more.
 
 **Check early after finished work**, under the Daily Home check, runs the same
 check soon after a routine, a diagnosis or a task you asked for finishes or
@@ -428,8 +431,8 @@ without it.
 - On Claude, MCP connections apply only on a macOS server. Elsewhere a Claude
   Bot with connections does not run; one without loads only T3 Code's own tools.
 - On a Claude Bot, plugins and hooks your organization manages for Claude still
-  load, in No changes routines too. Own MCP servers, maintenance and the Daily
-  Home check are not available yet.
+  load, in No changes routines and Home checks too. Own MCP servers and
+  maintenance are not available yet.
 - Bots turn off Claude's automatic memory.
 - Built-in email connections are not available. Calendar (this Mac) reads only,
   and only on the Mac that runs the environment.

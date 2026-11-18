@@ -1945,6 +1945,130 @@ it.effect(
     ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
+it.effect("lists and runs only the sealed set for a sealed load, whatever it asks for", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const scope: McpInvocationContext.McpThreadInvocationScope = {
+        environmentId,
+        requestNamespace: "homeToken",
+        thread: {
+          threadId: ThreadId.make("thread-home"),
+          providerSessionId: "homeToken",
+          providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+        },
+        client: undefined,
+        capabilities: new Set(["orchestration"]),
+        issuedAt: 1,
+      };
+      const tool = (name: string) =>
+        Tool.make(name, {
+          description: name,
+          success: Schema.Struct({}),
+          failure: OrchestratorMcpFailure,
+          failureMode: "return",
+        });
+      const HomeToolkit = Toolkit.make(
+        tool("t3_bot"),
+        tool("t3_thread_read"),
+        tool("schedule_task"),
+        tool("task_status"),
+      );
+      const reads = McpToolAccess.reads(() => Effect.succeed({}));
+      const serverLayer = McpHttpServer.layerMcpTransport(
+        Layer.mergeAll(
+          McpHttpServer.toolkitRegistration(
+            HomeToolkit,
+            McpToolAccess.toLayer(HomeToolkit, {
+              t3_bot: reads,
+              t3_thread_read: reads,
+              schedule_task: reads,
+              task_status: reads,
+            }),
+          ),
+          McpHttpServer.layerToolSearch,
+          McpHttpServer.layerSealedLoadTools,
+        ),
+      ).pipe(
+        Layer.provide(ServerSettings.layerTest()),
+        Layer.provide(McpToolAccessTestkit.liveThreadsLayer),
+        Layer.provide(
+          Layer.mock(McpSessionRegistry.McpSessionRegistry)({
+            resolve: (token) => Effect.succeed(token === "homeToken" ? scope : undefined),
+          }),
+        ),
+      );
+      yield* HttpRouter.serve(serverLayer, { disableListenLog: true, disableLogger: true }).pipe(
+        Layer.build,
+      );
+      const httpClient = yield* HttpClient.HttpClient;
+      const session = (sealed: boolean) =>
+        Effect.gen(function* () {
+          const headers = {
+            accept: "application/json, text/event-stream",
+            authorization: "Bearer homeToken",
+            ...(sealed ? { [McpInvocationContext.SEALED_LOAD_HEADER]: "1" } : {}),
+          };
+          const initialize = yield* httpClient.post("/mcp", {
+            headers,
+            body: HttpBody.text(
+              `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"probe","version":"1.0.0"}}}`,
+              "application/json",
+            ),
+          });
+          const rpc = (method: string, params: object) =>
+            httpClient
+              .post("/mcp", {
+                headers: {
+                  ...headers,
+                  "mcp-session-id": initialize.headers["mcp-session-id"]!,
+                  "mcp-protocol-version": "2025-06-18",
+                },
+                body: HttpBody.text(
+                  JSON.stringify({ jsonrpc: "2.0", id: 2, method, params }),
+                  "application/json",
+                ),
+              })
+              .pipe(
+                Effect.flatMap((response) => response.text),
+                Effect.map(
+                  (text) =>
+                    JSON.parse(text.replace(/^[\s\S]*?data: /u, "")) as {
+                      readonly result?: {
+                        readonly tools?: ReadonlyArray<{ readonly name: string }>;
+                        readonly structuredContent?: unknown;
+                      };
+                      readonly error?: { readonly message: string };
+                    },
+                ),
+              );
+          return {
+            listed: rpc("tools/list", {}).pipe(
+              Effect.map((body) => (body.result?.tools ?? []).map((listed) => listed.name).sort()),
+            ),
+            call: (name: string) => rpc("tools/call", { name, arguments: {} }),
+          };
+        });
+
+      const sealed = yield* session(true);
+      expect(yield* sealed.listed).toEqual(["t3_bot", "t3_thread_read"]);
+      expect((yield* sealed.call("t3_bot")).result?.structuredContent).toEqual({});
+      for (const name of ["schedule_task", "task_status", "tool_search"]) {
+        const refused = yield* sealed.call(name);
+        expect(refused.result?.structuredContent, name).toBeUndefined();
+        expect(JSON.stringify(refused), name).toContain(name);
+      }
+      const plain = yield* session(false);
+      expect(yield* plain.listed).toEqual([
+        "schedule_task",
+        "t3_bot",
+        "t3_thread_read",
+        "task_status",
+      ]);
+      expect((yield* plain.call("schedule_task")).result?.structuredContent).toEqual({});
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
 it.effect("lists optional tools to a deferring client only after tool_search loads them", () =>
   Effect.scoped(
     Effect.gen(function* () {
