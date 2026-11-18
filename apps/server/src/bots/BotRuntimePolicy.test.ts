@@ -174,13 +174,17 @@ it.effect("turns provider memory off for Bot conversations only", () =>
 it.effect("never resolves a No changes task to a policy that can change things", () =>
   Effect.gen(function* () {
     for (const threadId of [noChangesThread, archivedNoChangesThread]) {
-      const restricted = yield* resolveFor(threadId);
-      assert.equal(restricted.nativeTools, "readOnly");
-      assert.equal(restricted.nativeMemory, "disabled");
+      // In this suite the instance id "codex" runs the Claude driver.
+      for (const instanceId of ["codex_work", "codex"]) {
+        const restricted = yield* resolveFor(threadId, { instanceId });
+        assert.equal(restricted.nativeTools, "readOnly", instanceId);
+        assert.equal(restricted.nativeMemory, "disabled");
+      }
       for (const [options, reason] of [
-        [{ instanceId: "codex" }, "provider"],
         [{ instanceId: "missing" }, "provider"],
+        [{ instanceId: "pi" }, "provider"],
         [{ platform: "linux" }, "platform"],
+        [{ instanceId: "codex", platform: "linux" }, "platform"],
       ] as const) {
         const refused = yield* resolveFor(threadId, options).pipe(Effect.flip);
         assert.equal(refused._tag, "RuntimePolicyUnsupportedError");

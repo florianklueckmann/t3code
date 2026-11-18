@@ -1029,6 +1029,7 @@ export const make = Effect.gen(function* () {
       (yield* BotRuntimePolicy.restrictionUnenforceable(
         providers,
         ProviderInstanceId.make(thread.provider_instance_id),
+        "t3BotOnly",
       )) !== undefined
     )
       return yield* deferred("unsupported");

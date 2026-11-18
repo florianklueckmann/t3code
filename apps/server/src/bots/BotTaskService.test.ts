@@ -2326,13 +2326,6 @@ it.effect.each<{
     apply: ({ sql }) => sql`UPDATE bots SET mcp_own_codex_servers = 1 WHERE bot_id = ${botId}`,
   },
   {
-    setting: "an active No changes routine",
-    change: "pause its No changes routines or set them to Changes allowed",
-    refusesTask: false,
-    apply: ({ services }) =>
-      services.routines.upsert(routineInput({ type: "fixed_time", timeOfDay: "18:00" })),
-  },
-  {
     setting: "maintenance",
     change: "turn off Maintenance",
     refusesTask: false,
@@ -2348,15 +2341,6 @@ it.effect.each<{
       sql`INSERT INTO bot_home_checks
           (home_thread_id, settings_revision, enabled, time_of_day, done_through, updated_at)
           VALUES (${home}, 1, 1, '08:00', ${iso(START)}, ${iso(START)})`,
-  },
-  {
-    setting: "failure diagnosis",
-    change: "turn off Diagnose failed routines",
-    refusesTask: false,
-    apply: ({ sql, home }) =>
-      sql`INSERT INTO bot_failure_diagnosis
-          (home_thread_id, settings_revision, enabled, brief, enabled_at, updated_at)
-          VALUES (${home}, 1, 1, 'Why?', ${iso(START)}, ${iso(START)})`,
   },
 ])(
   "keeps a Bot with $setting off Claude, and one task only if it needs it",
@@ -2391,7 +2375,7 @@ it.effect.each<{
     }).pipe(Effect.provide(layerDatabase)),
 );
 
-it.effect("runs a Bot on Claude with what Claude can enforce and refuses No changes routines", () =>
+it.effect("runs a Bot on Claude with what Claude can enforce, No changes included", () =>
   Effect.gen(function* () {
     yield* TestClock.setTime(START);
     yield* seedProject;
@@ -2399,12 +2383,16 @@ it.effect("runs a Bot on Claude with what Claude can enforce and refuses No chan
     const sql = yield* BotDatabase.BotDatabase;
     yield* withServices(world, (services) =>
       Effect.gen(function* () {
-        yield* attachBot(services);
-        // A paused No changes routine does not run, so it does not block the switch.
+        const home = yield* attachBot(services);
+        // No changes routines, paused or active, and failure diagnosis switch along.
         const paused = yield* services.routines.upsert({
           ...routineInput({ type: "fixed_time", timeOfDay: "18:00" }),
           enabled: false,
         });
+        yield* services.routines.upsert(routineInput({ type: "fixed_time", timeOfDay: "17:00" }));
+        yield* sql`INSERT INTO bot_failure_diagnosis
+          (home_thread_id, settings_revision, enabled, brief, enabled_at, updated_at)
+          VALUES (${home}, 1, 1, 'Why?', ${iso(START)}, ${iso(START)})`;
         const codexBot = yield* services.bots.get({ botId });
         assert.deepEqual(Object.values(codexBot.capabilities ?? {}), [
           null,
@@ -2422,10 +2410,10 @@ it.effect("runs a Bot on Claude with what Claude can enforce and refuses No chan
         assert.deepEqual(claudeBot.capabilities, {
           mcpGrants: null,
           ownMcpServers: "claude_unsupported",
-          noChangesRoutines: "claude_unsupported",
+          noChangesRoutines: null,
           maintenance: "claude_unsupported",
           homeCheck: "claude_unsupported",
-          failureDiagnosis: "claude_unsupported",
+          failureDiagnosis: null,
         });
         const task = yield* services.tasks.start({ botId, projectId: campaign, prompt: "Recap." });
         assert.deepEqual(yield* launchedSelection(world, task.workThreadId), claude);
@@ -2447,19 +2435,12 @@ it.effect("runs a Bot on Claude with what Claude can enforce and refuses No chan
           ownCodexMcpServers: false,
         });
 
-        const noChanges = yield* services.routines
-          .upsert(routineInput({ type: "fixed_time", timeOfDay: "19:00" }))
-          .pipe(Effect.flip);
-        assert.include(noChanges.message, "can't enforce No changes yet");
-        const resumed = yield* services.routines
-          .setEnabled({ id: paused.task.id, enabled: true })
-          .pipe(Effect.flip);
-        assert.include(resumed.message, "can't enforce No changes yet");
-        const allowed = yield* services.routines.upsert({
-          ...routineInput({ type: "fixed_time", timeOfDay: "19:00" }),
-          bot: { botId, allowChanges: true },
-        });
-        assert.isTrue(allowed.task.enabled);
+        const noChanges = yield* services.routines.upsert(
+          routineInput({ type: "fixed_time", timeOfDay: "19:00" }),
+        );
+        assert.isTrue(noChanges.task.enabled);
+        const resumed = yield* services.routines.setEnabled({ id: paused.task.id, enabled: true });
+        assert.isTrue(resumed.task.enabled);
       }),
     );
   }).pipe(Effect.provide(layerDatabase)),

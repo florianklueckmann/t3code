@@ -1,6 +1,6 @@
 /**
  * Runs Bot preparation routines and home-conversation turns through a running T3 Code dev server
- * and its configured Codex provider, then grades the results. See README.md.
+ * and its configured Codex or Claude provider, then grades the results. See README.md.
  */
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeChildProcess from "node:child_process";
@@ -534,7 +534,6 @@ const main = Effect.gen(function* () {
         instance: values.instance,
         model: values.model,
         effort: values.effort,
-        codexOnly: "its routines and diagnoses run No changes, which only Codex enforces.",
       });
       return yield* Effect.forEach(
         jobs,

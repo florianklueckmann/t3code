@@ -79,7 +79,7 @@ const BOT_CAPABILITY_LABELS: Record<BotCapabilityFeature, ReadonlyMap<string, st
       "claude_unsupported",
       "No changes isn't available on Claude yet, because Claude can't enforce it. Switch the Bot to a Codex model for No changes routines.",
     ],
-    ["provider", "No changes needs a Codex model for this Bot."],
+    ["provider", "No changes needs a Codex or Claude model for this Bot."],
   ]),
 };
 /**
@@ -1039,7 +1039,7 @@ export function canToggleBotHomeCheck(view: BotHomeCheckView, formLocked: boolea
 export const BOT_FAILURE_DIAGNOSIS_DESCRIPTION =
   "When a routine run in this project fails, the Bot starts one task that looks into why, following your brief. It changes nothing, and its result shows in Home with a link to the failed run.";
 const BOT_FAILURE_DIAGNOSIS_UNAVAILABLE_LABELS: ReadonlyMap<string, string> = new Map([
-  ["provider", "Needs a Codex model for this Bot."],
+  ["provider", "Needs a Codex or Claude model for this Bot."],
   ["claude_unsupported", "Not available on Claude yet. It runs on Codex models."],
   ["platform", "Runs only when this server is a Mac."],
 ]);

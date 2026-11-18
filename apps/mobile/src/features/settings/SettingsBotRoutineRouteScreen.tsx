@@ -266,7 +266,7 @@ function BotRoutineForm(props: {
           footer={[
             allowChanges
               ? "The Bot carries out the edits or messages requested in the brief, in Full access without approval prompts."
-              : "The Bot reports results and proposes changes. It cannot edit files or data or send messages; this is enforced with Codex on a Mac server, and elsewhere the run fails instead.",
+              : "The Bot reports results and proposes changes. It cannot edit files or data or send messages; this is enforced with Codex or Claude on a Mac server, and elsewhere the run fails instead.",
             props.noChanges.unavailableLabel,
           ]
             .filter((line) => line !== null)
