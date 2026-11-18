@@ -201,11 +201,12 @@ export const make = (deps: {
       // The user restating an inferred lesson makes it their instruction, which later
       // inferred lessons cannot override, so it gets its own revision. A retried edit or move
       // whose base has moved on already says what is current, so it is no new proposal either.
+      const replayedMove = input.scope === "bot" && head?.base_revision === input.replaces.revision;
       if (
         head !== undefined &&
         head.normalized_text === normalized &&
         head.project_id === projectId &&
-        (!confirmsInference(input, head) || head.base_revision === input.replaces.revision)
+        (!confirmsInference(input, head) || replayedMove)
       ) {
         return duplicateOf(head);
       }
