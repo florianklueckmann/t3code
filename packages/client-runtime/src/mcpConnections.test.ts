@@ -183,10 +183,13 @@ describe("botMcpGrantsSection", () => {
   };
   const CLAUDE_GRANTS =
     "MCP connections aren't available on Claude yet. A Claude Bot loads only T3 Code's own tools; switch it to a Codex model to grant connections.";
+  const CLAUDE_PLATFORM_LIMIT =
+    "On Claude, MCP connections apply only on macOS. On Studio Mac, this Bot with connections does not run; without them it loads only T3 Code's own tools.";
 
   it.each([
     ["available, with grants", available, "darwin", [MAIL], [], true],
-    ["available, on Windows", available, "windows", [MAIL], [PLATFORM_LIMIT], true],
+    ["available, on Windows", available, "windows", [MAIL], [CLAUDE_PLATFORM_LIMIT], true],
+    ["available, on Linux", available, "linux", [MAIL], [CLAUDE_PLATFORM_LIMIT], true],
     ["unavailable on Claude, with grants", onClaude, "darwin", [MAIL], [CLAUDE_GRANTS], false],
     ["unavailable on Claude, on Windows", onClaude, "windows", [], [CLAUDE_GRANTS], false],
     [

@@ -285,9 +285,10 @@ export class ProviderAdapterSealRefusedError extends Schema.TaggedError<Provider
 }
 
 const mcpConnectionsRefusalText = {
-  provider: "only Codex can load granted connections or your own MCP servers",
+  provider: "only Codex can load your own MCP servers",
   version: "this Codex version has not been verified with them",
   platform: "they are only verified on macOS and Linux",
+  claudePlatform: "on Claude they are only verified on macOS",
   children: "this conversation has agents still running with its earlier connections",
   load: "the conversation's MCP setup could not be confirmed",
   unavailable: "this server cannot read its MCP connections",
@@ -324,7 +325,7 @@ export class ProviderAdapterMcpConnectionsRefusedError extends Schema.TaggedErro
       case "missing":
         return "An MCP connection granted to this Bot no longer exists. Review the Bot's MCP connections in Settings → Bots. Nothing ran.";
       default:
-        return `This Bot's MCP connections can't be loaded because ${mcpConnectionsRefusalText[this.reason]}, so nothing ran.`;
+        return `This Bot's MCP connections can't be loaded because ${mcpConnectionsRefusalText[this.reason === "platform" && this.driver === "claudeAgent" ? "claudePlatform" : this.reason]}, so nothing ran.`;
     }
   }
 }

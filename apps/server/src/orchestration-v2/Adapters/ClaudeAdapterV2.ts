@@ -100,6 +100,7 @@ import {
   defaultInstanceIdForDriver,
   isCompactionCommandMessage,
   parseGoalCommand,
+  type McpConnectionId,
   type MessageId,
   type ModelSelection,
   type OrchestrationV2ConversationMessage,
@@ -155,6 +156,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
+import * as Redacted from "effect/Redacted";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
@@ -164,6 +166,7 @@ import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { snapshotMcpApp } from "../../mcpApps/McpAppSnapshot.ts";
+import * as McpConnectionDelivery from "../../mcpConnections/McpConnectionDelivery.ts";
 import { resolveClaudeSdkExecutablePath } from "../../provider/Drivers/ClaudeExecutable.ts";
 import * as ProviderInstallationGate from "../../provider/ProviderInstallationGate.ts";
 import {
@@ -1664,7 +1667,13 @@ export const layerQueryRunner: Layer.Layer<
                             servers: failed,
                           },
                         );
-                        if (input.options.strictMcpConfig === true) {
+                        // A Bot's granted servers are optional: the turn runs on without them.
+                        if (
+                          input.options.strictMcpConfig === true &&
+                          failed.some(
+                            (name) => McpConnectionDelivery.grantedConnectionOf(name) === undefined,
+                          )
+                        ) {
                           // A CLI that refused strict mode at startup explains why on stderr.
                           yield* Effect.promise(() => stderrClosed).pipe(
                             Effect.timeoutOption(CLAUDE_STDERR_DRAIN_TIMEOUT),
@@ -2366,12 +2375,20 @@ function claudeIsolatedSettings(
   } as ClaudeSdkSettings;
 }
 
+// Registration already waited for the servers; the status read only names the failed ones.
+const CLAUDE_GRANTED_MCP_STATUS_TIMEOUT = "10 seconds";
+
+/** Where a Bot thread's granted servers were measured natively alongside strict MCP. */
+export const claudeMcpGrantsPlatformSupported = (platform: NodeJS.Platform) =>
+  platform === "darwin";
+
 /**
- * Claude enforces neither seal, nor MCP grants, nor the user's own Codex servers: a Bot thread
- * asking for one is refused before anything native starts.
+ * Claude enforces no seal and has none of the user's own Codex servers, and loads grants only
+ * where that was measured: a Bot thread asking for more is refused before anything native starts.
  */
 function claudeBotPolicyRefusal(
   policy: ProviderAdapter.ProviderAdapterV2RuntimePolicy,
+  platform: NodeJS.Platform,
 ):
   | ProviderAdapter.ProviderAdapterSealRefusedError
   | ProviderAdapter.ProviderAdapterMcpConnectionsRefusedError
@@ -2382,12 +2399,71 @@ function claudeBotPolicyRefusal(
       seal: policy.nativeTools,
       reason: "provider",
     });
-  if ((policy.mcpConnections?.length ?? 0) > 0 || policy.userMcpServers !== undefined)
+  if (policy.userMcpServers !== undefined)
     return new ProviderAdapter.ProviderAdapterMcpConnectionsRefusedError({
       driver: CLAUDE_PROVIDER,
       reason: "provider",
     });
+  if ((policy.mcpConnections?.length ?? 0) > 0 && !claudeMcpGrantsPlatformSupported(platform))
+    return new ProviderAdapter.ProviderAdapterMcpConnectionsRefusedError({
+      driver: CLAUDE_PROVIDER,
+      reason: "platform",
+    });
   return undefined;
+}
+
+/** A Bot thread's granted connections as one Claude process loads them. */
+export interface ClaudeGrantLoad {
+  /** Ids and catalog revisions: names the load, holds no credential. */
+  readonly key: string;
+  /**
+   * The delivery's identity, which changes with any credential, so a rotated secret or token
+   * reopens Claude. Derived from credentials: memory only, never logged or keyed.
+   */
+  readonly credentials: string;
+  readonly servers: Record<string, NonNullable<ClaudeQueryOptions["mcpServers"]>[string]>;
+  readonly connections: ReadonlyArray<
+    Pick<McpConnectionDelivery.DeliveredMcpConnection, "id" | "label">
+  >;
+}
+
+export function claudeGrantLoad(load: McpConnectionDelivery.McpConnectionLoad): ClaudeGrantLoad {
+  return {
+    key: load.connections.map(({ id, revision }) => `${id}@${revision}`).join(","),
+    credentials: load.identity,
+    servers: Object.fromEntries(
+      load.connections.map(({ id, transport }) => [
+        McpConnectionDelivery.grantedServerName(id),
+        transport.type === "stdio"
+          ? {
+              type: "stdio" as const,
+              command: transport.command,
+              args: [...transport.args],
+              env: { ...Redacted.value(transport.env) },
+            }
+          : {
+              type: "http" as const,
+              url: transport.url,
+              headers: { ...Redacted.value(transport.headers) },
+            },
+      ]),
+    ),
+    connections: load.connections.map(({ id, label }) => ({ id, label })),
+  };
+}
+
+/** The Bot's lasting instructions plus which granted account each tool namespace is. */
+function withClaudeGrantedAccounts(
+  instructions: ProviderAdapter.ApplicationInstructionParts,
+  grants: ClaudeGrantLoad | undefined,
+): ProviderAdapter.ApplicationInstructionParts {
+  const accounts =
+    grants === undefined
+      ? undefined
+      : McpConnectionDelivery.grantedConnectionsInstructions(grants.connections, "claudeAgent");
+  return accounts === undefined
+    ? instructions
+    : { ...instructions, lasting: `${instructions.lasting}\n\n${accounts}` };
 }
 
 export function makeClaudeQueryOptions(input: {
@@ -5198,6 +5274,8 @@ function formatClaudeUsageLimitWait(waitMs: number): string {
 interface ActiveClaudeTurnContext {
   retryBudgetFailure?: OrchestrationV2ProviderFailure;
   readonly queryPolicy: ClaudeRuntimeQueryPolicy;
+  /** The grant load of the process this turn runs in; a steer needs the same one. */
+  readonly grantKey: string | undefined;
   readonly input: ProviderAdapter.ProviderAdapterV2TurnInput;
   readonly autoCompactWindow: string;
   readonly nativeThreadId: string;
@@ -5341,8 +5419,11 @@ interface ClaudeLiveQueryContext {
   readonly launchArgSettings: ClaudeSdkSettings | undefined;
   readonly query: ClaudeAgentSdkQuerySession;
   readonly queryPolicyKey: string;
-  /** Opened with only T3 Code's MCP server and no plugins, as a Bot thread needs. */
+  /** Opened with only T3 Code's MCP server, its grants and no plugins, as a Bot thread needs. */
   readonly isolated: boolean;
+  readonly grants: ClaudeGrantLoad | undefined;
+  /** Granted servers that did not connect, until a turn of this process reports them. */
+  readonly unreportedGrantFailures: Set<string>;
   readonly botInstructions: ClaudeBotInstructionDelivery;
   selection: CompiledClaudeModelSelection;
   readonly closed: Deferred.Deferred<void, never>;
@@ -5799,6 +5880,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
   const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const serverSettings = yield* Effect.serviceOption(ServerSettings.ServerSettingsService);
+  // Without it, every grant load is refused.
+  const mcpConnectionDelivery = Option.getOrUndefined(
+    yield* Effect.serviceOption(McpConnectionDelivery.McpConnectionDelivery),
+  );
   const { attachmentsDir, fileSystem, path, random, idAllocator, queryRunner } = adapterOptions;
   const loadModelCatalog = (
     adapterOptions.modelCatalog ?? Effect.succeed(BUNDLED_CLAUDE_MODEL_CATALOG)
@@ -12896,6 +12981,55 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           live.selection = selection;
         });
 
+        /** Credentials are read at each turn, so a changed secret or a renewed token reopens Claude. */
+        const resolveGrants = Effect.fn("ClaudeAdapterV2.resolveGrants")(function* (
+          ids: ReadonlyArray<McpConnectionId>,
+        ) {
+          if (mcpConnectionDelivery === undefined)
+            return yield* new ProviderAdapter.ProviderAdapterMcpConnectionsRefusedError({
+              driver: CLAUDE_PROVIDER,
+              reason: "unavailable",
+            });
+          const load = yield* mcpConnectionDelivery
+            .resolve(ids)
+            .pipe(
+              Effect.mapError((error) =>
+                McpConnectionDelivery.deliveryRefusal(CLAUDE_PROVIDER, error),
+              ),
+            );
+          return claudeGrantLoad(load);
+        });
+
+        /**
+         * Granted servers that did not connect. The turn runs without their tools, as on Codex,
+         * and a refused token renews at the next load. Statuses can echo headers: names only.
+         */
+        const failedGrantedServers = Effect.fn("ClaudeAdapterV2.failedGrantedServers")(function* (
+          querySession: ClaudeAgentSdkQuerySession,
+          grants: ClaudeGrantLoad,
+        ) {
+          const statuses = yield* querySession.mcpServerStatus.pipe(
+            Effect.timeout(CLAUDE_GRANTED_MCP_STATUS_TIMEOUT),
+            Effect.tapError(() =>
+              Effect.logWarning("orchestration-v2.claude-granted-mcp-status-unavailable"),
+            ),
+            Effect.orElseSucceed(() => undefined),
+          );
+          if (statuses === undefined) return new Set<string>();
+          const failed = new Set(
+            Object.keys(grants.servers).filter((name) => {
+              const status = statuses.find((server) => server.name === name)?.status;
+              return status !== "connected" && status !== "pending";
+            }),
+          );
+          for (const name of failed) {
+            const id = McpConnectionDelivery.grantedConnectionOf(name);
+            if (id !== undefined && mcpConnectionDelivery !== undefined)
+              yield* mcpConnectionDelivery.markRefused(id, "startup");
+          }
+          return failed;
+        });
+
         const openQuery = Effect.fnUntraced(function* (
           turnInput: ProviderAdapter.ProviderAdapterV2TurnInput,
           nativeThreadId: string,
@@ -12920,14 +13054,28 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               ? {}
               : { allowedTools: queryPolicy.allowedTools }),
           });
-          // A Bot thread's load: T3 Code's server only, no plugins, and its instructions per prompt.
+          // A Bot thread's load: T3 Code's server and its grants only, no plugins, and its
+          // instructions per prompt.
           const isolated = turnInput.runtimePolicy.mcpConnections !== undefined;
+          const grantIds = turnInput.runtimePolicy.mcpConnections ?? [];
+          const grants = grantIds.length === 0 ? undefined : yield* resolveGrants(grantIds);
           const botThread = turnInput.applicationInstructions !== undefined;
-          const queryPolicyKey = `${turnInput.runtimePolicy.nativeMemory ?? "default"}:${isolated ? "isolated" : "open"}:${botThread ? "bot" : "plain"}:${claudeEffectiveQueryPolicyKey(queryPolicy, mcpOverrides)}`;
+          const botInstructions = claudeBotInstructionsOf(turnInput);
+          if (
+            botInstructions !== undefined &&
+            !claudeBotInstructionsFit(withClaudeGrantedAccounts(botInstructions, grants))
+          )
+            return yield* new ClaudeBotInstructionsTooLargeError({
+              length: botInstructions.lasting.length + botInstructions.turn.length,
+            });
+          // Grants are keyed by id and revision; their credentials never enter the key.
+          const queryPolicyKey = `${turnInput.runtimePolicy.nativeMemory ?? "default"}:${isolated ? `isolated[${grants?.key ?? ""}]` : "open"}:${botThread ? "bot" : "plain"}:${claudeEffectiveQueryPolicyKey(queryPolicy, mcpOverrides)}`;
           const resumeSessionAt = yield* getNativeConversationHeadId(turnInput.providerThread);
           const existing = yield* Ref.get(queryContext);
-          // Continuations drain existing output without prompting; retain the live process regardless of selection,
-          // but never a process loaded wider than this thread may run.
+          const sameGrantSet = existing?.grants?.key === grants?.key;
+          const sameGrants = sameGrantSet && existing?.grants?.credentials === grants?.credentials;
+          // Continuations drain existing output without prompting; retain the live process regardless of selection
+          // or renewed credentials, but never a process loaded with other servers than this thread may run.
           if (
             existing !== null &&
             existing.nativeThreadId === nativeThreadId &&
@@ -12935,12 +13083,20 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             isClaudeProviderContinuationTurn(turnInput) &&
             existing.isolated === isolated
           ) {
-            return existing;
+            if (sameGrantSet) return existing;
+            // Replacing the process would drop the output this continuation drains; as on Codex,
+            // other grants wait for the next turn.
+            if (isolated)
+              return yield* new ProviderAdapter.ProviderAdapterMcpConnectionsRefusedError({
+                driver: CLAUDE_PROVIDER,
+                reason: "load",
+              });
           }
           const reuseLaunchSettings =
             existing !== null &&
             existing.nativeThreadId === nativeThreadId &&
             existing.queryPolicyKey === queryPolicyKey &&
+            sameGrants &&
             !existing.stopping;
           const readLaunchSettings = readClaudeLaunchArgSettings({
             settings: adapterOptions.settings,
@@ -12959,10 +13115,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           let compiledSelection = compileClaudeModelSelection(turnInput.modelSelection, catalog);
           if (
             !turnInput.resume &&
-            existing !== null &&
-            existing.nativeThreadId === nativeThreadId &&
-            existing.queryPolicyKey === queryPolicyKey &&
-            !existing.stopping &&
+            reuseLaunchSettings &&
             existing.selection.queryIdentity !== compiledSelection.queryIdentity &&
             canApplyClaudeSelectionLive(existing.selection, compiledSelection) &&
             (existing.selection.apiModelId === compiledSelection.apiModelId ||
@@ -12972,10 +13125,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           }
           if (
             !turnInput.resume &&
-            existing !== null &&
-            existing.nativeThreadId === nativeThreadId &&
-            existing.queryPolicyKey === queryPolicyKey &&
-            !existing.stopping &&
+            reuseLaunchSettings &&
             existing.selection.queryIdentity === compiledSelection.queryIdentity
           ) {
             // A denied ExitPlanMode leaves Claude in plan mode. Restore only from plan:
@@ -13051,10 +13201,12 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             ? claudeIsolatedSettings(memorySettings, pluginIds)
             : memorySettings;
           const instructionDelivery = makeClaudeBotInstructionDelivery();
-          const botInstructions = claudeBotInstructionsOf(turnInput);
           // A resumed interrupted turn starts from Claude's own empty prompt, before any offer.
           if (botInstructions !== undefined)
-            prepareClaudeBotInstructions(instructionDelivery, botInstructions);
+            prepareClaudeBotInstructions(
+              instructionDelivery,
+              withClaudeGrantedAccounts(botInstructions, grants),
+            );
           const closedExistingNativeThreadId = existing !== null ? existing.nativeThreadId : null;
           clearedNativeSessions.delete(nativeThreadId);
           if (existing !== null) {
@@ -13099,9 +13251,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             ...(mcpOverrides.allowedTools === undefined
               ? {}
               : { allowedTools: mcpOverrides.allowedTools }),
-            ...(mcpOverrides.mcpServers === undefined
+            ...(mcpOverrides.mcpServers === undefined && grants === undefined
               ? {}
-              : { mcpServers: mcpOverrides.mcpServers }),
+              : { mcpServers: { ...mcpOverrides.mcpServers, ...grants?.servers } }),
             deviceToolsAvailable: mcpSession?.capabilities?.has("device") === true,
             permissionMode: queryPolicy.permissionMode,
             ...(queryPolicy.allowDangerouslySkipPermissions === undefined
@@ -13162,6 +13314,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           yield* resetBackgroundTaskStateForNativeThreadProcess(nativeThreadId, {
             status: "active",
           });
+          const grantFailures =
+            grants === undefined
+              ? new Set<string>()
+              : yield* failedGrantedServers(querySession, grants);
           const closed = yield* Deferred.make<void, never>();
           const context: ClaudeLiveQueryContext = {
             queryPolicy,
@@ -13171,6 +13327,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             query: querySession,
             queryPolicyKey,
             isolated,
+            grants,
+            unreportedGrantFailures: grantFailures,
             botInstructions: instructionDelivery,
             selection: compiledSelection,
             closed,
@@ -13303,13 +13461,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
 
         const startTurn = Effect.fn("ClaudeAdapterV2.startTurn")(
           function* (turnInput: ProviderAdapter.ProviderAdapterV2TurnInput) {
-            const refusal = claudeBotPolicyRefusal(turnInput.runtimePolicy);
+            const refusal = claudeBotPolicyRefusal(turnInput.runtimePolicy, hostPlatform);
             if (refusal !== undefined) return yield* refusal;
             const botInstructions = claudeBotInstructionsOf(turnInput);
-            if (botInstructions !== undefined && !claudeBotInstructionsFit(botInstructions))
-              return yield* new ClaudeBotInstructionsTooLargeError({
-                length: botInstructions.lasting.length + botInstructions.turn.length,
-              });
             modelCatalog = yield* loadModelCatalog;
             const startedAt = yield* DateTime.now;
             const nativeThreadId = yield* getNativeThreadId(turnInput.providerThread);
@@ -13441,6 +13595,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               input: turnInput,
               autoCompactWindow,
               queryPolicy: querySession.queryPolicy,
+              grantKey: querySession.grants?.key,
               nativeThreadId,
               nativeTurnId,
               nativeMessageCursor: null,
@@ -13564,6 +13719,44 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   },
                 });
               }
+              for (const server of querySession.unreportedGrantFailures) {
+                querySession.unreportedGrantFailures.delete(server);
+                const nativeItemId = `mcp-startup-failed:${context.providerTurnId}:${server}`;
+                const notice = McpConnectionDelivery.grantedServerFailureNotice(
+                  querySession.grants?.connections.find(
+                    ({ id }) => McpConnectionDelivery.grantedServerName(id) === server,
+                  )?.label,
+                );
+                yield* emitProviderEvent({
+                  type: "turn_item.updated",
+                  driver: CLAUDE_PROVIDER,
+                  turnItem: {
+                    id: idAllocator.derive.turnItemFromProviderItem({
+                      driver: CLAUDE_PROVIDER,
+                      nativeItemId,
+                    }),
+                    threadId: turnInput.threadId,
+                    runId: turnInput.runId,
+                    nodeId: turnInput.rootNodeId,
+                    providerThreadId: turnInput.providerThread.id,
+                    providerTurnId: context.providerTurnId,
+                    nativeItemRef: {
+                      driver: CLAUDE_PROVIDER,
+                      nativeId: nativeItemId,
+                      strength: "weak",
+                    },
+                    parentItemId: null,
+                    ordinal: yield* resolveItemOrdinal(context, nativeItemId),
+                    type: "system_notice",
+                    status: "completed",
+                    title: notice,
+                    message: notice,
+                    startedAt,
+                    completedAt: startedAt,
+                    updatedAt: startedAt,
+                  },
+                });
+              }
               yield* emitProviderEvent({
                 type: "provider_turn.updated",
                 driver: CLAUDE_PROVIDER,
@@ -13584,7 +13777,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                         if (botInstructions !== undefined)
                           prepareClaudeBotInstructions(
                             querySession.botInstructions,
-                            botInstructions,
+                            withClaudeGrantedAccounts(botInstructions, querySession.grants),
                           );
                       }),
                     ),
@@ -13931,7 +14124,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             // A Bot thread's message goes only into a process loaded as narrowly as its turn.
             if (
               existing.isolated !==
-              (currentTurn.input.runtimePolicy.mcpConnections !== undefined)
+                (currentTurn.input.runtimePolicy.mcpConnections !== undefined) ||
+              existing.grants?.key !== currentTurn.grantKey
             ) {
               return yield* new ProviderAdapter.ProviderAdapterProtocolError({
                 driver: CLAUDE_PROVIDER,

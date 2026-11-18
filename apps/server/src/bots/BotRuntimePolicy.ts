@@ -4,6 +4,7 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
+import * as ClaudeAdapterV2 from "../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import * as CodexAdapterV2 from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as RuntimePolicy from "../orchestration-v2/RuntimePolicy.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
@@ -36,8 +37,8 @@ export const restrictionUnenforceable = Effect.fn("BotRuntimePolicy.restrictionU
 
 /**
  * A Bot's whole lineage runs without provider memory and with only its granted MCP connections
- * (plus the user's own Codex servers when switched on). Codex enforces grants; Claude only an
- * empty set; any other provider is refused. No changes tasks also run restricted.
+ * (plus the user's own Codex servers when switched on). Codex and Claude enforce grants; any other
+ * provider is refused. No changes tasks also run restricted.
  */
 export const layer: Layer.Layer<
   RuntimePolicy.RuntimePolicyV2,
@@ -137,29 +138,26 @@ export const layer: Layer.Layer<
             providerInstanceId: input.modelSelection.instanceId,
             detail,
           });
-        const support = BotProviderSupport.botDriverSupport(
-          yield* driverOf(providerInstances, input.modelSelection.instanceId),
-        );
+        const driver = yield* driverOf(providerInstances, input.modelSelection.instanceId);
+        const support = BotProviderSupport.botDriverSupport(driver);
         if (!support.mcpIsolation) {
           return yield* refuseMcp(
             `${botName}'s threads run only on Codex or Claude, which keep them to T3 Code's tools and the Bot's own connections, so nothing ran. Switch this thread to a Codex or Claude model.`,
           );
         }
-        if (mcpConnections.length > 0 && !support.mcpGrants) {
+        const platform = yield* HostProcess.Platform;
+        const claude = driver === "claudeAgent";
+        const grantsVerified = claude
+          ? ClaudeAdapterV2.claudeMcpGrantsPlatformSupported(platform)
+          : CodexAdapterV2.codexMcpGrantsPlatformSupported(platform);
+        if (!grantsVerified && mcpConnections.length > 0) {
           return yield* refuseMcp(
-            `${botName} uses only the MCP connections granted to it, which only Codex can enforce, so nothing ran. Switch this thread to a Codex model.`,
+            `${botName} uses only the MCP connections granted to it, which ${claude ? "on Claude is only verified on macOS" : "is only verified on macOS and Linux"}, so nothing ran.`,
           );
         }
-        // Codex grants are verified on macOS and Linux only; elsewhere a Bot without grants keeps
-        // Codex's own MCP setup, as documented.
-        const grantsPlatform =
-          !support.mcpGrants ||
-          CodexAdapterV2.codexMcpGrantsPlatformSupported(yield* HostProcess.Platform);
-        if (!grantsPlatform && mcpConnections.length > 0) {
-          return yield* refuseMcp(
-            `${botName} uses only the MCP connections granted to it, which is only verified on macOS and Linux, so nothing ran.`,
-          );
-        }
+        // Elsewhere a Codex Bot without grants keeps Codex's own MCP setup, as documented; a Claude
+        // Bot stays on T3 Code's server everywhere.
+        const grantsPlatform = claude || grantsVerified;
         // The user's own servers are Codex's; on Claude a Bot thread loads T3 Code's server only.
         const userMcpServers =
           support.ownMcpServers && access._tag === "bot" && access.ownCodexMcpServers && !noChanges

@@ -71,6 +71,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
+import * as Redacted from "effect/Redacted";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
@@ -84,6 +85,7 @@ import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { SpawnExecutableResolution } from "@t3tools/shared/shell";
 
 import * as PortScanner from "../../preview/PortScanner.ts";
+import * as McpConnectionDelivery from "../../mcpConnections/McpConnectionDelivery.ts";
 import { attachmentRelativePath } from "../../attachmentStore.ts";
 import { WorkflowAgentTranscriptReadObserver } from "../workflowAgentTranscript.ts";
 import * as ServerConfig from "../../config.ts";
@@ -1508,39 +1510,59 @@ describe("ClaudeAdapterV2 append-system-prompt-file launch argument", () => {
   );
 
   it.effect.each([
-    [{ nativeTools: "readOnly" }, "ProviderAdapterSealRefusedError"],
-    [{ nativeTools: "t3BotOnly", mcpConnections: [] }, "ProviderAdapterSealRefusedError"],
+    [{ nativeTools: "readOnly" }, "darwin", "ProviderAdapterSealRefusedError", "No changes"],
+    [
+      { nativeTools: "t3BotOnly", mcpConnections: [] },
+      "darwin",
+      "ProviderAdapterSealRefusedError",
+      "maintenance",
+    ],
     [
       { mcpConnections: [McpConnectionId.make("2a2a2a2a-0000-4000-8000-00000000002a")] },
+      "linux",
       "ProviderAdapterMcpConnectionsRefusedError",
+      "on Claude they are only verified on macOS",
+    ],
+    [
+      { mcpConnections: [McpConnectionId.make("2a2a2a2a-0000-4000-8000-00000000002a")] },
+      "darwin",
+      "ProviderAdapterMcpConnectionsRefusedError",
+      "this server cannot read its MCP connections",
     ],
     [
       { mcpConnections: [], userMcpServers: "enabled" },
+      "darwin",
       "ProviderAdapterMcpConnectionsRefusedError",
+      "only Codex can load your own MCP servers",
     ],
-  ] as const)("refuses a Bot policy it cannot enforce before Claude opens: %j", ([policy, tag]) =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const fileSystem = yield* FileSystem.FileSystem;
-        const cwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-refuse-" });
-        const { exit, opened } = yield* startTurnWithLaunchArgs("", cwd, "disabled", {
-          policy,
-        });
-        assert.lengthOf(opened, 0);
-        assert.isTrue(Exit.isFailure(exit));
-        if (Exit.isFailure(exit))
-          assert.equal((Cause.squash(exit.cause) as { readonly _tag: string })._tag, tag);
-      }).pipe(
-        Effect.provide(
-          Layer.mergeAll(
-            IdAllocator.layer,
-            McpProviderSessions.layer,
-            NodeServices.layer,
-            NodeCrypto.layer,
+  ] as const)(
+    "refuses a Bot policy it cannot enforce before Claude opens: %j on %s",
+    ([policy, platform, tag, message]) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const cwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-refuse-" });
+          const { exit, opened } = yield* startTurnWithLaunchArgs("", cwd, "disabled", {
+            policy,
+          }).pipe(Effect.provideService(HostProcess.Platform, platform));
+          assert.lengthOf(opened, 0);
+          assert.isTrue(Exit.isFailure(exit));
+          if (Exit.isFailure(exit)) {
+            const error = Cause.squash(exit.cause) as { readonly _tag: string; message: string };
+            assert.equal(error._tag, tag);
+            assert.include(error.message, message);
+          }
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              NodeCrypto.layer,
+            ),
           ),
         ),
       ),
-    ),
   );
 
   it.effect("loads a Bot thread with only T3 Code's MCP server and no plugins", () =>
@@ -4029,7 +4051,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                       renameCalls.push(title);
                     }).pipe(Effect.andThen(() => options?.renameSession?.(title) ?? Effect.void)),
                   backgroundTasks: options?.backgroundTasks ?? (() => Effect.succeed(false)),
-                  mcpServerStatus: Effect.succeed([]),
+                  mcpServerStatus: options?.mcp?.mcpServerStatus ?? Effect.succeed([]),
                   readMcpResource: () => Effect.die("unexpected MCP resource read"),
                   callMcpTool: () => Effect.die("unexpected MCP tool call"),
                   listPermissionRules: Effect.die("unexpected permission rules read"),
@@ -4279,6 +4301,206 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         ),
       ),
     ),
+  );
+
+  it.effect(
+    "loads a Claude Bot's granted connections beside T3 Code's server and reopens when they change",
+    () => {
+      const privateMail = McpConnectionId.make("2a2a2a2a-0000-4000-8000-00000000002a");
+      const workMail = McpConnectionId.make("2b2b2b2b-0000-4000-8000-00000000002b");
+      const privateServer = McpConnectionDelivery.grantedServerName(privateMail);
+      const workServer = McpConnectionDelivery.grantedServerName(workMail);
+      /** What the catalog delivers; the token and header values stand for credentials. */
+      const load = (token: string, revision: number): McpConnectionDelivery.McpConnectionLoad => ({
+        identity: `identity-${token}-${revision}`,
+        connections: [
+          {
+            id: privateMail,
+            label: "Mail (private)",
+            revision,
+            transport: {
+              type: "stdio",
+              command: "mail-mcp",
+              args: ["--stdio"],
+              env: Redacted.make({ MAIL_TOKEN: token }),
+            },
+          },
+          {
+            id: workMail,
+            label: "Mail (work)",
+            revision: 1,
+            transport: {
+              type: "http",
+              url: "https://mail.example.test/mcp",
+              headers: Redacted.make({ Authorization: "Bearer work-header-secret" }),
+            },
+          },
+        ],
+      });
+      return Effect.gen(function* () {
+        const delivered = yield* Ref.make(load("token-1", 1));
+        const refused: Array<string> = [];
+        const harness = yield* makeWakeHarnessWithOptions({
+          freshQueueOnReopen: true,
+          mcp: {
+            mcpServerStatus: Effect.succeed([
+              { name: "t3-code", status: "connected" },
+              { name: privateServer, status: "connected" },
+              { name: workServer, status: "failed", error: "401 for Bearer work-header-secret" },
+            ]),
+            readMcpResource: () => Effect.die("unexpected MCP resource read"),
+            callMcpTool: () => Effect.die("unexpected MCP tool call"),
+          },
+        }).pipe(
+          Effect.provideService(McpConnectionDelivery.McpConnectionDelivery, {
+            resolve: () => Ref.get(delivered),
+            markRefused: (id) => Effect.sync(() => refused.push(id)),
+          }),
+        );
+        yield* (yield* McpProviderSessions.McpProviderSessions).set({
+          environmentId: EnvironmentId.make("environment-claude-grants"),
+          threadId: harness.threadId,
+          providerSessionId: "mcp-session-claude-grants",
+          providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+          endpoint: "http://127.0.0.1:43123/mcp",
+          authorizationHeader: "Bearer t3-session-secret",
+          browserToolsAvailable: true,
+        });
+        const lastingInstructions = Effect.promise(async () => {
+          const hooks = harness.getOpenedOptions()?.hooks?.UserPromptSubmit?.[0]?.hooks ?? [];
+          const outputs = await Promise.all(
+            hooks.map((hook) =>
+              hook(
+                {
+                  hook_event_name: "UserPromptSubmit",
+                  prompt: "",
+                  session_id: "",
+                  cwd: "",
+                } as never,
+                undefined,
+                { signal: new AbortController().signal },
+              ),
+            ),
+          );
+          return outputs
+            .map(
+              (output) =>
+                (output as { hookSpecificOutput?: { additionalContext?: string } } | undefined)
+                  ?.hookSpecificOutput?.additionalContext ?? "",
+            )
+            .join("");
+        });
+        const turns: ReadonlyArray<{
+          readonly change: McpConnectionDelivery.McpConnectionLoad | undefined;
+          readonly opened: number;
+          readonly continuation?: boolean;
+          readonly refused?: boolean;
+        }> = [
+          { change: undefined, opened: 1 },
+          { change: undefined, opened: 1 },
+          // A renewed token or rotated secret, same catalog revision.
+          { change: load("token-2", 1), opened: 2 },
+          // A continuation drains the running process, whatever credentials renewed meanwhile.
+          { change: load("token-3", 1), opened: 2, continuation: true },
+          // Another grant set never drains into that process, nor replaces it mid-continuation.
+          { change: load("token-2", 2), opened: 2, continuation: true, refused: true },
+          // An edit to the connection.
+          { change: load("token-2", 2), opened: 3 },
+        ];
+        for (const [index, turn] of turns.entries()) {
+          if (turn.change !== undefined) yield* Ref.set(delivered, turn.change);
+          const started = yield* harness.runtime
+            .startTurn(
+              makeClaudeTestTurnInput({
+                threadId: harness.threadId,
+                providerThread: harness.providerThread,
+                now: yield* DateTime.now,
+                attemptId: RunAttemptId.make(`attempt-claude-grants-${index}`),
+                text: "Check my private mail.",
+                attachments: [],
+                providerTurnOrdinal: index + 1,
+                ...(turn.continuation === true
+                  ? { messageCreatedBy: "agent", messageCreationSource: "provider" }
+                  : {}),
+                runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+                  ...CLAUDE_TEST_RUNTIME_POLICY,
+                  nativeMemory: "disabled",
+                  mcpConnections: [privateMail, workMail],
+                }),
+                applicationInstructions: "Answer briefly.",
+              }),
+            )
+            .pipe(Effect.exit);
+          assert.lengthOf(harness.processQueues, turn.opened, `turn ${index + 1}`);
+          if (turn.refused === true) {
+            assert.isTrue(Exit.isFailure(started));
+            if (Exit.isFailure(started))
+              assert.include(
+                Cause.pretty(started.cause),
+                "ProviderAdapterMcpConnectionsRefusedError",
+              );
+            continue;
+          }
+          assert.isTrue(Exit.isSuccess(started), `turn ${index + 1}`);
+          const options = harness.getOpenedOptions() ?? assert.fail("Claude did not open");
+          if (index === 0) {
+            assert.isTrue(options.strictMcpConfig);
+            assert.deepEqual(Object.keys(options.mcpServers ?? {}), [
+              "t3-code",
+              privateServer,
+              workServer,
+            ]);
+            assert.deepInclude(options.mcpServers?.[privateServer], {
+              type: "stdio",
+              command: "mail-mcp",
+              args: ["--stdio"],
+              env: { MAIL_TOKEN: "token-1" },
+            });
+            assert.deepInclude(options.mcpServers?.[workServer], {
+              type: "http",
+              url: "https://mail.example.test/mcp",
+              headers: { Authorization: "Bearer work-header-secret" },
+            });
+            const instructions = yield* lastingInstructions;
+            assert.include(instructions, `"Mail (private)": tools in the mcp__${privateServer}`);
+            assert.include(instructions, `"Mail (work)": tools in the mcp__${workServer}`);
+            // The failed account runs on without its tools, named but never with its error text.
+            const notice = yield* Queue.take(harness.systemNoticeReceipts);
+            assert.include(notice.turnItem.title ?? "", '"Mail (work)" could not start');
+            assert.notInclude(JSON.stringify(notice), "work-header-secret");
+            assert.deepEqual(refused, [workMail]);
+          }
+          if (turn.change !== undefined)
+            assert.deepInclude(options.mcpServers?.[privateServer], {
+              env: { MAIL_TOKEN: "token-2" },
+            });
+          const logged = JSON.stringify(ClaudeAdapterV2.loggedClaudeQueryOptions(options));
+          for (const secret of ["token-", "work-header-secret", "t3-session-secret", "identity-"])
+            assert.notInclude(logged, secret);
+          yield* Queue.offer(
+            harness.processQueues.at(-1)!,
+            makeResultFrame({
+              uuid: `00000000-0000-4000-8000-00000000005${index}`,
+              result: "Done.",
+            }),
+          );
+          assert.equal((yield* Queue.take(harness.terminalReceipts)).status, "completed");
+        }
+        // The key names the load by id and revision only.
+        const { key } = ClaudeAdapterV2.claudeGrantLoad(load("token-3", 4));
+        assert.equal(key, `${privateMail}@4,${workMail}@1`);
+      }).pipe(
+        Effect.provideService(HostProcess.Platform, "darwin"),
+        Effect.provide(
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            NodeCrypto.layer,
+          ),
+        ),
+      );
+    },
   );
 
   it.effect("reopens the Claude query when native memory is disabled and restored", () =>

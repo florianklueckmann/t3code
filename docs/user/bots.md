@@ -40,15 +40,15 @@ task thread you switch to another provider refuses new messages until you
 switch it back.
 
 A Bot on Claude works with the same instructions, guidance, sources, learning,
-working notes, tasks and routines. Its threads load T3 Code's own tools and no
-other MCP server: your Claude MCP servers, claude.ai connectors and plugins stay
-out. Hooks, skills, permission rules and `CLAUDE.md` files still apply, as they
+working notes, tasks and routines. Its threads load T3 Code's own tools and the
+[MCP connections](#mcp-connections) you grant it, and no other MCP server: your
+Claude MCP servers, claude.ai connectors and plugins stay out. Hooks, skills, permission rules and `CLAUDE.md` files still apply, as they
 do on Codex, and so do plugins and hooks your organization manages for Claude.
 
 Some features need a Codex model for now. On a Claude Bot, **Settings → Bots**
 shows them as unavailable and says why:
 
-- MCP connections and **Use my own Codex MCP servers**
+- **Use my own Codex MCP servers**
 - **No changes** routines. A new routine on a Claude Bot starts as **Changes
   allowed**.
 - Maintenance, the Daily Home check and Diagnose failed routines
@@ -314,8 +314,14 @@ load exactly those connections. So do threads the Bot starts with T3 Code's
 tools, such as a new thread or a delegated task on this environment. Turn on
 **Use my own Codex MCP servers** to load the MCP servers in your Codex config
 as well; the switch lists them by name. A change applies from the Bot's next
-turn. Both need the Bot on a Codex model; a Claude Bot can only remove them. A disabled connection stays granted but does not load until you enable it
-again. Removing a connection takes it away from every Bot that uses it; the
+turn. Connections work on Codex and Claude Bots; the switch needs a Codex model,
+and a Claude Bot can only turn it off. A disabled connection stays granted but does not load until you enable it
+again. A granted connection that can't start leaves its tools out, the turn runs
+on, and the conversation says which connection it was.
+
+On Claude, a changed connection or a renewed sign-in restarts Claude at the
+Bot's next turn. While the conversation still runs background agents or
+commands, that turn is refused until they finish or you stop them. Removing a connection takes it away from every Bot that uses it; the
 catalog shows which Bots those are and asks first.
 
 These grants choose the connections loaded in the Bot's threads. They do not
@@ -355,13 +361,14 @@ service, add a second connection and sign in with the other account.
 ## Current limits
 
 - Bots run on Codex and Claude only.
-- MCP connections apply only to Codex 0.166.0 or later on a macOS or Linux server.
-  With other Codex setups, a Bot without connections uses Codex's own MCP setup,
-  and a Bot with connections does not run. A Claude Bot loads no MCP server but
-  T3 Code's own.
+- On Codex, MCP connections apply only to Codex 0.166.0 or later on a macOS or
+  Linux server. With other Codex setups, a Bot without connections uses Codex's
+  own MCP setup, and a Bot with connections does not run.
+- On Claude, MCP connections apply only on a macOS server. Elsewhere a Claude
+  Bot with connections does not run; one without loads only T3 Code's own tools.
 - On a Claude Bot, plugins and hooks your organization manages for Claude still
-  load. MCP connections, own MCP servers, No changes routines, maintenance, the
-  Daily Home check and Diagnose failed routines are not available yet.
+  load. Own MCP servers, No changes routines, maintenance, the Daily Home check
+  and Diagnose failed routines are not available yet.
 - Bots turn off Claude's automatic memory.
 - Built-in email and calendar connections are not available.
 

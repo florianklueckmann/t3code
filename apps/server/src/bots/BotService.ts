@@ -482,9 +482,15 @@ const make = Effect.gen(function* () {
               const support = BotProviderSupport.botDriverSupport(
                 (yield* providerInstances.getInstance(instanceId))?.driverKind,
               );
-              if (!support.mcpGrants || (ownCodexMcpServers && !support.ownMcpServers)) {
+              if (!support.mcpGrants) {
                 return yield* botError(
                   `${bot.name} can't load MCP connections or your own MCP servers on its model yet. Switch it to a Codex model first.`,
+                  input.botId,
+                )();
+              }
+              if (ownCodexMcpServers && !support.ownMcpServers) {
+                return yield* botError(
+                  `${bot.name} can't load your own Codex MCP servers on its model. Switch it to a Codex model first.`,
                   input.botId,
                 )();
               }

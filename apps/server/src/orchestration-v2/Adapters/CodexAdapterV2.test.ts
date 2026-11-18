@@ -4910,6 +4910,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       {
         id: privateMail,
         label: "Private mail",
+        revision: 1,
         transport: {
           type: "stdio",
           command: "mail-mcp",
@@ -4920,6 +4921,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       {
         id: workMail,
         label: "Work mail",
+        revision: 1,
         transport: {
           type: "http",
           url: "https://mail.example.test/mcp",

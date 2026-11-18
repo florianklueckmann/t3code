@@ -16,18 +16,20 @@ export const unsupportedReason = (driver: string | undefined) =>
 
 /**
  * What a driver can enforce for a Bot, before any platform or sign-in check. Claude keeps a Bot's
- * threads to T3 Code's own MCP server but has no grants, sealed runs or sealed generation yet.
+ * threads to T3 Code's own MCP server and its grants, but has no sealed runs or sealed generation
+ * yet, and the user's own servers are Codex's.
  */
 export function botDriverSupport(driver: string | undefined) {
   const codex = driver === "codex";
+  const mcpIsolation = driver !== undefined && BOT_DRIVERS.includes(driver);
   return {
-    mcpGrants: codex,
+    mcpGrants: mcpIsolation,
     ownMcpServers: codex,
     /** Both sealed run modes: No changes ("readOnly") and the Home's scoped turns ("t3BotOnly"). */
     seals: codex,
     sealedGeneration: codex,
-    /** Loads no MCP server but T3 Code's own when the Bot has no grants. */
-    mcpIsolation: driver !== undefined && BOT_DRIVERS.includes(driver),
+    /** Loads no MCP server but T3 Code's own and the Bot's grants. */
+    mcpIsolation,
   };
 }
 
