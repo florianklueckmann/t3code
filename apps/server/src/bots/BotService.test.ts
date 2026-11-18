@@ -1179,10 +1179,19 @@ it.effect("keeps facts in their project by default and shares them when explicit
           status: "active",
           duplicate: false,
         });
-        assert.isNull(entryOf(moved.bot, local.learned.entryId).projectId);
+        const movedEntry = entryOf(moved.bot, local.learned.entryId);
+        assert.isNull(movedEntry.projectId);
+        // Moving keeps who the lesson came from, so it keeps its rank under the turn's cap.
+        assert.deepEqual(
+          movedEntry.revisions.map((revision) => [revision.origin, revision.source]),
+          [
+            ["correction", correction.source],
+            ["correction", correction.source],
+          ],
+        );
         assert.include(
           yield* instructionsFor(turnContext, homeB ?? assert.fail()),
-          `[${local.learned.entryId} r2; fact, all projects, standing instruction] Strahd fled to the Amber Temple.`,
+          `[${local.learned.entryId} r2; fact, all projects] Strahd fled to the Amber Temple.`,
         );
         const edited = yield* bots.recordLearning({
           ...user,

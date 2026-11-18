@@ -222,8 +222,15 @@ export const make = (deps: {
             policy,
             fromTask,
           });
+      // The user moving an entry changes where it applies, not who it came from.
+      const moved =
+        !stale &&
+        input.origin === "instruction" &&
+        head.project_id !== projectId &&
+        head.normalized_text === normalized;
       const row: BotStore.BotLearningRow = {
         ...base,
+        ...(moved ? { origin: head.origin, source_json: head.source_json } : {}),
         entry_id: first.entry_id,
         revision: Math.max(...revisions.map((revision) => revision.revision)) + 1,
         project_id: projectId,
