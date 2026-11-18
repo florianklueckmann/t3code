@@ -82,18 +82,105 @@ const seed = Effect.fn("fixture.seed")(function* (
   yield* main`UPDATE orchestration_v2_projection_threads SET provider_instance_id = 'codex' WHERE thread_id = ${home}`;
 });
 
-/** A Home event committed at the test clock's current time. */
-const homeEvent = Effect.gen(function* () {
+/** A second project of the same Bot, with its own Codex Home. */
+const otherScope = { botId: scope.botId, projectId: ProjectId.make("other-project") };
+const otherHome = ThreadId.make("bot-home:bot:other-project");
+const seedOtherProject = Effect.gen(function* () {
+  const store = yield* BotStore.BotStore;
+  yield* store.upsertContext({
+    home_thread_id: otherHome,
+    bot_id: "bot",
+    project_id: otherScope.projectId,
+    guidance: "",
+    sources_json: "[]",
+    revision: 1,
+    thread_sync: null,
+    attached_at: created,
+    detached_at: null,
+    updated_at: created,
+  });
   const main = yield* SqlClient.SqlClient;
-  const now = DateTime.formatIso(yield* DateTime.now);
-  const [row] = yield* main<{ readonly sequence: number }>`INSERT INTO orchestration_events
-      (event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at, actor_kind, payload_json, metadata_json, application_event_version)
-    VALUES ('event-' || lower(hex(randomblob(8))), 'thread', ${home},
-      (SELECT COALESCE(MAX(stream_version), -1) + 1 FROM orchestration_events WHERE stream_id = ${home}),
-      'thread.updated', ${now}, 'server', '{}', '{}', 2)
-    RETURNING sequence`;
-  return row!.sequence;
+  yield* main`INSERT INTO orchestration_v2_projection_threads (thread_id, project_id, title, default_provider, runtime_mode, interaction_mode, created_at, updated_at, archived_at, deleted_at, payload_json, provider_instance_id)
+    VALUES (${otherHome}, ${otherScope.projectId}, 'Home', 'codex', 'full-access', 'default', ${created}, ${created}, NULL, NULL, '{}', 'codex')`;
 });
+
+/** A Home event committed at the test clock's current time. */
+const eventIn = (thread: string) =>
+  Effect.gen(function* () {
+    const main = yield* SqlClient.SqlClient;
+    const now = DateTime.formatIso(yield* DateTime.now);
+    const [row] = yield* main<{ readonly sequence: number }>`INSERT INTO orchestration_events
+        (event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at, actor_kind, payload_json, metadata_json, application_event_version)
+      VALUES ('event-' || lower(hex(randomblob(8))), 'thread', ${thread},
+        (SELECT COALESCE(MAX(stream_version), -1) + 1 FROM orchestration_events WHERE stream_id = ${thread}),
+        'thread.updated', ${now}, 'server', '{}', '{}', 2)
+      RETURNING sequence`;
+    return row!.sequence;
+  });
+const homeEvent = eventIn(home);
+
+/**
+ * Bot work that ended now, as task reconcile records it while early checks are on: the task's
+ * terminal row, its pending outcome, and the unread mark on its Home.
+ */
+const finished = Effect.fn("fixture.finished")(function* (
+  taskId: string,
+  options: { readonly status?: "completed" | "failed"; readonly thread?: string } = {},
+) {
+  const bots = yield* BotDatabase.BotDatabase;
+  const thread = options.thread ?? home;
+  const project = thread === home ? scope.projectId : otherScope.projectId;
+  const now = DateTime.formatIso(yield* DateTime.now);
+  yield* bots`INSERT INTO bot_tasks (task_id, bot_id, project_id, home_thread_id, origin, title, prompt, runtime_mode, status, result_run_id, completed_at, notified_at, created_at, updated_at)
+    VALUES (${taskId}, 'bot', ${project}, ${thread}, 'routine', ${`Routine ${taskId}`}, 'Prepare', 'full-access', ${options.status ?? "completed"}, ${`run-${taskId}`}, ${now}, ${now}, ${now}, ${now})`;
+  yield* bots`INSERT INTO bot_home_check_outcomes (task_id, home_thread_id) VALUES (${taskId}, ${thread})`;
+  yield* eventIn(thread);
+});
+
+/** Saved task results as the check reads them. */
+const results: BotTaskService.BotTaskService["Service"]["getResult"] = (input) =>
+  Effect.succeed({
+    task: { id: input.taskId } as never,
+    result: {
+      state: "available",
+      runId: RunId.make(`run-${input.taskId}`),
+      text: `Result of ${input.taskId}`,
+    },
+  });
+
+const outcomes = BotDatabase.BotDatabase.pipe(
+  Effect.flatMap(
+    (bots) =>
+      bots<{
+        readonly task_id: string;
+        readonly check_message_id: string | null;
+      }>`SELECT task_id, check_message_id FROM bot_home_check_outcomes ORDER BY task_id`,
+  ),
+);
+
+const earlyStarts = BotDatabase.BotDatabase.pipe(
+  Effect.flatMap(
+    (bots) =>
+      bots<{
+        readonly home_thread_id: string;
+        readonly done_through: string;
+        readonly early_started_at: string | null;
+        readonly early_previous_at: string | null;
+      }>`SELECT home_thread_id, done_through, early_started_at, early_previous_at FROM bot_home_checks ORDER BY home_thread_id`,
+  ),
+);
+
+/** The text of each scoped run the check sent, in order. */
+const startTexts = (homeTurns: Pick<Orchestrator, "commands">) =>
+  Ref.get(homeTurns.commands).pipe(
+    Effect.map((all) =>
+      all.flatMap((command) =>
+        command.type === "restricted_run.start"
+          ? [{ id: command.commandId, thread: command.threadId, text: command.text }]
+          : [],
+      ),
+    ),
+  );
 
 /** The user's own Home message, which a check may quote. */
 const userMessage = Effect.fn("fixture.userMessage")(function* (id: string, text: string) {
@@ -125,16 +212,17 @@ const orchestrator = Effect.gen(function* () {
       yield* Ref.update(commands, (all) => [...all, command]);
       if (!(yield* Ref.get(receipts)).has(command.commandId)) {
         if (command.type === "restricted_run.start") {
+          const thread = command.threadId;
           const [latest] = yield* main<{
             readonly sequence: number | null;
-          }>`SELECT MAX(sequence) AS sequence FROM orchestration_events WHERE stream_id = ${home}`;
+          }>`SELECT MAX(sequence) AS sequence FROM orchestration_events WHERE stream_id = ${thread}`;
           if ((yield* Ref.get(busy)) || command.ifIdleAtSequence !== (latest?.sequence ?? 0))
             return { sequence: latest?.sequence ?? 0, storedEvents: [], deferred: true } as const;
           const now = DateTime.formatIso(yield* DateTime.now);
           yield* main`INSERT INTO orchestration_v2_projection_runs (run_id, thread_id, ordinal, provider, status, requested_at, payload_json)
-            VALUES (${`check-run-${command.messageId}`}, ${home}, (SELECT COALESCE(MAX(ordinal), 0) + 1 FROM orchestration_v2_projection_runs WHERE thread_id = ${home}), 'codex', 'running', ${now},
+            VALUES (${`check-run-${command.messageId}`}, ${thread}, (SELECT COALESCE(MAX(ordinal), 0) + 1 FROM orchestration_v2_projection_runs WHERE thread_id = ${thread}), 'codex', 'running', ${now},
               ${JSON.stringify({ userMessageId: command.messageId, restriction: command.restriction })})`;
-          yield* homeEvent;
+          yield* eventIn(thread);
         }
         yield* Ref.update(receipts, (all) => new Set([...all, command.commandId]));
       }
@@ -197,15 +285,22 @@ const startService = Effect.fn("fixture.startService")(function* (
 
 const enable = Effect.fn("fixture.enable")(function* (
   check: BotHomeCheck.BotHomeCheck["Service"],
-  input: { readonly enabled?: boolean; readonly timeOfDay?: string } = {},
+  input: {
+    readonly enabled?: boolean;
+    readonly timeOfDay?: string;
+    readonly early?: boolean;
+    readonly scope?: typeof scope;
+  } = {},
 ) {
-  const view = yield* onMac(check.get(scope));
+  const target = input.scope ?? scope;
+  const view = yield* onMac(check.get(target));
   const result = yield* onMac(
     check.configure({
-      ...scope,
+      ...target,
       baseRevision: view.revision,
       enabled: input.enabled ?? true,
       ...(input.timeOfDay === undefined ? {} : { timeOfDay: input.timeOfDay }),
+      ...(input.early === undefined ? {} : { early: input.early }),
     }),
   );
   if (result._tag !== "saved") return yield* Effect.die(result);
@@ -250,20 +345,38 @@ it.effect("stays off at 08:00 by default and configures by compare-and-set", () 
       revision: 0,
       enabled: false,
       timeOfDay: "08:00",
+      early: false,
       unavailableReason: null,
       writable: true,
       lastCheck: null,
     });
+    // An early check rides on the daily one.
+    const alone = yield* onMac(
+      check.configure({ ...scope, baseRevision: 0, enabled: false, early: true }),
+    ).pipe(Effect.flip);
+    assert.include(alone.message, "Daily Home check on");
     const stale = yield* onMac(check.configure({ ...scope, baseRevision: 3, enabled: true }));
     assert.equal(stale._tag, "conflict");
     const saved = yield* enable(check, { timeOfDay: "07:30" });
     assert.deepInclude(saved, { revision: 1, enabled: true, timeOfDay: "07:30" });
     const lost = yield* onMac(check.configure({ ...scope, baseRevision: 0, enabled: false }));
     assert.deepEqual(lost._tag === "conflict" && lost.current.revision, 1);
-    assert.deepInclude(yield* enable(check, { enabled: false }), { revision: 2, enabled: false });
+    // Work that ended before early checks were on is not owed one.
+    const bots = yield* BotDatabase.BotDatabase;
+    yield* bots`INSERT INTO bot_home_check_outcomes (task_id, home_thread_id) VALUES ('stale', ${home})`;
+    assert.deepInclude(yield* enable(check, { early: true }), { revision: 2, early: true });
+    assert.deepEqual(yield* outcomes, []);
+    // Turning the daily check off turns early checks off with it.
+    assert.deepInclude(yield* enable(check, { enabled: false }), {
+      revision: 3,
+      enabled: false,
+      early: false,
+    });
+    assert.deepInclude(yield* enable(check), { revision: 4, early: false });
+    yield* enable(check, { enabled: false });
     // A Home that cannot scope the turn never turns on.
     const linux = yield* check
-      .configure({ ...scope, baseRevision: 2, enabled: true })
+      .configure({ ...scope, baseRevision: 5, enabled: true })
       .pipe(Effect.provideService(HostProcess.Platform, "linux"), Effect.flip);
     assert.include(linux.message, "Mac");
     assert.equal(
@@ -271,6 +384,18 @@ it.effect("stays off at 08:00 by default and configures by compare-and-set", () 
         .unavailableReason,
       "platform",
     );
+    // A Claude Home gets neither check, and one reason covers both switches.
+    const main = yield* SqlClient.SqlClient;
+    yield* main`UPDATE orchestration_v2_projection_threads SET provider_instance_id = 'claudeAgent' WHERE thread_id = ${home}`;
+    const claude = yield* onMac(
+      check.configure({ ...scope, baseRevision: 5, enabled: true, early: true }),
+    ).pipe(Effect.flip);
+    assert.include(claude.message, "Codex");
+    assert.deepInclude(yield* onMac(check.get(scope)), {
+      enabled: false,
+      early: false,
+      unavailableReason: "claude_unsupported",
+    });
   }).pipe(Effect.provide(services)),
 );
 
@@ -416,49 +541,69 @@ it.effect("waits for a quiet Home and retries a refused start without a Bot writ
   }).pipe(Effect.provide(services)),
 );
 
-it.effect("replays the same start after a crash before its Bot write", () =>
+it.effect("adopts a start a crash left unrecorded, without what ended after it", () =>
   Effect.gen(function* () {
     yield* seed();
     const homeTurns = yield* orchestrator;
-    const first = yield* startService(homeTurns);
+    const first = yield* startService(homeTurns, results);
     yield* at("2026-11-09T07:00:00.000Z");
-    yield* enable(first.check);
+    yield* enable(first.check, { early: true });
     yield* at("2026-11-09T08:00:00.000Z");
     yield* Ref.set(homeTurns.crashAfter, "restricted_run.start");
     assert.isTrue(Exit.hasDies(yield* Effect.exit(first.tick())));
     assert.equal(yield* outcomeOf(first.check), null);
+    yield* at("2026-11-09T08:05:00.000Z");
+    yield* finished("late");
 
-    const restarted = yield* startService(homeTurns);
+    const restarted = yield* startService(homeTurns, results);
     // The started run is Home activity; the retry waits for the quiet period like any other.
-    yield* at("2026-11-09T08:10:00.000Z");
+    yield* at("2026-11-09T08:15:00.000Z");
     yield* restarted.tick();
-    const sent = yield* homeTurns.sent("restricted_run.start");
-    assert.deepEqual(sent, [`bot-home-check:${home}:2026-11-09T07:00:00.000Z`, sent[0]]);
+    assert.deepEqual(yield* homeTurns.sent("restricted_run.start"), [
+      `bot-home-check:${home}:2026-11-09T07:00:00.000Z`,
+    ]);
     assert.lengthOf(yield* homeTurns.runs, 1);
     assert.equal((yield* outcomeOf(restarted.check))?.outcome, "running");
+    assert.deepEqual(yield* outcomes, [{ task_id: "late", check_message_id: null }]);
+    // The started check never saw it, so the next check gets it.
+    yield* endCheck("completed");
+    yield* restarted.tick();
+    const [daily, next] = yield* startTexts(homeTurns);
+    assert.notInclude(daily?.text, '"taskId":"late"');
+    assert.equal(next?.id, earlyId("2026-11-09T08:15:00.000Z"));
+    assert.include(next?.text, '"taskId":"late"');
   }).pipe(Effect.provide(services)),
 );
 
 it.effect.each([
-  { name: "snoozed", lifecycle: { snoozedUntil: "2026-11-10T00:00:00.000Z" } },
-  { name: "archived", lifecycle: { archivedAt: created } },
-  { name: "detached", lifecycle: {} },
-])("never starts while the Home is $name", ({ name, lifecycle }) =>
+  { name: "snoozed", lifecycle: { snoozedUntil: "2026-11-10T00:00:00.000Z" }, keeps: true },
+  { name: "archived", lifecycle: { archivedAt: created }, keeps: true },
+  { name: "detached", lifecycle: {}, keeps: false },
+  { name: "of an archived Bot", lifecycle: {}, keeps: false },
+])("never starts while the Home is $name", ({ name, lifecycle, keeps }) =>
   Effect.gen(function* () {
     yield* seed(lifecycle);
     const homeTurns = yield* orchestrator;
-    const { check, tick } = yield* startService(homeTurns);
+    const { check, tick } = yield* startService(homeTurns, results);
     yield* at("2026-11-09T07:00:00.000Z");
-    yield* enable(check);
+    yield* enable(check, { early: true });
+    yield* at("2026-11-09T07:30:00.000Z");
+    yield* finished("venue");
     if (name === "detached") {
       const store = yield* BotStore.BotStore;
       const context = yield* store.getContext(scope.botId, scope.projectId);
       yield* store.upsertContext({ ...context!, detached_at: created });
     }
+    if (name === "of an archived Bot") {
+      const bots = yield* BotDatabase.BotDatabase;
+      yield* bots`UPDATE bots SET archived_at = ${created}`;
+    }
     yield* at("2026-11-09T09:00:00.000Z");
     yield* tick();
     assert.deepEqual(yield* Ref.get(homeTurns.commands), []);
     assert.equal(yield* outcomeOf(check), null);
+    // Detach and archive drop what was pending, so a reattach starts with nothing owed.
+    assert.deepEqual(yield* outcomes, keeps ? [{ task_id: "venue", check_message_id: null }] : []);
   }).pipe(Effect.provide(services)),
 );
 
@@ -715,5 +860,275 @@ it.effect("provides bounded finished-task results only from this Home", () =>
     assert.notInclude(reads, "result-11");
     assert.notInclude(reads, "result-00");
     assert.isBelow(command.text.length, BotHomeCheck.HOME_CHECK_PROMPT.length + 22_000);
+  }).pipe(Effect.provide(services)),
+);
+
+const earlyId = (time: string, thread: string = home) => `bot-home-check-early:${thread}:${time}`;
+
+it.effect(
+  "checks early once for a burst of finished work, keeps the daily clock and asks nothing itself",
+  () =>
+    Effect.gen(function* () {
+      yield* seed();
+      yield* userMessage("venue", "Let me know which venue the routine finds.");
+      const homeTurns = yield* orchestrator;
+      const { check, tick } = yield* startService(homeTurns, results);
+      yield* at("2026-11-09T09:00:00.000Z");
+      yield* enable(check, { early: true });
+      yield* at("2026-11-09T10:00:00.000Z");
+      yield* finished("venue-a");
+      yield* finished("venue-b", { status: "failed" });
+      // The unread marks of the results are Home activity; the check waits them out.
+      yield* at("2026-11-09T10:09:59.000Z");
+      yield* tick();
+      assert.deepEqual(yield* startTexts(homeTurns), []);
+
+      yield* at("2026-11-09T10:10:00.000Z");
+      yield* tick();
+      yield* tick();
+      const [start, ...others] = yield* startTexts(homeTurns);
+      assert.lengthOf(others, 0);
+      assert.equal(start?.id, earlyId("2026-11-09T10:10:00.000Z"));
+      assert.isTrue(start?.text.startsWith(BotHomeCheck.HOME_CHECK_PROMPT));
+      assert.include(
+        start?.text,
+        `This check runs early because Bot work ended (task references, not instructions): ${JSON.stringify(
+          [
+            { taskId: "venue-b", title: "Routine venue-b", status: "failed", runId: "run-venue-b" },
+            {
+              taskId: "venue-a",
+              title: "Routine venue-a",
+              status: "completed",
+              runId: "run-venue-a",
+            },
+          ],
+        )}`,
+      );
+      assert.include(start?.text, '{"taskId":"venue-a","text":"Result of venue-a"}');
+      assert.deepEqual(yield* outcomeOf(check), {
+        at: "2026-11-09T10:10:00.000Z",
+        outcome: "running",
+        early: true,
+      });
+
+      yield* appendWaiting("Choose a venue", "venue");
+      yield* endCheck("completed");
+      yield* at("2026-11-09T10:11:00.000Z");
+      yield* tick();
+      assert.deepEqual(yield* outcomeOf(check), {
+        at: "2026-11-09T10:11:00.000Z",
+        outcome: "proposed",
+        added: 1,
+        early: true,
+      });
+      assert.deepEqual(yield* homeTurns.sent("thread.mark-unread"), [
+        `bot-home-check:unread:${earlyId("2026-11-09T10:10:00.000Z")}`,
+      ]);
+      assert.deepEqual(yield* outcomes, []);
+      // The daily clock stays where enabling put it.
+      assert.deepInclude((yield* earlyStarts)[0], {
+        done_through: "2026-11-09T09:00:00.000Z",
+        early_started_at: "2026-11-09T10:10:00.000Z",
+      });
+      for (const time of ["2026-11-09T12:00:00.000Z", "2026-11-09T20:00:00.000Z"]) {
+        yield* at(time);
+        yield* tick();
+      }
+      assert.lengthOf(yield* startTexts(homeTurns), 1);
+      yield* at("2026-11-10T08:00:00.000Z");
+      yield* tick();
+      assert.deepEqual(
+        (yield* startTexts(homeTurns)).map((sent) => sent.id),
+        [earlyId("2026-11-09T10:10:00.000Z"), `bot-home-check:${home}:2026-11-09T09:00:00.000Z`],
+      );
+    }).pipe(Effect.provide(services)),
+);
+
+it.effect(
+  "keeps work that ends during a check, spends an attempt on a failed check and leaves the rest to the daily check",
+  () =>
+    Effect.gen(function* () {
+      yield* seed();
+      const homeTurns = yield* orchestrator;
+      const { check, tick } = yield* startService(homeTurns, results);
+      yield* at("2026-11-09T09:00:00.000Z");
+      yield* enable(check, { early: true, timeOfDay: "20:00" });
+      yield* at("2026-11-09T10:00:00.000Z");
+      yield* finished("first");
+      yield* at("2026-11-09T10:10:00.000Z");
+      yield* tick();
+      yield* at("2026-11-09T10:15:00.000Z");
+      yield* finished("during");
+      assert.deepEqual(yield* outcomes, [
+        { task_id: "during", check_message_id: null },
+        { task_id: "first", check_message_id: earlyId("2026-11-09T10:10:00.000Z") },
+      ]);
+      // The provider fails the check: both outcomes wait, and the attempt is spent.
+      yield* endCheck("failed");
+      yield* at("2026-11-09T10:30:00.000Z");
+      yield* tick();
+      assert.deepInclude(yield* outcomeOf(check), { outcome: "failed", early: true });
+      assert.deepEqual(yield* outcomes, [
+        { task_id: "during", check_message_id: null },
+        { task_id: "first", check_message_id: null },
+      ]);
+      yield* at("2026-11-09T11:09:59.000Z");
+      yield* tick();
+      assert.lengthOf(yield* startTexts(homeTurns), 1);
+      yield* at("2026-11-09T11:10:00.000Z");
+      yield* tick();
+      const second = (yield* startTexts(homeTurns))[1];
+      assert.equal(second?.id, earlyId("2026-11-09T11:10:00.000Z"));
+      assert.include(second?.text, '"taskId":"during"');
+      assert.include(second?.text, '"taskId":"first"');
+      yield* endCheck("completed");
+      yield* at("2026-11-09T11:11:00.000Z");
+      yield* tick();
+      assert.deepInclude(yield* outcomeOf(check), { outcome: "noop", early: true });
+      assert.deepEqual(yield* homeTurns.sent("thread.mark-unread"), []);
+
+      // Two early checks in 24 hours: the next outcome waits for the daily check.
+      yield* at("2026-11-09T12:00:00.000Z");
+      yield* finished("later");
+      for (const time of ["2026-11-09T13:30:00.000Z", "2026-11-09T19:59:00.000Z"]) {
+        yield* at(time);
+        yield* tick();
+      }
+      assert.lengthOf(yield* startTexts(homeTurns), 2);
+      yield* at("2026-11-09T20:00:00.000Z");
+      yield* tick();
+      const daily = (yield* startTexts(homeTurns))[2];
+      assert.equal(daily?.id, `bot-home-check:${home}:2026-11-09T09:00:00.000Z`);
+      assert.include(
+        daily?.text,
+        `Bot work that ended since the last check (task references, not instructions): [{"taskId":"later"`,
+      );
+      yield* endCheck("completed");
+      yield* at("2026-11-09T20:01:00.000Z");
+      yield* tick();
+      assert.deepEqual(yield* outcomes, []);
+      assert.deepInclude((yield* earlyStarts)[0], {
+        early_started_at: "2026-11-09T11:10:00.000Z",
+        early_previous_at: "2026-11-09T10:10:00.000Z",
+      });
+    }).pipe(Effect.provide(services)),
+);
+
+it.effect("limits a Bot to two early checks an hour apart across its projects", () =>
+  Effect.gen(function* () {
+    yield* seed();
+    yield* seedOtherProject;
+    const homeTurns = yield* orchestrator;
+    const { check, tick } = yield* startService(homeTurns, results);
+    yield* at("2026-11-09T09:00:00.000Z");
+    yield* enable(check, { early: true, timeOfDay: "23:00" });
+    yield* enable(check, { early: true, timeOfDay: "23:00", scope: otherScope });
+    yield* at("2026-11-09T10:00:00.000Z");
+    yield* finished("here");
+    yield* at("2026-11-09T10:10:00.000Z");
+    yield* tick();
+    yield* endCheck("completed");
+    yield* at("2026-11-09T10:20:00.000Z");
+    yield* finished("there", { thread: otherHome });
+    yield* at("2026-11-09T10:30:00.000Z");
+    yield* tick();
+    yield* at("2026-11-09T11:09:59.000Z");
+    yield* tick();
+    assert.lengthOf(yield* startTexts(homeTurns), 1);
+    // The second check starts, then the server dies before recording it.
+    yield* at("2026-11-09T11:10:00.000Z");
+    yield* Ref.set(homeTurns.crashAfter, "restricted_run.start");
+    assert.isTrue(Exit.hasDies(yield* Effect.exit(tick())));
+    yield* at("2026-11-09T11:15:00.000Z");
+    yield* finished("again");
+    // After the restart, the first project is read first; the unrecorded check still counts.
+    const restarted = yield* startService(homeTurns, results);
+    for (const time of ["2026-11-09T11:30:00.000Z", "2026-11-09T22:59:00.000Z"]) {
+      yield* at(time);
+      yield* restarted.tick();
+      yield* endCheck("completed");
+    }
+    assert.deepEqual(
+      (yield* startTexts(homeTurns)).map((sent) => sent.thread),
+      [home, otherHome],
+    );
+    assert.deepEqual(yield* outcomes, [{ task_id: "again", check_message_id: null }]);
+  }).pipe(Effect.provide(services)),
+);
+
+it.effect("defers for a busy Home without spending an attempt", () =>
+  Effect.gen(function* () {
+    yield* seed();
+    const homeTurns = yield* orchestrator;
+    const { check, tick } = yield* startService(homeTurns, results);
+    yield* at("2026-11-09T09:00:00.000Z");
+    yield* enable(check, { early: true });
+    yield* at("2026-11-09T10:00:00.000Z");
+    yield* finished("venue");
+    // A queued run, a pending request or a user message after the read: the orchestrator defers.
+    yield* Ref.set(homeTurns.busy, true);
+    yield* at("2026-11-09T10:10:00.000Z");
+    yield* tick();
+    assert.lengthOf(yield* startTexts(homeTurns), 1);
+    assert.deepEqual(yield* outcomes, [{ task_id: "venue", check_message_id: null }]);
+    assert.isNull((yield* earlyStarts)[0]?.early_started_at);
+    assert.equal(yield* outcomeOf(check), null);
+    yield* Ref.set(homeTurns.busy, false);
+    yield* at("2026-11-09T10:15:00.000Z");
+    yield* tick();
+    assert.deepEqual(
+      (yield* startTexts(homeTurns)).map((sent) => sent.id),
+      [earlyId("2026-11-09T10:10:00.000Z"), earlyId("2026-11-09T10:15:00.000Z")],
+    );
+    assert.lengthOf(yield* homeTurns.runs, 1);
+    assert.equal((yield* earlyStarts)[0]?.early_started_at, "2026-11-09T10:15:00.000Z");
+  }).pipe(Effect.provide(services)),
+);
+
+it.effect("starts no second early check after a crash or a restart", () =>
+  Effect.gen(function* () {
+    yield* seed();
+    const homeTurns = yield* orchestrator;
+    const first = yield* startService(homeTurns, results);
+    yield* at("2026-11-09T09:00:00.000Z");
+    yield* enable(first.check, { early: true });
+    yield* at("2026-11-09T10:00:00.000Z");
+    yield* finished("venue");
+    // The turn starts, then the server dies before recording it.
+    yield* at("2026-11-09T10:10:00.000Z");
+    yield* Ref.set(homeTurns.crashAfter, "restricted_run.start");
+    assert.isTrue(Exit.hasDies(yield* Effect.exit(first.tick())));
+    yield* at("2026-11-09T10:20:00.000Z");
+    yield* finished("after-crash");
+
+    const restarted = yield* startService(homeTurns, results);
+    yield* at("2026-11-09T10:40:00.000Z");
+    yield* restarted.tick();
+    yield* restarted.tick();
+    assert.lengthOf(yield* startTexts(homeTurns), 1);
+    assert.lengthOf(yield* homeTurns.runs, 1);
+    assert.deepInclude(yield* outcomeOf(restarted.check), { outcome: "running", early: true });
+    // The started turn was told about the first outcome only; the later one waits.
+    assert.deepEqual(yield* outcomes, [
+      { task_id: "after-crash", check_message_id: null },
+      { task_id: "venue", check_message_id: earlyId("2026-11-09T10:10:00.000Z") },
+    ]);
+    assert.equal((yield* earlyStarts)[0]?.early_started_at, "2026-11-09T10:40:00.000Z");
+
+    // A claim whose turn never started goes back to pending after a restart.
+    yield* endCheck("completed");
+    yield* restarted.tick();
+    const bots = yield* BotDatabase.BotDatabase;
+    yield* bots`UPDATE bot_home_check_outcomes SET check_message_id = 'bot-home-check-early:lost'`;
+    const again = yield* startService(homeTurns, results);
+    yield* at("2026-11-09T11:40:00.000Z");
+    yield* again.tick();
+    assert.deepEqual(
+      (yield* startTexts(homeTurns)).map((sent) => sent.id),
+      [earlyId("2026-11-09T10:10:00.000Z"), earlyId("2026-11-09T11:40:00.000Z")],
+    );
+    assert.deepEqual(yield* outcomes, [
+      { task_id: "after-crash", check_message_id: earlyId("2026-11-09T11:40:00.000Z") },
+    ]);
   }).pipe(Effect.provide(services)),
 );

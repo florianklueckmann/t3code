@@ -6,7 +6,7 @@ The check prompt is `HOME_CHECK_PROMPT` in `apps/server/src/bots/BotHomeCheck.ts
 
 ## How a check is started
 
-No client can start a check at once. After seeding, the eval checks that each Home is idle with a completed ordinary turn and its native provider conversation. It waits out the server's ten-minute quiet period and writes each Home's `bot_home_checks` row in that server's `bots.sqlite` so a daily time has just passed. The server's scheduler, quiet check, admission, scoped Codex turn, Waiting save rules and outcome reconcile all run as they would for a user. The eval refuses `~/.t3`; point `--base-dir` only at a synthetic home.
+No client can start a check at once. After seeding, the eval checks that each Home is idle with a completed ordinary turn and its native provider conversation. It waits out the server's ten-minute quiet period and writes each Home's `bot_home_checks` row in that server's `bots.sqlite` so a daily time has just passed. The server's scheduler, quiet check, admission, scoped Codex turn, Waiting save rules and outcome reconcile all run as they would for a user. An early case (T3B-79) instead turns daily and early checks on before its task starts, with the daily time just passed, so only the finished task's outcome starts the check after the quiet period. The eval refuses `~/.t3`; point `--base-dir` only at a synthetic home.
 
 ## Run
 
@@ -26,7 +26,7 @@ The baseline is the same restricted run with a plain prompt. Start a second synt
 
 ## Cases
 
-`cases.ts` holds six cases: the ticket's three scenarios (a task waiting on the user's choice, an upcoming event that needs preparation, nothing worth saying) and three controls that catch a prompt which overcorrects into spam (the event is after the next check, Waiting already holds it, the user removed what an earlier check proposed). A case fails when half or more of its samples fail. A sample whose precondition did not hold, such as a first check that proposed nothing for the removal control, fails with `setup held`.
+`cases.ts` holds seven cases: the ticket's three scenarios (a task waiting on the user's choice, an upcoming event that needs preparation, nothing worth saying), the same decision reached through an early check, and three controls that catch a prompt which overcorrects into spam (the event is after the next check, Waiting already holds it, the user removed what an earlier check proposed). A case fails when half or more of its samples fail. A sample whose precondition did not hold, such as a first check that proposed nothing for the removal control, fails with `setup held`.
 
 The decision case seeds a neutral ordinary Home turn and starts a task with a generic title. The choice appears only in the task result. The server supplies excerpts from up to ten recent completed tasks of that Home, capped at 2000 characters each, through `BotTaskService.getResult`. The grader requires both options from the result in the new Waiting item, along with its task reference.
 

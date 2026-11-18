@@ -1194,6 +1194,43 @@ const make = Effect.gen(function* () {
     if (row !== undefined) yield* dispatch(row);
   });
 
+  /**
+   * Whether a finished task asks for an early Home check: a completed or failed run of a routine,
+   * a diagnosis, or a direct task whose result does not go back to Home. A failed routine run that
+   * got a diagnosis is left to it. A Home check's own run is no task, so it never asks for another.
+   */
+  const requestsHomeCheck = Effect.fnUntraced(function* (row: BotTaskRow) {
+    if (
+      (row.status !== "completed" && row.status !== "failed") ||
+      row.result_run_id === null ||
+      row.cancel_requested_at !== null
+    )
+      return false;
+    if (row.origin === "direct") return row.status === "failed" || row.return_home_run_id === null;
+    if (row.origin === "diagnostic" || row.status === "completed") return true;
+    const diagnosed =
+      yield* sql`SELECT task_id FROM bot_tasks WHERE diagnoses_task_id = ${row.task_id}`;
+    return diagnosed.length === 0;
+  });
+
+  /** The saved result run's own end; completed_at is only when a reconcile pass first saw it. */
+  const resultEndedAt = Effect.fn("BotTaskService.resultEndedAt")(function* (row: BotTaskRow) {
+    if (row.work_thread_id === null || row.result_run_id === null) return row.completed_at;
+    const runId = RunId.make(row.result_run_id);
+    const records = yield* threads
+      .getProjectThreadRecords(
+        { projectId: ProjectId.make(row.project_id), threadId: ThreadId.make(row.work_thread_id) },
+        ["runs"],
+        { runIds: [runId] },
+      )
+      .pipe(
+        Effect.catchTags({ ThreadManagementThreadNotFoundError: () => Effect.succeed(null) }),
+        Effect.mapError(botError("Failed to read the Bot task's run.")),
+      );
+    const completedAt = records?.runs.find((run) => run.id === runId)?.completedAt;
+    return completedAt == null ? row.completed_at : DateTime.formatIso(completedAt);
+  });
+
   /** One step of the reconcile loop for one task; failures stay with that task. */
   const reconcileTask = Effect.fn("BotTaskService.reconcileTask")(function* (row: BotTaskRow) {
     if (row.completed_at === null) {
@@ -1263,11 +1300,34 @@ const make = Effect.gen(function* () {
           }),
         );
     }
+    // When the result run ended: work that ended before early checks were on is not owed one.
+    const asks = yield* Effect.gen(function* () {
+      const [early] = yield* sql`SELECT 1 FROM bot_home_checks
+        WHERE home_thread_id = ${current.home_thread_id} AND early_since IS NOT NULL`;
+      return early !== undefined && (yield* requestsHomeCheck(current));
+    }).pipe(Effect.mapError(storageError));
+    const endedAt = asks ? yield* resultEndedAt(current) : null;
     const now = yield* nowIso;
-    yield* sql`
-      UPDATE bot_tasks SET notified_at = ${now}
-      WHERE task_id = ${current.task_id} AND notified_at IS NULL
-    `.pipe(Effect.mapError(storageError));
+    yield* sql
+      .withTransaction(
+        Effect.gen(function* () {
+          const notified = yield* sql`
+            UPDATE bot_tasks SET notified_at = ${now}
+            WHERE task_id = ${current.task_id} AND notified_at IS NULL RETURNING task_id
+          `;
+          if (notified.length > 0 && endedAt !== null)
+            yield* sql`
+              INSERT OR IGNORE INTO bot_home_check_outcomes (task_id, home_thread_id)
+              SELECT ${current.task_id}, h.home_thread_id FROM bot_home_checks h
+              JOIN bot_project_contexts c ON c.home_thread_id = h.home_thread_id
+              JOIN bots b ON b.bot_id = c.bot_id
+              WHERE h.home_thread_id = ${current.home_thread_id} AND h.enabled = 1
+                AND h.early_since <= ${endedAt} AND c.detached_at IS NULL
+                AND b.archived_at IS NULL
+            `;
+        }),
+      )
+      .pipe(Effect.mapError(storageError));
   });
 
   const reconcile: BotTaskService["Service"]["reconcile"] = Effect.gen(function* () {

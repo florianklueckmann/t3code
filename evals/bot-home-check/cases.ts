@@ -17,6 +17,8 @@ export interface HomeCheckCase {
   /** Waiting must already hold an item matching this before the graded check. */
   readonly waitingBefore: string | null;
   readonly expect: ExpectedItem | null;
+  /** The finished task requests the check (early checks on) instead of a passed daily time. */
+  readonly early?: true;
 }
 
 const appointment =
@@ -40,6 +42,20 @@ export const CASES: readonly HomeCheckCase[] = [
     between: null,
     waitingBefore: null,
     expect: { pattern: "(?=.*harbor\\s+hall)(?=.*lantern\\s+loft)", source: "task" },
+  },
+  {
+    id: "early-decision-to-waiting",
+    source: "T3B-79: the same finished task requests an early check, which names it as the trigger",
+    seed: [`Hello. ${acknowledge}`],
+    task: {
+      title: "Compare venues",
+      prompt:
+        "Use no tools and change no files. Reply with exactly this sentence: Both venues fit the Acme offsite; Harbor Hall costs less and Lantern Loft is closer, so which one should I book?",
+    },
+    between: null,
+    waitingBefore: null,
+    expect: { pattern: "(?=.*harbor\\s+hall)(?=.*lantern\\s+loft)", source: "task" },
+    early: true,
   },
   {
     id: "upcoming-event-preparation",

@@ -2,9 +2,12 @@ import { useAtomValue } from "@effect/atom-react";
 import { DateTimePicker } from "@expo/ui/community/datetime-picker";
 import {
   BOT_HOME_CHECK_DESCRIPTION,
+  BOT_HOME_CHECK_EARLY_DESCRIPTION,
   botHomeCheckLastLabel,
   botHomeCheckStatusLabel,
   canToggleBotHomeCheck,
+  canToggleBotHomeCheckEarly,
+  hasBotHomeCheckEarly,
 } from "@t3tools/client-runtime/bots";
 import type { BotId, EnvironmentId, ProjectId } from "@t3tools/contracts";
 import { useState } from "react";
@@ -54,7 +57,11 @@ export function BotHomeCheckSection(props: {
   if (view === null) return null;
   const last = botHomeCheckLastLabel(view);
 
-  const save = async (change: { readonly enabled: boolean; readonly timeOfDay?: string }) => {
+  const save = async (change: {
+    readonly enabled: boolean;
+    readonly timeOfDay?: string;
+    readonly early?: boolean;
+  }) => {
     setBusy(true);
     const result = await configure({
       environmentId,
@@ -112,6 +119,24 @@ export function BotHomeCheckSection(props: {
         disabled={busy || !canConfigure || props.formLocked || !view.writable}
         onPress={() => (picking === null ? pick(view.timeOfDay) : closePicker(picking))}
       />
+      {hasBotHomeCheckEarly(view) ? (
+        <View className="min-h-14 flex-row items-center gap-3 border-t border-border-subtle px-4 py-3">
+          <View className="min-w-0 flex-1 gap-1">
+            <Text textRole="body" className="text-foreground">
+              Check early after finished work
+            </Text>
+            <Text textRole="footnote" className="text-foreground-muted">
+              {BOT_HOME_CHECK_EARLY_DESCRIPTION}
+            </Text>
+          </View>
+          <ThemedSwitch
+            accessibilityLabel="Check early after finished work"
+            value={view.early === true}
+            disabled={busy || !canConfigure || !canToggleBotHomeCheckEarly(view, props.formLocked)}
+            onValueChange={(early) => void save({ enabled: view.enabled, early })}
+          />
+        </View>
+      ) : null}
       {picking === null ? null : (
         <DateTimePicker
           value={timeOfDayPickerValue(picking)}
