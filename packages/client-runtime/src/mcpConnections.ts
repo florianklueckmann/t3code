@@ -427,15 +427,23 @@ export function botMcpGrantsSection(input: {
   const grantsUnavailable = botCapabilityUnavailableLabel(input.capabilities, "mcpGrants");
   const ownServersUnavailable = botCapabilityUnavailableLabel(input.capabilities, "ownMcpServers");
   // Servers that send capabilities decide the model's support; older ones run Bots on Codex.
+  const onClaude = input.capabilities !== undefined && input.providerDriver === "claudeAgent";
   const unenforceable =
     input.capabilities === undefined && input.providerDriver !== "codex"
       ? "This Bot's model is not on a Codex provider, so without connections it uses that provider's own MCP setup."
-      : input.platformOs !== "darwin" && input.platformOs !== "linux"
-        ? `On ${input.environmentLabel}, this Bot without connections uses Codex's own MCP setup.`
-        : null;
+      : onClaude
+        ? null
+        : input.platformOs !== "darwin" && input.platformOs !== "linux"
+          ? `On ${input.environmentLabel}, this Bot without connections uses Codex's own MCP setup.`
+          : null;
   const notes: Array<BotMcpGrantsNote> = [];
   if (grantsUnavailable !== null) {
     notes.push({ tone: "muted", text: grantsUnavailable });
+  } else if (onClaude && input.platformOs !== "darwin") {
+    notes.push({
+      tone: "warning",
+      text: `On Claude, MCP connections apply only on macOS. On ${input.environmentLabel}, this Bot with connections does not run; without them it loads only T3 Code's own tools.`,
+    });
   } else if (unenforceable !== null) {
     notes.push({
       tone: "warning",

@@ -239,7 +239,6 @@ const main = Effect.gen(function* () {
           instance: values.instance,
           model: values.model,
           effort: values.effort,
-          codexOnly: "MCP grants need a Codex Bot.",
         });
         return yield* Effect.forEach(
           jobs,

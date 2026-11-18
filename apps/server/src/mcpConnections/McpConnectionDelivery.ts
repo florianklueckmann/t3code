@@ -7,7 +7,9 @@ import {
   mcpConnectionDefinitionProblem,
   McpConnectionId,
   McpConnectionProblem,
+  type ProviderDriverKind,
 } from "@t3tools/contracts";
+import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -32,9 +34,14 @@ export const grantedConnectionOf = (serverName: string): McpConnectionId | undef
     ? Option.getOrUndefined(decodeConnectionId(serverName.slice(GRANTED_SERVER_PREFIX.length)))
     : undefined;
 
-/** The tool namespace Codex shows the model for a granted server (measured on 0.166, 0.167). */
-const grantedToolNamespace = (id: McpConnectionId) =>
-  `mcp__${grantedServerName(id).replaceAll("-", "_")}`;
+/**
+ * The tool namespace a provider shows the model for a granted server: Codex turns hyphens into
+ * underscores (measured on 0.166, 0.167), Claude keeps them (measured on 2.1.326).
+ */
+const grantedToolNamespace = (id: McpConnectionId, driver: "codex" | "claudeAgent") =>
+  driver === "codex"
+    ? `mcp__${grantedServerName(id).replaceAll("-", "_")}`
+    : `mcp__${grantedServerName(id)}`;
 
 /**
  * Tells the model which granted account each namespace is. Labels and ids only: two accounts of
@@ -42,19 +49,23 @@ const grantedToolNamespace = (id: McpConnectionId) =>
  */
 export const grantedConnectionsInstructions = (
   delivered: ReadonlyArray<Pick<DeliveredMcpConnection, "id" | "label">>,
+  driver: "codex" | "claudeAgent",
 ): string | undefined =>
   delivered.length === 0
     ? undefined
     : [
         "MCP connections granted to you, each a separate account. Use the one the request is about:",
         ...delivered.map(
-          ({ id, label }) => `- "${label}": tools in the ${grantedToolNamespace(id)} namespace`,
+          ({ id, label }) =>
+            `- "${label}": tools in the ${grantedToolNamespace(id, driver)} namespace`,
         ),
       ].join("\n");
 
 export interface DeliveredMcpConnection {
   readonly id: McpConnectionId;
   readonly label: string;
+  /** The catalog revision delivered; with the id it names this load without any credential. */
+  readonly revision: number;
   readonly transport:
     | {
         readonly type: "stdio";
@@ -90,6 +101,24 @@ export class McpConnectionDeliveryError extends Schema.TaggedError<McpConnection
     cause: Schema.optional(Schema.Defect()),
   },
 ) {}
+
+/** A granted server that did not start: names the connection, never the provider's error text. */
+export const grantedServerFailureNotice = (label: string | undefined) =>
+  `${label === undefined ? "A granted MCP connection" : `"${label}"`} could not start, so its tools are unavailable in this conversation. Check it in Settings → MCP connections.`;
+
+/** A load that could not be delivered, as the provider adapter refuses it. */
+export const deliveryRefusal = (driver: ProviderDriverKind, error: McpConnectionDeliveryError) =>
+  new ProviderAdapter.ProviderAdapterMcpConnectionsRefusedError(
+    error.reason === "invalid"
+      ? {
+          driver,
+          reason: "connection",
+          ...(error.connectionId === undefined ? {} : { connectionId: error.connectionId }),
+          ...(error.label === undefined ? {} : { connectionLabel: error.label }),
+          ...(error.problem === undefined ? {} : { problem: error.problem }),
+        }
+      : { driver, reason: error.reason },
+  );
 
 export class McpConnectionDelivery extends Context.Service<
   McpConnectionDelivery,
@@ -160,6 +189,7 @@ const make = Effect.gen(function* () {
       connections.push({
         id,
         label: definition.label,
+        revision: definition.revision,
         transport:
           transport.type === "stdio"
             ? {

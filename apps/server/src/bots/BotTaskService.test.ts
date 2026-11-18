@@ -2320,13 +2320,6 @@ it.effect.each<{
   }) => Effect.Effect<unknown, Error>;
 }>([
   {
-    setting: "MCP connections",
-    change: "remove its MCP connections",
-    refusesTask: true,
-    apply: ({ sql }) =>
-      sql`INSERT INTO bot_mcp_grants (bot_id, connection_id) VALUES (${botId}, '2a2a2a2a-0000-4000-8000-00000000002a')`,
-  },
-  {
     setting: "the own servers switch",
     change: 'turn off "Use my own Codex MCP servers"',
     refusesTask: true,
@@ -2403,6 +2396,7 @@ it.effect("runs a Bot on Claude with what Claude can enforce and refuses No chan
     yield* TestClock.setTime(START);
     yield* seedProject;
     const world = yield* makeThreadWorld;
+    const sql = yield* BotDatabase.BotDatabase;
     yield* withServices(world, (services) =>
       Effect.gen(function* () {
         yield* attachBot(services);
@@ -2420,10 +2414,13 @@ it.effect("runs a Bot on Claude with what Claude can enforce and refuses No chan
           null,
           null,
         ]);
+        // Granted connections switch along: Claude enforces them.
+        yield* sql`INSERT INTO bot_mcp_grants (bot_id, connection_id) VALUES (${botId}, ${MAIL})`;
 
         const claudeBot = yield* services.bots.update({ botId, modelSelection: claude });
+        assert.deepEqual(claudeBot.mcpGrants?.connectionIds, [MAIL]);
         assert.deepEqual(claudeBot.capabilities, {
-          mcpGrants: "claude_unsupported",
+          mcpGrants: null,
           ownMcpServers: "claude_unsupported",
           noChangesRoutines: "claude_unsupported",
           maintenance: "claude_unsupported",
@@ -2442,7 +2439,7 @@ it.effect("runs a Bot on Claude with what Claude can enforce and refuses No chan
             ownCodexMcpServers: true,
           })
           .pipe(Effect.flip);
-        assert.include(own.message, "Switch it to a Codex model first");
+        assert.include(own.message, "can't load your own Codex MCP servers");
         yield* services.bots.setMcpGrants({
           botId,
           expectedRevision: claudeBot.mcpGrants?.revision ?? 0,

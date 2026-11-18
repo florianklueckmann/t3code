@@ -2590,21 +2590,13 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             return yield* refuseMcp("platform");
           if (!codexSealVersionSupported(yield* Ref.get(codexVersion)))
             return yield* refuseMcp("version");
-          const delivered = yield* mcpConnectionDelivery.resolve(ids).pipe(
-            Effect.mapError((error) =>
-              error.reason === "invalid"
-                ? new ProviderAdapter.ProviderAdapterMcpConnectionsRefusedError({
-                    driver: CODEX_PROVIDER,
-                    reason: "connection",
-                    ...(error.connectionId === undefined
-                      ? {}
-                      : { connectionId: error.connectionId }),
-                    ...(error.label === undefined ? {} : { connectionLabel: error.label }),
-                    ...(error.problem === undefined ? {} : { problem: error.problem }),
-                  })
-                : refuseMcp(error.reason === "missing" ? "missing" : "unavailable"),
-            ),
-          );
+          const delivered = yield* mcpConnectionDelivery
+            .resolve(ids)
+            .pipe(
+              Effect.mapError((error) =>
+                McpConnectionDelivery.deliveryRefusal(CODEX_PROVIDER, error),
+              ),
+            );
           // The switch is part of the identity, so turning it either way reloads the thread.
           const keepsUserServers = seal === "ordinary" && policy?.userMcpServers === "enabled";
           return {
@@ -3047,7 +3039,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             const label = grantedConnectionsByThread
               .get(nativeThreadId)
               ?.find(({ id }) => codexGrantedServerName(id) === server)?.label;
-            const message = `${label === undefined ? "A granted MCP connection" : `"${label}"`} could not start, so its tools are unavailable in this conversation. Check it in Settings → MCP connections.`;
+            const message = McpConnectionDelivery.grantedServerFailureNotice(label);
             const nativeItemId = `mcp-startup-failed:${context.nativeTurnId}:${server}`;
             const now = yield* DateTime.now;
             yield* emitProviderEvent({
@@ -8303,6 +8295,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             // From the thread's load, so an account left out of it is never named to the model.
             const accounts = McpConnectionDelivery.grantedConnectionsInstructions(
               grantedConnectionsByThread.get(threadId) ?? [],
+              "codex",
             );
             const applicationInstructions =
               turnInput.applicationInstructions === undefined || accounts === undefined

@@ -1,8 +1,8 @@
 # Bot grants
 
-Checks that a Bot granted two accounts of one MCP service calls the account the user means. Each sample gives a fresh Bot two connections, "Mail (private)" and "Mail (work)". Both run `mailServer.ts`, a stdio fixture with the same tool and the same text, so the only thing telling them apart is the line T3 adds to each Bot turn that maps a connection's label to its Codex tool namespace (`grantedConnectionsInstructions` in `apps/server/src/mcpConnections/McpConnectionDelivery.ts`). The eval copies none of that text. The server sends it.
+Checks that a Bot granted two accounts of one MCP service calls the account the user means. Each sample gives a fresh Bot two connections, "Mail (private)" and "Mail (work)". Both run `mailServer.ts`, a stdio fixture with the same tool and the same text, so the only thing telling them apart is the line T3 adds to the Bot's instructions that maps a connection's label to its tool namespace (`grantedConnectionsInstructions` in `apps/server/src/mcpConnections/McpConnectionDelivery.ts`). Codex gets it with each turn, Claude with the Bot's instructions. The eval copies none of that text. The server sends it.
 
-Turns run in the Bot's Home through a dev server's Codex login. Nothing is replayed.
+Turns run in the Bot's Home through a dev server's Codex or Claude login. Nothing is replayed.
 
 ## Run
 
@@ -15,7 +15,7 @@ Turns run in the Bot's Home through a dev server's Codex login. Nothing is repla
 
 3. Then the full set: `pnpm bot-grants --base-dir <scratch> --out runs/<name>`.
 
-Flags: `--model` (default `gpt-6.1-terra`), `--effort` (default `high`), `--samples` (default 3), `--concurrency` (default 2), `--case <id>` (repeatable), `--work <dir>` (default `<out>/work`). The run stops when the server's Codex catalog does not offer the model at that effort. `--instance` (default `codex`) must name a Codex instance: grants need a Codex Bot, and the run refuses other providers.
+Flags: `--model` (default `gpt-6.1-terra`), `--effort` (default `high`), `--samples` (default 3), `--concurrency` (default 2), `--case <id>` (repeatable), `--work <dir>` (default `<out>/work`). The run stops when the server's catalog does not offer the model at that effort. `--instance` (default `codex`) names a Codex or Claude instance, such as `--instance claudeAgent --model claude-haiku-5-5`; Claude grants need a macOS server.
 
 The connections and grants are written through the `mcpConnections.create` and `bots.setMcpGrants` RPCs, as Settings does, and each sample removes its connections afterwards.
 

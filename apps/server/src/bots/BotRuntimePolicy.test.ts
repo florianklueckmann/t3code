@@ -239,13 +239,21 @@ it.effect.each([
   ["Claude fork", botForkThread, ungrantedBotForkThread],
   ["Codex Bot delegating to Claude", botSubagentThread, ungrantedBotSubagentThread],
 ] as const)(
-  "keeps a %s to T3 Code's server alone and refuses grants there",
+  "keeps a %s to T3 Code's server and its grants, which load only on macOS",
   ([_, grantedThreadId, ungrantedThreadId]) =>
     Effect.gen(function* () {
       // In this suite the instance id "codex" runs the Claude driver.
-      const refused = yield* resolveFor(grantedThreadId, { instanceId: "codex" }).pipe(Effect.flip);
-      assert.equal(refused._tag, "RuntimePolicyMcpUnsupportedError");
-      assert.include(refused.message, "which only Codex can enforce");
+      const granted = yield* resolveFor(grantedThreadId, { instanceId: "codex" });
+      assert.deepEqual(granted.mcpConnections, [privateMail]);
+      assert.isUndefined(granted.userMcpServers);
+      assert.equal(granted.nativeMemory, "disabled");
+      for (const platform of ["linux", "win32"] as const) {
+        const refused = yield* resolveFor(grantedThreadId, { instanceId: "codex", platform }).pipe(
+          Effect.flip,
+        );
+        assert.equal(refused._tag, "RuntimePolicyMcpUnsupportedError");
+        assert.include(refused.message, "on Claude is only verified on macOS", platform);
+      }
 
       for (const platform of ["darwin", "linux", "win32"] as const) {
         const policy = yield* resolveFor(ungrantedThreadId, { instanceId: "codex", platform });
@@ -259,10 +267,13 @@ it.effect.each([
 
 it.effect("never gives a Claude thread the user's own Codex MCP servers", () =>
   Effect.gen(function* () {
-    // The switch is refused for a Claude Bot; a Codex Bot's descendant on Claude stays isolated.
+    // The switch is refused for a Claude Bot; a Codex Bot's descendant on Claude keeps only grants.
     const policy = yield* resolveFor(ownServersOnlyBotThread, { instanceId: "codex" });
     assert.deepEqual(policy.mcpConnections, []);
     assert.isUndefined(policy.userMcpServers);
+    const granted = yield* resolveFor(ownServersBotThread, { instanceId: "codex" });
+    assert.deepEqual(granted.mcpConnections, [privateMail]);
+    assert.isUndefined(granted.userMcpServers);
     const onCodex = yield* resolveFor(ownServersOnlyBotThread);
     assert.equal(onCodex.userMcpServers, "enabled");
   }),
