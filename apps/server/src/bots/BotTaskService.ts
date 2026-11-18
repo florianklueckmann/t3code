@@ -59,6 +59,7 @@ import * as BotStore from "./BotStore.ts";
 import { isDirectHomeInput, latestDirectHomeInput } from "./homeReturn.ts";
 
 const LIST_LIMIT = 50;
+export const BOT_TASK_NOTIFY_COMMAND_PREFIX = "bot-task-notify:";
 
 interface BotTaskRow {
   readonly task_id: string;
@@ -1322,7 +1323,7 @@ const make = Effect.gen(function* () {
       yield* threads
         .dispatch({
           type: "thread.mark-unread",
-          commandId: CommandId.make(`bot-task-notify:${current.task_id}`),
+          commandId: CommandId.make(`${BOT_TASK_NOTIFY_COMMAND_PREFIX}${current.task_id}`),
           threadId: ThreadId.make(current.home_thread_id),
         })
         .pipe(

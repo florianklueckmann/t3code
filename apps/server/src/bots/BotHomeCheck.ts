@@ -69,7 +69,6 @@ interface Row {
   readonly last_outcome_json: string | null;
   readonly early_since: string | null;
   readonly early_started_at: string | null;
-  readonly early_previous_at: string | null;
 }
 
 interface ClaimedOutcome {
@@ -259,7 +258,7 @@ export const make = Effect.gen(function* () {
         last_outcome_json = NULL, updated_at = ${at} WHERE home_thread_id = ${home}`;
     const sent = DateTime.formatIso(yield* DateTime.now);
     yield* sql`UPDATE bot_home_checks SET check_message_id = ${messageId}, last_outcome_json = NULL,
-        early_previous_at = early_started_at, early_started_at = ${sent}, updated_at = ${sent}
+        early_started_at = ${sent}, updated_at = ${sent}
       WHERE home_thread_id = ${home}`;
   });
 
@@ -352,7 +351,9 @@ export const make = Effect.gen(function* () {
     }>`SELECT sequence, (
         SELECT occurred_at FROM orchestration_events
         WHERE application_event_version = 2 AND aggregate_kind = 'thread' AND stream_id = ${home}
-          AND event_type IN ('message.updated', 'run.created', 'run.updated')
+          AND (event_type IN ('message.updated', 'run.created', 'run.updated')
+            OR (event_type = 'thread.marked-unread'
+              AND command_id GLOB ${`${BotTaskService.BOT_TASK_NOTIFY_COMMAND_PREFIX}*`}))
         ORDER BY sequence DESC LIMIT 1
       ) AS activity_at FROM orchestration_events
       WHERE application_event_version = 2 AND aggregate_kind = 'thread' AND stream_id = ${home}

@@ -106,15 +106,15 @@ const seedOtherProject = Effect.gen(function* () {
 });
 
 /** A Home event committed at the test clock's current time. */
-const eventIn = (thread: string, type = "run.updated") =>
+const eventIn = (thread: string, type = "run.updated", commandId: string | null = null) =>
   Effect.gen(function* () {
     const main = yield* SqlClient.SqlClient;
     const now = DateTime.formatIso(yield* DateTime.now);
     const [row] = yield* main<{ readonly sequence: number }>`INSERT INTO orchestration_events
-        (event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at, actor_kind, payload_json, metadata_json, application_event_version)
+        (event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at, actor_kind, payload_json, metadata_json, application_event_version, command_id)
       VALUES ('event-' || lower(hex(randomblob(8))), 'thread', ${thread},
         (SELECT COALESCE(MAX(stream_version), -1) + 1 FROM orchestration_events WHERE stream_id = ${thread}),
-        ${type}, ${now}, 'server', '{}', '{}', 2)
+        ${type}, ${now}, 'server', '{}', '{}', 2, ${commandId})
       RETURNING sequence`;
     return row!.sequence;
   });
@@ -134,7 +134,7 @@ const finished = Effect.fn("fixture.finished")(function* (
   yield* bots`INSERT INTO bot_tasks (task_id, bot_id, project_id, home_thread_id, origin, title, prompt, runtime_mode, status, result_run_id, completed_at, notified_at, created_at, updated_at)
     VALUES (${taskId}, 'bot', ${project}, ${thread}, 'routine', ${`Routine ${taskId}`}, 'Prepare', 'full-access', ${options.status ?? "completed"}, ${`run-${taskId}`}, ${now}, ${now}, ${now}, ${now})`;
   yield* bots`INSERT INTO bot_home_check_outcomes (task_id, home_thread_id) VALUES (${taskId}, ${thread})`;
-  yield* eventIn(thread, "thread.marked-unread");
+  yield* eventIn(thread, "thread.marked-unread", `bot-task-notify:${taskId}`);
 });
 
 /** Saved task results as the check reads them. */
@@ -165,8 +165,7 @@ const earlyStarts = BotDatabase.BotDatabase.pipe(
         readonly home_thread_id: string;
         readonly done_through: string;
         readonly early_started_at: string | null;
-        readonly early_previous_at: string | null;
-      }>`SELECT home_thread_id, done_through, early_started_at, early_previous_at FROM bot_home_checks ORDER BY home_thread_id`,
+      }>`SELECT home_thread_id, done_through, early_started_at FROM bot_home_checks ORDER BY home_thread_id`,
   ),
 );
 
@@ -894,19 +893,26 @@ it.effect(
       yield* at("2026-11-09T09:00:00.000Z");
       yield* enable(check, { early: true });
       yield* at("2026-11-09T10:00:00.000Z");
-      yield* eventIn(home);
       yield* finished("venue-a");
-      yield* finished("venue-b", { status: "failed" });
-      yield* at("2026-11-09T10:09:59.000Z");
+      yield* at("2026-11-09T10:01:00.000Z");
       yield* tick();
       assert.deepEqual(yield* startTexts(homeTurns), []);
 
-      yield* at("2026-11-09T10:10:00.000Z");
+      yield* at("2026-11-09T10:04:00.000Z");
+      yield* finished("venue-b", { status: "failed" });
+      // The unread marks of the results are Home activity; the check waits them out.
+      yield* at("2026-11-09T10:12:00.000Z");
+      yield* eventIn(home, "thread.marked-unread", "manual-mark-unread");
+      yield* at("2026-11-09T10:13:59.000Z");
+      yield* tick();
+      assert.deepEqual(yield* startTexts(homeTurns), []);
+
+      yield* at("2026-11-09T10:14:00.000Z");
       yield* tick();
       yield* tick();
       const [start, ...others] = yield* startTexts(homeTurns);
       assert.lengthOf(others, 0);
-      assert.equal(start?.id, earlyId("2026-11-09T10:10:00.000Z"));
+      assert.equal(start?.id, earlyId("2026-11-09T10:14:00.000Z"));
       assert.isTrue(start?.text.startsWith(BotHomeCheck.HOME_CHECK_PROMPT));
       assert.include(
         start?.text,
@@ -924,29 +930,29 @@ it.effect(
       );
       assert.include(start?.text, '{"taskId":"venue-a","text":"Result of venue-a"}');
       assert.deepEqual(yield* outcomeOf(check), {
-        at: "2026-11-09T10:10:00.000Z",
+        at: "2026-11-09T10:14:00.000Z",
         outcome: "running",
         early: true,
       });
 
       yield* appendWaiting("Choose a venue", "venue");
       yield* endCheck("completed");
-      yield* at("2026-11-09T10:11:00.000Z");
+      yield* at("2026-11-09T10:15:00.000Z");
       yield* tick();
       assert.deepEqual(yield* outcomeOf(check), {
-        at: "2026-11-09T10:11:00.000Z",
+        at: "2026-11-09T10:15:00.000Z",
         outcome: "proposed",
         added: 1,
         early: true,
       });
       assert.deepEqual(yield* homeTurns.sent("thread.mark-unread"), [
-        `bot-home-check:unread:${earlyId("2026-11-09T10:10:00.000Z")}`,
+        `bot-home-check:unread:${earlyId("2026-11-09T10:14:00.000Z")}`,
       ]);
       assert.deepEqual(yield* outcomes, []);
       // The daily clock stays where enabling put it.
       assert.deepInclude((yield* earlyStarts)[0], {
         done_through: "2026-11-09T09:00:00.000Z",
-        early_started_at: "2026-11-09T10:10:00.000Z",
+        early_started_at: "2026-11-09T10:14:00.000Z",
       });
       for (const time of ["2026-11-09T12:00:00.000Z", "2026-11-09T20:00:00.000Z"]) {
         yield* at(time);
@@ -957,7 +963,7 @@ it.effect(
       yield* tick();
       assert.deepEqual(
         (yield* startTexts(homeTurns)).map((sent) => sent.id),
-        [earlyId("2026-11-09T10:10:00.000Z"), `bot-home-check:${home}:2026-11-09T09:00:00.000Z`],
+        [earlyId("2026-11-09T10:14:00.000Z"), `bot-home-check:${home}:2026-11-09T09:00:00.000Z`],
       );
     }).pipe(Effect.provide(services)),
 );
@@ -1027,7 +1033,6 @@ it.effect(
       assert.deepEqual(yield* outcomes, []);
       assert.deepInclude((yield* earlyStarts)[0], {
         early_started_at: "2026-11-09T11:10:00.000Z",
-        early_previous_at: "2026-11-09T10:10:00.000Z",
       });
     }).pipe(Effect.provide(services)),
 );
