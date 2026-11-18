@@ -83,7 +83,7 @@ function HomeLearningNotices(scope: HomeScope) {
   const [unfolded, setUnfolded] = useState(false);
   const registry = useContext(RegistryContext);
   const formatInstant = useUpcomingInstantFormatter();
-  const { visible, hiddenKeys, folded } = homeBotLearningNoticeGroups(
+  const { visible, hiddenKeys, folded, showGroupSummaries } = homeBotLearningNoticeGroups(
     scope,
     noticesQuery.data?.notices ?? [],
     hidden,
@@ -124,7 +124,7 @@ function HomeLearningNotices(scope: HomeScope) {
               key={group.key}
               scope={scope}
               group={group}
-              when={formatInstant(group.notices[0]!.at)}
+              when={showGroupSummaries ? formatInstant(group.notices[0]!.at) : null}
               unfolded={folded !== null}
               onOpen={open}
               onHide={() => setHidden((current) => hideBotHomeCard(current, group.key))}
@@ -188,7 +188,7 @@ function NoticeGroup({
 }: {
   readonly scope: HomeScope;
   readonly group: BotLearningNoticeGroup;
-  readonly when: string;
+  readonly when: string | null;
   /** Opened from the folded summary, which already counted every notice. */
   readonly unfolded: boolean;
   readonly onOpen: (notice: BotLearningNotice) => void;
@@ -203,25 +203,29 @@ function NoticeGroup({
   const more = group.notices.length - shown.length;
   return (
     <li className="space-y-1.5">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="flex min-w-0 items-center gap-1.5 text-muted-foreground">
-          <BrainIcon className="size-3.5 shrink-0" aria-hidden />
-          <span className="wrap-anywhere">
-            {`Memory · ${botLearningNoticeGroupSummary(group)} · ${when}`}
-          </span>
-        </p>
-        {group.waiting > 0 ? null : (
-          <Button
-            size="xs"
-            variant="ghost-muted"
-            aria-label="Hide these memory changes from Home"
-            onClick={onHide}
-          >
-            <EyeOffIcon aria-hidden />
-            Hide
-          </Button>
-        )}
-      </div>
+      {when !== null || group.waiting === 0 ? (
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          {when === null ? null : (
+            <p className="flex min-w-0 items-center gap-1.5 text-muted-foreground">
+              <BrainIcon className="size-3.5 shrink-0" aria-hidden />
+              <span className="wrap-anywhere">
+                {`Memory · ${botLearningNoticeGroupSummary(group)} · ${when}`}
+              </span>
+            </p>
+          )}
+          {group.waiting > 0 ? null : (
+            <Button
+              size="xs"
+              variant="ghost-muted"
+              aria-label="Hide these memory changes from Home"
+              onClick={onHide}
+            >
+              <EyeOffIcon aria-hidden />
+              Hide
+            </Button>
+          )}
+        </div>
+      ) : null}
       <ul className="space-y-2">
         {shown.map((notice) => (
           <NoticeRow

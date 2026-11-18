@@ -76,7 +76,7 @@ function HomeLearningNotices(scope: HomeScope) {
   );
   // Waiting for preferences keeps hidden groups from flashing in on launch.
   if (!AsyncResult.isSuccess(preferences)) return null;
-  const { visible, hiddenKeys, folded } = homeBotLearningNoticeGroups(
+  const { visible, hiddenKeys, folded, showGroupSummaries } = homeBotLearningNoticeGroups(
     scope,
     notices.data?.notices ?? [],
     preferences.value.hiddenBotTaskCards ?? [],
@@ -124,6 +124,7 @@ function HomeLearningNotices(scope: HomeScope) {
           group={group}
           borderTop={index > 0 || folded !== null}
           unfolded={folded !== null}
+          showSummary={showGroupSummaries}
           onOpen={open}
           onHide={() =>
             updatePreferences({
@@ -164,6 +165,7 @@ function NoticeGroup(props: {
   readonly borderTop: boolean;
   /** Opened from the folded summary, which already counted every notice. */
   readonly unfolded: boolean;
+  readonly showSummary: boolean;
   readonly onOpen: (notice: BotLearningNotice) => void;
   readonly onHide: () => void;
 }) {
@@ -179,12 +181,14 @@ function NoticeGroup(props: {
     <View
       className={cn("gap-1 px-4 pt-3 pb-1", props.borderTop && "border-t border-border-subtle")}
     >
-      <View className="flex-row items-center gap-1.5">
-        <SymbolView name="brain" size={13} tintColorClassName="accent-foreground-muted" />
-        <Text className="min-w-0 flex-1 text-xs text-foreground-muted" numberOfLines={2}>
-          {`Memory · ${botLearningNoticeGroupSummary(group)} · ${formatBotInstant(group.notices[0]!.at)}`}
-        </Text>
-      </View>
+      {props.showSummary ? (
+        <View className="flex-row items-center gap-1.5">
+          <SymbolView name="brain" size={13} tintColorClassName="accent-foreground-muted" />
+          <Text className="min-w-0 flex-1 text-xs text-foreground-muted" numberOfLines={2}>
+            {`Memory · ${botLearningNoticeGroupSummary(group)} · ${formatBotInstant(group.notices[0]!.at)}`}
+          </Text>
+        </View>
+      ) : null}
       {shown.map((notice) => (
         <NoticeRow
           key={`${notice.entryId}:${notice.revision}:${notice.change}`}

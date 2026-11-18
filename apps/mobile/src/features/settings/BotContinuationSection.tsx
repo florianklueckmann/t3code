@@ -20,13 +20,13 @@ import {
 import { Pressable, View } from "react-native";
 import { useEffect, useRef, useState } from "react";
 
+import { RelativeTime } from "../../components/RelativeTime";
 import { AppText as Text } from "../../components/ui/AppText";
 import { SymbolView } from "../../components/ui/AppSymbol";
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
 import { environmentThreadShells } from "../../state/threads";
 import { useSelectWorkspaceDetail } from "../layout/workspace/useSelectWorkspaceDetail";
-import { formatBotInstant } from "./botRoutineDraft";
 import {
   BOT_NOTE_SECTION_LABELS,
   botNoteMessagesSince,
@@ -172,7 +172,8 @@ export function BotContinuationSection(props: {
             ) : null}
             {view.updatedBy === null || view.updatedAt === null ? null : (
               <Text textRole="footnote" className="text-foreground-muted">
-                {botContinuationWriterLabel(view.updatedBy)} · {formatBotInstant(view.updatedAt)}
+                {botContinuationWriterLabel(view.updatedBy)} ·{" "}
+                <RelativeTime timestamp={view.updatedAt} withAgo />
                 {view.restoredFrom === null ? "" : ` · restored from r${view.restoredFrom}`}
               </Text>
             )}

@@ -1,4 +1,7 @@
+import { formatRelativeTimeLabel } from "@t3tools/client-runtime/clock";
 import { type TimestampFormat } from "@t3tools/contracts/settings";
+
+export { formatRelativeTime, formatRelativeTimeLabel } from "@t3tools/client-runtime/clock";
 
 function getTimestampFormatOptions(
   timestampFormat: TimestampFormat,
@@ -228,67 +231,22 @@ export function formatUpcomingTimestamp(
   return `${formatNumericDate(date, targetDay.year === today.year, timeZone)} ${time}`;
 }
 
-type RelativeTimeParts = { value: string; suffix: string | null };
-export type RelativeTimeState =
-  | { status: "missing" }
-  | { status: "invalid" }
-  | { status: "relative"; value: string; suffix: string | null };
-
-const MINUTE_MS = 60_000;
-const HOUR_MS = 3_600_000;
-const DAY_MS = 86_400_000;
-
-function relativeTimeUnitMs(elapsedMs: number): number {
-  if (elapsedMs < HOUR_MS) return MINUTE_MS;
-  if (elapsedMs < DAY_MS) return HOUR_MS;
-  return DAY_MS;
-}
-
-/** Elapsed time floored to formatRelativeTime precision; equal labels yield equal values. */
-export function relativeTimeElapsedMs(isoDate: string, nowMs: number = Date.now()): number | null {
-  const date = parseTimestampDate(isoDate);
-  if (!date) return null;
-  const elapsedMs = Math.max(0, nowMs - date.getTime());
-  const unitMs = relativeTimeUnitMs(elapsedMs);
-  return Math.floor(elapsedMs / unitMs) * unitMs;
-}
-
-export function msUntilRelativeTimeChange(
-  isoDate: string,
-  nowMs: number = Date.now(),
-): number | null {
-  const date = parseTimestampDate(isoDate);
-  if (!date) return null;
-  const elapsedMs = Math.max(0, nowMs - date.getTime());
-  const unitMs = relativeTimeUnitMs(elapsedMs);
-  const nextChangeMs = date.getTime() + (Math.floor(elapsedMs / unitMs) + 1) * unitMs;
-  // Delays above 2^31-1 fire immediately; cap safely and let callers reschedule.
-  return Math.min(nextChangeMs - nowMs, DAY_MS);
-}
-
-export function formatRelativeElapsed(elapsedMs: number): RelativeTimeParts {
-  const seconds = Math.floor(elapsedMs / 1000);
-  if (seconds < 60) return { value: "just now", suffix: null };
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return { value: `${minutes}m`, suffix: "ago" };
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return { value: `${hours}h`, suffix: "ago" };
-  const days = Math.floor(hours / 24);
-  return { value: `${days}d`, suffix: "ago" };
-}
-
-export function formatRelativeTime(
-  isoDate: string,
-  nowMs: number = Date.now(),
-): RelativeTimeParts | null {
-  const elapsedMs = relativeTimeElapsedMs(isoDate, nowMs);
-  return elapsedMs === null ? null : formatRelativeElapsed(elapsedMs);
-}
-
-export function formatRelativeTimeLabel(isoDate: string, nowMs: number = Date.now()) {
-  const relative = formatRelativeTime(isoDate, nowMs);
-  if (!relative) return "";
-  return relative.suffix ? `${relative.value} ${relative.suffix}` : relative.value;
+export function formatScheduledRelativeTimeLabel(
+  value: string | null,
+  nowMs: number,
+  mode: "upcoming" | "past",
+): string {
+  if (!value) return "Not scheduled";
+  const diffMs = mode === "past" ? 0 : Date.parse(value) - nowMs;
+  if (diffMs <= 0 || Number.isNaN(diffMs)) {
+    return formatRelativeTimeLabel(value, nowMs) || "Not scheduled";
+  }
+  const minutes = Math.ceil(diffMs / 60_000);
+  if (minutes < 2) return "in under a minute";
+  if (minutes < 60) return `in ${minutes}m`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `in ${hours}h`;
+  return `in ${Math.round(hours / 24)}d`;
 }
 
 export function formatElapsedDurationLabel(isoDate: string, nowMs: number = Date.now()): string {

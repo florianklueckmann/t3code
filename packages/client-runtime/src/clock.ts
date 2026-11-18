@@ -2,6 +2,15 @@
 
 import type { EnvironmentId } from "@t3tools/contracts";
 
+export {
+  formatRelativeElapsed,
+  formatRelativeTime,
+  formatRelativeTimeLabel,
+  msUntilRelativeTimeChange,
+  relativeTimeElapsedMs,
+  type RelativeTimeState,
+} from "./relativeTime.ts";
+
 /**
  * A `useSyncExternalStore`-shaped clock. Snapshots stay cached between
  * notifications while subscribed, as `useSyncExternalStore` requires.

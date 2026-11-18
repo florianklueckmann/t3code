@@ -5,7 +5,7 @@ import {
   msUntilRelativeTimeChange,
   relativeTimeElapsedMs,
   type RelativeTimeState,
-} from "../timestampFormat";
+} from "@t3tools/client-runtime/clock";
 
 export function useRelativeTimeState(isoDate: string | null): RelativeTimeState {
   const subscribe = (onChange: () => void) => {
