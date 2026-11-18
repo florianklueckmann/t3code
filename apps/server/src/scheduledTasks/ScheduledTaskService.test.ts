@@ -596,6 +596,75 @@ it.effect("a bound run follows its thread when promotion moves it mid-send", () 
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 
+it.effect("a task read sees a change that commits while its routine read waits", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const routines = yield* BotRoutineStore.BotRoutineStore;
+    // The read after the save stands in for the run's last check before dispatch.
+    const changed = yield* Ref.make(false);
+    const inTaskRead = Effect.currentSpan.pipe(
+      Effect.map((span) => {
+        let current: Option.Option<{ readonly name?: string; readonly parent?: unknown }> =
+          Option.some(span);
+        while (Option.isSome(current)) {
+          if (current.value.name === "ScheduledTaskService.findStoredTask") return true;
+          current = (current.value.parent ?? Option.none()) as typeof current;
+        }
+        return false;
+      }),
+      Effect.orElseSucceed(() => false),
+    );
+    const layer = ScheduledTaskService.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          ManagedPolicy.layerTest(),
+          Layer.succeed(BotRoutineStore.BotRoutineStore, {
+            ...routines,
+            // A read that waited for a change in flight returns after that change committed.
+            get: (id) =>
+              Effect.gen(function* () {
+                const saved = yield* sql`SELECT 1 FROM scheduled_tasks WHERE task_id = ${id}`;
+                if (
+                  (yield* inTaskRead) &&
+                  saved.length > 0 &&
+                  !(yield* Ref.getAndSet(changed, true))
+                )
+                  yield* sql`UPDATE scheduled_tasks SET enabled = 0 WHERE task_id = ${id}`;
+                return yield* routines.get(id);
+              }),
+          }),
+          Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
+          Layer.mock(ThreadManagementService.ThreadManagementService)({}),
+          Layer.mock(SecretRequests.SecretRequests)({}),
+          Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+            namedProjectsRoot: "/projects",
+            isScratchProject: () => Effect.succeed(false),
+          }),
+          NodeCrypto.layer,
+          Scheduler.layer,
+        ),
+      ),
+    );
+    yield* Effect.gen(function* () {
+      const service = yield* ScheduledTaskService.ScheduledTaskService;
+      const { task } = yield* service.upsert({
+        id: ScheduledTaskId.make("task:paused-during-read"),
+        title: "Check in",
+        prompt: "Check progress",
+        enabled: true,
+        schedule: { type: "interval", everyMs: 60_000 },
+        projectId: ProjectId.make("project:test"),
+        workspaceStrategy: { type: "root" },
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+        runtimeMode: "full-access",
+        interactionMode: "default",
+      });
+      assert.isTrue(yield* Ref.get(changed));
+      assert.isFalse(task.enabled);
+    }).pipe(Effect.provide(layer));
+  }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
 it.effect("a fresh-session task launches one thread, then starts each later run fresh in it", () =>
   Effect.gen(function* () {
     const launches = yield* Ref.make(0);

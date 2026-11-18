@@ -649,6 +649,14 @@ export const layer = Layer.effect(
     const findStoredTask = Effect.fn("ScheduledTaskService.findStoredTask")(function* (
       id: ScheduledTaskId,
     ) {
+      // First, so a routine change it waits for is in the row read after it.
+      const routine = yield* routines
+        .get(id)
+        .pipe(
+          Effect.mapError((cause) =>
+            taskError("Could not load schedule task.", { taskId: id, cause }),
+          ),
+        );
       const rows = yield* getRows(id).pipe(
         Effect.mapError((cause) =>
           taskError("Could not load schedule task.", { taskId: id, cause }),
@@ -657,19 +665,16 @@ export const layer = Layer.effect(
       const row = rows[0];
       if (row === undefined) return null;
       const createdByThreadId = yield* decodeCreatorThreadId(
-        (yield* routines
-          .get(id)
-          .pipe(
-            Effect.mapError((cause) =>
-              taskError("Could not load schedule task.", { taskId: id, cause }),
-            ),
-          ))?.created_by_thread_id ?? null,
+        routine?.created_by_thread_id ?? null,
       ).pipe(
         Effect.mapError((cause) =>
           taskError("Could not decode schedule task row.", { taskId: id, cause }),
         ),
       );
-      return { task: withPolicy(yield* decode(row, yield* readWebhookOrigin)), createdByThreadId };
+      return {
+        task: withPolicy(yield* decode(row, yield* readWebhookOrigin, { routine })),
+        createdByThreadId,
+      };
     });
 
     const findTask = Effect.fn("ScheduledTaskService.findTask")(function* (id: ScheduledTaskId) {

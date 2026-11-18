@@ -1,6 +1,7 @@
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -69,7 +70,9 @@ export const layer = Layer.effect(
       const [row] = yield* bots<Routine>`SELECT * FROM bot_routines WHERE task_id = ${id}`;
       return row;
     });
-    const apply = Effect.fn("BotRoutineStore.apply")(function* <A extends object>(intent: Intent) {
+    const writeMain = Effect.fn("BotRoutineStore.writeMain")(function* <A extends object>(
+      intent: Intent,
+    ) {
       const params = yield* decodeParameters(intent.parameters_json).pipe(
         Effect.mapError(
           () =>
@@ -80,7 +83,7 @@ export const layer = Layer.effect(
             }),
         ),
       );
-      const rows = yield* sql.withTransaction(
+      return yield* sql.withTransaction(
         Effect.gen(function* () {
           if (intent.removing === 1)
             yield* sql`DELETE FROM scheduled_task_webhook_deliveries WHERE task_id = ${intent.task_id}`;
@@ -96,13 +99,29 @@ export const layer = Layer.effect(
           return rows;
         }),
       );
-      const [checkpoint] = yield* sql<{ readonly busy: number }>`PRAGMA wal_checkpoint(FULL)`;
-      if (checkpoint?.busy !== 0)
-        return yield* new Migrator.MigrationError({
-          kind: "Locked",
-          message:
-            "Bot routine changes are pending a T3 database checkpoint. Stop other builds using this T3 home, then retry.",
-        });
+    });
+    const checkpoint = sql<{ readonly busy: number }>`PRAGMA wal_checkpoint(FULL)`.pipe(
+      Effect.flatMap(([result]) =>
+        result?.busy === 0
+          ? Effect.void
+          : new Migrator.MigrationError({
+              kind: "Locked",
+              message:
+                "Bot routine changes are pending a T3 database checkpoint. Stop other builds using this T3 home, then retry.",
+            }),
+      ),
+      // The checkpoint worker's own checkpoints make this one busy at once, whatever busy_timeout says.
+      Effect.retry({
+        while: (error) => error._tag === "MigrationError",
+        schedule: Schedule.spaced("20 millis").pipe(Schedule.upTo({ duration: "5 seconds" })),
+      }),
+    );
+    const clearIntent = bots`DELETE FROM bot_routine_intent WHERE singleton = 1`;
+    const finish = Effect.fn("BotRoutineStore.finish")(function* (
+      intent: Intent,
+      rows: ReadonlyArray<object>,
+    ) {
+      yield* checkpoint;
       yield* bots.withTransaction(
         Effect.gen(function* () {
           if (intent.removing === 1) {
@@ -114,17 +133,23 @@ export const layer = Layer.effect(
             bot_session_at = excluded.bot_session_at, schedule_revision = excluded.schedule_revision,
             bot_allow_changes = excluded.bot_allow_changes, created_by_thread_id = excluded.created_by_thread_id`;
           }
-          yield* bots`DELETE FROM bot_routine_intent WHERE singleton = 1`;
+          yield* clearIntent;
         }),
       );
-      return rows;
     });
+    // Without its caller nobody knows whether the main write committed, so a pending change rolls forward.
     const recover = Effect.fn("BotRoutineStore.recover")(function* () {
       const [pending] = yield* bots<Intent>`SELECT * FROM bot_routine_intent`;
-      if (pending) yield* apply(pending);
+      if (pending) yield* finish(pending, yield* writeMain(pending));
     });
     // Layer acquisition precedes scheduler recovery and registration.
-    yield* recover();
+    yield* recover().pipe(
+      Effect.catch((cause) =>
+        Effect.logWarning("A pending Bot routine change is retried on its next operation", {
+          cause,
+        }),
+      ),
+    );
     const mutate: BotRoutineStore["Service"]["mutate"] = <A extends object>(
       statement: Statement.Statement<A>,
       input: Parameters<BotRoutineStore["Service"]["mutate"]>[1],
@@ -163,21 +188,21 @@ export const layer = Layer.effect(
             removing: input.removing ? 1 : 0,
           };
           yield* bots`INSERT INTO bot_routine_intent ${bots.insert({ singleton: 1, ...intent })}`;
-          return yield* apply<A>(intent);
+          // The main transaction rolled back, so the caller's failure leaves nothing to finish.
+          const rows = yield* writeMain<A>(intent).pipe(
+            Effect.tapError(() => clearIntent.pipe(Effect.ignore({ log: true }))),
+          );
+          yield* finish(intent, rows);
+          return rows;
         }),
       );
     const get = Effect.fn("BotRoutineStore.get")(function* (id: string) {
-      return yield* bots.withTransaction(
-        Effect.gen(function* () {
-          const pending = yield* bots`SELECT singleton FROM bot_routine_intent`;
-          if (pending.length > 0)
-            return yield* new Migrator.MigrationError({
-              kind: "Locked",
-              message: "A Bot routine change is pending. Restart the server to finish recovery.",
-            });
-          return yield* read(id);
-        }),
-      );
+      const [pending] = yield* bots<{
+        readonly task_id: string;
+      }>`SELECT task_id FROM bot_routine_intent`;
+      if (pending?.task_id !== id) return yield* read(id);
+      // Waits for the change in flight, or finishes one an earlier run left behind.
+      return yield* lock.withPermit(recover().pipe(Effect.andThen(read(id))));
     });
     return BotRoutineStore.of({ get, mutate });
   }),
