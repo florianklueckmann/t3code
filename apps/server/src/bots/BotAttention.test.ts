@@ -134,6 +134,14 @@ it.effect("holds alerts through quiet hours across midnight and sends one digest
     const due = yield* attention.claimDigests;
     assert.lengthOf(due, 1);
     assert.deepInclude(due[0]!, { held: 2, allFailed: false });
+    assert.isTrue(yield* attention.canSendDigest(due[0]!));
+    // Quiet hours saved while the digest waits to go out hold it again.
+    yield* configure(attention, { quietHours: { start: "06:00", end: "08:00" } });
+    assert.isFalse(yield* attention.canSendDigest(due[0]!));
+    yield* configure(attention, { quietHours: { start: "22:00", end: "07:00" } });
+    // Too close to the relay's freshness limit to land in time.
+    yield* at("2026-11-03T07:01:30.000Z");
+    assert.isFalse(yield* attention.canSendDigest(due[0]!));
     yield* attention.markDigestSent(due[0]!);
     assert.lengthOf(yield* attention.claimDigests, 0);
     // The digest counted against nothing: the new day still has its whole cap.

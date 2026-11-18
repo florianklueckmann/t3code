@@ -80,7 +80,7 @@ export class BotAttention extends Context.Service<
      * digest; an unsent claim comes back as it was until it is too old to alert.
      */
     readonly claimDigests: Effect.Effect<ReadonlyArray<BotAlertDigest>, BotError>;
-    /** Unsent and still young enough for the relay to ring. */
+    /** Unsent, young enough for the relay to ring, and outside the Bot's quiet hours now. */
     readonly canSendDigest: (digest: BotAlertDigest) => Effect.Effect<boolean, BotError>;
     readonly markDigestSent: (digest: BotAlertDigest) => Effect.Effect<void, BotError>;
   }
@@ -280,7 +280,11 @@ export const make = Effect.gen(function* () {
   }).pipe(Effect.mapError(failure));
 
   const canSendDigest = Effect.fn("BotAttention.canSendDigest")(function* (digest: BotAlertDigest) {
-    if (!isFresh(digest.digestAt, yield* localNow)) return false;
+    const now = yield* localNow;
+    // Margin for the request itself, so the relay still sees the claim as fresh when it lands.
+    if (DateTime.toEpochMillis(now) - Date.parse(digest.digestAt) >= DIGEST_RECLAIM_MS - 30_000)
+      return false;
+    if (inQuietHours(now, (yield* settings(digest.botId)).quietHours)) return false;
     const rows = yield* sql`SELECT 1 FROM bot_alerts WHERE bot_id = ${digest.botId}
         AND digest_at = ${digest.digestAt} AND digest_sent_at IS NULL LIMIT 1`;
     return rows.length > 0;
