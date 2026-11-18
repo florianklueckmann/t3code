@@ -1213,17 +1213,22 @@ const make = Effect.gen(function* () {
     return diagnosed.length === 0;
   });
 
-  /** The result run's own end; completed_at is only when a reconcile pass first saw it. */
+  /** The saved result run's own end; completed_at is only when a reconcile pass first saw it. */
   const resultEndedAt = Effect.fn("BotTaskService.resultEndedAt")(function* (row: BotTaskRow) {
-    const shell =
-      row.work_thread_id === null
-        ? null
-        : yield* threads
-            .getThreadShell(ThreadId.make(row.work_thread_id))
-            .pipe(Effect.mapError(botError("Failed to read the Bot task's work thread.")));
-    return shell?.latestRunId === row.result_run_id && shell?.latestRunCompletedAt != null
-      ? DateTime.formatIso(shell.latestRunCompletedAt)
-      : row.completed_at;
+    if (row.work_thread_id === null || row.result_run_id === null) return row.completed_at;
+    const runId = RunId.make(row.result_run_id);
+    const records = yield* threads
+      .getProjectThreadRecords(
+        { projectId: ProjectId.make(row.project_id), threadId: ThreadId.make(row.work_thread_id) },
+        ["runs"],
+        { runIds: [runId] },
+      )
+      .pipe(
+        Effect.catchTags({ ThreadManagementThreadNotFoundError: () => Effect.succeed(null) }),
+        Effect.mapError(botError("Failed to read the Bot task's run.")),
+      );
+    const completedAt = records?.runs.find((run) => run.id === runId)?.completedAt;
+    return completedAt == null ? row.completed_at : DateTime.formatIso(completedAt);
   });
 
   /** One step of the reconcile loop for one task; failures stay with that task. */

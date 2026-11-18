@@ -2401,10 +2401,26 @@ it.effect.each<{
   {
     name: "a routine run that ended before early checks were turned on but was seen after",
     early: iso(START),
-    run: (services, world) =>
+    run: (services, world, home) =>
       Effect.gen(function* () {
         const routine = yield* runRoutine(services, true);
-        yield* world.update(routine.workThreadId, { status: "completed" });
+        const runId = RunId.make(`run:${routine.workThreadId}`);
+        yield* world.update(routine.workThreadId, { status: "completed", runId });
+        yield* Ref.update(world.records, (all) =>
+          new Map(all).set(routine.workThreadId, {
+            thread: { id: routine.workThreadId, projectId: campaign, deletedAt: null } as never,
+            runs: [
+              { id: runId, status: "completed", completedAt: DateTime.makeUnsafe(0) } as never,
+            ],
+            messages: [],
+            turnItems: [],
+          }),
+        );
+        // A busy Home holds the notification while a follow-up moves the work thread's latest run.
+        yield* seedHomeRun(world, home);
+        yield* services.tasks.reconcile;
+        yield* world.update(routine.workThreadId, { runId: "follow-up-run" });
+        yield* world.update(home, { status: "completed" });
         return [];
       }),
   },
