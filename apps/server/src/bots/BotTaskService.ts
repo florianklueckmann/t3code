@@ -1213,6 +1213,19 @@ const make = Effect.gen(function* () {
     return diagnosed.length === 0;
   });
 
+  /** The result run's own end; completed_at is only when a reconcile pass first saw it. */
+  const resultEndedAt = Effect.fn("BotTaskService.resultEndedAt")(function* (row: BotTaskRow) {
+    const shell =
+      row.work_thread_id === null
+        ? null
+        : yield* threads
+            .getThreadShell(ThreadId.make(row.work_thread_id))
+            .pipe(Effect.mapError(botError("Failed to read the Bot task's work thread.")));
+    return shell?.latestRunId === row.result_run_id && shell?.latestRunCompletedAt != null
+      ? DateTime.formatIso(shell.latestRunCompletedAt)
+      : row.completed_at;
+  });
+
   /** One step of the reconcile loop for one task; failures stay with that task. */
   const reconcileTask = Effect.fn("BotTaskService.reconcileTask")(function* (row: BotTaskRow) {
     if (row.completed_at === null) {
@@ -1282,6 +1295,10 @@ const make = Effect.gen(function* () {
           }),
         );
     }
+    // When the result run ended: work that ended before early checks were on is not owed one.
+    const endedAt = (yield* requestsHomeCheck(current).pipe(Effect.mapError(storageError)))
+      ? yield* resultEndedAt(current)
+      : null;
     const now = yield* nowIso;
     yield* sql
       .withTransaction(
@@ -1290,14 +1307,14 @@ const make = Effect.gen(function* () {
             UPDATE bot_tasks SET notified_at = ${now}
             WHERE task_id = ${current.task_id} AND notified_at IS NULL RETURNING task_id
           `;
-          if (notified.length > 0 && (yield* requestsHomeCheck(current)))
+          if (notified.length > 0 && endedAt !== null)
             yield* sql`
               INSERT OR IGNORE INTO bot_home_check_outcomes (task_id, home_thread_id)
               SELECT ${current.task_id}, h.home_thread_id FROM bot_home_checks h
               JOIN bot_project_contexts c ON c.home_thread_id = h.home_thread_id
               JOIN bots b ON b.bot_id = c.bot_id
               WHERE h.home_thread_id = ${current.home_thread_id} AND h.enabled = 1
-                AND h.early_since <= ${current.completed_at} AND c.detached_at IS NULL
+                AND h.early_since <= ${endedAt} AND c.detached_at IS NULL
                 AND b.archived_at IS NULL
             `;
         }),

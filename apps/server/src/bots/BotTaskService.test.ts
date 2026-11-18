@@ -1847,8 +1847,9 @@ it.effect("detach and archive pause routines and stop their work until resumed",
         const run = yield* services.routines.runNow({ id: routine.id });
         const workThreadId = run.threadId ?? assert.fail("no work thread");
         yield* world.update(workThreadId, { status: "running" });
-        // Work that ended earlier and still waits for an early Home check.
-        const owed = sql`INSERT INTO bot_home_check_outcomes (task_id, home_thread_id) VALUES ('owed', ${home})`;
+        // Work that waits for an early Home check, and work a running check claimed.
+        const owed = sql`INSERT INTO bot_home_check_outcomes (task_id, home_thread_id, check_message_id)
+          VALUES ('owed', ${home}, NULL), ('claimed', ${home}, 'bot-home-check-early:running')`;
         const outcomes = sql`SELECT task_id FROM bot_home_check_outcomes`;
         yield* owed;
 
@@ -2269,7 +2270,7 @@ it.effect.each<{
 
 it.effect.each<{
   readonly name: string;
-  /** When early checks were turned on, null while off; default START. */
+  /** When early checks were turned on, null while off; default the epoch. */
   readonly early?: string | null;
   /** Runs the work; the ids of the tasks that should ask for an early Home check. */
   readonly run: (
@@ -2398,8 +2399,8 @@ it.effect.each<{
       }),
   },
   {
-    name: "a routine run that ended before early checks were turned on",
-    early: iso(START + HOUR),
+    name: "a routine run that ended before early checks were turned on but was seen after",
+    early: iso(START),
     run: (services, world) =>
       Effect.gen(function* () {
         const routine = yield* runRoutine(services, true);
@@ -2416,9 +2417,9 @@ it.effect.each<{
     yield* withServices(world, (services) =>
       Effect.gen(function* () {
         const home = yield* attachBot(services);
-        // A notification that waits for Home can land after early checks were turned on.
+        // The fake world's runs end at the epoch, before any reconcile pass sees them.
         yield* sql`INSERT INTO bot_home_checks (home_thread_id, settings_revision, enabled, time_of_day, done_through, early_since, updated_at)
-          VALUES (${home}, 1, 1, '08:00', ${iso(START)}, ${early === undefined ? iso(START) : early}, ${iso(START)})`;
+          VALUES (${home}, 1, 1, '08:00', ${iso(START)}, ${early === undefined ? iso(0) : early}, ${iso(START)})`;
         const expected = yield* run(services, world, home).pipe(
           Effect.provideService(BotDatabase.BotDatabase, sql),
         );
