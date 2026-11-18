@@ -31,17 +31,19 @@ final class EventKitStore: CalendarStore {
 
     func events(in query: EventQuery) throws -> [CalendarEvent] {
         guard authorization == .fullAccess else { throw CalendarError.notAuthorized }
-        let calendars = try query.selectCalendars(store.calendars(for: .event), id: \.calendarIdentifier)
+        let calendars = query.calendarIDs.compactMap { store.calendar(withIdentifier: $0) }
+        guard calendars.count == query.calendarIDs.count else { throw CalendarError.unknownCalendar }
         // EventKit expands recurring events into occurrences when matching a date predicate.
         let predicate = store.predicateForEvents(withStart: query.start, end: query.end, calendars: calendars)
         guard authorization == .fullAccess else { throw CalendarError.notAuthorized }
+        let timeZone = TimeZone.current
         return store.events(matching: predicate).compactMap { event in
             guard let start = event.startDate, let end = event.endDate else { return nil }
             return CalendarEvent(
                 title: event.title ?? "",
                 calendar: CalendarSummary(id: event.calendar.calendarIdentifier, title: event.calendar.title),
                 start: start, end: end, allDay: event.isAllDay,
-                itemID: event.calendarItemIdentifier, occurrenceDate: event.occurrenceDate
+                itemID: event.calendarItemIdentifier, occurrenceDate: event.occurrenceDate, timeZone: timeZone
             )
         }
     }

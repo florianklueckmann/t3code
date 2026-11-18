@@ -6,7 +6,7 @@ enum CalendarAuthorization: String, Encodable {
 }
 
 enum CalendarError: String, Error, Encodable {
-    case invalidRequest, notAuthorized, unknownCalendar, storeUnavailable
+    case invalidRequest, notAuthorized, unknownCalendar, storeUnavailable, timeout
 }
 
 struct CalendarSummary: Encodable {
@@ -28,19 +28,47 @@ struct CalendarEvent: Encodable {
     let end: Date
     let allDay: Bool
     let reference: String
+    let timeZone: TimeZone
 
     init(
         title: String, calendar: CalendarSummary, start: Date, end: Date, allDay: Bool,
-        itemID: String, occurrenceDate: Date?
+        itemID: String, occurrenceDate: Date?, timeZone: TimeZone
     ) {
         self.title = title
         self.calendar = calendar
         self.start = start
-        self.end = end
         self.allDay = allDay
+        self.timeZone = timeZone
+        var hostCalendar = Calendar(identifier: .gregorian)
+        hostCalendar.timeZone = timeZone
+        if allDay, let day = hostCalendar.dateInterval(of: .day, for: end), end != day.start {
+            self.end = day.end
+        } else {
+            self.end = end
+        }
         let occurrence = occurrenceDate.map { String($0.timeIntervalSinceReferenceDate) } ?? ""
         let identity = "\(calendar.id.utf8.count):\(calendar.id)\(itemID.utf8.count):\(itemID)\(occurrence)"
         self.reference = Data(SHA256.hash(data: Data(identity.utf8))).base64EncodedString()
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case title, calendar, start, end, allDay, reference, timeZone
+    }
+
+    func encode(to encoder: Encoder) throws {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = timeZone
+        formatter.dateFormat = allDay ? "yyyy-MM-dd" : "yyyy-MM-dd'T'HH:mm:ssxxx"
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(title, forKey: .title)
+        try container.encode(calendar, forKey: .calendar)
+        try container.encode(formatter.string(from: start), forKey: .start)
+        try container.encode(formatter.string(from: end), forKey: .end)
+        try container.encode(allDay, forKey: .allDay)
+        try container.encode(reference, forKey: .reference)
+        try container.encode(timeZone.identifier, forKey: .timeZone)
     }
 }
 
@@ -68,14 +96,6 @@ struct EventQuery {
     func contains(_ event: CalendarEvent) -> Bool {
         calendarIDs.contains(event.calendar.id) && event.start < end
             && event.end >= event.start && (event.start >= start || event.end > start)
-    }
-
-    func selectCalendars<Calendar>(_ calendars: [Calendar], id: KeyPath<Calendar, String>) throws -> [Calendar] {
-        let selected = calendars.filter { calendarIDs.contains($0[keyPath: id]) }
-        guard Set(selected.map { $0[keyPath: id] }) == calendarIDs else {
-            throw CalendarError.unknownCalendar
-        }
-        return selected
     }
 
     private static func parseBound(_ value: String) -> Date? {
@@ -108,21 +128,19 @@ protocol CalendarStore {
 enum CalendarResponse: Encodable {
     case status(authorization: CalendarAuthorization)
     case calendars(items: [CalendarDetails])
-    case events(items: [CalendarEvent])
+    case events(items: [CalendarEvent], truncated: Bool?)
     case error(code: CalendarError)
 
     func json() throws -> Data {
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        return try encoder.encode(self)
+        try JSONEncoder().encode(self)
     }
 }
 
-@MainActor
-struct CalendarService {
-    let store: any CalendarStore
+enum CalendarRequest: Decodable {
+    case status, setup, listCalendars
+    case listEvents(EventQuery)
 
-    private struct Request: Decodable {
+    private struct Payload: Decodable {
         enum Command: String, Decodable {
             case status, setup
             case listCalendars = "list-calendars"
@@ -136,12 +154,34 @@ struct CalendarService {
         let limit: Int?
     }
 
-    func respond(to data: Data) async -> CalendarResponse {
-        guard let request = try? JSONDecoder().decode(Request.self, from: data) else {
-            return .error(code: .invalidRequest)
+    init(from decoder: Decoder) throws {
+        let payload = try Payload(from: decoder)
+        switch payload.command {
+        case .status: self = .status
+        case .setup: self = .setup
+        case .listCalendars: self = .listCalendars
+        case .listEvents:
+            self = .listEvents(try EventQuery(
+                start: payload.start, end: payload.end, calendarIDs: payload.calendarIds,
+                limit: payload.limit
+            ))
         }
+    }
+
+    var timeout: DispatchTimeInterval {
+        if case .setup = self { return .seconds(180) }
+        return .seconds(30)
+    }
+}
+
+@MainActor
+struct CalendarService {
+    let store: any CalendarStore
+
+    func respond(to request: CalendarRequest?) async -> CalendarResponse {
+        guard let request else { return .error(code: .invalidRequest) }
         do {
-            switch request.command {
+            switch request {
             case .status:
                 return .status(authorization: store.authorization)
             case .setup:
@@ -152,16 +192,16 @@ struct CalendarService {
             case .listCalendars:
                 guard store.authorization == .fullAccess else { return .error(code: .notAuthorized) }
                 return .calendars(items: try store.calendars())
-            case .listEvents:
+            case .listEvents(let query):
                 guard store.authorization == .fullAccess else { return .error(code: .notAuthorized) }
-                let query = try EventQuery(
-                    start: request.start, end: request.end, calendarIDs: request.calendarIds,
-                    limit: request.limit
-                )
+                let available = Set(try store.calendars().map(\.id))
+                guard query.calendarIDs.isSubset(of: available) else { return .error(code: .unknownCalendar) }
                 let events = try store.events(in: query).filter(query.contains).sorted {
                     ($0.start, $0.reference) < ($1.start, $1.reference)
                 }
-                return .events(items: Array(events.prefix(query.limit)))
+                return .events(
+                    items: Array(events.prefix(query.limit)), truncated: events.count > query.limit ? true : nil
+                )
             }
         } catch let error as CalendarError {
             return .error(code: error)

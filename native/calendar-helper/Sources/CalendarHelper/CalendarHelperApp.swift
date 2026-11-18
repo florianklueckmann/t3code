@@ -15,15 +15,11 @@ final class CalendarHelperApp: NSObject, NSApplicationDelegate {
               let files = try? RequestFiles(directory: CommandLine.arguments[1]) else {
             exit(EXIT_FAILURE)
         }
+        let request = try? JSONDecoder().decode(CalendarRequest.self, from: files.request)
+        let execution = RequestExecution(response: files.response, timeout: request?.timeout ?? .seconds(30))
         Task {
-            let response = await CalendarService(store: EventKitStore()).respond(to: files.request)
-            do {
-                try files.response.write(contentsOf: response.json())
-                try files.response.close()
-                exit(EXIT_SUCCESS)
-            } catch {
-                exit(EXIT_FAILURE)
-            }
+            let response = await CalendarService(store: EventKitStore()).respond(to: request)
+            execution.finish(response)
         }
     }
 }

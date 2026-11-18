@@ -13,6 +13,7 @@ private final class FakeStore: CalendarStore {
     var fails = false
     var promptCount = 0
     var reads = 0
+    var eventReads = 0
     var selectedIDs: [String] = []
     var occurrences: [CalendarEvent] = []
 
@@ -30,8 +31,9 @@ private final class FakeStore: CalendarStore {
 
     func events(in query: EventQuery) throws -> [CalendarEvent] {
         reads += 1
+        eventReads += 1
         if fails { throw Failure.offline }
-        selectedIDs = try query.selectCalendars([selected, other], id: \.id).map(\.id)
+        selectedIDs = query.calendarIDs.sorted()
         return occurrences
     }
 }
@@ -56,9 +58,12 @@ final class CalendarServiceTests: XCTestCase {
             ["limit": 101],
             ["limit": 2.5],
         ]
-        for fields in cases {
-            let result = try await reply(store, eventsRequest(fields))
-            XCTAssertEqual(code(result), "invalidRequest", "\(fields)")
+        for state in [CalendarAuthorization.fullAccess, .notDetermined] {
+            store.authorization = state
+            for fields in cases {
+                let result = try await reply(store, eventsRequest(fields))
+                XCTAssertEqual(code(result), "invalidRequest", "\(state): \(fields)")
+            }
         }
         XCTAssertEqual(store.reads, 0)
     }
@@ -76,7 +81,12 @@ final class CalendarServiceTests: XCTestCase {
             let items = try items(result, "events")
             XCTAssertEqual(items.count, count)
             XCTAssertEqual(items.last?["title"] as? String, "Event \(count - 1)")
+            XCTAssertEqual((result["events"] as? [String: Any])?["truncated"] as? Bool, true)
         }
+        store.occurrences = Array(store.occurrences.prefix(50))
+        let complete = try await reply(store, eventsRequest())
+        XCTAssertEqual(try items(complete, "events").count, 50)
+        XCTAssertNil((complete["events"] as? [String: Any])?["truncated"])
     }
 
     @MainActor
@@ -87,6 +97,7 @@ final class CalendarServiceTests: XCTestCase {
         store.occurrences = [event("Allowed", start, end), event("Unselected", start, end, calendar: other)]
         let missing = try await reply(store, eventsRequest(["calendarIds": [selected.id, "retired"]]))
         XCTAssertEqual(code(missing), "unknownCalendar")
+        XCTAssertEqual(store.eventReads, 0)
         let result = try await reply(store, eventsRequest(["calendarIds": [selected.id, selected.id]]))
         XCTAssertEqual(store.selectedIDs, [selected.id])
         XCTAssertEqual(try items(result, "events").compactMap { $0["title"] as? String }, ["Allowed"])
@@ -105,14 +116,17 @@ final class CalendarServiceTests: XCTestCase {
     func testRecurringOccurrencesAndAllDayEventAcrossDST() async throws {
         let store = FakeStore()
         let beforeDST = date("2026-03-07T17:00:00Z")
-        let afterDST = date("2026-03-08T16:00:00Z")
+        let recurringStart = date("2026-03-08T09:30:00Z")
         let allDayStart = date("2026-03-08T08:00:00Z")
-        let allDayEnd = date("2026-03-09T07:00:00Z")
+        let allDayEnd = date("2026-03-09T06:59:59Z")
+        let midnight = date("2026-03-09T07:00:00Z")
         let nextDay = date("2026-03-10T07:00:00Z")
         store.occurrences = [
             event("Outside", beforeDST, beforeDST.addingTimeInterval(3600), occurrenceDate: beforeDST),
-            event("Recurring", afterDST, afterDST.addingTimeInterval(3600), occurrenceDate: afterDST),
-            event("Moved", allDayEnd, allDayEnd.addingTimeInterval(3600), occurrenceDate: nextDay),
+            event(
+                "Recurring", recurringStart, recurringStart.addingTimeInterval(3600), occurrenceDate: recurringStart
+            ),
+            event("Moved", midnight, midnight.addingTimeInterval(3600), occurrenceDate: nextDay),
             event("All day", allDayStart, allDayEnd, allDay: true),
             event("Starts at end", nextDay, nextDay.addingTimeInterval(3600)),
             event("Ends at start", beforeDST, allDayStart),
@@ -125,9 +139,12 @@ final class CalendarServiceTests: XCTestCase {
         XCTAssertEqual(items.compactMap { $0["title"] as? String }, ["All day", "Recurring", "Moved"])
         let allDay = try XCTUnwrap(items.first)
         XCTAssertEqual(allDay["allDay"] as? Bool, true)
-        XCTAssertEqual(allDay["start"] as? String, "2026-03-08T08:00:00Z")
-        XCTAssertEqual(allDay["end"] as? String, "2026-03-09T07:00:00Z")
-        XCTAssertEqual(items.dropFirst().first?["start"] as? String, "2026-03-08T16:00:00Z")
+        XCTAssertEqual(allDay["start"] as? String, "2026-03-08")
+        XCTAssertEqual(allDay["end"] as? String, "2026-03-09")
+        let recurring = try XCTUnwrap(items.dropFirst().first)
+        XCTAssertEqual(recurring["start"] as? String, "2026-03-08T01:30:00-08:00")
+        XCTAssertEqual(recurring["end"] as? String, "2026-03-08T03:30:00-07:00")
+        XCTAssertEqual(recurring["timeZone"] as? String, "America/Los_Angeles")
         XCTAssertEqual(Set(items.compactMap { $0["reference"] as? String }).count, 3)
     }
 
@@ -148,7 +165,7 @@ final class CalendarServiceTests: XCTestCase {
         store.occurrences = [event("Fixture", start, start.addingTimeInterval(3600))]
         let result = try await reply(store, eventsRequest())
         let item = try XCTUnwrap(try items(result, "events").first)
-        XCTAssertEqual(Set(item.keys), ["title", "calendar", "start", "end", "allDay", "reference"])
+        XCTAssertEqual(Set(item.keys), ["title", "calendar", "start", "end", "allDay", "timeZone", "reference"])
         XCTAssertEqual(item["calendar"] as? [String: String], ["id": selected.id, "title": selected.title])
         let reference = try XCTUnwrap(item["reference"] as? String)
         XCTAssertEqual(Data(base64Encoded: reference)?.count, 32)
@@ -199,7 +216,8 @@ final class CalendarServiceTests: XCTestCase {
     ) -> CalendarEvent {
         CalendarEvent(
             title: title, calendar: CalendarSummary(id: calendar.id, title: calendar.title),
-            start: start, end: end, allDay: allDay, itemID: "private-item-id", occurrenceDate: occurrenceDate
+            start: start, end: end, allDay: allDay, itemID: "private-item-id",
+            occurrenceDate: occurrenceDate, timeZone: TimeZone(identifier: "America/Los_Angeles")!
         )
     }
 
@@ -215,7 +233,8 @@ final class CalendarServiceTests: XCTestCase {
     @MainActor
     private func reply(_ store: FakeStore, _ request: [String: Any]) async throws -> [String: Any] {
         let data = try JSONSerialization.data(withJSONObject: request)
-        let result = await CalendarService(store: store).respond(to: data)
+        let command = try? JSONDecoder().decode(CalendarRequest.self, from: data)
+        let result = await CalendarService(store: store).respond(to: command)
         return try XCTUnwrap(JSONSerialization.jsonObject(with: result.json()) as? [String: Any])
     }
 
