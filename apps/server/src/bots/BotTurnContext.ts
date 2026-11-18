@@ -1,4 +1,5 @@
 import * as BotContinuation from "./BotContinuation.ts";
+import type { ApplicationInstructionParts } from "@t3tools/provider-core/server/ProviderAdapter";
 import {
   type BotId,
   BotSourcePreference,
@@ -33,7 +34,13 @@ export type BotTurnContextResult =
   | { readonly _tag: "none" }
   /** The thread is a Bot's conversation, but the Bot is archived or the project detached. */
   | { readonly _tag: "inactive"; readonly message: string }
-  | { readonly _tag: "active"; readonly instructions: string; readonly scope: BotTurnScope };
+  | {
+      readonly _tag: "active";
+      readonly instructions: string;
+      /** `instructions` split by how often each part changes. */
+      readonly instructionParts: ApplicationInstructionParts;
+      readonly scope: BotTurnScope;
+    };
 
 interface WorkTask {
   readonly taskId: string;
@@ -90,14 +97,13 @@ function buildBotInstructions(input: {
   readonly learningPolicy: string;
   readonly continuation: string;
   readonly activeLearning: ReturnType<typeof BotLearning.turnLearning>;
-}): string {
+}) {
   const place =
     input.task === null
       ? `This conversation is your home conversation for the project "${input.projectTitle}" (projectId "${input.projectId}").`
       : `This thread is a work thread for one task (taskId "${input.task.taskId}") of your home conversation for the project "${input.projectTitle}" (projectId "${input.projectId}").`;
   const { lines, omitted } = input.activeLearning;
-  const sections = [
-    input.continuation === "" ? null : input.continuation,
+  const lasting = [
     `You are "${input.botName}" (botId "${input.botId}"), a Bot the user configured in T3 Code. ${place} Apply the project guidance and sources below only to this project; your other projects have their own. Names can repeat across Bots and projects, so identify them by these ids.`,
     input.botInstructions === ""
       ? null
@@ -152,7 +158,16 @@ function buildBotInstructions(input: {
     ].join("\n"),
     input.task === null ? homeTaskSection(input) : workTaskSection(input.task),
   ];
-  return `<t3_bot>\n${sections.filter((section) => section !== null).join("\n\n")}\n</t3_bot>`;
+  const block = (sections: ReadonlyArray<string | null>) =>
+    `<t3_bot>\n${sections.filter((section) => section !== null && section !== "").join("\n\n")}\n</t3_bot>`;
+  return {
+    instructions: block([input.continuation, ...lasting]),
+    // The working notes carry this turn's save basis, so they change every Home turn.
+    parts: {
+      lasting: block(lasting),
+      turn: input.continuation === "" ? "" : block([input.continuation]),
+    },
+  };
 }
 
 function homeTaskSection(input: { readonly botId: string; readonly projectId: string }): string {
@@ -349,33 +364,35 @@ export const layer = Layer.effect(
         ),
       );
       const learning = yield* store.listLearning(bot.bot_id);
+      const { instructions, parts } = buildBotInstructions({
+        botId: bot.bot_id,
+        botName: bot.name,
+        botInstructions: bot.instructions,
+        projectId: context.project_id,
+        projectTitle: project[0]?.title ?? context.project_id,
+        guidance: context.guidance,
+        sources,
+        task,
+        learningPolicy: bot.learning_policy,
+        activeLearning: BotLearning.turnLearning(learning, context.project_id),
+        continuation:
+          task !== null
+            ? ""
+            : BotContinuation.continuationInjection(
+                yield* continuation
+                  .get({ botId: bot.bot_id as BotId, projectId: context.project_id as ProjectId })
+                  .pipe(
+                    Effect.mapError(
+                      (cause) =>
+                        new BotStore.BotStoreError({ operation: "read-continuation", cause }),
+                    ),
+                  ),
+              ),
+      });
       return {
         _tag: "active",
-        instructions: buildBotInstructions({
-          botId: bot.bot_id,
-          botName: bot.name,
-          botInstructions: bot.instructions,
-          projectId: context.project_id,
-          projectTitle: project[0]?.title ?? context.project_id,
-          guidance: context.guidance,
-          sources,
-          task,
-          learningPolicy: bot.learning_policy,
-          activeLearning: BotLearning.turnLearning(learning, context.project_id),
-          continuation:
-            task !== null
-              ? ""
-              : BotContinuation.continuationInjection(
-                  yield* continuation
-                    .get({ botId: bot.bot_id as BotId, projectId: context.project_id as ProjectId })
-                    .pipe(
-                      Effect.mapError(
-                        (cause) =>
-                          new BotStore.BotStoreError({ operation: "read-continuation", cause }),
-                      ),
-                    ),
-                ),
-        }),
+        instructions,
+        instructionParts: parts,
         scope: {
           botId: bot.bot_id as BotId,
           projectId: context.project_id as ProjectId,

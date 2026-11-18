@@ -3972,7 +3972,8 @@ it.effect.each(["current", "settled", "stopped", "read-error"] as const)(
 
 it.effect("delivers the current Bot instructions with the provider turn", () =>
   Effect.gen(function* () {
-    const delivered = yield* Ref.make<ReadonlyArray<string | undefined>>([]);
+    const delivered = yield* Ref.make<ReadonlyArray<unknown>>([]);
+    const instructionParts = { lasting: "Campaign A canon.", turn: "Working notes." };
     const { observed } = yield* captureRootRunTermination({
       key: "bot-context:active",
       shouldFinalizeRun: () => Effect.succeed(true),
@@ -3980,6 +3981,7 @@ it.effect("delivers the current Bot instructions with the provider turn", () =>
       botContext: Effect.succeed({
         _tag: "active",
         instructions: "Campaign A canon.",
+        instructionParts,
         scope: {
           botId: BotId.make("campaign-bot"),
           projectId: ProjectId.make("campaign-a"),
@@ -3988,9 +3990,13 @@ it.effect("delivers the current Bot instructions with the provider turn", () =>
         },
       }),
       startTurn: (turnInput) =>
-        Ref.update(delivered, (current) => [...current, turnInput.applicationInstructions]),
+        Ref.update(delivered, (current) => [
+          ...current,
+          turnInput.applicationInstructions,
+          turnInput.applicationInstructionParts,
+        ]),
     });
-    assert.deepEqual(yield* Ref.get(delivered), ["Campaign A canon."]);
+    assert.deepEqual(yield* Ref.get(delivered), ["Campaign A canon.", instructionParts]);
     assert.deepEqual(observed, ["run:waiting", "pull-requests-refreshed"]);
   }),
 );

@@ -1639,11 +1639,11 @@ describe("ClaudeAdapterV2 append-system-prompt-file launch argument", () => {
                 }),
               ),
             );
+          assert.deepEqual(yield* run({ agent_id: "subagent" }), []);
           const parts = yield* run({});
           assert.isAbove(instructions.length, 30_000);
-          assert.equal(parts.join(""), instructions);
+          assert.isTrue(parts.join("").endsWith(`\n${instructions}`));
           for (const part of parts) assert.isAtMost(part.length, 9_000);
-          assert.deepEqual(yield* run({ agent_id: "subagent" }), []);
         }).pipe(
           Effect.provide(
             Layer.mergeAll(
@@ -1656,6 +1656,106 @@ describe("ClaudeAdapterV2 append-system-prompt-file launch argument", () => {
         ),
       ),
   );
+
+  it("sends a Bot's lasting instructions once per native history and its turn context per prompt", async () => {
+    const delivery = ClaudeAdapterV2.makeClaudeBotInstructionDelivery();
+    const hooks = ClaudeAdapterV2.claudeBotInstructionHooks(delivery);
+    const fire = async (input: Record<string, unknown>) => {
+      const outputs = await Promise.all(
+        hooks.map((hook) =>
+          hook({ session_id: "s", transcript_path: "t", cwd: "/", ...input } as never, undefined, {
+            signal: new AbortController().signal,
+          }),
+        ),
+      );
+      return outputs
+        .flatMap((output) => {
+          const specific = (
+            output as {
+              hookSpecificOutput?: { hookEventName: string; additionalContext: string };
+            }
+          ).hookSpecificOutput;
+          if (specific !== undefined) assert.equal(specific.hookEventName, input.hook_event_name);
+          return specific === undefined ? [] : [specific.additionalContext];
+        })
+        .join("");
+    };
+    const prompt = (agentId?: string) =>
+      fire({
+        hook_event_name: "UserPromptSubmit",
+        prompt: "Next?",
+        ...(agentId === undefined ? {} : { agent_id: agentId }),
+      });
+    const lasting = Array.from({ length: 400 }, (_, line) => `Rule ${line}: answer briefly.`).join(
+      "\n",
+    );
+    const offer = (instructions: { lasting: string; turn: string }) =>
+      ClaudeAdapterV2.prepareClaudeBotInstructions(delivery, instructions);
+    const answered = () => ClaudeAdapterV2.confirmClaudeBotInstructions(delivery);
+    const turn = async () => {
+      const sent = await prompt();
+      answered();
+      return sent;
+    };
+
+    // First prompt: the lasting part, marked as replacing earlier copies, and the turn context.
+    offer({ lasting, turn: "Notes 1" });
+    assert.equal(await prompt("subagent"), "");
+    const first = await turn();
+    assert.include(first, "They replace any Bot instructions earlier in this conversation.");
+    assert.include(first, lasting);
+    assert.isTrue(first.endsWith("Notes 1"));
+    // A steer or Claude's own prompt in the same turn gets nothing new.
+    assert.equal(await prompt(), "");
+
+    // Unchanged: only the turn context.
+    offer({ lasting, turn: "Notes 2" });
+    const unchanged = await turn();
+    assert.notInclude(unchanged, "Rule 0:");
+    assert.isTrue(unchanged.endsWith("Notes 2"));
+
+    // Changed: the new lasting part, again marked as the replacement.
+    const changed = lasting.replace("Rule 0: answer briefly.", "Rule 0: answer in French.");
+    offer({ lasting: changed, turn: "" });
+    const afterChange = await turn();
+    assert.include(afterChange, "They replace any Bot instructions earlier");
+    assert.include(afterChange, "Rule 0: answer in French.");
+
+    // A prompt another hook vetoed, or one interrupted before Claude answered: the next carries it.
+    const restarted = changed.replace("French", "Spanish");
+    offer({ lasting: restarted, turn: "" });
+    assert.include(await prompt(), "Rule 0: answer in Spanish.");
+    offer({ lasting: restarted, turn: "" });
+    assert.include(await turn(), "Rule 0: answer in Spanish.");
+    offer({ lasting: restarted, turn: "" });
+    assert.equal(await turn(), "");
+    // A vetoed change is not counted when a later turn on the old text is answered.
+    offer({ lasting: changed, turn: "" });
+    assert.include(await prompt(), "Rule 0: answer in French.");
+    offer({ lasting: restarted, turn: "" });
+    assert.equal(await turn(), "");
+    offer({ lasting: changed, turn: "" });
+    assert.include(await turn(), "Rule 0: answer in French.");
+    offer({ lasting: restarted, turn: "" });
+    assert.include(await turn(), "Rule 0: answer in Spanish.");
+
+    // A compaction between offering and Claude taking the prompt: the prompt carries it again.
+    offer({ lasting: restarted, turn: "Notes 3" });
+    delivery.delivered = undefined;
+    assert.include(await prompt(), "Rule 0: answer in Spanish.");
+
+    // A compaction mid-turn: the session start after it restores both parts in the same turn,
+    // and the next prompt of that turn, such as a wake, needs nothing more.
+    const restored = await fire({ hook_event_name: "SessionStart", source: "compact" });
+    assert.include(restored, "Rule 0: answer in Spanish.");
+    assert.isTrue(restored.endsWith("Notes 3"));
+    answered();
+    assert.equal(await prompt(), "");
+
+    // A wake prompt after a compaction the hook did not see still gets the lasting part.
+    delivery.delivered = undefined;
+    assert.include(await prompt(), "Rule 0: answer in Spanish.");
+  });
 
   it.effect("fails a turn whose Bot instructions cannot reach Claude whole", () =>
     Effect.scoped(
@@ -4077,27 +4177,49 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     });
   const makeWakeHarness = makeWakeHarnessWithOptions();
 
-  it.effect("applies changed Bot instructions on the next prompt without reopening Claude", () =>
+  it.effect("resends Bot instructions only when changed, compacted away or in a new process", () =>
     Effect.gen(function* () {
       const harness = yield* makeWakeHarnessWithOptions({ freshQueueOnReopen: true });
-      const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
-        ...CLAUDE_TEST_RUNTIME_POLICY,
-        nativeMemory: "disabled",
-        mcpConnections: [],
-      });
       const delivered = () => {
-        const [hook] = harness.getOpenedOptions()?.hooks?.UserPromptSubmit?.[0]?.hooks ?? [];
+        const hooks = harness.getOpenedOptions()?.hooks?.UserPromptSubmit?.[0]?.hooks ?? [];
         return Effect.promise(async () => {
-          const output = await hook?.(
-            { hook_event_name: "UserPromptSubmit", prompt: "", session_id: "", cwd: "" } as never,
-            undefined,
-            { signal: new AbortController().signal },
+          const outputs = await Promise.all(
+            hooks.map((hook) =>
+              hook(
+                {
+                  hook_event_name: "UserPromptSubmit",
+                  prompt: "",
+                  session_id: "",
+                  cwd: "",
+                } as never,
+                undefined,
+                { signal: new AbortController().signal },
+              ),
+            ),
           );
-          return (output as { hookSpecificOutput?: { additionalContext?: string } } | undefined)
-            ?.hookSpecificOutput?.additionalContext;
+          return outputs
+            .map(
+              (output) =>
+                (output as { hookSpecificOutput?: { additionalContext?: string } } | undefined)
+                  ?.hookSpecificOutput?.additionalContext ?? "",
+            )
+            .join("");
         });
       };
-      for (const [index, instructions] of ["Answer in German.", "Answer in French."].entries()) {
+      const turns = [
+        { instructions: "Answer in German.", sent: true },
+        { instructions: "Answer in German.", sent: false },
+        { instructions: "Answer in French.", sent: true, compact: true },
+        { instructions: "Answer in French.", sent: true },
+        { instructions: "Answer in French.", sent: false },
+        // Claude never answered, as when another hook vetoes the prompt.
+        { instructions: "Answer in Spanish.", sent: true, unanswered: true },
+        { instructions: "Answer in Spanish.", sent: true },
+        { instructions: "Answer in Spanish.", sent: false },
+        // Another native memory setting needs a new Claude process.
+        { instructions: "Answer in Spanish.", sent: true, reopen: true },
+      ];
+      for (const [index, turn] of turns.entries()) {
         yield* harness.runtime.startTurn(
           makeClaudeTestTurnInput({
             threadId: harness.threadId,
@@ -4107,14 +4229,39 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             text: "Continue.",
             attachments: [],
             providerTurnOrdinal: index + 1,
-            runtimePolicy,
-            applicationInstructions: instructions,
+            runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+              ...CLAUDE_TEST_RUNTIME_POLICY,
+              ...(turn.reopen === true ? {} : { nativeMemory: "disabled" }),
+              mcpConnections: [],
+            }),
+            applicationInstructions: turn.instructions,
           }),
         );
-        assert.equal(yield* delivered(), instructions);
-        assert.lengthOf(harness.processQueues, 1);
+        const text = yield* delivered();
+        assert.equal(text.endsWith(`\n${turn.instructions}`), turn.sent, `turn ${index + 1}`);
+        assert.lengthOf(harness.processQueues, turn.reopen === true ? 2 : 1);
+        const queue = harness.processQueues.at(-1)!;
+        if (turn.unanswered !== true)
+          yield* Queue.offer(
+            queue,
+            makeAssistantTextFrame({
+              uuid: `00000000-0000-4000-8000-00000000004${index}`,
+              text: "Done.",
+            }),
+          );
+        if (turn.compact === true)
+          yield* Queue.offer(
+            queue,
+            claudeSdkFrame({
+              type: "system",
+              subtype: "compact_boundary",
+              compact_metadata: { trigger: "manual", pre_tokens: 1_000, post_tokens: 100 },
+              uuid: `00000000-0000-4000-8000-00000000003${index}`,
+              session_id: WAKE_NATIVE_SESSION,
+            }),
+          );
         yield* Queue.offer(
-          harness.processQueues[0]!,
+          queue,
           makeResultFrame({
             uuid: `00000000-0000-4000-8000-00000000002${index}`,
             result: "Done.",

@@ -276,6 +276,11 @@ it.effect(
           assert.include(a, `projectId "${campaignA}"`);
           assert.include(a, "- Campaign A vault: /vaults/a");
           assert.notInclude(a, "Strahd was defeated");
+          const home = yield* turnContext.forThread(homes.a);
+          if (home._tag !== "active") return assert.fail(home._tag);
+          assert.include(home.instructionParts.turn, "Prepare the Amber Temple encounter");
+          assert.notInclude(home.instructionParts.lasting, "Working notes");
+          assert.include(home.instructionParts.lasting, "Strahd is alive");
           const b = yield* instructionsFor(turnContext, homes.b);
           assert.include(b, "Strahd was defeated");
           assert.include(b, `projectId "${campaignB}"`);

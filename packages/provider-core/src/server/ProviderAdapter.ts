@@ -663,6 +663,15 @@ export interface ProviderAdapterV2TurnInput {
    * `appContext`, adapters deliver them as instructions, not as quoted context.
    */
   readonly applicationInstructions?: string;
+  /** `applicationInstructions` split for adapters that send the lasting part only once. */
+  readonly applicationInstructionParts?: ApplicationInstructionParts;
+}
+
+export interface ApplicationInstructionParts {
+  /** Changes only when settings or learning change. */
+  readonly lasting: string;
+  /** Changes most turns, such as a Bot Home's working notes; empty when there is none. */
+  readonly turn: string;
 }
 
 export type ProviderAdapterV2ResumeTurnInput = Omit<

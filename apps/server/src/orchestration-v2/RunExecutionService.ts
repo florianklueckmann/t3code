@@ -2182,10 +2182,11 @@ export const layer: Layer.Layer<
         // read, an inactive Bot or a provider that cannot carry them fails the turn.
         const botContext = yield* Effect.exit(botTurnContext.forThread(input.run.threadId));
         // The adapter adds the granted accounts, from what it actually loaded for the turn.
-        const applicationInstructions =
+        const activeBot =
           Exit.isSuccess(botContext) && botContext.value._tag === "active"
-            ? botContext.value.instructions
+            ? botContext.value
             : undefined;
+        const applicationInstructions = activeBot?.instructions;
         const botBlock = Exit.isFailure(botContext)
           ? "Failed to read this Bot conversation's instructions."
           : botContext.value._tag === "inactive"
@@ -2229,7 +2230,12 @@ export const layer: Layer.Layer<
           modelSelection: input.modelSelection,
           runtimePolicy: input.runtimePolicy,
           ...(appContext.length === 0 ? {} : { appContext }),
-          ...(applicationInstructions === undefined ? {} : { applicationInstructions }),
+          ...(activeBot === undefined
+            ? {}
+            : {
+                applicationInstructions: activeBot.instructions,
+                applicationInstructionParts: activeBot.instructionParts,
+              }),
         };
         // Check after the context read: ingestion can settle the run while
         // it awaits. A failed ownership read fails the start below.
