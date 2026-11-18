@@ -49,17 +49,17 @@ export interface BotAlert {
   readonly phase: "completed" | "failed";
 }
 
-/** One Bot's held alerts, owed as a single push. */
+/** One Bot's held alerts, claimed as a single push. */
 export interface BotAlertDigest {
   readonly botId: string;
   readonly botName: string;
-  /** The newest held alert's threads; the digest goes out on its work thread. */
-  readonly workThreadId: ThreadId;
+  /** The newest held alert's Home and project; the digest opens that Home. */
   readonly homeThreadId: ThreadId;
+  readonly projectId: string | null;
   readonly held: number;
   readonly allFailed: boolean;
-  /** The newest decision it covers, so a later hold is not marked sent with it. */
-  readonly through: string;
+  /** When it was claimed: its relay identity and alert time, the same on every retry. */
+  readonly digestAt: string;
 }
 
 export class BotAttention extends Context.Service<
@@ -69,18 +69,24 @@ export class BotAttention extends Context.Service<
     readonly configure: (
       input: BotConfigureAttentionInput,
     ) => Effect.Effect<BotConfigureAttentionResult, BotError>;
-    /** The user's remit for the Home check, empty when none. */
-    readonly remit: (botId: string) => Effect.Effect<string, BotError>;
     /**
      * The one admission for proactive Bot alerts: decides once per task run whether it goes out
      * now or waits for the digest, and records it, so repeats and restarts get the same answer.
      */
     readonly admit: (alert: BotAlert) => Effect.Effect<"send" | "hold", BotError>;
-    /** Bots whose held alerts are due as a digest now. */
-    readonly dueDigests: Effect.Effect<ReadonlyArray<BotAlertDigest>, BotError>;
+    readonly hasHeldAlerts: Effect.Effect<boolean, BotError>;
+    /**
+     * Claims each Bot's held alerts whose release time has passed, outside its quiet hours, as one
+     * digest; an unsent claim comes back as it was until it is too old to alert.
+     */
+    readonly claimDigests: Effect.Effect<ReadonlyArray<BotAlertDigest>, BotError>;
+    readonly isDigestPending: (digest: BotAlertDigest) => Effect.Effect<boolean, BotError>;
     readonly markDigestSent: (digest: BotAlertDigest) => Effect.Effect<void, BotError>;
   }
 >()("t3/bots/BotAttention") {}
+
+/** The relay rings for a completion at most this old; an older unsent claim gets a new identity. */
+const DIGEST_RECLAIM_MS = 2 * 60_000;
 
 const isBotError = Schema.is(BotError);
 const failure = (cause: unknown) =>
@@ -100,10 +106,10 @@ function inQuietHours(now: DateTime.Zoned, quiet: BotQuietHours | null): boolean
   return start < end ? minute >= start && minute < end : minute >= start || minute < end;
 }
 
-/** When alerts held since `oldest` go out: as quiet hours end, or as the next local day starts. */
-function digestDueAt(oldest: DateTime.Zoned, quiet: BotQuietHours | null): DateTime.DateTime {
+/** When an alert held at `heldAt` may go out: as quiet hours end, or as the next local day starts. */
+function digestDueAt(heldAt: DateTime.Zoned, quiet: BotQuietHours | null): DateTime.DateTime {
   return (
-    nextScheduledRunAt({ type: "fixed_time", timeOfDay: quiet?.end ?? "00:00" }, oldest) ?? oldest
+    nextScheduledRunAt({ type: "fixed_time", timeOfDay: quiet?.end ?? "00:00" }, heldAt) ?? heldAt
   );
 }
 
@@ -189,12 +195,6 @@ export const make = Effect.gen(function* () {
     return { _tag: "saved", view: yield* get(input.botId) } as const;
   }, Effect.mapError(failure));
 
-  const remit = (botId: string) =>
-    settings(botId).pipe(
-      Effect.map((current) => current.remit),
-      Effect.mapError(failure),
-    );
-
   const admit = Effect.fn("BotAttention.admit")(function* (alert: BotAlert) {
     const key = `${alert.taskId}:${alert.runId}`;
     return yield* sql.withTransaction(
@@ -218,55 +218,90 @@ export const make = Effect.gen(function* () {
     );
   }, Effect.mapError(failure));
 
-  /** Polled by the scheduler tick, so it opens no span; usually nothing is held. */
-  const dueDigests = Effect.gen(function* () {
+  /** Polled by the scheduler tick, so it opens no span. */
+  const hasHeldAlerts =
+    sql`SELECT 1 FROM bot_alerts WHERE held = 1 AND digest_sent_at IS NULL LIMIT 1`.pipe(
+      Effect.map((rows) => rows.length > 0),
+      Effect.mapError(failure),
+    );
+
+  const claimDigests = Effect.gen(function* () {
     const rows = yield* sql<{
+      readonly alert_key: string;
       readonly bot_id: string;
       readonly name: string;
-      readonly held: number;
-      readonly failed: number;
-      readonly oldest: string;
-      readonly through: string;
-    }>`SELECT a.bot_id, b.name, COUNT(*) AS held, SUM(a.phase = 'failed') AS failed,
-        MIN(a.decided_at) AS oldest, MAX(a.decided_at) AS through
+      readonly home_thread_id: string;
+      readonly project_id: string | null;
+      readonly phase: string;
+      readonly decided_at: string;
+      readonly digest_at: string | null;
+    }>`SELECT a.alert_key, a.bot_id, b.name, a.home_thread_id, c.project_id, a.phase, a.decided_at, a.digest_at
       FROM bot_alerts a JOIN bots b ON b.bot_id = a.bot_id
-      WHERE a.held = 1 AND a.digest_sent_at IS NULL GROUP BY a.bot_id, b.name`;
+      LEFT JOIN bot_project_contexts c ON c.home_thread_id = a.home_thread_id
+      WHERE a.held = 1 AND a.digest_sent_at IS NULL ORDER BY a.decided_at, a.alert_key`;
     if (rows.length === 0) return [];
     const now = yield* localNow;
-    const due: Array<BotAlertDigest> = [];
-    for (const row of rows) {
-      const current = yield* settings(row.bot_id);
-      if (DateTime.isGreaterThan(digestDueAt(local(row.oldest), current.quietHours), now)) continue;
-      const [newest] = yield* sql<{
-        readonly work_thread_id: string;
-        readonly home_thread_id: string;
-      }>`SELECT work_thread_id, home_thread_id FROM bot_alerts
-        WHERE bot_id = ${row.bot_id} AND held = 1 AND digest_sent_at IS NULL
-        ORDER BY decided_at DESC, alert_key DESC LIMIT 1`;
-      if (newest === undefined) continue;
-      due.push({
-        botId: row.bot_id,
-        botName: row.name,
-        workThreadId: ThreadId.make(newest.work_thread_id),
+    const nowIso = DateTime.formatIso(now);
+    const digests: Array<BotAlertDigest> = [];
+    for (const botId of new Set(rows.map((row) => row.bot_id))) {
+      const held = rows.filter((row) => row.bot_id === botId);
+      const claimed = held.find((row) => row.digest_at !== null)?.digest_at ?? null;
+      let digestAt = claimed;
+      let batch = held.filter((row) => row.digest_at === claimed);
+      if (claimed === null) {
+        const { quietHours } = yield* settings(botId);
+        if (inQuietHours(now, quietHours)) continue;
+        // Each alert waits for its own release, so one held a moment ago waits for the next.
+        batch = held.filter(
+          (row) => !DateTime.isGreaterThan(digestDueAt(local(row.decided_at), quietHours), now),
+        );
+        if (batch.length === 0) continue;
+        digestAt = nowIso;
+        yield* sql`UPDATE bot_alerts SET digest_at = ${digestAt}
+          WHERE alert_key IN ${sql.in(batch.map((row) => row.alert_key))}`;
+      } else if (DateTime.toEpochMillis(now) - Date.parse(claimed) >= DIGEST_RECLAIM_MS) {
+        digestAt = nowIso;
+        yield* sql`UPDATE bot_alerts SET digest_at = ${digestAt}
+          WHERE bot_id = ${botId} AND digest_at = ${claimed} AND digest_sent_at IS NULL`;
+      }
+      const newest = batch.at(-1)!;
+      digests.push({
+        botId,
+        botName: newest.name,
         homeThreadId: ThreadId.make(newest.home_thread_id),
-        held: row.held,
-        allFailed: row.failed === row.held,
-        through: row.through,
+        projectId: newest.project_id,
+        held: batch.length,
+        allFailed: batch.every((row) => row.phase === "failed"),
+        digestAt: digestAt!,
       });
     }
-    return due;
+    return digests;
   }).pipe(Effect.mapError(failure));
+
+  const isDigestPending = (digest: BotAlertDigest) =>
+    sql`SELECT 1 FROM bot_alerts WHERE bot_id = ${digest.botId} AND digest_at = ${digest.digestAt}
+      AND digest_sent_at IS NULL LIMIT 1`.pipe(
+      Effect.map((rows) => rows.length > 0),
+      Effect.mapError(failure),
+    );
 
   const markDigestSent = Effect.fn("BotAttention.markDigestSent")(function* (
     digest: BotAlertDigest,
   ) {
     const now = DateTime.formatIso(yield* DateTime.now);
     yield* sql`UPDATE bot_alerts SET digest_sent_at = ${now}
-      WHERE bot_id = ${digest.botId} AND held = 1 AND digest_sent_at IS NULL
-        AND decided_at <= ${digest.through}`;
+      WHERE bot_id = ${digest.botId} AND digest_at = ${digest.digestAt} AND digest_sent_at IS NULL`;
   }, Effect.mapError(failure));
 
-  return BotAttention.of({ get, configure, remit, admit, dueDigests, markDigestSent });
+  return BotAttention.of({
+    get,
+    configure,
+    admit,
+    hasHeldAlerts,
+    claimDigests,
+    isDigestPending,
+    markDigestSent,
+  });
 });
 
 export const layer = Layer.effect(BotAttention, make).pipe(

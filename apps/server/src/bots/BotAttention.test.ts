@@ -90,16 +90,20 @@ it.effect("caps proactive alerts per local day, deciding each run once across a 
 
     // Without quiet hours the held alerts go out as the next local day starts, outside the cap.
     yield* at("2026-11-02T23:59:59.000Z");
-    assert.lengthOf(yield* restarted.dueDigests, 0);
+    assert.lengthOf(yield* restarted.claimDigests, 0);
     yield* at("2026-11-03T00:00:00.000Z");
-    const [digest] = yield* restarted.dueDigests;
+    const [digest] = yield* restarted.claimDigests;
     assert.deepInclude(digest!, {
       held: 2,
       allFailed: false,
-      workThreadId: ThreadId.make("bot-work:5"),
+      homeThreadId: ThreadId.make("bot-home:bot:project"),
+      digestAt: "2026-11-03T00:00:00.000Z",
     });
+    // An unsent claim keeps its identity for a retry.
+    yield* at("2026-11-03T00:00:05.000Z");
+    assert.deepEqual(yield* restarted.claimDigests, [digest!]);
     yield* restarted.markDigestSent(digest!);
-    assert.lengthOf(yield* restarted.dueDigests, 0);
+    assert.lengthOf(yield* restarted.claimDigests, 0);
     assert.deepEqual(
       [yield* restarted.admit(alert(6)), yield* restarted.admit(alert(7))],
       ["send", "send"],
@@ -123,33 +127,47 @@ it.effect("holds alerts through quiet hours across midnight and sends one digest
     assert.equal(yield* attention.admit(alert(2, "failed")), "hold");
     yield* at("2026-11-03T06:59:00.000Z");
     assert.equal(yield* attention.admit(alert(3)), "hold");
-    assert.lengthOf(yield* attention.dueDigests, 0);
+    assert.lengthOf(yield* attention.claimDigests, 0);
     assert.equal((yield* attention.get(botId)).digestAt, "2026-11-03T07:00:00.000Z");
 
     yield* at("2026-11-03T07:00:00.000Z");
-    const due = yield* attention.dueDigests;
+    const due = yield* attention.claimDigests;
     assert.lengthOf(due, 1);
-    assert.deepInclude(due[0]!, {
-      held: 2,
-      allFailed: false,
-      workThreadId: ThreadId.make("bot-work:3"),
-    });
+    assert.deepInclude(due[0]!, { held: 2, allFailed: false });
     yield* attention.markDigestSent(due[0]!);
-    assert.lengthOf(yield* attention.dueDigests, 0);
+    assert.lengthOf(yield* attention.claimDigests, 0);
     // The digest counted against nothing: the new day still has its whole cap.
     assert.equal(yield* attention.admit(alert(4)), "send");
     assert.deepInclude(yield* attention.get(botId), { sentToday: 1, held: 0 });
   }).pipe(Effect.provide(services)),
 );
 
-it.effect("a limit of zero holds every proactive alert for the digest", () =>
-  Effect.gen(function* () {
-    yield* seed;
-    yield* at("2026-11-02T12:00:00.000Z");
-    const attention = yield* startService;
-    yield* configure(attention, { dailyLimit: 0 });
-    assert.equal(yield* attention.admit(alert(1, "failed")), "hold");
-    yield* at("2026-11-03T07:00:00.000Z");
-    assert.deepInclude((yield* attention.dueDigests)[0]!, { held: 1, allFailed: true });
-  }).pipe(Effect.provide(services)),
+it.effect(
+  "an overdue digest waits out quiet hours and takes only alerts whose release passed",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* at("2026-11-02T12:00:00.000Z");
+      const attention = yield* startService;
+      yield* configure(attention, { dailyLimit: 0 });
+      assert.equal(yield* attention.admit(alert(1, "failed")), "hold");
+      // The server was off through the release at 07:00 and is back during the next quiet hours.
+      yield* at("2026-11-03T23:00:00.000Z");
+      assert.lengthOf(yield* attention.claimDigests, 0);
+      yield* at("2026-11-04T07:00:00.000Z");
+      assert.equal(yield* attention.admit(alert(2)), "hold");
+      yield* at("2026-11-04T07:00:04.000Z");
+      const [digest] = yield* attention.claimDigests;
+      assert.deepInclude(digest!, { held: 1, allFailed: true });
+      // A claim the relay never confirmed gets a new identity once it is too old to alert.
+      yield* at("2026-11-04T07:02:04.000Z");
+      const [reclaimed] = yield* attention.claimDigests;
+      assert.deepInclude(reclaimed!, { held: 1, digestAt: "2026-11-04T07:02:04.000Z" });
+      assert.isFalse(yield* attention.isDigestPending(digest!));
+      yield* attention.markDigestSent(reclaimed!);
+      assert.deepInclude(yield* attention.get(botId), {
+        held: 1,
+        digestAt: "2026-11-05T07:00:00.000Z",
+      });
+    }).pipe(Effect.provide(services)),
 );

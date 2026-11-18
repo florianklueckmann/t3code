@@ -5,8 +5,9 @@ import {
   type OrchestrationV2DomainEvent,
   type OrchestrationV2TurnItem,
   type Project,
+  ProjectId,
   type RuntimeRequestId,
-  type ThreadId,
+  ThreadId,
 } from "@t3tools/contracts";
 import {
   RelayApi,
@@ -584,53 +585,41 @@ export const make = Effect.gen(function* () {
       });
     });
 
-    // Read only this thread; full shell reads would make each activity event scale with all threads.
-    const threadShell = yield* readAwarenessThread(threadId);
-    const queuedDigest = pendingDigests.get(threadId);
-    if (queuedDigest !== undefined) {
-      pendingDigests.delete(threadId);
-      // Read again after any earlier digest was marked sent, so each held alert is sent once.
-      const digest = (yield* attention.dueDigests).find((due) => due.botId === queuedDigest.botId);
-      if (digest === undefined) return;
-      if (digest.workThreadId !== threadId) {
-        pendingDigests.set(digest.workThreadId, digest);
-        return yield* enqueueTopLevelPublish(digest.workThreadId);
+    const digest = pendingDigests.get(threadId);
+    if (digest !== undefined) {
+      // A digest has its own relay row, so no thread update can replace it before delivery.
+      if (yield* attention.isDigestPending(digest)) {
+        const project =
+          digest.projectId === null
+            ? Option.none<Project>()
+            : yield* projects.getById(ProjectId.make(digest.projectId));
+        const held = digest.held === 1 ? "1 alert" : `${digest.held} alerts`;
+        yield* publishState({
+          projectId: digest.projectId,
+          state: {
+            environmentId,
+            threadId,
+            projectTitle: Option.isSome(project) ? project.value.title : digest.botName,
+            modelTitle: digest.botName,
+            // Phones show the title and the phase, so the title carries the count.
+            threadTitle: `${digest.botName}: ${held} held`,
+            phase: digest.allFailed ? "failed" : "completed",
+            headline: `${held} held`,
+            detail:
+              "Held for quiet hours or the daily limit. Review them in the Bot's conversation.",
+            updatedAt: digest.digestAt,
+            deepLink: buildAgentAwarenessDeepLink({ environmentId, threadId: digest.homeThreadId }),
+          },
+          reason: "bot-alert-digest",
+        }).pipe(withRelayClientTracing);
+        yield* attention.markDigestSent(digest);
       }
-      const project =
-        threadShell === null
-          ? Option.none<Project>()
-          : yield* projects.getById(threadShell.projectId);
-      const base = resolveAgentAwarenessRelayPublishSnapshot({
-        environmentId,
-        thread: Option.fromNullOr(threadShell),
-        project,
-        pendingSubagentRequest: null,
-      }).state;
-      const state: RelayAgentActivityState = {
-        environmentId,
-        threadId,
-        projectTitle: base?.projectTitle ?? digest.botName,
-        modelTitle: base?.modelTitle ?? digest.botName,
-        threadTitle: digest.botName,
-        phase: digest.allFailed ? "failed" : "completed",
-        headline: digest.held === 1 ? "1 Bot alert held" : `${digest.held} Bot alerts held`,
-        detail: "Held for quiet hours or the daily limit. Review them in the Bot's conversation.",
-        updatedAt: DateTime.formatIso(yield* DateTime.now),
-        deepLink: buildAgentAwarenessDeepLink({ environmentId, threadId: digest.homeThreadId }),
-      };
-      yield* publishState({
-        projectId: threadShell?.projectId ?? null,
-        state,
-        reason: "bot-alert-digest",
-      }).pipe(withRelayClientTracing);
-      yield* attention.markDigestSent(digest);
-      publishConfirmDeadlines.delete(threadId);
-      heldCompletions.delete(threadId);
-      yield* Ref.update(publishedStateByThreadRef, (publishedStates) =>
-        new Map(publishedStates).set(threadId, agentAwarenessPublishIdentity(state)),
-      );
+      pendingDigests.delete(threadId);
       return;
     }
+
+    // Read only this thread; full shell reads would make each activity event scale with all threads.
+    const threadShell = yield* readAwarenessThread(threadId);
     yield* trackSubagentRequest(threadId, threadShell);
     if (
       threadShell !== null &&
@@ -741,8 +730,6 @@ export const make = Effect.gen(function* () {
       )
         return;
     }
-    // Decided only for a state that would go out, so a stale one neither counts nor is held.
-    snapshot = { ...snapshot, state: yield* withinBudget(snapshot.state) };
     const publishIdentity = agentAwarenessPublishIdentity(snapshot.state, snapshot.subagentWait);
     if (
       publishedStateByThread.get(threadId) === publishIdentity &&
@@ -804,18 +791,21 @@ export const make = Effect.gen(function* () {
               pendingSubagentRequest: null,
             })
           : null;
-      if (unsettled?.state?.phase === "completed") {
-        const completion = yield* withinBudget(projectTaskState(unsettled.state));
-        if (completion === null) return;
+      const completion =
+        unsettled?.state?.phase === "completed" ? projectTaskState(unsettled.state) : undefined;
+      if (completion === null) return;
+      // A held completion falls through and clears the card instead.
+      const outgoing = completion === undefined ? null : yield* withinBudget(completion);
+      if (unsettled !== null && outgoing !== null) {
         yield* publishState({
           projectId: unsettled.projectId,
-          state: completion,
+          state: outgoing,
           reason: unsettled.reason,
         }).pipe(withRelayClientTracing);
         heldCompletions.delete(threadId);
         publishConfirmDeadlines.set(threadId, nowMs + 5_000);
         yield* Ref.update(publishedStateByThreadRef, (publishedStates) =>
-          new Map(publishedStates).set(threadId, agentAwarenessPublishIdentity(completion)),
+          new Map(publishedStates).set(threadId, agentAwarenessPublishIdentity(outgoing)),
         );
         yield* schedulePublishConfirm(threadId);
         return;
@@ -840,12 +830,14 @@ export const make = Effect.gen(function* () {
 
     const childRequestId = snapshot.subagentWait?.requestId;
     const childAlert = childAlertByThread.get(threadId);
-    const state =
+    // Decided only once the state goes out, so a stale or retracted completion spends nothing.
+    const state = yield* withinBudget(
       snapshot.state !== null &&
-      childRequestId !== undefined &&
-      childAlert?.requestId === childRequestId
+        childRequestId !== undefined &&
+        childAlert?.requestId === childRequestId
         ? { ...snapshot.state, updatedAt: childAlert.updatedAt }
-        : snapshot.state;
+        : snapshot.state,
+    );
     yield* publishState({
       projectId: snapshot.projectId,
       state,
@@ -1122,17 +1114,14 @@ export const make = Effect.gen(function* () {
       yield* scheduler.register(
         "bot-alert-digest",
         Effect.gen(function* () {
-          const due = yield* attention.dueDigests;
-          if (due.length === 0) return;
-          const deliverable =
-            (yield* readPublishAgentActivityEnabled) && (yield* readRelayConfig) !== null;
-          for (const digest of due) {
-            // With publishing off since the hold there is no phone to tell; Home still shows it.
-            if (!deliverable) yield* attention.markDigestSent(digest);
-            else {
-              pendingDigests.set(digest.workThreadId, digest);
-              yield* worker.enqueue(digest.workThreadId);
-            }
+          if (!(yield* attention.hasHeldAlerts)) return;
+          // Held alerts wait while publishing is off or unlinked, and go out once it is back.
+          if (!(yield* readPublishAgentActivityEnabled) || (yield* readRelayConfig) === null)
+            return;
+          for (const digest of yield* attention.claimDigests) {
+            const id = ThreadId.make(`bot-alert-digest:${digest.botId}:${digest.digestAt}`);
+            pendingDigests.set(id, digest);
+            yield* worker.enqueue(id);
           }
         }),
       );

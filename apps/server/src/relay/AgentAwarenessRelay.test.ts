@@ -172,8 +172,11 @@ describe("startup agent activity", () => {
   });
 });
 
-/** Inside the default quiet hours (22:00 to 07:00) in UTC, and the moment they end. */
-const QUIET_NIGHT = "2026-09-04T23:00:00.000Z";
+/**
+ * Just before the default quiet hours (22:00 to 07:00, UTC) start: the completion is confirmed,
+ * and only then admitted, inside them. And the moment they end.
+ */
+const QUIET_NIGHT = "2026-09-04T21:59:58.000Z";
 const QUIET_END = "2026-09-05T07:00:00.000Z";
 const botDatabase = SqlitePersistence.layerMemory.pipe(
   Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "relay-bot-alerts-test-" })),
@@ -393,9 +396,10 @@ const makeTestRelay = Effect.fnUntraced(function* (
         BotAttention.BotAttention.of({
           get: unused,
           configure: unused,
-          remit: unused,
           admit: () => Effect.die("results of work the user started skip the budget"),
-          dueDigests: Effect.succeed([]),
+          hasHeldAlerts: Effect.succeed(false),
+          claimDigests: Effect.succeed([]),
+          isDigestPending: unused,
           markDigestSent: unused,
         }),
     ),
@@ -1574,9 +1578,9 @@ describe("AgentAwarenessRelay", () => {
         if (!byHand) {
           const digest = digests[0]!.state!;
           assert.deepInclude(digest, {
-            threadId: THREAD_ID,
-            threadTitle: "Companion",
-            headline: "1 Bot alert held",
+            threadId: ThreadId.make(`bot-alert-digest:bot:${QUIET_END}`),
+            threadTitle: "Companion: 1 alert held",
+            phase: "completed",
             updatedAt: QUIET_END,
             deepLink: `/threads/relay-environment/${encodeURIComponent(HOME_THREAD_ID)}`,
           });

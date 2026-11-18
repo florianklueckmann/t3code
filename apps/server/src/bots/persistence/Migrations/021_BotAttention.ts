@@ -17,7 +17,8 @@ export default Effect.gen(function* () {
   // Whether the user started the task: a direct request from their own Home message or client.
   yield* sql`ALTER TABLE bot_tasks ADD COLUMN by_hand INTEGER NOT NULL DEFAULT 0`;
   // One row per proactive alert decision, keyed by task and run so a repeated publish decides
-  // once. `day` is the environment-local date the cap counts against.
+  // once. `day` is the environment-local date the cap counts against. A held row joins the
+  // digest claimed at `digest_at`, whose relay identity a retry reuses until `digest_sent_at`.
   yield* sql`CREATE TABLE bot_alerts (
     alert_key TEXT PRIMARY KEY,
     bot_id TEXT NOT NULL REFERENCES bots(bot_id),
@@ -28,6 +29,7 @@ export default Effect.gen(function* () {
     day TEXT NOT NULL,
     decided_at TEXT NOT NULL,
     held INTEGER NOT NULL,
+    digest_at TEXT,
     digest_sent_at TEXT
   )`;
   yield* sql`CREATE INDEX idx_bot_alerts_bot_day ON bot_alerts(bot_id, day)`;
