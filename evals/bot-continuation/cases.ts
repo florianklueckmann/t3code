@@ -38,7 +38,7 @@ export const CASES: readonly ContinuationCase[] = [
     // T3B-75: Claude answers the question as asked ("neither has returned", "both are gone").
     answer: [
       "Harbor",
-      "(resolved|discarded|no longer|removed|closed|gone|(not|n't|neither).*(returned|come back))",
+      "(resolved|discarded|no longer|removed|closed|both are gone|neither\\b.{0,80}\\b(has|have) (returned|come back)|(has|have) not (returned|come back)|(hasn't|haven't) (returned|come back))",
     ],
   },
   {
