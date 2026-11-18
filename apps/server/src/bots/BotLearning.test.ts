@@ -216,7 +216,20 @@ it.effect("restores the origin of the earlier revision after a user edit", () =>
   }).pipe(Effect.provide(storeLayer)),
 );
 
-it.effect("keeps the learned shared entry when moving an identical project lesson", () =>
+it.effect.each([
+  {
+    name: "keeps the learned shared entry when moving an identical project lesson",
+    origin: "correction",
+    sharedRevision: 1,
+    duplicate: true,
+  },
+  {
+    name: "makes the shared entry an instruction when moving an identical project instruction",
+    origin: "instruction",
+    sharedRevision: 2,
+    duplicate: false,
+  },
+] as const)("$name", ({ origin, sharedRevision, duplicate }) =>
   Effect.gen(function* () {
     const { learning, rows } = yield* fixture;
     const shared = yield* learning.record(policy, {
@@ -230,7 +243,10 @@ it.effect("keeps the learned shared entry when moving an identical project lesso
       revision: shared.revision,
       decision: "adopt",
     });
-    const local = yield* learning.record(policy, correction);
+    const local = yield* learning.record(
+      policy,
+      origin === "instruction" ? { ...correction, ...user } : correction,
+    );
     const moved = yield* learning.record(policy, {
       ...correction,
       ...user,
@@ -241,12 +257,17 @@ it.effect("keeps the learned shared entry when moving an identical project lesso
     const revisions = yield* rows;
     expect(revisions.find((row) => row.status === "active")).toMatchObject({
       entry_id: shared.entryId,
-      revision: shared.revision,
+      revision: sharedRevision,
       project_id: null,
-      origin: "correction",
+      origin,
     });
     expect(revisions.find((row) => row.entry_id === local.entryId)?.status).toBe("retired");
-    expect(moved).toEqual({ ...shared, status: "active", duplicate: true });
+    expect(moved).toEqual({
+      entryId: shared.entryId,
+      revision: sharedRevision,
+      status: "active",
+      duplicate,
+    });
   }).pipe(Effect.provide(storeLayer)),
 );
 

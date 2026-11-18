@@ -200,7 +200,9 @@ export const make = (deps: {
                 row.normalized_text === normalized,
             );
       if (existing !== undefined) {
-        const kept = moved
+        const keepShared =
+          moved && !(head.origin === "instruction" && existing.origin === "correction");
+        const kept = keepShared
           ? duplicateOf(existing)
           : yield* record(policy, {
               ...input,
