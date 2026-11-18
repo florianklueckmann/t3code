@@ -218,7 +218,7 @@ export const make = Effect.gen(function* () {
             done_through = CASE WHEN ${restart ? 1 : 0} = 1 THEN excluded.done_through ELSE done_through END,
             updated_at = excluded.updated_at`;
         // Turning early checks on starts with work that finishes from now on.
-        if (!early)
+        if (!early || !wasEarly)
           yield* sql`DELETE FROM bot_home_check_outcomes WHERE home_thread_id = ${home} AND check_message_id IS NULL`;
         return true;
       }),

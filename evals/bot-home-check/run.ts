@@ -88,6 +88,13 @@ const botDatabase = (path: string) => {
             done_through = excluded.done_through, check_message_id = NULL, last_outcome_json = NULL`,
       ).run(home, slot.timeOfDay, slot.doneThrough, slot.now);
     },
+    /** Daily and early checks on, with the daily time just passed, so only finished work starts one. */
+    early: (home: string, slot: Effect.Success<typeof passedSlot>) => {
+      db.prepare(
+        `INSERT INTO bot_home_checks (home_thread_id, settings_revision, enabled, time_of_day, done_through, early_enabled, updated_at)
+          VALUES (?, 1, 1, ?, ?, 1, ?)`,
+      ).run(home, slot.timeOfDay, slot.now, slot.now);
+    },
     read: (home: string) =>
       db
         .prepare(
@@ -107,6 +114,7 @@ const setUp = Effect.fn("botHomeCheckEval.setUp")(function* (
   sample: number,
   work: string,
   modelSelection: BotModelSelection,
+  db: BotDatabase,
 ) {
   const tag = `bhc-${testCase.id}-${sample}-${NodeCrypto.randomBytes(3).toString("hex")}`;
   const home = yield* createBotHome(call, { tag, work, modelSelection });
@@ -123,6 +131,7 @@ const setUp = Effect.fn("botHomeCheckEval.setUp")(function* (
     );
     if (message?.messageId != null) userMessageIds.push(message.messageId);
   }
+  if (testCase.early === true) db.early(homeThreadId, yield* passedSlot);
   let taskId: string | null = null;
   if (testCase.task !== null) {
     const started = yield* call(
@@ -162,17 +171,22 @@ const untilTasksSettled = Effect.fn("botHomeCheckEval.untilTasksSettled")(functi
   return yield* new SampleError({ message: "the case's task did not finish" });
 });
 
-/** Makes one check owed on every Home, then waits until each has an outcome. */
+/**
+ * Makes one check owed on every Home but those whose finished task requests an early check, then
+ * waits until each has an outcome.
+ */
 const runChecks = Effect.fn("botHomeCheckEval.runChecks")(function* (
   db: BotDatabase,
   homes: ReadonlyArray<string>,
   statePath: string,
+  early: ReadonlySet<string> = new Set(),
 ) {
+  const owed = homes.filter((home) => !early.has(home));
   yield* Effect.try({
     try: () => {
       const state = new NodeSqlite.DatabaseSync(statePath, { readOnly: true });
       try {
-        for (const home of homes)
+        for (const home of owed)
           if (!homeIsEligible(state, home))
             throw new Error(
               "The fixture Home needs an idle, completed ordinary turn and its native provider conversation.",
@@ -189,7 +203,7 @@ const runChecks = Effect.fn("botHomeCheckEval.runChecks")(function* (
   });
   yield* Effect.sleep(QUIET_WAIT);
   const slot = yield* passedSlot;
-  for (const home of homes) db.owe(home, slot);
+  for (const home of owed) db.owe(home, slot);
   for (let poll = 0; poll < POLLS; poll += 1) {
     if (homes.every((home) => db.read(home)?.last_outcome_json != null)) return;
     yield* Effect.sleep(POLL);
@@ -300,7 +314,7 @@ const main = Effect.gen(function* () {
       const fixtures: Fixture[] = [];
       for (const testCase of selected)
         for (let sample = 0; sample < samples; sample += 1)
-          fixtures.push(yield* setUp(call, testCase, sample, work, modelSelection));
+          fixtures.push(yield* setUp(call, testCase, sample, work, modelSelection, db));
       const setup = new Map(fixtures.map((fixture) => [fixture, [] as string[]]));
 
       // The control's first check proposes; the user then removes it before the graded check.
@@ -344,6 +358,11 @@ const main = Effect.gen(function* () {
         db,
         fixtures.map((fixture) => fixture.homeThreadId),
         config.dbPath,
+        new Set(
+          fixtures
+            .filter((fixture) => CASES.find((testCase) => testCase.id === fixture.id)?.early)
+            .map((fixture) => fixture.homeThreadId),
+        ),
       );
       for (const fixture of fixtures) {
         const { note, tasks } = baselines.get(fixture)!;

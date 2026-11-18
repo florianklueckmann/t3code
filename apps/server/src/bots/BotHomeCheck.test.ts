@@ -361,7 +361,11 @@ it.effect("stays off at 08:00 by default and configures by compare-and-set", () 
     assert.deepInclude(saved, { revision: 1, enabled: true, timeOfDay: "07:30" });
     const lost = yield* onMac(check.configure({ ...scope, baseRevision: 0, enabled: false }));
     assert.deepEqual(lost._tag === "conflict" && lost.current.revision, 1);
+    // Work that ended before early checks were on is not owed one.
+    const bots = yield* BotDatabase.BotDatabase;
+    yield* bots`INSERT INTO bot_home_check_outcomes (task_id, home_thread_id) VALUES ('stale', ${home})`;
     assert.deepInclude(yield* enable(check, { early: true }), { revision: 2, early: true });
+    assert.deepEqual(yield* outcomes, []);
     // Turning the daily check off turns early checks off with it.
     assert.deepInclude(yield* enable(check, { enabled: false }), {
       revision: 3,
