@@ -3,6 +3,7 @@ import {
   botContinuationDraft,
   botContinuationRefCaption,
   botContinuationWriterLabel,
+  botHomeNotesActivity,
   parseBotContinuationDraft,
   type BotContinuationDraft,
 } from "@t3tools/client-runtime/bots";
@@ -29,11 +30,12 @@ import {
 } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
 import { MessageSquareIcon, PencilIcon } from "lucide-react";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { randomUUID } from "../../lib/utils";
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
+import { environmentThreadShells } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { buildThreadRouteParams } from "../../threadRoutes";
 import { BotTaskStatusBadge } from "../chat/BotTaskStatusBadge";
@@ -42,7 +44,7 @@ import { Button } from "../ui/button";
 import { Label } from "../ui/label";
 import { Textarea } from "../ui/textarea";
 import { stackedThreadToast, toastManager } from "../ui/toast";
-import { ScheduledRelativeLabel } from "./ScheduledTasksSettings";
+import { RelativeTime } from "../RelativeTime";
 
 type Section = (typeof BOT_CONTINUATION_SECTIONS)[number];
 
@@ -174,7 +176,8 @@ function RevisionMeta({
 }: Pick<BotContinuationRevision, "updatedBy" | "updatedAt" | "restoredFrom">) {
   return (
     <>
-      {botContinuationWriterLabel(updatedBy)} · <ScheduledRelativeLabel value={updatedAt} />
+      {/* A save is always past, even when the server's clock runs ahead of this one. */}
+      {botContinuationWriterLabel(updatedBy)} · <RelativeTime timestamp={updatedAt} />
       {restoredFrom === null ? null : ` · restored from r${restoredFrom}`}
     </>
   );
@@ -210,6 +213,31 @@ function NoteSections({ note, captions }: { note: BotContinuationNote; captions:
       )}
     </>
   );
+}
+
+/** Reloads the notes when their Home moves on, so an open view never shows a stale count. */
+function ReloadOnHomeActivity({
+  environmentId,
+  homeThreadId,
+  onActivity,
+}: {
+  readonly environmentId: EnvironmentId;
+  readonly homeThreadId: ThreadId;
+  readonly onActivity: () => void;
+}) {
+  const activity = botHomeNotesActivity(
+    useAtomValue(
+      environmentThreadShells.quietThreadShellAtom(scopeThreadRef(environmentId, homeThreadId)),
+    ),
+  );
+  const seen = useRef(activity);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- refetches server data when the pushed Home shell moves on.
+  useEffect(() => {
+    if (seen.current === activity) return;
+    seen.current = activity;
+    onActivity();
+  }, [activity, onActivity]);
+  return null;
 }
 
 /** A Bot's working notes in one attached project. They save apart from the Bot form. */
@@ -312,6 +340,13 @@ export function BotContinuationNotes({
 
   return (
     <div className="space-y-3">
+      {view === null ? null : (
+        <ReloadOnHomeActivity
+          environmentId={environmentId}
+          homeThreadId={view.homeThreadId}
+          onActivity={refresh}
+        />
+      )}
       <div className="flex items-center justify-between gap-2">
         <Label>Working notes</Label>
         {view !== null && editing === null ? (

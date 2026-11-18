@@ -58,6 +58,7 @@ export function BotMaintenanceSection(props: {
     setLastRun(null);
     const result = await runCommand({ environmentId, input: scope });
     setRunning(false);
+    query.refresh();
     if (result._tag === "Success") setLastRun(botMaintenanceRunLabel(result.value));
     else reportBotFailure("Maintenance didn't run", result);
   };

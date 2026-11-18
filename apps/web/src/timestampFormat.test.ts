@@ -1,6 +1,16 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { formatDayAwareTimestamp, formatUpcomingTimestamp } from "./timestampFormat";
+import {
+  formatDayAwareTimestamp,
+  formatRelativeTimeLabel,
+  formatUpcomingTimestamp,
+} from "./timestampFormat";
+
+it("reads a save stamped ahead of this clock as just now, never as upcoming", () => {
+  const now = Date.parse("2026-11-18T07:41:30.000Z");
+  expect(formatRelativeTimeLabel("2026-11-18T07:41:50.000Z", now)).toBe("just now");
+  expect(formatRelativeTimeLabel("2026-11-18T07:38:00.000Z", now)).toBe("3m ago");
+});
 
 describe("timestamps in an explicit time zone", () => {
   // 23:00 UTC on July 1 is 7 PM on July 1 in New York, whatever the host zone.

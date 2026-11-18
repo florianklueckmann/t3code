@@ -45,6 +45,7 @@ import * as BotTurnContext from "./BotTurnContext.ts";
 
 const campaignA = ProjectId.make("project-campaign-a");
 const campaignB = ProjectId.make("project-campaign-b");
+const campaignC = ProjectId.make("project-campaign-c");
 const botId = BotId.make("faerun-companion");
 const codex = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" };
 
@@ -157,6 +158,7 @@ const seedProjects = Effect.gen(function* () {
     // Equal titles: only the ids in the Bot context tell the campaigns apart.
     [campaignA, "Faerun"],
     [campaignB, "Faerun"],
+    [campaignC, "Barovia"],
   ] as const) {
     yield* sql`
       INSERT INTO projection_projects (
@@ -1509,7 +1511,6 @@ it.effect("shows each committed learning change once, in the Home it came from",
 
         const notices = yield* learningNoticesOf(bots, campaignA);
         assert.deepEqual(noticeLines(notices), [
-          "added r1 active: The party uses the Harptos calendar.",
           "adopted r1 active: Name the moon phase on each date.",
           "restored r3 active: Give in-world dates in Dale Reckoning.",
           "retired r2 retired: Give in-world dates in Dale Reckoning, with the month.",
@@ -1517,10 +1518,9 @@ it.effect("shows each committed learning change once, in the Home it came from",
           "added r1 active: Name the moon phase on each date.",
           "added r1 superseded: Give in-world dates in Dale Reckoning.",
         ]);
-        const [shared, adopted, restored, retired, changed, proposal, first] = notices;
+        const [adopted, restored, retired, changed, proposal, first] = notices;
         // Adopted since, the proposal still reads as one; the instruction applied when saved.
         assert.deepEqual([proposal?.proposed, first?.proposed], [true, false]);
-        assert.equal(shared?.projectId, null);
         assert.equal(adopted?.currentRevision, 1);
         assert.equal(restored?.restoredFrom, 1);
         assert.deepEqual(
@@ -1533,7 +1533,7 @@ it.effect("shows each committed learning change once, in the Home it came from",
           projectId: campaignA,
         });
 
-        // B never sees A's own entries; a shared proposal stays where it was made until adopted.
+        // B never sees A's own entries; a shared change shows only in the Home it was made in.
         assert.deepEqual(noticeLines(yield* learningNoticesOf(bots, campaignB)), [
           "added r1 pending: Open each session with the weather.",
           "added r1 active: Campaign B starts in Waterdeep.",
@@ -1571,5 +1571,59 @@ it.effect("shows each committed learning change once, in the Home it came from",
       }),
     );
     yield* boundedHistory;
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect("shows a shared change from a detached Home once, in the Home most active then", () =>
+  Effect.gen(function* () {
+    yield* seedProjects;
+    const world = yield* makeThreadWorld;
+    const sql = yield* SqlClient.SqlClient;
+    const messageAt = (
+      threadId: ThreadId | undefined,
+      at: string,
+      createdBy: "user" | "agent" = "user",
+    ) => sql`
+      INSERT INTO orchestration_v2_projection_messages (
+        message_id, thread_id, run_id, node_id, role, streaming, created_at, updated_at, payload_json
+      ) VALUES (${`${threadId}:${at}`}, ${threadId ?? assert.fail()}, NULL, NULL, 'user', 0, ${at}, ${at},
+        ${`{"createdBy":"${createdBy}"}`})
+    `;
+    yield* withServices(world.threadLayer, ({ bots }) =>
+      Effect.gen(function* () {
+        yield* createCampaignBot(bots);
+        yield* bots.attachProject({ botId, projectId: campaignA });
+        yield* bots.attachProject({ botId, projectId: campaignB });
+        const detail = yield* bots.attachProject({ botId, projectId: campaignC });
+        const [homeA, , homeC] = detail.projects.map((project) => project.homeThreadId);
+        // TestClock starts at the epoch; the change below is recorded a minute later.
+        yield* messageAt(homeA, "1970-01-01T00:00:01.000Z");
+        yield* messageAt(homeC, "1970-01-01T00:00:02.000Z");
+        // A maintenance prompt is not the user being active there.
+        yield* messageAt(homeA, "1970-01-01T00:00:03.000Z", "agent");
+        yield* TestClock.adjust("1 minute");
+        yield* bots.recordLearning({
+          ...correction,
+          origin: "instruction",
+          source: { kind: "user" },
+          botId,
+          projectId: campaignB,
+          scope: "bot",
+          text: "The party uses the Harptos calendar.",
+        });
+        const shownIn = Effect.forEach([campaignA, campaignB, campaignC], (projectId) =>
+          learningNoticesOf(bots, projectId).pipe(Effect.map((notices) => notices.length)),
+        );
+        assert.deepEqual(yield* shownIn, [0, 1, 0]);
+
+        // Chatting in A after the change, before or after the detach, leaves it where it landed.
+        yield* messageAt(homeA, "1970-01-01T00:01:30.000Z");
+        yield* TestClock.adjust("1 minute");
+        yield* bots.detachProject({ botId, projectId: campaignB });
+        assert.deepEqual(yield* shownIn, [0, 0, 1]);
+        yield* messageAt(homeA, "1970-01-01T00:03:00.000Z");
+        assert.deepEqual(yield* shownIn, [0, 0, 1]);
+      }),
+    );
   }).pipe(Effect.provide(layerDatabase)),
 );

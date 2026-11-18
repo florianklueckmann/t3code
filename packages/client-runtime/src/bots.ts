@@ -541,6 +541,8 @@ export function showBotTaskCards(
 /** Changes this close together read as one, such as everything one maintenance pass kept. */
 const LEARNING_NOTICE_GROUP_GAP_MS = 60_000;
 const HOME_LEARNING_NOTICE_GROUP_LIMIT = 3;
+/** More notices than this fold into one summary row, so they never crowd out the conversation. */
+const HOME_LEARNING_NOTICES_UNFOLDED = 2;
 
 export interface BotLearningNoticeGroup {
   /** Changes when a newer notice joins, so a hidden group shows again. */
@@ -554,6 +556,8 @@ export interface BotLearningNoticeGroup {
 /**
  * A Home's learning notices in groups, newest first: the three newest groups plus any that still
  * holds a waiting proposal, which stays until it is decided. Hiding shares the task cards' list.
+ * `folded` is the one-row summary that stands for the groups until expanded, null when they are
+ * few enough to show as they are.
  */
 export function homeBotLearningNoticeGroups(
   scope: { readonly environmentId: string; readonly botId: BotId; readonly projectId: ProjectId },
@@ -562,6 +566,7 @@ export function homeBotLearningNoticeGroups(
 ): {
   readonly visible: ReadonlyArray<BotLearningNoticeGroup>;
   readonly hiddenKeys: ReadonlyArray<string>;
+  readonly folded: string | null;
 } {
   const runs: Array<Array<BotLearningNotice>> = [];
   for (const notice of notices) {
@@ -599,7 +604,16 @@ export function homeBotLearningNoticeGroups(
     else if (hiddenSet.has(group.key)) hiddenKeys.push(group.key);
     else visible.push(group);
   });
-  return { visible, hiddenKeys };
+  const shown = visible.flatMap((group) => group.notices);
+  const folded =
+    shown.length <= HOME_LEARNING_NOTICES_UNFOLDED
+      ? null
+      : botLearningNoticeGroupSummary({
+          key: "",
+          notices: shown,
+          waiting: visible.reduce((sum, group) => sum + group.waiting, 0),
+        });
+  return { visible, hiddenKeys, folded };
 }
 
 export function hideBotHomeCard(hidden: HiddenBotTaskCards, key: string): HiddenBotTaskCards {
@@ -927,6 +941,20 @@ function botMaintenanceState(view: BotMaintenanceView, unavailable: boolean): st
 export function canToggleBotMaintenance(view: BotMaintenanceView, formLocked: boolean): boolean {
   return view.enabled || (!formLocked && view.writable && view.unavailableReason === null);
 }
+/**
+ * Moves when the Home gets new input or a run there starts or ends, from any device or the
+ * nightly pass: the moments its working notes, or the count of messages newer than them, can
+ * change. The active run covers notes refreshes, which stay out of the shell's latest run.
+ */
+export function botHomeNotesActivity(
+  shell: {
+    readonly latestUserMessageAt: string | null;
+    readonly source: { readonly activeRunId: string | null };
+  } | null,
+): string {
+  return `${shell?.latestUserMessageAt ?? ""}|${shell?.source.activeRunId ?? ""}`;
+}
+
 /** The server refuses the same cases; this only keeps the action from offering a sure refusal. */
 export function canRunBotMaintenance(view: BotMaintenanceView): boolean {
   return view.enabled && view.writable && view.unavailableReason === null;
@@ -971,7 +999,10 @@ export function botMaintenanceRunLabel(result: BotMaintenanceRunResult): string 
       ? "Notes up to date"
       : note.status === "refreshed"
         ? "Notes refreshed"
-        : maintenanceStepLabel("Notes", note);
+        : // A save from a read that missed the newest messages; the next run covers them.
+          note.status === "not_refreshed" && note.reason === "not_shown"
+          ? "Notes saved, newest messages next run"
+          : maintenanceStepLabel("Notes", note);
   const compactionLabel =
     compaction.status === "not_needed"
       ? "No compaction needed"

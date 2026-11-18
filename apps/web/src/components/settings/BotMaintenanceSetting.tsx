@@ -65,6 +65,7 @@ export function BotMaintenanceSetting({
     setLastRun(null);
     const result = await runCommand({ environmentId, input: scope });
     setRunning(false);
+    query.refresh();
     if (result._tag === "Success") {
       setLastRun(botMaintenanceRunLabel(result.value));
       return;

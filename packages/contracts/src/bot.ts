@@ -446,7 +446,7 @@ export const BotLearningNotice = Schema.Struct({
 });
 export type BotLearningNotice = typeof BotLearningNotice.Type;
 
-/** A Home's notices: its project's entries, shared ones in use, and shared proposals made there. */
+/** A Home's notices: its project's entries, plus shared changes, each shown in one Home only. */
 export const BotLearningNoticesInput = Schema.Struct({ botId: BotId, projectId: ProjectId });
 export type BotLearningNoticesInput = typeof BotLearningNoticesInput.Type;
 
