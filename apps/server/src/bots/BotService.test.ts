@@ -45,6 +45,7 @@ import * as BotTurnContext from "./BotTurnContext.ts";
 
 const campaignA = ProjectId.make("project-campaign-a");
 const campaignB = ProjectId.make("project-campaign-b");
+const campaignC = ProjectId.make("project-campaign-c");
 const botId = BotId.make("faerun-companion");
 const codex = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" };
 
@@ -52,6 +53,7 @@ interface FakeThread {
   readonly projectId: ProjectId;
   readonly archived: boolean;
   readonly model: string;
+  readonly latestUserMessageAt?: number;
 }
 
 /** Stands in for the orchestrator: records home threads and the commands that reach them. */
@@ -93,11 +95,15 @@ const makeThreadWorld = Effect.gen(function* () {
         if (thread === undefined) return null;
         const shell: Pick<
           OrchestrationV2ThreadShell,
-          "archivedAt" | "deletedAt" | "modelSelection"
+          "archivedAt" | "deletedAt" | "modelSelection" | "latestUserMessageAt"
         > = {
           archivedAt: thread.archived ? DateTime.makeUnsafe(0) : null,
           deletedAt: null,
           modelSelection: { ...codex, model: thread.model },
+          latestUserMessageAt:
+            thread.latestUserMessageAt === undefined
+              ? null
+              : DateTime.makeUnsafe(thread.latestUserMessageAt),
         };
         return shell as OrchestrationV2ThreadShell;
       }),
@@ -157,6 +163,7 @@ const seedProjects = Effect.gen(function* () {
     // Equal titles: only the ids in the Bot context tell the campaigns apart.
     [campaignA, "Faerun"],
     [campaignB, "Faerun"],
+    [campaignC, "Barovia"],
   ] as const) {
     yield* sql`
       INSERT INTO projection_projects (
@@ -1509,7 +1516,6 @@ it.effect("shows each committed learning change once, in the Home it came from",
 
         const notices = yield* learningNoticesOf(bots, campaignA);
         assert.deepEqual(noticeLines(notices), [
-          "added r1 active: The party uses the Harptos calendar.",
           "adopted r1 active: Name the moon phase on each date.",
           "restored r3 active: Give in-world dates in Dale Reckoning.",
           "retired r2 retired: Give in-world dates in Dale Reckoning, with the month.",
@@ -1517,10 +1523,9 @@ it.effect("shows each committed learning change once, in the Home it came from",
           "added r1 active: Name the moon phase on each date.",
           "added r1 superseded: Give in-world dates in Dale Reckoning.",
         ]);
-        const [shared, adopted, restored, retired, changed, proposal, first] = notices;
+        const [adopted, restored, retired, changed, proposal, first] = notices;
         // Adopted since, the proposal still reads as one; the instruction applied when saved.
         assert.deepEqual([proposal?.proposed, first?.proposed], [true, false]);
-        assert.equal(shared?.projectId, null);
         assert.equal(adopted?.currentRevision, 1);
         assert.equal(restored?.restoredFrom, 1);
         assert.deepEqual(
@@ -1533,7 +1538,7 @@ it.effect("shows each committed learning change once, in the Home it came from",
           projectId: campaignA,
         });
 
-        // B never sees A's own entries; a shared proposal stays where it was made until adopted.
+        // B never sees A's own entries; a shared change shows only in the Home it was made in.
         assert.deepEqual(noticeLines(yield* learningNoticesOf(bots, campaignB)), [
           "added r1 pending: Open each session with the weather.",
           "added r1 active: Campaign B starts in Waterdeep.",
@@ -1571,5 +1576,46 @@ it.effect("shows each committed learning change once, in the Home it came from",
       }),
     );
     yield* boundedHistory;
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect("shows a shared change from a detached Home once, in the latest active Home", () =>
+  Effect.gen(function* () {
+    yield* seedProjects;
+    const world = yield* makeThreadWorld;
+    const activeAt = (threadId: ThreadId, at: number) =>
+      Ref.update(world.threads, (current) => {
+        const thread = current.get(threadId) ?? assert.fail();
+        return new Map(current).set(threadId, { ...thread, latestUserMessageAt: at });
+      });
+    yield* withServices(world.threadLayer, ({ bots }) =>
+      Effect.gen(function* () {
+        yield* createCampaignBot(bots);
+        yield* bots.attachProject({ botId, projectId: campaignA });
+        yield* bots.attachProject({ botId, projectId: campaignB });
+        const detail = yield* bots.attachProject({ botId, projectId: campaignC });
+        const [homeA, , homeC] = detail.projects.map((project) => project.homeThreadId);
+        yield* bots.recordLearning({
+          ...correction,
+          origin: "instruction",
+          source: { kind: "user" },
+          botId,
+          projectId: campaignB,
+          scope: "bot",
+          text: "The party uses the Harptos calendar.",
+        });
+        const shownIn = Effect.forEach([campaignA, campaignB, campaignC], (projectId) =>
+          learningNoticesOf(bots, projectId).pipe(Effect.map((notices) => notices.length)),
+        );
+        assert.deepEqual(yield* shownIn, [0, 1, 0]);
+
+        yield* activeAt(homeA ?? assert.fail(), 2_000);
+        yield* activeAt(homeC ?? assert.fail(), 1_000);
+        yield* bots.detachProject({ botId, projectId: campaignB });
+        assert.deepEqual(yield* shownIn, [1, 0, 0]);
+        yield* activeAt(homeC ?? assert.fail(), 3_000);
+        assert.deepEqual(yield* shownIn, [0, 0, 1]);
+      }),
+    );
   }).pipe(Effect.provide(layerDatabase)),
 );

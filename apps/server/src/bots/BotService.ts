@@ -317,8 +317,30 @@ const make = Effect.gen(function* () {
     input: BotLearningNoticesInput,
   ) {
     const rows = yield* store.listLearning(input.botId);
-    return yield* BotLearningNotices.forHome(rows, input.projectId);
+    const contexts = (yield* store.listContexts(input.botId)).filter(
+      (context) => context.detached_at === null,
+    );
+    const attached = new Set(contexts.map((context) => context.project_id));
+    const orphaned = rows.some(
+      (row) => row.project_id === null && !attached.has(row.learned_in_project_id),
+    );
+    const latest = orphaned ? yield* mostRecentlyActiveHome(contexts) : null;
+    return yield* BotLearningNotices.forHome(rows, input.projectId, { attached, latest });
   }, Effect.mapError(storeError()));
+
+  /** By the newest user message; a tie goes to the Home attached last. */
+  const mostRecentlyActiveHome = Effect.fn("BotService.mostRecentlyActiveHome")(function* (
+    contexts: ReadonlyArray<BotStore.BotContextRow>,
+  ) {
+    let latest: { readonly projectId: string; readonly at: number } | null = null;
+    for (const context of contexts) {
+      const shell = yield* threads.getThreadShell(ThreadId.make(context.home_thread_id));
+      const at =
+        shell?.latestUserMessageAt == null ? 0 : DateTime.toEpochMillis(shell.latestUserMessageAt);
+      if (latest === null || at >= latest.at) latest = { projectId: context.project_id, at };
+    }
+    return latest?.projectId ?? null;
+  });
 
   // A change to another project's entries leaves this Home's notices as they were; skip resending.
   const subscribeLearningNotices: BotService["Service"]["subscribeLearningNotices"] = (input) =>
@@ -610,6 +632,8 @@ const make = Effect.gen(function* () {
       }),
     );
     yield* notifyChanged;
+    // Which Home shows a shared change from a detached one depends on what is attached.
+    yield* PubSub.publish(learningChanges, input.botId);
     if (result !== undefined) {
       yield* syncThreads(input.botId, [result]);
       // Model changes skip detached conversations, so a reattach catches them up.
@@ -703,7 +727,10 @@ const make = Effect.gen(function* () {
         }),
       )
       .pipe(Effect.mapError(storeError(input.botId)));
-    if (next !== existing) yield* notifyChanged;
+    if (next !== existing) {
+      yield* notifyChanged;
+      yield* PubSub.publish(learningChanges, input.botId);
+    }
     yield* stopWork(input.botId, input.projectId);
     yield* syncThreads(input.botId, [next]);
     return yield* readDetail(input.botId);

@@ -20,7 +20,7 @@ import type {
 } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
 import { useState } from "react";
-import { ScrollView, useWindowDimensions, View } from "react-native";
+import { Pressable, ScrollView, useWindowDimensions, View } from "react-native";
 
 import { SymbolView } from "../../components/ui/AppSymbol";
 import { AppText as Text } from "../../components/ui/AppText";
@@ -67,6 +67,7 @@ function HomeLearningNotices(scope: HomeScope) {
   const { height: windowHeight } = useWindowDimensions();
   const preferences = useAtomValue(mobilePreferencesAtom);
   const updatePreferences = useAtomSet(updateMobilePreferencesAtom);
+  const [unfolded, setUnfolded] = useState(false);
   const notices = useEnvironmentQuery(
     serverEnvironment.botLearningNoticesLive({
       environmentId: scope.environmentId,
@@ -75,7 +76,7 @@ function HomeLearningNotices(scope: HomeScope) {
   );
   // Waiting for preferences keeps hidden groups from flashing in on launch.
   if (!AsyncResult.isSuccess(preferences)) return null;
-  const { visible, hiddenKeys } = homeBotLearningNoticeGroups(
+  const { visible, hiddenKeys, folded } = homeBotLearningNoticeGroups(
     scope,
     notices.data?.notices ?? [],
     preferences.value.hiddenBotTaskCards ?? [],
@@ -97,12 +98,31 @@ function HomeLearningNotices(scope: HomeScope) {
       contentContainerClassName="py-1"
       style={{ maxHeight: Math.round(windowHeight * 0.4) }}
     >
-      {visible.map((group, index) => (
+      {folded === null ? null : (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityState={{ expanded: unfolded }}
+          accessibilityLabel={`Memory: ${folded}`}
+          onPress={() => setUnfolded((current) => !current)}
+          className="min-h-11 flex-row items-center gap-1.5 px-4 active:opacity-70"
+        >
+          <SymbolView name="brain" size={13} tintColorClassName="accent-foreground-muted" />
+          <Text className="min-w-0 flex-1 text-xs text-foreground-muted" numberOfLines={1}>
+            {`Memory · ${folded} · ${formatBotInstant(visible[0]!.notices[0]!.at)}`}
+          </Text>
+          <SymbolView
+            name={unfolded ? "chevron.down" : "chevron.right"}
+            size={13}
+            tintColorClassName="accent-foreground-muted"
+          />
+        </Pressable>
+      )}
+      {(folded !== null && !unfolded ? [] : visible).map((group, index) => (
         <NoticeGroup
           key={group.key}
           scope={scope}
           group={group}
-          borderTop={index > 0}
+          borderTop={index > 0 || folded !== null}
           onOpen={open}
           onHide={() =>
             updatePreferences({
@@ -113,7 +133,7 @@ function HomeLearningNotices(scope: HomeScope) {
           }
         />
       ))}
-      {hiddenKeys.length === 0 ? null : (
+      {hiddenKeys.length === 0 || (folded !== null && !unfolded) ? null : (
         <View className={cn("px-4", visible.length > 0 && "border-t border-border-subtle")}>
           <BotTaskAction
             label={`Show ${hiddenKeys.length} hidden`}

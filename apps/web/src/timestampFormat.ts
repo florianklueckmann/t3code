@@ -285,6 +285,28 @@ export function formatRelativeTime(
   return elapsedMs === null ? null : formatRelativeElapsed(elapsedMs);
 }
 
+/**
+ * A past or upcoming time, such as a save or the next run. `minute` is the render tick; a time
+ * inside that minute is past or upcoming only by the real clock, never by the minute's start.
+ */
+export function formatScheduleRelativeLabel(
+  value: string | null,
+  minute: string,
+  clockMs: number = Date.now(),
+): string {
+  if (!value) return "Not scheduled";
+  // A clock read before the tick turned over is stale; the tick's minute has begun.
+  const nowMs = Math.max(Date.parse(`${minute}:00.000Z`), clockMs);
+  const diffMs = new Date(value).getTime() - nowMs;
+  if (diffMs <= 0) return formatRelativeTimeLabel(value, nowMs) || "Not scheduled";
+  const minutes = Math.ceil(diffMs / 60_000);
+  if (minutes < 2) return "in under a minute";
+  if (minutes < 60) return `in ${minutes}m`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `in ${hours}h`;
+  return `in ${Math.round(hours / 24)}d`;
+}
+
 export function formatRelativeTimeLabel(isoDate: string, nowMs: number = Date.now()) {
   const relative = formatRelativeTime(isoDate, nowMs);
   if (!relative) return "";

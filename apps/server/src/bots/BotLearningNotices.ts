@@ -9,14 +9,21 @@ const HOME_LEARNING_NOTICE_LIMIT = 30;
 
 const decodeResult = Schema.decodeUnknownEffect(BotLearningNoticesResult);
 
+/** The Bot's attached Homes, and the most recently active one for changes made in none of them. */
+export interface NoticeHomes {
+  readonly attached: ReadonlySet<string>;
+  readonly latest: string | null;
+}
+
 /**
- * A project's revision shows in that project's Home only. A shared one shows in every Home once
- * it was in use there; before that it is a proposal, shown where it was proposed.
+ * A project's revision shows in that project's Home only. A shared one shows once: in the Home it
+ * was made in, or in the most recently active Home when that one is no longer attached.
  */
-const showsIn = (row: BotStore.BotLearningRow, projectId: string) =>
-  row.project_id === null
-    ? row.activated_at !== null || row.learned_in_project_id === projectId
-    : row.project_id === projectId;
+const showsIn = (row: BotStore.BotLearningRow, projectId: string, homes: NoticeHomes) =>
+  row.project_id !== null
+    ? row.project_id === projectId
+    : (homes.attached.has(row.learned_in_project_id) ? row.learned_in_project_id : homes.latest) ===
+      projectId;
 
 /**
  * A Home's learning notices, newest first, read from the committed revisions: when each was
@@ -26,6 +33,7 @@ const showsIn = (row: BotStore.BotLearningRow, projectId: string) =>
 export const forHome = Effect.fn("BotLearningNotices.forHome")(function* (
   rows: ReadonlyArray<BotStore.BotLearningRow>,
   projectId: string,
+  homes: NoticeHomes,
 ) {
   const byEntry = new Map<string, Array<BotStore.BotLearningRow>>();
   for (const row of rows) {
@@ -42,7 +50,7 @@ export const forHome = Effect.fn("BotLearningNotices.forHome")(function* (
     const byRevision = new Map(revisions.map((row) => [row.revision, row]));
     const currentRevision = revisions.find((row) => row.status === "active")?.revision ?? null;
     for (const row of revisions) {
-      if (row.status === "diagnostic" || !showsIn(row, projectId)) continue;
+      if (row.status === "diagnostic" || !showsIn(row, projectId, homes)) continue;
       const base = row.base_revision === null ? undefined : byRevision.get(row.base_revision);
       const common = {
         entryId: row.entry_id,

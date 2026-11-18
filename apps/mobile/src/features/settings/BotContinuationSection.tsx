@@ -5,7 +5,9 @@ import {
   BOT_TASK_STATUS_LABELS,
   botContinuationRefCaption,
   botContinuationWriterLabel,
+  botHomeNotesActivity,
 } from "@t3tools/client-runtime/bots";
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
   BOT_CONTINUATION_SECTIONS,
   type BotContinuationNote,
@@ -13,14 +15,16 @@ import {
   type BotTaskId,
   type EnvironmentId,
   type ProjectId,
+  type ThreadId,
 } from "@t3tools/contracts";
 import { Pressable, View } from "react-native";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { AppText as Text } from "../../components/ui/AppText";
 import { SymbolView } from "../../components/ui/AppSymbol";
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
+import { environmentThreadShells } from "../../state/threads";
 import { useSelectWorkspaceDetail } from "../layout/workspace/useSelectWorkspaceDetail";
 import { formatBotInstant } from "./botRoutineDraft";
 import {
@@ -87,6 +91,30 @@ export function BotNoteSections({
   );
 }
 
+/** Reloads the notes when their Home moves on, so an open screen never shows a stale count. */
+function ReloadOnHomeActivity(props: {
+  readonly environmentId: EnvironmentId;
+  readonly homeThreadId: ThreadId;
+  readonly onActivity: () => void;
+}) {
+  const { onActivity } = props;
+  const activity = botHomeNotesActivity(
+    useAtomValue(
+      environmentThreadShells.quietThreadShellAtom(
+        scopeThreadRef(props.environmentId, props.homeThreadId),
+      ),
+    ),
+  );
+  const seen = useRef(activity);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- refetches server data when the pushed Home shell moves on.
+  useEffect(() => {
+    if (seen.current === activity) return;
+    seen.current = activity;
+    onActivity();
+  }, [activity, onActivity]);
+  return null;
+}
+
 /** A Bot's working notes in one attached project. They save on their own screen, apart from the form. */
 export function BotContinuationSection(props: {
   readonly environmentId: EnvironmentId;
@@ -128,6 +156,14 @@ export function BotContinuationSection(props: {
         )
       ) : (
         <>
+          <ReloadOnHomeActivity
+            environmentId={environmentId}
+            homeThreadId={view.homeThreadId}
+            onActivity={() => {
+              query.refresh();
+              if (afterTaskId !== undefined) taskPage.refresh();
+            }}
+          />
           <View className="gap-3 px-4 py-3">
             {query.error ? (
               <Text textRole="footnote" className="text-danger-foreground">

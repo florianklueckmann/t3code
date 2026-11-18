@@ -3,6 +3,7 @@ import {
   botContinuationDraft,
   botContinuationRefCaption,
   botContinuationWriterLabel,
+  botHomeNotesActivity,
   parseBotContinuationDraft,
   type BotContinuationDraft,
 } from "@t3tools/client-runtime/bots";
@@ -29,11 +30,12 @@ import {
 } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
 import { MessageSquareIcon, PencilIcon } from "lucide-react";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { randomUUID } from "../../lib/utils";
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
+import { environmentThreadShells } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { buildThreadRouteParams } from "../../threadRoutes";
 import { BotTaskStatusBadge } from "../chat/BotTaskStatusBadge";
@@ -212,6 +214,31 @@ function NoteSections({ note, captions }: { note: BotContinuationNote; captions:
   );
 }
 
+/** Reloads the notes when their Home moves on, so an open view never shows a stale count. */
+function ReloadOnHomeActivity({
+  environmentId,
+  homeThreadId,
+  onActivity,
+}: {
+  readonly environmentId: EnvironmentId;
+  readonly homeThreadId: ThreadId;
+  readonly onActivity: () => void;
+}) {
+  const activity = botHomeNotesActivity(
+    useAtomValue(
+      environmentThreadShells.quietThreadShellAtom(scopeThreadRef(environmentId, homeThreadId)),
+    ),
+  );
+  const seen = useRef(activity);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- refetches server data when the pushed Home shell moves on.
+  useEffect(() => {
+    if (seen.current === activity) return;
+    seen.current = activity;
+    onActivity();
+  }, [activity, onActivity]);
+  return null;
+}
+
 /** A Bot's working notes in one attached project. They save apart from the Bot form. */
 export function BotContinuationNotes({
   environmentId,
@@ -312,6 +339,13 @@ export function BotContinuationNotes({
 
   return (
     <div className="space-y-3">
+      {view === null ? null : (
+        <ReloadOnHomeActivity
+          environmentId={environmentId}
+          homeThreadId={view.homeThreadId}
+          onActivity={refresh}
+        />
+      )}
       <div className="flex items-center justify-between gap-2">
         <Label>Working notes</Label>
         {view !== null && editing === null ? (

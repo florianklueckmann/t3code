@@ -321,9 +321,10 @@ describe("home Bot learning notices", () => {
   ];
 
   it("reads one maintenance pass as one group and keeps waiting proposals past the limit", () => {
-    const { visible, hiddenKeys } = homeBotLearningNoticeGroups(scope, notices, []);
+    const { visible, hiddenKeys, folded } = homeBotLearningNoticeGroups(scope, notices, []);
     expect(entriesOf(visible)).toEqual(["p3,p2,p1", "d", "c", "a"]);
     expect(hiddenKeys).toEqual([]);
+    expect(folded).toBe("5 new, 1 retired · 2 waiting for you");
     expect(visible.map(botLearningNoticeGroupSummary)).toEqual([
       "2 new, 1 retired · 1 waiting for you",
       "1 new",
@@ -333,7 +334,10 @@ describe("home Bot learning notices", () => {
   });
 
   it("hides a settled group until a newer change joins it", () => {
-    const groups = homeBotLearningNoticeGroups(scope, notices.slice(3, 5), []).visible;
+    const before = homeBotLearningNoticeGroups(scope, notices.slice(3, 5), []);
+    // Two notices still show as they are; a third folds them into one row.
+    expect(before.folded).toBeNull();
+    const groups = before.visible;
     const hidden = hideBotHomeCard([], groups[0]!.key);
     const after = homeBotLearningNoticeGroups(scope, notices.slice(3, 5), hidden);
     expect(entriesOf(after.visible)).toEqual(["c"]);
@@ -576,6 +580,14 @@ it("sums up a manual maintenance run, keeping steps and reasons from a newer ser
   ).toBe(
     "Learning waited: reason from newer server · Notes status from newer server · No compaction needed",
   );
+  // A revision was saved, just not from a read that showed the newest messages.
+  expect(
+    botMaintenanceRunLabel({
+      learning: { status: "idle", reason: null, active: 0, pending: 0 },
+      note: { status: "not_refreshed", reason: "not_shown" },
+      compaction: { status: "not_needed", reason: "below_threshold" },
+    }),
+  ).toBe("Nothing new to learn · Notes saved, newest messages next run · No compaction needed");
 });
 
 it("keeps pausing maintenance reachable while the Bot form is locked", () => {

@@ -22,9 +22,10 @@ import type {
   ProjectId,
   ThreadId,
 } from "@t3tools/contracts";
-import { BrainIcon, EyeIcon, EyeOffIcon } from "lucide-react";
+import { BrainIcon, ChevronRightIcon, EyeIcon, EyeOffIcon } from "lucide-react";
 import { lazy, Suspense, useContext, useState } from "react";
 
+import { cn } from "~/lib/utils";
 import { useLocalStorage } from "../../hooks/useLocalStorage";
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
@@ -79,9 +80,10 @@ function HomeLearningNotices(scope: HomeScope) {
     HiddenBotTaskCards,
   );
   const [opened, setOpened] = useState<BotLearningNotice | null>(null);
+  const [unfolded, setUnfolded] = useState(false);
   const registry = useContext(RegistryContext);
   const formatInstant = useUpcomingInstantFormatter();
-  const { visible, hiddenKeys } = homeBotLearningNoticeGroups(
+  const { visible, hiddenKeys, folded } = homeBotLearningNoticeGroups(
     scope,
     noticesQuery.data?.notices ?? [],
     hidden,
@@ -98,7 +100,24 @@ function HomeLearningNotices(scope: HomeScope) {
       // Capped so expanded groups never push the conversation off screen.
       className="mb-2 max-h-[40vh] space-y-1.5 overflow-y-auto rounded-lg border border-border bg-background px-3 py-2 text-xs"
     >
-      {visible.length === 0 ? null : (
+      {folded === null ? null : (
+        <button
+          type="button"
+          aria-expanded={unfolded}
+          className="flex w-full cursor-pointer items-center gap-1.5 rounded-sm text-left text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+          onClick={() => setUnfolded((current) => !current)}
+        >
+          <BrainIcon className="size-3.5 shrink-0" aria-hidden />
+          <span className="min-w-0 flex-1 truncate">
+            {`Memory · ${folded} · ${formatInstant(visible[0]!.notices[0]!.at)}`}
+          </span>
+          <ChevronRightIcon
+            aria-hidden
+            className={cn("size-3.5 shrink-0", unfolded && "rotate-90")}
+          />
+        </button>
+      )}
+      {(folded !== null && !unfolded) || visible.length === 0 ? null : (
         <ul className="space-y-2">
           {visible.map((group) => (
             <NoticeGroup
@@ -112,7 +131,7 @@ function HomeLearningNotices(scope: HomeScope) {
           ))}
         </ul>
       )}
-      {hiddenKeys.length === 0 ? null : (
+      {hiddenKeys.length === 0 || (folded !== null && !unfolded) ? null : (
         <Button
           size="xs"
           variant="ghost-muted"
