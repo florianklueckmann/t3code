@@ -1,5 +1,6 @@
 import {
   BOT_HOME_CHECK_DEFAULT_TIME,
+  BOT_HOME_THREAD_ID_PREFIX,
   BotTaskId,
   type BotConfigureHomeCheckInput,
   type BotConfigureHomeCheckResult,
@@ -8,15 +9,18 @@ import {
   type BotHomeCheckView,
   CommandId,
   MessageId,
+  NonNegativeInt,
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as CommandReceiptStore from "../orchestration-v2/CommandReceiptStore.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import { nextScheduledRunAt } from "../scheduledTasks/Schedule.ts";
@@ -68,7 +72,6 @@ interface Row {
   readonly last_outcome_json: string | null;
   readonly early_since: string | null;
   readonly early_started_at: string | null;
-  readonly early_previous_at: string | null;
 }
 
 interface ClaimedOutcome {
@@ -105,6 +108,7 @@ const endingOf: Readonly<Record<string, "failed" | "interrupted" | "stopped">> =
 
 export const make = Effect.gen(function* () {
   const main = yield* SqlClient.SqlClient;
+  const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
   const sql = yield* BotDatabase.BotDatabase;
   const store = yield* BotStore.BotStore;
   const threads = yield* ThreadManagementService.ThreadManagementService;
@@ -250,31 +254,30 @@ export const make = Effect.gen(function* () {
   const finish = (home: string, messageId: string, end: Outcome) =>
     sql.withTransaction(recordEnd(home, messageId, end)).pipe(Effect.as(true));
 
-  /** Records a started check; an early one also spends one of the Bot's early checks. */
+  /** Records the check's start for reconciliation and for the Home's status. */
   const started = Effect.fnUntraced(function* (home: string, messageId: string, at: string) {
     if (!isEarly(messageId))
       return yield* sql`UPDATE bot_home_checks SET done_through = ${at}, check_message_id = ${messageId},
         last_outcome_json = NULL, updated_at = ${at} WHERE home_thread_id = ${home}`;
-    // The limit counts from when the check went out, not from when the tick began.
     const sent = DateTime.formatIso(yield* DateTime.now);
     yield* sql`UPDATE bot_home_checks SET check_message_id = ${messageId}, last_outcome_json = NULL,
-        early_previous_at = early_started_at, early_started_at = ${sent}, updated_at = ${sent}
+        early_started_at = ${sent}, updated_at = ${sent}
       WHERE home_thread_id = ${home}`;
   });
 
   /** Whether the Bot has an early check left: two in any 24 hours, an hour apart, across its Homes. */
   const earlyAllowed = Effect.fnUntraced(function* (botId: string, nowMs: number) {
-    const rows = yield* sql<{
-      readonly early_started_at: string | null;
-      readonly early_previous_at: string | null;
-    }>`SELECT h.early_started_at, h.early_previous_at FROM bot_home_checks h
-      JOIN bot_project_contexts c ON c.home_thread_id = h.home_thread_id WHERE c.bot_id = ${botId}`;
-    const ages = rows
-      .flatMap((row) => [row.early_started_at, row.early_previous_at])
-      .flatMap((started) => (started === null ? [] : [nowMs - Date.parse(started)]));
+    const cutoff = DateTime.formatIso(DateTime.makeUnsafe(nowMs - EARLY_WINDOW_MS));
+    // Receipts commit with dispatch and outlive the Home's claim and project context.
+    const attempts = yield* main<{ readonly accepted_at: string }>`SELECT accepted_at
+      FROM orchestration_command_receipts
+      WHERE command_id GLOB ${`${EARLY_PREFIX}${BOT_HOME_THREAD_ID_PREFIX}${botId}:*`}
+        AND command_type = 'restricted_run.start' AND aggregate_kind = 'thread'
+        AND accepted_at > ${cutoff}
+      ORDER BY accepted_at DESC LIMIT ${EARLY_LIMIT}`.pipe(NodeSqliteClient.readOnly);
     return (
-      ages.filter((age) => age < EARLY_WINDOW_MS).length < EARLY_LIMIT &&
-      ages.every((age) => age >= EARLY_GAP_MS)
+      attempts.length < EARLY_LIMIT &&
+      attempts.every(({ accepted_at }) => nowMs - Date.parse(accepted_at) >= EARLY_GAP_MS)
     );
   });
 
@@ -347,11 +350,18 @@ export const make = Effect.gen(function* () {
     if (thread?.idle !== 1) return;
     const [last] = yield* main<{
       readonly sequence: number;
-      readonly occurred_at: string;
-    }>`SELECT sequence, occurred_at FROM orchestration_events
+      readonly activity_at: string | null;
+    }>`SELECT sequence, (
+        SELECT occurred_at FROM orchestration_events
+        WHERE application_event_version = 2 AND aggregate_kind = 'thread' AND stream_id = ${home}
+          AND (event_type IN ('message.updated', 'run.created', 'run.updated')
+            OR (event_type = 'thread.marked-unread'
+              AND command_id GLOB ${`${BotTaskService.BOT_TASK_NOTIFY_COMMAND_PREFIX}*`}))
+        ORDER BY sequence DESC LIMIT 1
+      ) AS activity_at FROM orchestration_events
       WHERE application_event_version = 2 AND aggregate_kind = 'thread' AND stream_id = ${home}
-      ORDER BY sequence DESC LIMIT 1`;
-    if (last !== undefined && nowMs - Date.parse(last.occurred_at) < QUIET_MS) return;
+      ORDER BY sequence DESC LIMIT 1`.pipe(NodeSqliteClient.readOnly);
+    if (last?.activity_at != null && nowMs - Date.parse(last.activity_at) < QUIET_MS) return;
 
     const bot = yield* store.getBot(row.bot_id);
     const reason = bot === undefined ? "home" : yield* unsupported(home, bot);
@@ -444,7 +454,17 @@ export const make = Effect.gen(function* () {
         return;
       }
       retryAfter.delete(home);
-      // The attempt is spent; its outcomes stay pending for the next check.
+      // Preflight and storage errors may not have written a receipt. These failures still spend an attempt.
+      if (early)
+        yield* receipts.insertIfAbsent({
+          commandId: CommandId.make(messageId),
+          threadId: ThreadId.make(home),
+          commandType: "restricted_run.start",
+          acceptedAt: yield* DateTime.now,
+          resultSequence: NonNegativeInt.make(last?.sequence ?? 0),
+          status: "rejected",
+          error: "The early Bot Home check failed to start.",
+        });
       yield* sql.withTransaction(
         Effect.gen(function* () {
           yield* started(home, messageId, at);
@@ -482,8 +502,6 @@ export const make = Effect.gen(function* () {
       JOIN bots b ON b.bot_id = c.bot_id
       WHERE h.enabled = 1 OR (h.check_message_id IS NOT NULL AND h.last_outcome_json IS NULL)
         OR EXISTS (SELECT 1 FROM bot_home_check_outcomes o WHERE o.home_thread_id = h.home_thread_id AND o.check_message_id IS NOT NULL)`;
-    // Every Home settles first, so an early check a crash left unrecorded counts against its Bot
-    // before any of the Bot's Homes starts another.
     const idle: Array<(typeof rows)[number] & { readonly owed: number }> = [];
     for (const row of rows) {
       const home = row.home_thread_id;
@@ -517,5 +535,7 @@ export const make = Effect.gen(function* () {
 });
 
 export const layer = Layer.effect(BotHomeCheck, make).pipe(
-  Layer.provide(Layer.merge(BotStore.layer, DateTime.layerCurrentZoneLocal)),
+  Layer.provide(
+    Layer.mergeAll(BotStore.layer, CommandReceiptStore.layer, DateTime.layerCurrentZoneLocal),
+  ),
 );

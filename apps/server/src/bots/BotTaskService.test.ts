@@ -168,6 +168,7 @@ const makeThreadWorld = Effect.gen(function* () {
     readonly release: Deferred.Deferred<void>;
   } | null>(null);
   const receipts = yield* Ref.make(new Set<string>());
+  const disposeReturn = yield* Ref.make(false);
   /** Command ids the orchestrator refused; their receipt replays the refusal. */
   const rejected = yield* Ref.make(new Set<string>());
   const notificationAttempts = yield* Ref.make<ReadonlyArray<CommandId>>([]);
@@ -215,6 +216,9 @@ const makeThreadWorld = Effect.gen(function* () {
       if (thread !== undefined && thread.status !== "idle") {
         yield* update(command.threadId, { status: "interrupted" });
       }
+    }
+    if (command.type === "bot-task.result.deliver" && !(yield* Ref.get(disposeReturn))) {
+      return { storedEvents: [{ event: { type: "message.updated" } }] } as never;
     }
     return { storedEvents: [] } as never;
   });
@@ -349,6 +353,7 @@ const makeThreadWorld = Effect.gen(function* () {
     hangLaunches,
     launchGate,
     failNext,
+    disposeReturn,
     rejected,
     notificationAttempts,
     deliveryLockTransactions,
@@ -2014,7 +2019,7 @@ const runRoutine = Effect.fn("BotTaskServiceTest.runRoutine")(function* (
 const endRun = Effect.fn("BotTaskServiceTest.endRun")(function* (
   world: ThreadWorld,
   threadId: ThreadId,
-  status: "failed" | "rolled_back" | "interrupted",
+  status: "completed" | "failed" | "rolled_back" | "interrupted",
 ) {
   yield* world.update(threadId, { status });
   const completedAt = yield* DateTime.now;
@@ -2023,15 +2028,18 @@ const endRun = Effect.fn("BotTaskServiceTest.endRun")(function* (
       thread: { id: threadId, projectId: campaign, deletedAt: null } as never,
       runs: [{ id: RunId.make(`run:${threadId}`), threadId, status, completedAt } as never],
       messages: [],
-      turnItems: [
-        {
-          type: "error",
-          status: "failed",
-          runId: RunId.make(`run:${threadId}`),
-          ordinal: 1,
-          failure: { message: "The provider event stream closed unexpectedly." },
-        } as never,
-      ],
+      turnItems:
+        status === "completed"
+          ? []
+          : [
+              {
+                type: "error",
+                status: "failed",
+                runId: RunId.make(`run:${threadId}`),
+                ordinal: 1,
+                failure: { message: "The provider event stream closed unexpectedly." },
+              } as never,
+            ],
     }),
   );
 });
@@ -2329,7 +2337,7 @@ it.effect.each<{
     run: (services, world) =>
       Effect.gen(function* () {
         const routine = yield* runRoutine(services, true);
-        yield* world.update(routine.workThreadId, { status: "completed" });
+        yield* endRun(world, routine.workThreadId, "completed");
         return [routine.taskId];
       }),
   },
@@ -2353,7 +2361,7 @@ it.effect.each<{
         yield* services.tasks.reconcile;
         const [diagnosis] = yield* diagnosesOf(services, routine.taskId);
         if (diagnosis?.workThreadId == null) return assert.fail("no diagnosis");
-        yield* world.update(diagnosis.workThreadId, { status: "completed" });
+        yield* endRun(world, diagnosis.workThreadId, "completed");
         return [diagnosis.id];
       }),
   },
@@ -2362,15 +2370,15 @@ it.effect.each<{
     run: (services, world) =>
       Effect.gen(function* () {
         const task = yield* services.tasks.start({ botId, projectId: campaign, prompt: "Pick." });
-        yield* world.update(task.workThreadId ?? assert.fail("no work thread"), {
-          status: "completed",
-        });
+        yield* endRun(world, task.workThreadId ?? assert.fail("no work thread"), "completed");
         return [task.id];
       }),
   },
-  {
-    name: "a completed direct task that returns to Home",
-    run: (services, world, home) =>
+  ...[false, true].map((dropped) => ({
+    name: dropped
+      ? "a completed direct task whose Home return is dropped"
+      : "a completed direct task that returns to Home",
+    run: (services: Services, world: ThreadWorld, home: ThreadId) =>
       Effect.gen(function* () {
         yield* seedHomeRun(world, home, "external-mcp");
         const task = yield* services.tasks.start(
@@ -2378,12 +2386,13 @@ it.effect.each<{
           { returnToHomeFrom: home },
         );
         yield* world.update(home, { status: "completed" });
-        yield* world.update(task.workThreadId ?? assert.fail("no work thread"), {
-          status: "completed",
-        });
-        return [];
+        yield* endRun(world, task.workThreadId ?? assert.fail("no work thread"), "completed");
+        yield* Ref.set(world.disposeReturn, dropped);
+        yield* services.tasks.reconcile;
+        assert.lengthOf(yield* world.commandsMatching("bot-task.result.deliver"), 1);
+        return dropped ? [task.id] : [];
       }),
-  },
+  })),
   {
     name: "a failed direct task that was to return to Home",
     run: (services, world, home) =>
@@ -2439,10 +2448,12 @@ it.effect.each<{
         return [];
       }),
   },
-  {
-    name: "a routine run that ended before early checks were turned on but was seen after",
+  ...[false, true].map((deleted) => ({
+    name: deleted
+      ? "a pre-opt-in result whose work thread is deleted while Home is busy"
+      : "a routine run that ended before early checks were turned on but was seen after",
     early: iso(START),
-    run: (services, world, home) =>
+    run: (services: Services, world: ThreadWorld, home: ThreadId) =>
       Effect.gen(function* () {
         const routine = yield* runRoutine(services, true);
         const runId = RunId.make(`run:${routine.workThreadId}`);
@@ -2457,14 +2468,28 @@ it.effect.each<{
             turnItems: [],
           }),
         );
-        // A busy Home holds the notification while a follow-up moves the work thread's latest run.
+        // The busy Home holds the notification after reconcile records the completed task.
         yield* seedHomeRun(world, home);
+        yield* TestClock.adjust("1 second");
         yield* services.tasks.reconcile;
-        yield* world.update(routine.workThreadId, { runId: "follow-up-run" });
+        if (deleted) {
+          yield* Ref.update(world.threads, (all) => {
+            const next = new Map(all);
+            next.delete(routine.workThreadId);
+            return next;
+          });
+          yield* Ref.update(world.records, (all) => {
+            const next = new Map(all);
+            next.delete(routine.workThreadId);
+            return next;
+          });
+        } else {
+          yield* world.update(routine.workThreadId, { runId: "follow-up-run" });
+        }
         yield* world.update(home, { status: "completed" });
         return [];
       }),
-  },
+  })),
 ])("records whether $name asks for an early Home check", ({ early, run }) =>
   Effect.gen(function* () {
     yield* TestClock.setTime(START);
@@ -2474,7 +2499,6 @@ it.effect.each<{
     yield* withServices(world, (services) =>
       Effect.gen(function* () {
         const home = yield* attachBot(services);
-        // The fake world's runs end at the epoch, before any reconcile pass sees them.
         yield* sql`INSERT INTO bot_home_checks (home_thread_id, settings_revision, enabled, time_of_day, done_through, early_since, updated_at)
           VALUES (${home}, 1, 1, '08:00', ${iso(START)}, ${early === undefined ? iso(0) : early}, ${iso(START)})`;
         const expected = yield* run(services, world, home).pipe(
