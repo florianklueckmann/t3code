@@ -25,6 +25,7 @@ import * as SecretResolver from "../secrets/SecretResolver.ts";
 import { BUILT_IN_DRIVERS, type BuiltInDriversEnv } from "./builtInDrivers.ts";
 import * as ProviderInstanceRegistry from "./ProviderInstanceRegistry.ts";
 import * as ProviderInstanceRegistryMutator from "./ProviderInstanceRegistryMutator.ts";
+import * as MacCalendarHelper from "../calendar/MacCalendarHelper.ts";
 import * as McpConnectionDelivery from "../mcpConnections/McpConnectionDelivery.ts";
 import * as McpConnectionOAuth from "../mcpConnections/McpConnectionOAuth.ts";
 import * as ProviderOrchestrationAdapterInfrastructure from "./ProviderOrchestrationAdapterInfrastructure.ts";
@@ -210,7 +211,11 @@ export const layer: Layer.Layer<
       Layer.provide(Layer.succeed(HostProcess.Environment, hostEnvironment)),
       // Codex reads it at each grant load; the same resolver keeps a catalog refresh effective.
       // The catalog's OAuth instance, by layer memoization: one lock orders refresh and disconnect.
-      Layer.provide(McpConnectionDelivery.layer.pipe(Layer.provide(McpConnectionOAuth.layer))),
+      Layer.provide(
+        McpConnectionDelivery.layer.pipe(
+          Layer.provide(Layer.merge(McpConnectionOAuth.layer, MacCalendarHelper.layer)),
+        ),
+      ),
       Layer.provide(SecretResolver.layer),
     );
 

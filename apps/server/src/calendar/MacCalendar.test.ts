@@ -31,7 +31,6 @@ const granted: BotTurnContextModule.BotMcpAccess = {
   botName: "Planner",
   connectionIds: [MAC_CALENDAR_CONNECTION_ID],
   ownCodexMcpServers: false,
-  levels: { [MAC_CALENDAR_CONNECTION_ID]: "read" },
 };
 const notGranted: BotTurnContextModule.BotMcpAccess = { ...granted, connectionIds: [otherMail] };
 
@@ -226,8 +225,14 @@ it.effect.each([
   }),
 );
 
-it.effect.each([
-  ["is not installed", { availability: "helper-missing" as const }, "not installed"],
+const helperFailures: ReadonlyArray<
+  readonly [
+    string,
+    { readonly availability?: MacCalendarAvailability; readonly answer?: () => Answer },
+    string,
+  ]
+> = [
+  ["is not installed", { availability: "helper-missing" }, "not installed"],
   [
     "has no Full Access",
     { answer: () => JSON.stringify({ error: { code: "notAuthorized" } }) },
@@ -246,8 +251,10 @@ it.effect.each([
     { answer: () => '{"status":{"authorization":"fullAccess"}}' },
     "did not answer",
   ],
-  ["fails to launch", { answer: () => "fail" as const }, "did not answer"],
-] as const)("fails a read when the helper %s", ([, options, message]) =>
+  ["fails to launch", { answer: () => "fail" }, "did not answer"],
+];
+
+it.effect.each(helperFailures)("fails a read when the helper %s", ([, options, message]) =>
   Effect.gen(function* () {
     const { calendar } = yield* harness({ answer: () => eventsResponse, ...options });
     const error = yield* refusal(calendar.listEvents(caller, today));

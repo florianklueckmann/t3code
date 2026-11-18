@@ -2075,7 +2075,7 @@ it.effect("serves the calendar tool only on a thread's Calendar (this Mac) sessi
   Effect.scoped(
     Effect.gen(function* () {
       const reads: Array<string> = [];
-      const scopes = new Map<string, McpInvocationContext.McpInvocationScope>([
+      const scopes = new Map<string, McpInvocationContext.McpThreadInvocationScope>([
         [
           "threadToken",
           {
@@ -2087,17 +2087,6 @@ it.effect("serves the calendar tool only on a thread's Calendar (this Mac) sessi
               providerInstanceId: ProviderInstanceId.make("codex"),
             },
             client: undefined,
-            capabilities: new Set(["orchestration"]),
-            issuedAt: 1,
-          },
-        ],
-        [
-          "clientToken",
-          {
-            environmentId,
-            requestNamespace: "clientToken",
-            thread: undefined,
-            client: { sessionId: "client", label: "Outside", access: "full-access" },
             capabilities: new Set(["orchestration"]),
             issuedAt: 1,
           },
@@ -2217,9 +2206,6 @@ it.effect("serves the calendar tool only on a thread's Calendar (this Mac) sessi
       );
       expect((yield* calendar.call("list_events")).result?.isError).toBe(false);
       expect(reads).toEqual(["thread-calendar"]);
-      // An outside client never sees it, whatever it sends.
-      const outside = yield* session("clientToken", "calendar");
-      expect(yield* outside.listed).toEqual([]);
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );

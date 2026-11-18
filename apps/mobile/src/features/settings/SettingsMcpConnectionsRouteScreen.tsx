@@ -2,6 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import {
+  botMcpGrantableIds,
   botMcpGrantsChange,
   emptyMcpConnectionDraft,
   MAC_CALENDAR_CONNECT_ELSEWHERE_TEXT,
@@ -464,7 +465,7 @@ function McpConnectionEditor({
         input: botMcpGrantsChange(
           grantToBotId,
           grantBot.mcpGrants,
-          statuses.data?.connections ?? [],
+          botMcpGrantableIds(statuses.data ?? { connections: [] }),
           { connectionId: plan.input.connectionId, granted: true },
         ),
       });

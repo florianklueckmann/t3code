@@ -181,7 +181,13 @@ function MacCalendarDialog({
     setBusy("save");
     const result = await update({
       environmentId,
-      input: { expectedRevision: calendar.revision, calendarIds: [...selected] },
+      // A selected calendar no longer on this Mac has no checkbox, so it drops out here.
+      input: {
+        expectedRevision: calendar.revision,
+        calendarIds: (inspected?.calendars ?? [])
+          .map((entry) => entry.id)
+          .filter((id) => selected.has(id)),
+      },
     });
     setBusy(null);
     const message = failureMessage(result);

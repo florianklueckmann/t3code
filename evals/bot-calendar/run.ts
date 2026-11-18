@@ -214,7 +214,10 @@ const runSample = Effect.fn("botCalendar.runSample")(function* (
 });
 
 /** Selects the fixture's calendars through Settings' RPC, which reads them from the fake helper. */
-const selectCalendars = Effect.fn("botCalendar.selectCalendars")(function* (rpc: WsClient) {
+const selectCalendars = Effect.fn("botCalendar.selectCalendars")(function* (
+  rpc: WsClient,
+  calls: string,
+) {
   const failed = (step: string) => (cause: unknown) =>
     new SampleError({ message: `${step}: ${String(cause)}` });
   const { calendar } = yield* rpc["mcpConnections.list"]({}).pipe(
@@ -224,6 +227,19 @@ const selectCalendars = Effect.fn("botCalendar.selectCalendars")(function* (rpc:
     return yield* Effect.die(
       new Error(
         `The server has no fake calendar helper (${calendar?.availability ?? "no calendar"}). Start it with ${APP_OVERRIDE_ENV} as README.md says.`,
+      ),
+    );
+  }
+  // Selecting launches the helper to read calendar names, so first prove the server's helper is
+  // this fake: a status check, harmless on a real helper, must reach the fake's request log.
+  NodeFS.rmSync(calls, { force: true });
+  yield* rpc["mcpConnections.calendarInspect"]({}).pipe(
+    Effect.mapError(failed("mcpConnections.calendarInspect")),
+  );
+  if (!NodeFS.existsSync(calls)) {
+    return yield* Effect.die(
+      new Error(
+        `The server's calendar helper is not this eval's fake. Start it with ${APP_OVERRIDE_ENV} as README.md says.`,
       ),
     );
   }
@@ -272,7 +288,7 @@ const main = Effect.gen(function* () {
           model: values.model,
           effort: values.effort,
         });
-        yield* selectCalendars(rpc);
+        yield* selectCalendars(rpc, calls);
         // One at a time: the fake helper's request log has no Bot to tell samples apart.
         return yield* Effect.forEach(jobs, ({ testCase, sample }) =>
           runSample(call, rpc, testCase, { work, modelSelection, calls }).pipe(

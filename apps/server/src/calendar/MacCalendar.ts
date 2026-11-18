@@ -331,7 +331,6 @@ const make = Effect.gen(function* () {
     if (access._tag !== "bot" || !access.connectionIds.includes(MAC_CALENDAR_CONNECTION_ID)) {
       return yield* readError("capability_denied", NOT_GRANTED);
     }
-    // Every grant level includes reading; only writes will need a higher one.
     const stored = yield* settings.getSettings.pipe(
       Effect.map((current) => current.macCalendar),
       Effect.mapError(() =>

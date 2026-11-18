@@ -1379,8 +1379,13 @@ const layerToolExposure = Layer.effect(
   Effect.gen(function* () {
     const server = yield* McpServer.McpServer;
     return McpToolExposure.make(
+      // Only a granted calendar's own server lists its tool, so search never offers it.
       () =>
-        server.tools.map(({ tool }) => ({ name: tool.name, description: tool.description ?? "" })),
+        server.tools.flatMap(({ tool }) =>
+          tool.name === CALENDAR_LIST_EVENTS_TOOL
+            ? []
+            : [{ name: tool.name, description: tool.description ?? "" }],
+        ),
       () => server.notifications["notifications/tools/list_changed"]({}),
     );
   }),

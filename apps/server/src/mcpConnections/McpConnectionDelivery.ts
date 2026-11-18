@@ -21,6 +21,7 @@ import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
+import * as MacCalendarHelper from "../calendar/MacCalendarHelper.ts";
 import { requireSettingsSecret } from "../secrets/settingsSecretValue.ts";
 import * as Settings from "../serverSettings.ts";
 import * as McpConnectionOAuth from "./McpConnectionOAuth.ts";
@@ -162,6 +163,7 @@ const make = Effect.gen(function* () {
   const settings = yield* Settings.ServerSettingsService;
   const resolver = yield* SecretResolver.SecretResolver;
   const oauth = yield* McpConnectionOAuth.McpConnectionOAuth;
+  const calendarHelper = yield* MacCalendarHelper.MacCalendarHelper;
 
   const resolve = Effect.fn("McpConnectionDelivery.resolve")(function* (
     ids: ReadonlyArray<McpConnectionId>,
@@ -173,9 +175,11 @@ const make = Effect.gen(function* () {
     const canonical: Array<unknown> = [];
     for (const id of [...new Set(ids)].toSorted()) {
       if (id === MAC_CALENDAR_CONNECTION_ID) {
-        // Off or without calendars it has nothing to read, so the Bot runs without it.
+        // Off, without calendars or without the helper it has nothing to read, so the Bot runs
+        // without it; Settings says why.
         const calendar = current.macCalendar;
         if (!calendar.enabled || calendar.calendars.length === 0) continue;
+        if ((yield* calendarHelper.availability) !== "available") continue;
         connections.push({
           id,
           label: MAC_CALENDAR_LABEL,

@@ -62,8 +62,6 @@ export type BotMcpAccess =
       readonly botName: string;
       readonly connectionIds: ReadonlyArray<McpConnectionId>;
       readonly ownCodexMcpServers: boolean;
-      /** Levels of granted connections that have them. */
-      readonly levels?: Readonly<Record<string, string>>;
     };
 
 type BotMcpAccessThread = Pick<OrchestrationV2AppThread, "id" | "lineage" | "createdByThreadId">;
@@ -340,7 +338,6 @@ export const layer = Layer.effect(
             botName: owner.bot.name,
             connectionIds: grants?.connectionIds ?? [],
             ownCodexMcpServers: grants?.ownCodexMcpServers === true,
-            ...(grants?.levels === undefined ? {} : { levels: grants.levels }),
           } as const;
         }
         if (parent === null) return { _tag: "none" } as const;

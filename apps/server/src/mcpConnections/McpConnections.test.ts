@@ -5,6 +5,7 @@ import {
   DEFAULT_MAC_CALENDAR_SETTINGS,
   MAC_CALENDAR_CONNECTION_ID,
   MAC_CALENDAR_LABEL,
+  type MacCalendarAvailability,
   McpConnectionId,
   type McpConnectionOAuth as McpConnectionOAuthSetup,
   type McpConnectionTransport,
@@ -24,6 +25,7 @@ import * as Schema from "effect/Schema";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as BotService from "../bots/BotService.ts";
 import * as MacCalendar from "../calendar/MacCalendar.ts";
+import * as MacCalendarHelper from "../calendar/MacCalendarHelper.ts";
 import * as ServerConfig from "../config.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
@@ -106,6 +108,7 @@ const harness = Effect.gen(function* () {
         oauthGrants.forgotten.push(id);
       }),
   });
+  const calendarHelper: { availability: MacCalendarAvailability } = { availability: "available" };
   const connections = yield* McpConnections.McpConnections.pipe(
     Effect.provide(
       McpConnections.layer.pipe(
@@ -130,10 +133,25 @@ const harness = Effect.gen(function* () {
       McpConnectionDelivery.layer.pipe(
         Layer.provide(Layer.succeed(SecretResolver.SecretResolver, resolver)),
         Layer.provide(oauth),
+        Layer.provide(
+          Layer.mock(MacCalendarHelper.MacCalendarHelper)({
+            availability: Effect.sync(() => calendarHelper.availability),
+          }),
+        ),
       ),
     ),
   );
-  return { connections, delivery, secrets, reads, invalidated, holds, grantCleanup, oauthGrants };
+  return {
+    connections,
+    delivery,
+    secrets,
+    reads,
+    invalidated,
+    holds,
+    grantCleanup,
+    oauthGrants,
+    calendarHelper,
+  };
 });
 
 const accountA = McpConnectionId.make("1a1a1a1a-0000-4000-8000-00000000001a");
@@ -434,7 +452,8 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("MCP connections"
     "delivers granted connections with credentials read now, and nothing to fall back on",
     () =>
       Effect.gen(function* () {
-        const { connections, delivery, secrets, reads, oauthGrants } = yield* harness;
+        const { connections, delivery, secrets, reads, oauthGrants, calendarHelper } =
+          yield* harness;
         const settings = yield* ServerSettings.ServerSettingsService;
         yield* decodeServerSettingsPatch({
           secretProviders: {
@@ -552,6 +571,9 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("MCP connections"
           [accountA, "http"],
           [MAC_CALENDAR_CONNECTION_ID, "t3"],
         ]);
+        calendarHelper.availability = "helper-missing";
+        assert.deepEqual(yield* withCalendar(), [[accountA, "http"]]);
+        calendarHelper.availability = "available";
         yield* setCalendar(false, [{ id: "cal-work", title: "Work" }]);
         assert.deepEqual(yield* withCalendar(), [[accountA, "http"]]);
 

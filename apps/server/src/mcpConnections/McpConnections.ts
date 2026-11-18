@@ -1,5 +1,6 @@
 import {
   isSecretReference,
+  MAC_CALENDAR_CONNECTION_ID,
   MCP_CONNECTIONS_MAX,
   mcpConnectionBindings,
   mcpConnectionBindingValueProblem,
@@ -227,7 +228,7 @@ const make = Effect.gen(function* () {
           }),
         );
       }
-      if (current.retiredMcpConnectionIds.includes(id)) {
+      if (current.retiredMcpConnectionIds.includes(id) || id === MAC_CALENDAR_CONNECTION_ID) {
         return Effect.fail(new McpConnectionError({ reason: "id-unavailable", connectionId: id }));
       }
       if (Object.keys(current.mcpConnections).length >= MCP_CONNECTIONS_MAX) {
