@@ -183,16 +183,19 @@ function withoutUnknownSecretProviderConfigs(
   ) as ServerSettings["secretProviders"];
 }
 
+/** Calendar (this Mac) is in the catalog too; an update that leaves it out keeps it. */
 export type McpConnectionCatalog = Pick<
   ServerSettings,
   "mcpConnections" | "retiredMcpConnectionIds"
->;
+> &
+  Partial<Pick<ServerSettings, "macCalendar">>;
 
 // A generic settings patch never edits the catalog, whatever keys reach `applyServerSettingsPatch`.
 const withCatalogOf = (current: ServerSettings, next: ServerSettings): ServerSettings => ({
   ...next,
   mcpConnections: current.mcpConnections,
   retiredMcpConnectionIds: current.retiredMcpConnectionIds,
+  macCalendar: current.macCalendar,
 });
 
 export function applyProviderInstanceMutation(
@@ -580,6 +583,8 @@ const ATOMIC_SETTINGS_KEYS: ReadonlySet<string> = new Set([
   "textGenerationModelSelection",
   "fallbackModelSelection",
   "pullRequestMergeMethod",
+  // Decodes only whole: its fields have no defaults of their own.
+  "macCalendar",
   // Empty by default, these hold one whole value, which a managed policy can default.
   ...Object.entries(DEFAULT_SERVER_SETTINGS).flatMap(([key, value]) =>
     value === null ? [key] : [],

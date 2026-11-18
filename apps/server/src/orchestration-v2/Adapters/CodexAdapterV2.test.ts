@@ -11,6 +11,7 @@ import {
   CheckpointId,
   CodexSettings,
   EnvironmentId,
+  MAC_CALENDAR_CONNECTION_ID,
   McpConnectionId,
   MessageId,
   isOrchestrationV2WorkActive,
@@ -4904,7 +4905,10 @@ describe("CodexAdapterV2 post-settle continuation", () => {
   const privateMail = McpConnectionId.make("2a2a2a2a-0000-4000-8000-00000000002a");
   const workMail = McpConnectionId.make("2b2b2b2b-0000-4000-8000-00000000002b");
   /** What the catalog delivers, as the test sets it; each value stands for a credential. */
-  const grantedLoad = (token: string): McpConnectionDelivery.McpConnectionLoad => ({
+  const grantedLoad = (
+    token: string,
+    calendar = true,
+  ): McpConnectionDelivery.McpConnectionLoad => ({
     identity: `identity-${token}`,
     connections: [
       {
@@ -4928,6 +4932,16 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           headers: Redacted.make({ Authorization: "Bearer work-header" }),
         },
       },
+      ...(calendar
+        ? [
+            {
+              id: MAC_CALENDAR_CONNECTION_ID,
+              label: "Calendar (this Mac)",
+              revision: 1,
+              transport: { type: "t3", toolset: "calendar" } as const,
+            },
+          ]
+        : []),
     ],
   });
   type DeliveryResult = Effect.Effect<
@@ -5050,7 +5064,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             const grantPolicy = {
               ...CODEX_TEST_RUNTIME_POLICY,
               nativeMemory: "disabled",
-              mcpConnections: [privateMail, workMail],
+              mcpConnections: [privateMail, workMail, MAC_CALENDAR_CONNECTION_ID],
             } as const;
             const resume = (runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy) =>
               harness.runtime.resumeThread({
@@ -5100,7 +5114,11 @@ describe("CodexAdapterV2 post-settle continuation", () => {
               '"Private mail" can\'t be used: MAIL_TOKEN could not be read from its secret provider. Fix it in Settings → MCP connections, or remove it from this Bot. Nothing ran.',
             );
             yield* delivery.set(Effect.succeed(grantedLoad("token-2")));
-            yield* resume({ ...seal.readOnlyPolicy, mcpConnections: [privateMail, workMail] });
+            // No changes keeps the calendar: its one tool is read-only.
+            yield* resume({
+              ...seal.readOnlyPolicy,
+              mcpConnections: [privateMail, workMail, MAC_CALENDAR_CONNECTION_ID],
+            });
             const ownServersPolicy = { ...grantPolicy, userMcpServers: "enabled" } as const;
             yield* resume(ownServersPolicy);
             // A turn never runs with the user's servers on a thread loaded without them, or back.
@@ -5114,6 +5132,11 @@ describe("CodexAdapterV2 post-settle continuation", () => {
               "ProviderAdapterMcpConnectionsRefusedError",
             );
 
+            const servers = resumeParams[0]!.config.mcp_servers;
+            const t3Server = servers["t3-code"] as {
+              url: string;
+              http_headers: { Authorization: string };
+            };
             const granted = {
               [`t3c-${privateMail}`]: {
                 command: "mail-mcp",
@@ -5124,8 +5147,15 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                 url: "https://mail.example.test/mcp",
                 http_headers: { Authorization: "Bearer work-header" },
               },
+              // The calendar is T3 Code's own endpoint, as this thread, listing only its tool.
+              [`t3c-${MAC_CALENDAR_CONNECTION_ID}`]: {
+                url: t3Server.url,
+                http_headers: {
+                  Authorization: t3Server.http_headers.Authorization,
+                  "t3-toolset": "calendar",
+                },
+              },
             };
-            const servers = resumeParams[0]!.config.mcp_servers;
             assert.deepEqual(
               Object.fromEntries(
                 Object.entries(servers).filter(([name]) => !name.startsWith("t3-code")),
@@ -5385,7 +5415,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             NodeServices.layer,
             NodeCrypto.layer,
             Layer.succeed(McpConnectionDelivery.McpConnectionDelivery, {
-              resolve: () => Effect.succeed(grantedLoad("token-1")),
+              resolve: () => Effect.succeed(grantedLoad("token-1", false)),
               markRefused: (id, source) => Effect.sync(() => void refused.push([id, source])),
             }),
           ),

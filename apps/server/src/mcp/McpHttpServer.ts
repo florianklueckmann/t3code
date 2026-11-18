@@ -57,6 +57,8 @@ import * as EnvironmentHandlers from "./toolkits/environment/handlers.ts";
 import { ThemeToolkit } from "./toolkits/theme/tools.ts";
 import * as ThemeHandlers from "./toolkits/theme/handlers.ts";
 import { BotToolkit } from "./toolkits/bot/tools.ts";
+import * as CalendarHandlers from "./toolkits/calendar/handlers.ts";
+import { CALENDAR_LIST_EVENTS_TOOL, CalendarToolkit } from "./toolkits/calendar/tools.ts";
 import * as BotHandlers from "./toolkits/bot/handlers.ts";
 import { ProjectToolkit } from "./toolkits/project/tools.ts";
 import * as ProjectHandlers from "./toolkits/project/handlers.ts";
@@ -1377,8 +1379,13 @@ const layerToolExposure = Layer.effect(
   Effect.gen(function* () {
     const server = yield* McpServer.McpServer;
     return McpToolExposure.make(
+      // Only a granted calendar's own server lists its tool, so search never offers it.
       () =>
-        server.tools.map(({ tool }) => ({ name: tool.name, description: tool.description ?? "" })),
+        server.tools.flatMap(({ tool }) =>
+          tool.name === CALENDAR_LIST_EVENTS_TOOL
+            ? []
+            : [{ name: tool.name, description: tool.description ?? "" }],
+        ),
       () => server.notifications["notifications/tools/list_changed"]({}),
     );
   }),
@@ -1412,4 +1419,29 @@ export const layerToolSearch = Layer.mergeAll(
   layerDeferredListing,
 ).pipe(Layer.provide(layerToolExposure));
 
-export const layer = layerMcpTransport(Layer.mergeAll(layerTools, layerToolSearch));
+/**
+ * A granted Calendar (this Mac) is its own server entry on this endpoint: a session that sends
+ * `TOOLSET_HEADER` reaches only the calendar tool, and no other session reaches it.
+ */
+const layerToolsets = McpServer.visibility(
+  Effect.fnUntraced(function* ({ target, headers }: McpServer.MiddlewareOptions) {
+    const calendar = target === CALENDAR_LIST_EVENTS_TOOL;
+    if (headers[McpInvocationContext.TOOLSET_HEADER] !== McpInvocationContext.CALENDAR_TOOLSET) {
+      return !calendar;
+    }
+    // Only a thread's own credential is a Bot's calendar server; an outside client gets nothing.
+    const scope = yield* Effect.serviceOption(McpInvocationContext.McpInvocationContext);
+    return calendar && Option.getOrUndefined(scope)?.thread !== undefined;
+  }),
+  { global: true },
+);
+
+/** Outside layerTools: only a granted Calendar (this Mac) server lists it. */
+export const layerCalendarToolkit = Layer.mergeAll(
+  toolkitRegistration(CalendarToolkit, CalendarHandlers.layer),
+  layerToolsets,
+);
+
+export const layer = layerMcpTransport(
+  Layer.mergeAll(layerTools, layerToolSearch, layerCalendarToolkit),
+);

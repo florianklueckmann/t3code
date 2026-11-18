@@ -2,6 +2,7 @@ import * as BotProjectGuard from "./bots/BotProjectGuard.ts";
 import * as BotContinuation from "./bots/BotContinuation.ts";
 import * as McpConnectionOAuth from "./mcpConnections/McpConnectionOAuth.ts";
 import * as McpConnections from "./mcpConnections/McpConnections.ts";
+import * as MacCalendar from "./calendar/MacCalendar.ts";
 import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { WebSocket } from "@effect/platform-node/NodeWS";
@@ -876,6 +877,7 @@ const layerUnusedConfigRpcServices = Layer.mergeAll(
   Layer.mock(ScheduledTasks.ScheduledTaskService)({}),
   Layer.mock(BotContinuation.BotContinuation)({}),
   Layer.mock(McpConnections.McpConnections)({}),
+  Layer.mock(MacCalendar.MacCalendar)({}),
   Layer.mock(McpConnectionOAuth.McpConnectionOAuth)({}),
   Layer.mock(BotMaintenance.BotMaintenance)({}),
   Layer.mock(BotHomeCheck.BotHomeCheck)({}),

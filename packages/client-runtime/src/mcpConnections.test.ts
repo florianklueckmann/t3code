@@ -1,5 +1,9 @@
 import {
   BotId,
+  DEFAULT_MAC_CALENDAR_SETTINGS,
+  MAC_CALENDAR_CONNECTION_ID,
+  MAC_CALENDAR_LABEL,
+  type MacCalendarSummary,
   McpConnectionId,
   ProviderDriverKind,
   type BotMcpGrants,
@@ -11,6 +15,7 @@ import {
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  botMcpGrantableIds,
   botMcpGrantsChange,
   botMcpGrantsSection,
   codexMcpServerNames,
@@ -324,6 +329,58 @@ describe("botMcpGrantsSection", () => {
       ).toBe(explains);
     },
   );
+});
+
+describe("Calendar (this Mac) in a Bot's grants", () => {
+  const calendar = (patch: Partial<MacCalendarSummary> = {}): MacCalendarSummary => ({
+    id: MAC_CALENDAR_CONNECTION_ID,
+    label: MAC_CALENDAR_LABEL,
+    availability: "available",
+    ...DEFAULT_MAC_CALENDAR_SETTINGS,
+    calendars: [{ id: "cal-work", title: "Work" }],
+    ...patch,
+  });
+  const calendarRow = (patch: Partial<MacCalendarSummary>, granted: McpConnectionId[] = [MAIL]) =>
+    section({ calendar: calendar(patch), granted }).rows.find(
+      (row) => row.id === MAC_CALENDAR_CONNECTION_ID,
+    );
+
+  it.each([
+    ["ready", {}, "ok", "Bots granted it read Work"],
+    ["without a selection", { calendars: [] }, "warning", "No calendars selected"],
+    ["without the helper", { availability: "helper-missing" as const }, "warning", "not installed"],
+    ["disabled", { enabled: false }, "muted", "Disabled"],
+  ] as const)("lists it first when %s", (_, patch, tone, text) => {
+    const row = calendarRow(patch);
+    expect(row?.transport).toBe("calendar");
+    expect(row?.status.tone).toBe(tone);
+    expect(row?.status.text).toContain(text);
+  });
+
+  it("leaves it out off a Mac unless it is still granted", () => {
+    expect(calendarRow({ availability: "unsupported" })).toBeUndefined();
+    expect(
+      calendarRow({ availability: "unsupported" }, [MAC_CALENDAR_CONNECTION_ID])?.granted,
+    ).toBe(true);
+  });
+
+  it("saves a calendar grant at the read level and drops it with the grant", () => {
+    const catalog = botMcpGrantableIds({ connections: CATALOG, calendar: calendar() });
+    const grants: BotMcpGrants = { revision: 2, connectionIds: [MAIL] };
+    const granted = botMcpGrantsChange(BOT, grants, catalog, {
+      connectionId: MAC_CALENDAR_CONNECTION_ID,
+      granted: true,
+    });
+    expect(granted.connectionIds).toEqual([MAC_CALENDAR_CONNECTION_ID, MAIL]);
+    expect(granted.levels).toEqual({ [MAC_CALENDAR_CONNECTION_ID]: "read" });
+    const revoked = botMcpGrantsChange(
+      BOT,
+      { revision: 3, connectionIds: [MAC_CALENDAR_CONNECTION_ID, MAIL] },
+      catalog,
+      { connectionId: MAC_CALENDAR_CONNECTION_ID, granted: false },
+    );
+    expect(revoked).toEqual({ botId: BOT, expectedRevision: 3, connectionIds: [MAIL] });
+  });
 });
 
 describe("botMcpGrantsChange", () => {

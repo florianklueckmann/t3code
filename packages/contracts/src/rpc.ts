@@ -460,6 +460,11 @@ import {
   McpConnectionRemoveResult,
   McpConnectionSummary,
   McpConnectionUpdateInput,
+  MacCalendarError,
+  MacCalendarInspectResult,
+  MacCalendarSetupResult,
+  MacCalendarSummary,
+  MacCalendarUpdateInput,
 } from "./mcpConnection.ts";
 import {
   ProjectCloneActionInput,
@@ -679,6 +684,9 @@ export const WS_METHODS = {
   mcpConnectionsOAuthCancel: "mcpConnections.oauthCancel",
   mcpConnectionsOAuthDisconnect: "mcpConnections.oauthDisconnect",
   mcpConnectionsOAuthSubscribe: "mcpConnections.oauthSubscribe",
+  mcpConnectionsCalendarInspect: "mcpConnections.calendarInspect",
+  mcpConnectionsCalendarSetup: "mcpConnections.calendarSetup",
+  mcpConnectionsCalendarUpdate: "mcpConnections.calendarUpdate",
 
   cloudGetRelayClientStatus: "cloud.getRelayClientStatus",
   cloudInstallRelayClient: "cloud.installRelayClient",
@@ -2409,6 +2417,23 @@ const WsMcpConnectionsRefreshRpc = Rpc.make(WS_METHODS.mcpConnectionsRefresh, {
   success: McpConnectionListResult,
   error: McpConnectionRpcError,
 });
+const MacCalendarRpcError = Schema.Union([MacCalendarError, EnvironmentAuthorizationError]);
+const WsMcpConnectionsCalendarInspectRpc = Rpc.make(WS_METHODS.mcpConnectionsCalendarInspect, {
+  payload: Schema.Struct({}),
+  success: MacCalendarInspectResult,
+  error: MacCalendarRpcError,
+});
+/** Raises the macOS Calendar prompt on the host Mac when access was never decided. */
+const WsMcpConnectionsCalendarSetupRpc = Rpc.make(WS_METHODS.mcpConnectionsCalendarSetup, {
+  payload: Schema.Struct({}),
+  success: MacCalendarSetupResult,
+  error: MacCalendarRpcError,
+});
+const WsMcpConnectionsCalendarUpdateRpc = Rpc.make(WS_METHODS.mcpConnectionsCalendarUpdate, {
+  payload: MacCalendarUpdateInput,
+  success: MacCalendarSummary,
+  error: MacCalendarRpcError,
+});
 const McpConnectionOAuthRpcError = Schema.Union([
   McpConnectionOAuthError,
   EnvironmentAuthorizationError,
@@ -2570,6 +2595,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsMcpConnectionsOAuthCancelRpc,
   WsMcpConnectionsOAuthDisconnectRpc,
   WsMcpConnectionsOAuthSubscribeRpc,
+  WsMcpConnectionsCalendarInspectRpc,
+  WsMcpConnectionsCalendarSetupRpc,
+  WsMcpConnectionsCalendarUpdateRpc,
   WsServerReportClientActivityRpc,
   WsCloudGetRelayClientStatusRpc,
   WsCloudInstallRelayClientRpc,

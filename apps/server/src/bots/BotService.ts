@@ -24,10 +24,12 @@ import {
   type BotUpdateProjectContextInput,
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
+  MAC_CALENDAR_CONNECTION_ID,
   type McpConnectionId,
   ProjectId,
   ThreadId,
 } from "@t3tools/contracts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import * as Context from "effect/Context";
@@ -511,8 +513,14 @@ const make = Effect.gen(function* () {
         Effect.mapError(botError("Could not read MCP connections.", input.botId)),
       )).mcpConnections;
       const connectionIds = [...new Set(input.connectionIds)];
+      // Calendar (this Mac) is built in, and only a Mac has it.
+      const calendarHere = (yield* HostProcess.Platform) === "darwin";
       // Removed connections are never granted anew; only a stale row left by removal survives.
-      if (connectionIds.some((id) => catalog[id] === undefined)) {
+      if (
+        connectionIds.some(
+          (id) => catalog[id] === undefined && !(id === MAC_CALENDAR_CONNECTION_ID && calendarHere),
+        )
+      ) {
         return yield* botError(
           "One of these MCP connections no longer exists. Reload and try again.",
           input.botId,
@@ -554,6 +562,12 @@ const make = Effect.gen(function* () {
               botId: input.botId,
               connectionIds,
               ownCodexMcpServers,
+              levels: connectionIds.includes(MAC_CALENDAR_CONNECTION_ID)
+                ? {
+                    [MAC_CALENDAR_CONNECTION_ID]:
+                      input.levels?.[MAC_CALENDAR_CONNECTION_ID] ?? ("read" as const),
+                  }
+                : {},
             });
           }),
         )

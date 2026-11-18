@@ -88,6 +88,9 @@ import * as ProviderInstanceRegistryHydration from "./provider/ProviderInstanceR
 import * as ProjectSettingsOverrideSweep from "./provider/ProjectSettingsOverrideSweep.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
 import * as BotExecutionConstraint from "./bots/BotExecutionConstraint.ts";
+import * as BotTurnContext from "./bots/BotTurnContext.ts";
+import * as MacCalendar from "./calendar/MacCalendar.ts";
+import * as MacCalendarHelper from "./calendar/MacCalendarHelper.ts";
 import * as McpHttpServer from "./mcp/McpHttpServer.ts";
 import * as PeerForwarding from "./peer/PeerForwarding.ts";
 import * as RemoteDelegation from "./peer/RemoteDelegation.ts";
@@ -725,6 +728,18 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   Layer.effectDiscard(ProjectSettingsOverrideSweep.sweep),
 ).pipe(
   Layer.provideMerge(layerOrchestrationApplication),
+  // Settings, the catalog, and the MCP tool all read Calendar (this Mac) through one service.
+  Layer.provideMerge(
+    MacCalendar.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          MacCalendarHelper.layer,
+          BotTurnContext.layer,
+          BotExecutionConstraint.layerMcpCallerChanges,
+        ),
+      ),
+    ),
+  ),
   // Below orchestration, which names only signed-in accounts to the model. One instance: its
   // per-connection lock orders refreshes, sign-ins and disconnects.
   Layer.provideMerge(McpConnectionOAuth.layer),

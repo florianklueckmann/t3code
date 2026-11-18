@@ -82,6 +82,10 @@ export class BotTurnContext extends Context.Service<
     readonly mcpAccessForThread: (
       thread: BotMcpAccessThread,
     ) => Effect.Effect<BotMcpAccess, BotStore.BotStoreError>;
+    /** `mcpAccessForThread` for a thread known only by id, such as an MCP tool's caller. */
+    readonly mcpAccessForThreadId: (
+      threadId: ThreadId,
+    ) => Effect.Effect<BotMcpAccess, BotStore.BotStoreError>;
   }
 >()("t3/bots/BotTurnContext") {}
 
@@ -313,15 +317,12 @@ export const layer = Layer.effect(
         : lineageParent(row.parent_thread_id, row.relationship, row.created_by_thread_id);
     });
 
-    const mcpAccessForThread = Effect.fn("BotTurnContext.mcpAccessForThread")(function* (
-      thread: BotMcpAccessThread,
+    const accessFrom = Effect.fn("BotTurnContext.accessFrom")(function* (
+      start: ThreadId,
+      startParent: ThreadId | null,
     ) {
-      let threadId = thread.id;
-      let parent = lineageParent(
-        thread.lineage.parentThreadId,
-        thread.lineage.relationshipToParent,
-        thread.createdByThreadId ?? null,
-      );
+      let threadId = start;
+      let parent = startParent;
       for (let depth = 0; depth < MAX_LINEAGE_DEPTH; depth++) {
         const owner = yield* botOfThread(threadId);
         if (owner?._tag === "inactive") return { _tag: "refused", message: owner.message } as const;
@@ -351,6 +352,25 @@ export const layer = Layer.effect(
         message:
           "This thread's parent conversation could not be found, so the MCP connections it may use are unknown. Start a new thread.",
       } as const;
+    });
+
+    const mcpAccessForThread = (thread: BotMcpAccessThread) =>
+      accessFrom(
+        thread.id,
+        lineageParent(
+          thread.lineage.parentThreadId,
+          thread.lineage.relationshipToParent,
+          thread.createdByThreadId ?? null,
+        ),
+      );
+
+    const mcpAccessForThreadId = Effect.fn("BotTurnContext.mcpAccessForThreadId")(function* (
+      threadId: ThreadId,
+    ) {
+      const parent = yield* parentOf(threadId);
+      // A thread with no projection row cannot be placed in any Bot's line.
+      if (parent === undefined) return { _tag: "none" } as const;
+      return yield* accessFrom(threadId, parent);
     });
 
     const forThread = Effect.fn("BotTurnContext.forThread")(function* (threadId: ThreadId) {
@@ -409,7 +429,7 @@ export const layer = Layer.effect(
       } as const;
     });
 
-    return BotTurnContext.of({ forThread, mcpAccessForThread });
+    return BotTurnContext.of({ forThread, mcpAccessForThread, mcpAccessForThreadId });
   }),
 ).pipe(Layer.provide(Layer.merge(BotStore.layer, BotContinuation.layer)));
 
@@ -433,6 +453,9 @@ export const layerEmpty = Layer.succeed(
       return yield* Effect.succeed({ _tag: "none" } as const);
     }),
     mcpAccessForThread: Effect.fn("BotTurnContext.mcpAccessForThreadEmpty")(function* () {
+      return yield* Effect.succeed({ _tag: "none" } as const);
+    }),
+    mcpAccessForThreadId: Effect.fn("BotTurnContext.mcpAccessForThreadIdEmpty")(function* () {
       return yield* Effect.succeed({ _tag: "none" } as const);
     }),
   }),

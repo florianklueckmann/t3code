@@ -1856,6 +1856,22 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:server:mcp-connections:oauth-disconnect",
       tag: WS_METHODS.mcpConnectionsOAuthDisconnect,
     }),
+    // Calendar (this Mac): each launches the helper, so they run only when asked.
+    inspectMacCalendar: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:mcp-connections:calendar-inspect",
+      tag: WS_METHODS.mcpConnectionsCalendarInspect,
+    }),
+    setupMacCalendar: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:mcp-connections:calendar-setup",
+      tag: WS_METHODS.mcpConnectionsCalendarSetup,
+    }),
+    updateMacCalendar: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:mcp-connections:calendar-update",
+      tag: WS_METHODS.mcpConnectionsCalendarUpdate,
+      scheduler: configScheduler,
+      concurrency: configConcurrency,
+      onSuccess: refreshMcpConnections,
+    }),
     botMaintenance: (target: {
       readonly environmentId: EnvironmentId;
       readonly input: BotContinuationScope;

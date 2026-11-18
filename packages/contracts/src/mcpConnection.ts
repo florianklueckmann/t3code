@@ -432,9 +432,126 @@ export const McpConnectionSummary = Schema.Struct({
 });
 export type McpConnectionSummary = typeof McpConnectionSummary.Type;
 
+/**
+ * "Calendar (this Mac)": the built-in connection to the signed macOS Calendar helper. Its id is
+ * fixed, so a Bot grants, revokes and loads it like any MCP connection.
+ */
+export const MAC_CALENDAR_CONNECTION_ID = McpConnectionId.make(
+  "ca1e0da0-0000-4000-8000-000000000001",
+);
+export const MAC_CALENDAR_LABEL = "Calendar (this Mac)";
+
+/** What a Bot's grant of a connection with levels allows. Writing arrives as another level. */
+export const McpGrantLevel = Schema.Literals(["read"]);
+export type McpGrantLevel = typeof McpGrantLevel.Type;
+
+const MacCalendarId = TrimmedNonEmptyString.check(Schema.isMaxLength(256));
+const MAC_CALENDAR_SELECTION_MAX = 64;
+
+export const MacCalendarRef = Schema.Struct({ id: MacCalendarId, title: Schema.String });
+export type MacCalendarRef = typeof MacCalendarRef.Type;
+
+/** Written only through the calendar service, never through a settings patch. */
+export const MacCalendarSettings = Schema.Struct({
+  enabled: Schema.Boolean,
+  revision: NonNegativeInt,
+  /** The one selected set. Bots read only these; titles are as they were when selected. */
+  calendars: Schema.Array(MacCalendarRef),
+});
+export type MacCalendarSettings = typeof MacCalendarSettings.Type;
+
+export const DEFAULT_MAC_CALENDAR_SETTINGS: MacCalendarSettings = {
+  enabled: true,
+  revision: 0,
+  calendars: [],
+};
+
+/** `unsupported`: not macOS 14 or later. `helper-missing`: the T3 Calendar Helper is not installed. */
+export const MacCalendarAvailability = Schema.Literals([
+  "available",
+  "helper-missing",
+  "unsupported",
+]);
+export type MacCalendarAvailability = typeof MacCalendarAvailability.Type;
+
+export const MacCalendarSummary = Schema.Struct({
+  id: McpConnectionId,
+  label: Schema.String,
+  availability: MacCalendarAvailability,
+  enabled: Schema.Boolean,
+  revision: NonNegativeInt,
+  calendars: Schema.Array(MacCalendarRef),
+});
+export type MacCalendarSummary = typeof MacCalendarSummary.Type;
+
+/**
+ * The helper's Calendar permission: notDetermined, fullAccess, writeOnly, denied, restricted or
+ * unknown. A string, so a value a newer helper reports still decodes.
+ */
+export const MacCalendarAuthorization = Schema.String;
+
+/** Every calendar on this Mac, for choosing the selection. Only setup reads it, never a model. */
+export const MacCalendarInspectResult = Schema.Struct({
+  authorization: MacCalendarAuthorization,
+  calendars: Schema.Array(
+    Schema.Struct({ id: MacCalendarId, title: Schema.String, sourceName: Schema.String }),
+  ),
+});
+export type MacCalendarInspectResult = typeof MacCalendarInspectResult.Type;
+
+export const MacCalendarSetupResult = Schema.Struct({ authorization: MacCalendarAuthorization });
+export type MacCalendarSetupResult = typeof MacCalendarSetupResult.Type;
+
+export const MacCalendarUpdateInput = Schema.Struct({
+  expectedRevision: NonNegativeInt,
+  enabled: Schema.optionalKey(Schema.Boolean),
+  /** Replaces the selection. Each id must be a calendar on this Mac now. */
+  calendarIds: Schema.optionalKey(
+    Schema.Array(MacCalendarId).check(Schema.isMaxLength(MAC_CALENDAR_SELECTION_MAX)),
+  ),
+});
+export type MacCalendarUpdateInput = typeof MacCalendarUpdateInput.Type;
+
+export const MacCalendarErrorReason = Schema.Literals([
+  "unsupported",
+  "helper-missing",
+  "not-authorized",
+  "helper-failed",
+  "unknown-calendar",
+  "revision-conflict",
+  "settings-unavailable",
+]);
+export type MacCalendarErrorReason = typeof MacCalendarErrorReason.Type;
+
+export class MacCalendarError extends Schema.TaggedError<MacCalendarError>()("MacCalendarError", {
+  reason: MacCalendarErrorReason,
+  cause: Schema.optional(Schema.Defect()),
+}) {
+  override get message(): string {
+    switch (this.reason) {
+      case "unsupported":
+        return "Calendar (this Mac) needs macOS 14 or later.";
+      case "helper-missing":
+        return "The T3 Calendar Helper is not installed on this Mac.";
+      case "not-authorized":
+        return "T3 Calendar Helper has no Full Access to Calendars. Connect Calendar on this Mac, or allow it in System Settings > Privacy & Security > Calendars.";
+      case "helper-failed":
+        return "The T3 Calendar Helper did not answer. Try again.";
+      case "unknown-calendar":
+        return "One of these calendars is no longer on this Mac. Review the selection.";
+      case "revision-conflict":
+        return "Calendar (this Mac) changed since you opened it. Review it and try again.";
+      case "settings-unavailable":
+        return "Could not save Calendar (this Mac). Try again.";
+    }
+  }
+}
+
 export const McpConnectionListInput = Schema.Struct({});
 export const McpConnectionListResult = Schema.Struct({
   connections: Schema.Array(McpConnectionSummary),
+  /** Absent on servers without the built-in calendar. */
+  calendar: Schema.optionalKey(MacCalendarSummary),
 });
 export type McpConnectionListResult = typeof McpConnectionListResult.Type;
 

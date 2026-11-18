@@ -96,6 +96,10 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.mcpConnectionsOAuthComplete]: AuthSettingsWriteScope,
   [WS_METHODS.mcpConnectionsOAuthCancel]: AuthSettingsWriteScope,
   [WS_METHODS.mcpConnectionsOAuthDisconnect]: AuthSettingsWriteScope,
+  // The calendar list names accounts; setup raises a macOS prompt; the selection is what Bots read.
+  [WS_METHODS.mcpConnectionsCalendarInspect]: AuthSettingsWriteScope,
+  [WS_METHODS.mcpConnectionsCalendarSetup]: AuthSettingsWriteScope,
+  [WS_METHODS.mcpConnectionsCalendarUpdate]: AuthSettingsWriteScope,
   [WS_METHODS.botsConfigureMaintenance]: AuthOrchestrationOperateScope,
   [WS_METHODS.botsRunMaintenance]: AuthOrchestrationOperateScope,
   [WS_METHODS.botsConfigureHomeCheck]: AuthOrchestrationOperateScope,

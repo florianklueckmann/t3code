@@ -2451,6 +2451,8 @@ function claudeBotPolicyRefusal(
   return undefined;
 }
 
+type ClaudeGrantServer = NonNullable<ClaudeQueryOptions["mcpServers"]>[string];
+
 /** A Bot thread's granted connections as one Claude process loads them. */
 export interface ClaudeGrantLoad {
   /** Ids and catalog revisions: names the load, holds no credential. */
@@ -2466,26 +2468,47 @@ export interface ClaudeGrantLoad {
   >;
 }
 
-export function claudeGrantLoad(load: McpConnectionDelivery.McpConnectionLoad): ClaudeGrantLoad {
+export function claudeGrantLoad(
+  load: McpConnectionDelivery.McpConnectionLoad,
+  mcpSession: McpProviderSession.McpProviderSessionConfig | undefined,
+): ClaudeGrantLoad {
   return {
     key: load.connections.map(({ id, revision }) => `${id}@${revision}`).join(","),
     credentials: load.identity,
     servers: Object.fromEntries(
-      load.connections.map(({ id, transport }) => [
-        McpConnectionDelivery.grantedServerName(id),
-        transport.type === "stdio"
-          ? {
-              type: "stdio" as const,
-              command: transport.command,
-              args: [...transport.args],
-              env: { ...Redacted.value(transport.env) },
-            }
-          : {
-              type: "http" as const,
-              url: transport.url,
-              headers: { ...Redacted.value(transport.headers) },
-            },
-      ]),
+      load.connections.flatMap(({ id, transport }): ReadonlyArray<[string, ClaudeGrantServer]> => {
+        const name = McpConnectionDelivery.grantedServerName(id);
+        if (transport.type === "t3") {
+          return mcpSession === undefined
+            ? []
+            : [
+                [
+                  name,
+                  {
+                    type: "http" as const,
+                    ...McpConnectionDelivery.t3ServedEndpoint(transport.toolset, mcpSession),
+                  },
+                ],
+              ];
+        }
+        return [
+          [
+            name,
+            transport.type === "stdio"
+              ? {
+                  type: "stdio" as const,
+                  command: transport.command,
+                  args: [...transport.args],
+                  env: { ...Redacted.value(transport.env) },
+                }
+              : {
+                  type: "http" as const,
+                  url: transport.url,
+                  headers: { ...Redacted.value(transport.headers) },
+                },
+          ],
+        ];
+      }),
     ),
     connections: load.connections.map(({ id, label }) => ({ id, label })),
   };
@@ -13109,6 +13132,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         /** Credentials are read at each turn, so a changed secret or a renewed token reopens Claude. */
         const resolveGrants = Effect.fn("ClaudeAdapterV2.resolveGrants")(function* (
           ids: ReadonlyArray<McpConnectionId>,
+          mcpSession: McpProviderSession.McpProviderSessionConfig | undefined,
         ) {
           if (mcpConnectionDelivery === undefined)
             return yield* new ProviderAdapter.ProviderAdapterMcpConnectionsRefusedError({
@@ -13122,7 +13146,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 McpConnectionDelivery.deliveryRefusal(CLAUDE_PROVIDER, error),
               ),
             );
-          return claudeGrantLoad(load);
+          return claudeGrantLoad(load, mcpSession);
         });
 
         /**
@@ -13205,7 +13229,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           // instructions per prompt.
           const isolated = sealed || turnInput.runtimePolicy.mcpConnections !== undefined;
           const grantIds = turnInput.runtimePolicy.mcpConnections ?? [];
-          const grants = grantIds.length === 0 ? undefined : yield* resolveGrants(grantIds);
+          const grants =
+            grantIds.length === 0 ? undefined : yield* resolveGrants(grantIds, mcpSession);
           const botThread = turnInput.applicationInstructions !== undefined;
           const botInstructions = claudeBotInstructionsOf(turnInput);
           if (

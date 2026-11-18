@@ -36,6 +36,7 @@ import {
   CheckpointId,
   ClaudeSettings,
   EnvironmentId,
+  MAC_CALENDAR_CONNECTION_ID,
   McpConnectionId,
   MessageId,
   type ModelSelection,
@@ -4423,6 +4424,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       const workMail = McpConnectionId.make("2b2b2b2b-0000-4000-8000-00000000002b");
       const privateServer = McpConnectionDelivery.grantedServerName(privateMail);
       const workServer = McpConnectionDelivery.grantedServerName(workMail);
+      const calendarServer = McpConnectionDelivery.grantedServerName(MAC_CALENDAR_CONNECTION_ID);
       /** What the catalog delivers; the token and header values stand for credentials. */
       const load = (token: string, revision: number): McpConnectionDelivery.McpConnectionLoad => ({
         identity: `identity-${token}-${revision}`,
@@ -4448,6 +4450,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               headers: Redacted.make({ Authorization: "Bearer work-header-secret" }),
             },
           },
+          {
+            id: MAC_CALENDAR_CONNECTION_ID,
+            label: "Calendar (this Mac)",
+            revision: 1,
+            transport: { type: "t3", toolset: "calendar" },
+          },
         ],
       });
       return Effect.gen(function* () {
@@ -4460,6 +4468,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               { name: "t3-code", status: "connected" },
               { name: privateServer, status: "connected" },
               { name: workServer, status: "failed", error: "401 for Bearer work-header-secret" },
+              { name: calendarServer, status: "connected" },
             ]),
             readMcpResource: () => Effect.die("unexpected MCP resource read"),
             callMcpTool: () => Effect.die("unexpected MCP tool call"),
@@ -4538,7 +4547,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                 runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
                   ...CLAUDE_TEST_RUNTIME_POLICY,
                   nativeMemory: "disabled",
-                  mcpConnections: [privateMail, workMail],
+                  mcpConnections: [privateMail, workMail, MAC_CALENDAR_CONNECTION_ID],
                 }),
                 applicationInstructions: "Answer briefly.",
               }),
@@ -4562,7 +4571,14 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               "t3-code",
               privateServer,
               workServer,
+              calendarServer,
             ]);
+            // The calendar is T3 Code's own endpoint, as this thread, listing only its tool.
+            assert.deepEqual(options.mcpServers?.[calendarServer], {
+              type: "http",
+              url: "http://127.0.0.1:43123/mcp",
+              headers: { Authorization: "Bearer t3-session-secret", "t3-toolset": "calendar" },
+            });
             assert.deepInclude(options.mcpServers?.[privateServer], {
               type: "stdio",
               command: "mail-mcp",
@@ -4600,8 +4616,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           assert.equal((yield* Queue.take(harness.terminalReceipts)).status, "completed");
         }
         // The key names the load by id and revision only.
-        const { key } = ClaudeAdapterV2.claudeGrantLoad(load("token-3", 4));
-        assert.equal(key, `${privateMail}@4,${workMail}@1`);
+        const { key } = ClaudeAdapterV2.claudeGrantLoad(load("token-3", 4), undefined);
+        assert.equal(key, `${privateMail}@4,${workMail}@1,${MAC_CALENDAR_CONNECTION_ID}@1`);
       }).pipe(
         Effect.provideService(HostProcess.Platform, "darwin"),
         Effect.provide(

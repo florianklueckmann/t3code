@@ -1673,18 +1673,31 @@ const codexGrantedServerName = McpConnectionDelivery.grantedServerName;
 
 const codexGrantedServers = (
   connections: ReadonlyArray<McpConnectionDelivery.DeliveredMcpConnection>,
+  mcpSession: McpProviderSession.McpProviderSessionConfig | undefined,
 ): Record<string, Schema.Json> =>
   Object.fromEntries(
-    connections.map(({ id, transport }) => [
-      codexGrantedServerName(id),
-      transport.type === "stdio"
-        ? {
-            command: transport.command,
-            args: [...transport.args],
-            env: { ...Redacted.value(transport.env) },
-          }
-        : { url: transport.url, http_headers: { ...Redacted.value(transport.headers) } },
-    ]),
+    connections.flatMap(({ id, transport }): ReadonlyArray<[string, Schema.Json]> => {
+      if (transport.type === "t3") {
+        if (mcpSession === undefined) return [];
+        const { url, headers } = McpConnectionDelivery.t3ServedEndpoint(
+          transport.toolset,
+          mcpSession,
+        );
+        return [[codexGrantedServerName(id), { url, http_headers: headers }]];
+      }
+      return [
+        [
+          codexGrantedServerName(id),
+          transport.type === "stdio"
+            ? {
+                command: transport.command,
+                args: [...transport.args],
+                env: { ...Redacted.value(transport.env) },
+              }
+            : { url: transport.url, http_headers: { ...Redacted.value(transport.headers) } },
+        ],
+      ];
+    }),
   );
 
 /**
@@ -1756,7 +1769,9 @@ function codexThreadRuntimeParams(input: {
     ]),
   );
   const granted =
-    input.grantedConnections === undefined ? {} : codexGrantedServers(input.grantedConnections);
+    input.grantedConnections === undefined
+      ? {}
+      : codexGrantedServers(input.grantedConnections, mcpSession);
   if (seal !== "ordinary") {
     return {
       ...selection,

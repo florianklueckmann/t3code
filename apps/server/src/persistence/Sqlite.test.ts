@@ -202,6 +202,7 @@ it.effect.each(
             [19, "BotLearningNotices"],
             [20, "BotHomeCheckEarly"],
             [21, "BotAttention"],
+            [22, "BotMcpGrantLevels"],
           ],
         );
         return { ...current, botHistory };

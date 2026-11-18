@@ -235,6 +235,13 @@ Any process running as this macOS user can run `setup`. Once the user grants Ful
 process running as that user can request events from any calendar. T3's per-Bot grant constrains
 the calendar IDs T3 passes to the helper. The helper's transport isolates macOS user accounts.
 
+Bots reach the helper as the built-in connection Calendar (this Mac). A grant loads it as another
+server entry on T3's own `/mcp` endpoint, with the thread's credential and `T3-Toolset: calendar`,
+which lists only `list_events`. The header selects tools only:
+[MacCalendar.ts](../../apps/server/src/calendar/MacCalendar.ts) checks the calling Bot's grant,
+the run and the selected calendars on every call. Only Settings runs `setup` and
+`list-calendars`. Tests and evals use a fake helper; never point them at real calendars.
+
 - `status` returns `{"status":{"authorization":"notDetermined"}}` before an access decision. The other
   authorization values are `fullAccess`, `writeOnly`, `denied`, `restricted`, and `unknown`.
   Use `setup` in the logged-in user's session to request Full Access explicitly. It returns the same

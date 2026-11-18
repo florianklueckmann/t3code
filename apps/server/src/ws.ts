@@ -198,6 +198,7 @@ import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretReso
 import * as ServerSettings from "./serverSettings.ts";
 import * as McpConnectionOAuth from "./mcpConnections/McpConnectionOAuth.ts";
 import * as McpConnections from "./mcpConnections/McpConnections.ts";
+import * as MacCalendar from "./calendar/MacCalendar.ts";
 import { invalidateSettingsSecrets } from "./sourceControl/sourceControlHostSecrets.ts";
 import * as DatabaseStorage from "./persistence/DatabaseStorage.ts";
 import * as StorageCleanup from "./storageCleanup.ts";
@@ -1484,6 +1485,7 @@ export const layerWsRpc = (
       const botTasks = yield* BotTaskService.BotTaskService;
       const botContinuation = yield* BotContinuation.BotContinuation;
       const mcpConnections = yield* McpConnections.McpConnections;
+      const macCalendar = yield* MacCalendar.MacCalendar;
       const mcpConnectionOAuth = yield* McpConnectionOAuth.McpConnectionOAuth;
       const botMaintenance = yield* BotMaintenance.BotMaintenance;
       const botHomeCheck = yield* BotHomeCheck.BotHomeCheck;
@@ -2377,6 +2379,9 @@ export const layerWsRpc = (
           mcpConnectionOAuth.disconnect(input.connectionId),
         [WS_METHODS.mcpConnectionsOAuthSubscribe]: (input) =>
           mcpConnectionOAuth.subscribe(input.connectionId),
+        [WS_METHODS.mcpConnectionsCalendarInspect]: (_input) => macCalendar.inspect,
+        [WS_METHODS.mcpConnectionsCalendarSetup]: (_input) => macCalendar.setup,
+        [WS_METHODS.mcpConnectionsCalendarUpdate]: (input) => macCalendar.update(input),
         [WS_METHODS.guestShareCreate]: (input) =>
           Effect.annotateCurrentSpan({ "orchestration_v2.thread_id": input.threadId }).pipe(
             Effect.andThen(guestShares.create(input)),

@@ -12,7 +12,7 @@ import {
   TrimmedNonEmptyString,
   TrimmedString,
 } from "./baseSchemas.ts";
-import { MCP_CONNECTIONS_MAX, McpConnectionId } from "./mcpConnection.ts";
+import { MCP_CONNECTIONS_MAX, McpConnectionId, McpGrantLevel } from "./mcpConnection.ts";
 import { ModelSelection, ModelSelectionInput } from "./modelSelection.ts";
 import { RuntimeMode } from "./providerPolicy.ts";
 
@@ -239,6 +239,11 @@ export const BotMcpGrants = Schema.Struct({
   connectionIds: Schema.Array(McpConnectionId),
   /** Absent on servers without the switch. */
   ownCodexMcpServers: Schema.optionalKey(Schema.Boolean),
+  /**
+   * The level of each granted connection that has levels (Calendar (this Mac)), an
+   * `McpGrantLevel`. A string, so a level a newer server adds still decodes.
+   */
+  levels: Schema.optionalKey(Schema.Record(McpConnectionId, Schema.String)),
 });
 export type BotMcpGrants = typeof BotMcpGrants.Type;
 
@@ -326,6 +331,8 @@ export const BotSetMcpGrantsInput = Schema.Struct({
   connectionIds: Schema.Array(McpConnectionId).check(Schema.isMaxLength(MCP_CONNECTIONS_MAX)),
   /** Absent keeps the saved choice. */
   ownCodexMcpServers: Schema.optionalKey(Schema.Boolean),
+  /** Levels for granted connections that have them; a connection left out gets "read". */
+  levels: Schema.optionalKey(Schema.Record(McpConnectionId, McpGrantLevel)),
 });
 export type BotSetMcpGrantsInput = typeof BotSetMcpGrantsInput.Type;
 
