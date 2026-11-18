@@ -125,6 +125,7 @@ function HomeLearningNotices(scope: HomeScope) {
               scope={scope}
               group={group}
               when={formatInstant(group.notices[0]!.at)}
+              unfolded={folded !== null}
               onOpen={open}
               onHide={() => setHidden((current) => hideBotHomeCard(current, group.key))}
             />
@@ -181,16 +182,19 @@ function NoticeGroup({
   scope,
   group,
   when,
+  unfolded,
   onOpen,
   onHide,
 }: {
   readonly scope: HomeScope;
   readonly group: BotLearningNoticeGroup;
   readonly when: string;
+  /** Opened from the folded summary, which already counted every notice. */
+  readonly unfolded: boolean;
   readonly onOpen: (notice: BotLearningNotice) => void;
   readonly onHide: () => void;
 }) {
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(unfolded);
   const shown = expanded
     ? group.notices
     : group.notices.filter(

@@ -9,21 +9,22 @@ const HOME_LEARNING_NOTICE_LIMIT = 30;
 
 const decodeResult = Schema.decodeUnknownEffect(BotLearningNoticesResult);
 
-/** The Bot's attached Homes, and the most recently active one for changes made in none of them. */
+/**
+ * The Bot's attached Homes, and for each project whose Home is gone, the Home that was most
+ * recently active when it went.
+ */
 export interface NoticeHomes {
   readonly attached: ReadonlySet<string>;
-  readonly latest: string | null;
+  readonly fallback: ReadonlyMap<string, string | null>;
 }
 
-/**
- * A project's revision shows in that project's Home only. A shared one shows once: in the Home it
- * was made in, or in the most recently active Home when that one is no longer attached.
- */
+/** A project's revision shows in that project's Home only; a shared one in one Home only. */
 const showsIn = (row: BotStore.BotLearningRow, projectId: string, homes: NoticeHomes) =>
   row.project_id !== null
     ? row.project_id === projectId
-    : (homes.attached.has(row.learned_in_project_id) ? row.learned_in_project_id : homes.latest) ===
-      projectId;
+    : (homes.attached.has(row.learned_in_project_id)
+        ? row.learned_in_project_id
+        : homes.fallback.get(row.learned_in_project_id)) === projectId;
 
 /**
  * A Home's learning notices, newest first, read from the committed revisions: when each was

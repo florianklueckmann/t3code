@@ -942,16 +942,17 @@ export function canToggleBotMaintenance(view: BotMaintenanceView, formLocked: bo
   return view.enabled || (!formLocked && view.writable && view.unavailableReason === null);
 }
 /**
- * Moves when the Home gets new input or a run there ends, from any device or the nightly pass:
- * the moments its working notes, or the count of messages newer than them, can change.
+ * Moves when the Home gets new input or a run there starts or ends, from any device or the
+ * nightly pass: the moments its working notes, or the count of messages newer than them, can
+ * change. The active run covers notes refreshes, which stay out of the shell's latest run.
  */
 export function botHomeNotesActivity(
   shell: {
     readonly latestUserMessageAt: string | null;
-    readonly latestRun: { readonly completedAt: string | null } | null;
+    readonly source: { readonly activeRunId: string | null };
   } | null,
 ): string {
-  return `${shell?.latestUserMessageAt ?? ""}|${shell?.latestRun?.completedAt ?? ""}`;
+  return `${shell?.latestUserMessageAt ?? ""}|${shell?.source.activeRunId ?? ""}`;
 }
 
 /** The server refuses the same cases; this only keeps the action from offering a sure refusal. */

@@ -123,6 +123,7 @@ function HomeLearningNotices(scope: HomeScope) {
           scope={scope}
           group={group}
           borderTop={index > 0 || folded !== null}
+          unfolded={folded !== null}
           onOpen={open}
           onHide={() =>
             updatePreferences({
@@ -161,11 +162,13 @@ function NoticeGroup(props: {
   readonly scope: HomeScope;
   readonly group: BotLearningNoticeGroup;
   readonly borderTop: boolean;
+  /** Opened from the folded summary, which already counted every notice. */
+  readonly unfolded: boolean;
   readonly onOpen: (notice: BotLearningNotice) => void;
   readonly onHide: () => void;
 }) {
   const { group } = props;
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(props.unfolded);
   const shown = expanded
     ? group.notices
     : group.notices.filter(

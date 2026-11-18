@@ -38,6 +38,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Schema from "effect/Schema";
+import * as SqlClient from "effect/sql/SqlClient";
 import type * as SqlError from "effect/sql/SqlError";
 import * as Stream from "effect/Stream";
 import * as BotDatabase from "./persistence/BotDatabase.ts";
@@ -164,6 +165,7 @@ const make = Effect.gen(function* () {
   const botTasks = yield* BotTaskService.BotTaskService;
   const turnContext = yield* BotTurnContext.BotTurnContext;
   const random = yield* SecureRandom.SecureRandom;
+  const main = yield* SqlClient.SqlClient;
   // Subscribers re-read the full list, so only the newest change signal matters.
   const changes = yield* PubSub.sliding<void>(1);
   const notifyChanged = PubSub.publish(changes, undefined).pipe(Effect.asVoid);
@@ -317,27 +319,40 @@ const make = Effect.gen(function* () {
     input: BotLearningNoticesInput,
   ) {
     const rows = yield* store.listLearning(input.botId);
-    const contexts = (yield* store.listContexts(input.botId)).filter(
-      (context) => context.detached_at === null,
-    );
-    const attached = new Set(contexts.map((context) => context.project_id));
-    const orphaned = rows.some(
-      (row) => row.project_id === null && !attached.has(row.learned_in_project_id),
-    );
-    const latest = orphaned ? yield* mostRecentlyActiveHome(contexts) : null;
-    return yield* BotLearningNotices.forHome(rows, input.projectId, { attached, latest });
+    const contexts = yield* store.listContexts(input.botId);
+    const attachedContexts = contexts.filter((context) => context.detached_at === null);
+    const attached = new Set(attachedContexts.map((context) => context.project_id));
+    // Fixed at the moment the change lost its Home, so later chatting never moves it.
+    const fallback = new Map<string, string | null>();
+    for (const row of rows) {
+      const home = row.learned_in_project_id;
+      if (row.project_id !== null || attached.has(home) || fallback.has(home)) continue;
+      const left = contexts.find((context) => context.project_id === home);
+      fallback.set(
+        home,
+        yield* mostActiveHomeAt(attachedContexts, left?.detached_at ?? row.created_at),
+      );
+    }
+    return yield* BotLearningNotices.forHome(rows, input.projectId, { attached, fallback });
   }, Effect.mapError(storeError()));
 
-  /** By the newest user message; a tie goes to the Home attached last. */
-  const mostRecentlyActiveHome = Effect.fn("BotService.mostRecentlyActiveHome")(function* (
+  /** The Home with the newest user message up to `at`; a tie goes to the Home attached last. */
+  const mostActiveHomeAt = Effect.fn("BotService.mostActiveHomeAt")(function* (
     contexts: ReadonlyArray<BotStore.BotContextRow>,
+    at: string,
   ) {
-    let latest: { readonly projectId: string; readonly at: number } | null = null;
+    if (contexts.length === 0) return null;
+    const activity = yield* main<{ readonly thread_id: string; readonly at: string }>`
+      SELECT thread_id, MAX(created_at) AS at FROM orchestration_v2_projection_messages
+      WHERE role = 'user' AND created_at <= ${at}
+        AND thread_id IN ${main.in(contexts.map((context) => context.home_thread_id))}
+      GROUP BY thread_id`;
+    const lastAt = new Map(activity.map((row) => [row.thread_id, row.at]));
+    let latest: { readonly projectId: string; readonly at: string } | null = null;
     for (const context of contexts) {
-      const shell = yield* threads.getThreadShell(ThreadId.make(context.home_thread_id));
-      const at =
-        shell?.latestUserMessageAt == null ? 0 : DateTime.toEpochMillis(shell.latestUserMessageAt);
-      if (latest === null || at >= latest.at) latest = { projectId: context.project_id, at };
+      const contextAt = lastAt.get(context.home_thread_id) ?? "";
+      if (latest === null || contextAt >= latest.at)
+        latest = { projectId: context.project_id, at: contextAt };
     }
     return latest?.projectId ?? null;
   });

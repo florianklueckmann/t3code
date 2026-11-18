@@ -53,7 +53,6 @@ interface FakeThread {
   readonly projectId: ProjectId;
   readonly archived: boolean;
   readonly model: string;
-  readonly latestUserMessageAt?: number;
 }
 
 /** Stands in for the orchestrator: records home threads and the commands that reach them. */
@@ -95,15 +94,11 @@ const makeThreadWorld = Effect.gen(function* () {
         if (thread === undefined) return null;
         const shell: Pick<
           OrchestrationV2ThreadShell,
-          "archivedAt" | "deletedAt" | "modelSelection" | "latestUserMessageAt"
+          "archivedAt" | "deletedAt" | "modelSelection"
         > = {
           archivedAt: thread.archived ? DateTime.makeUnsafe(0) : null,
           deletedAt: null,
           modelSelection: { ...codex, model: thread.model },
-          latestUserMessageAt:
-            thread.latestUserMessageAt === undefined
-              ? null
-              : DateTime.makeUnsafe(thread.latestUserMessageAt),
         };
         return shell as OrchestrationV2ThreadShell;
       }),
@@ -1579,15 +1574,16 @@ it.effect("shows each committed learning change once, in the Home it came from",
   }).pipe(Effect.provide(layerDatabase)),
 );
 
-it.effect("shows a shared change from a detached Home once, in the latest active Home", () =>
+it.effect("shows a shared change from a detached Home once, in the Home most active then", () =>
   Effect.gen(function* () {
     yield* seedProjects;
     const world = yield* makeThreadWorld;
-    const activeAt = (threadId: ThreadId, at: number) =>
-      Ref.update(world.threads, (current) => {
-        const thread = current.get(threadId) ?? assert.fail();
-        return new Map(current).set(threadId, { ...thread, latestUserMessageAt: at });
-      });
+    const sql = yield* SqlClient.SqlClient;
+    const userMessageAt = (threadId: ThreadId | undefined, at: string) => sql`
+      INSERT INTO orchestration_v2_projection_messages (
+        message_id, thread_id, run_id, node_id, role, streaming, created_at, updated_at, payload_json
+      ) VALUES (${`${threadId}:${at}`}, ${threadId ?? assert.fail()}, NULL, NULL, 'user', 0, ${at}, ${at}, '{}')
+    `;
     yield* withServices(world.threadLayer, ({ bots }) =>
       Effect.gen(function* () {
         yield* createCampaignBot(bots);
@@ -1609,11 +1605,14 @@ it.effect("shows a shared change from a detached Home once, in the latest active
         );
         assert.deepEqual(yield* shownIn, [0, 1, 0]);
 
-        yield* activeAt(homeA ?? assert.fail(), 2_000);
-        yield* activeAt(homeC ?? assert.fail(), 1_000);
+        // TestClock starts at the epoch, so these all precede the detach a minute later.
+        yield* userMessageAt(homeA, "1970-01-01T00:00:01.000Z");
+        yield* userMessageAt(homeC, "1970-01-01T00:00:02.000Z");
+        yield* TestClock.adjust("1 minute");
         yield* bots.detachProject({ botId, projectId: campaignB });
-        assert.deepEqual(yield* shownIn, [1, 0, 0]);
-        yield* activeAt(homeC ?? assert.fail(), 3_000);
+        assert.deepEqual(yield* shownIn, [0, 0, 1]);
+        // Chatting in A afterwards leaves the change where it landed.
+        yield* userMessageAt(homeA, "1970-01-01T00:02:00.000Z");
         assert.deepEqual(yield* shownIn, [0, 0, 1]);
       }),
     );
