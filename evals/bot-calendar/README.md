@@ -13,7 +13,7 @@ The calendar is a fake: `fakeHelper.ts`, wrapped in an app bundle that the serve
      T3CODE_CODEX_LAUNCH_ARGS="--disable memories" vp run dev --no-seed
    ```
 
-   The run writes the app there, so it need not exist when the server starts.
+   The run writes the app there, so it need not exist when the server starts. Before any request, it checks the server process's environment for exactly this path and stops otherwise, so it never launches a real helper.
 
 2. From `evals/`, check the setup with one sample:
 

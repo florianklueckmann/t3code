@@ -2127,6 +2127,23 @@ it.effect("serves the calendar tool only on a thread's Calendar (this Mac) sessi
             resolve: (token) => Effect.succeed(scopes.get(token)),
           }),
         ),
+        Layer.provide(
+          Layer.succeed(McpHttpServer.McpClientAuthenticator)({
+            authenticate: (request) =>
+              Effect.succeed(
+                request.headers.authorization === "Bearer clientToken"
+                  ? {
+                      environmentId,
+                      requestNamespace: "clientToken",
+                      thread: undefined,
+                      client: { sessionId: "client", label: "Outside", access: "full-access" },
+                      capabilities: new Set(["orchestration"]),
+                      issuedAt: 1,
+                    }
+                  : undefined,
+              ),
+          }),
+        ),
       );
       yield* HttpRouter.serve(serverLayer, { disableListenLog: true, disableLogger: true }).pipe(
         Layer.build,
@@ -2206,6 +2223,12 @@ it.effect("serves the calendar tool only on a thread's Calendar (this Mac) sessi
       );
       expect((yield* calendar.call("list_events")).result?.isError).toBe(false);
       expect(reads).toEqual(["thread-calendar"]);
+      // An outside client never reaches it, whatever it sends.
+      const outside = yield* session("clientToken", "calendar");
+      expect(yield* outside.listed).toEqual([]);
+      expect((yield* outside.call("list_events")).error?.message).toBe(
+        "Tool 'list_events' not found",
+      );
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );

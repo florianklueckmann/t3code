@@ -18,9 +18,12 @@ import { BotDetail, MAC_CALENDAR_CONNECTION_ID } from "@t3tools/contracts";
 import * as Net from "@t3tools/shared/Net";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import { APP_OVERRIDE_ENV } from "../../apps/server/src/calendar/MacCalendarHelper.ts";
+import { resolveCliAuthConfig } from "../../apps/server/src/cli/config.ts";
+import { readPersistedServerRuntimeState } from "../../apps/server/src/serverRuntimeState.ts";
 import { createBotHome } from "../shared/botHome.ts";
 import { type WsClient, withRpc } from "../shared/devServerRpc.ts";
 import {
@@ -213,11 +216,35 @@ const runSample = Effect.fn("botCalendar.runSample")(function* (
   } satisfies SampleRun;
 });
 
+/**
+ * Selecting calendars launches the server's helper to read their names, so before any RPC prove
+ * from the server process itself that its helper is this eval's fake, never a real one.
+ */
+const requireFakeHelper = Effect.fn("botCalendar.requireFakeHelper")(function* (baseDir: string) {
+  const config = yield* resolveCliAuthConfig({ baseDir: Option.some(baseDir) }, Option.none(), {
+    quietLogs: true,
+  });
+  const state = yield* readPersistedServerRuntimeState(config.serverRuntimeStatePath);
+  const environment = Option.isNone(state)
+    ? ""
+    : NodeChildProcess.execFileSync(
+        "ps",
+        ["eww", "-p", String(state.value.pid), "-o", "command="],
+        {
+          encoding: "utf8",
+        },
+      );
+  if (!environment.includes(`${APP_OVERRIDE_ENV}=${fakeAppPath(baseDir)}`)) {
+    return yield* Effect.die(
+      new Error(
+        `The server on ${baseDir} does not use this eval's fake calendar helper. Start it with ${APP_OVERRIDE_ENV} as README.md says.`,
+      ),
+    );
+  }
+});
+
 /** Selects the fixture's calendars through Settings' RPC, which reads them from the fake helper. */
-const selectCalendars = Effect.fn("botCalendar.selectCalendars")(function* (
-  rpc: WsClient,
-  calls: string,
-) {
+const selectCalendars = Effect.fn("botCalendar.selectCalendars")(function* (rpc: WsClient) {
   const failed = (step: string) => (cause: unknown) =>
     new SampleError({ message: `${step}: ${String(cause)}` });
   const { calendar } = yield* rpc["mcpConnections.list"]({}).pipe(
@@ -227,19 +254,6 @@ const selectCalendars = Effect.fn("botCalendar.selectCalendars")(function* (
     return yield* Effect.die(
       new Error(
         `The server has no fake calendar helper (${calendar?.availability ?? "no calendar"}). Start it with ${APP_OVERRIDE_ENV} as README.md says.`,
-      ),
-    );
-  }
-  // Selecting launches the helper to read calendar names, so first prove the server's helper is
-  // this fake: a status check, harmless on a real helper, must reach the fake's request log.
-  NodeFS.rmSync(calls, { force: true });
-  yield* rpc["mcpConnections.calendarInspect"]({}).pipe(
-    Effect.mapError(failed("mcpConnections.calendarInspect")),
-  );
-  if (!NodeFS.existsSync(calls)) {
-    return yield* Effect.die(
-      new Error(
-        `The server's calendar helper is not this eval's fake. Start it with ${APP_OVERRIDE_ENV} as README.md says.`,
       ),
     );
   }
@@ -268,6 +282,7 @@ const main = Effect.gen(function* () {
   if (out === undefined || baseDir === undefined) {
     return yield* Effect.die(new Error("Pass --out <dir> and --base-dir <dev server .t3>."));
   }
+  yield* requireFakeHelper(baseDir);
   const today = new Date();
   const { calls } = writeFakeHelper(baseDir, today);
   const selected = CASES.filter((c) => values.case === undefined || values.case.includes(c.id));
@@ -288,7 +303,7 @@ const main = Effect.gen(function* () {
           model: values.model,
           effort: values.effort,
         });
-        yield* selectCalendars(rpc, calls);
+        yield* selectCalendars(rpc);
         // One at a time: the fake helper's request log has no Bot to tell samples apart.
         return yield* Effect.forEach(jobs, ({ testCase, sample }) =>
           runSample(call, rpc, testCase, { work, modelSelection, calls }).pipe(

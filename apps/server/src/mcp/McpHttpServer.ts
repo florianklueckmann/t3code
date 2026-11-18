@@ -1424,11 +1424,15 @@ export const layerToolSearch = Layer.mergeAll(
  * `TOOLSET_HEADER` reaches only the calendar tool, and no other session reaches it.
  */
 const layerToolsets = McpServer.visibility(
-  ({ target, headers }: McpServer.MiddlewareOptions) =>
-    Effect.succeed(
-      (headers[McpInvocationContext.TOOLSET_HEADER] === McpInvocationContext.CALENDAR_TOOLSET) ===
-        (target === CALENDAR_LIST_EVENTS_TOOL),
-    ),
+  Effect.fnUntraced(function* ({ target, headers }: McpServer.MiddlewareOptions) {
+    const calendar = target === CALENDAR_LIST_EVENTS_TOOL;
+    if (headers[McpInvocationContext.TOOLSET_HEADER] !== McpInvocationContext.CALENDAR_TOOLSET) {
+      return !calendar;
+    }
+    // Only a thread's own credential is a Bot's calendar server; an outside client gets nothing.
+    const scope = yield* Effect.serviceOption(McpInvocationContext.McpInvocationContext);
+    return calendar && Option.getOrUndefined(scope)?.thread !== undefined;
+  }),
   { global: true },
 );
 
