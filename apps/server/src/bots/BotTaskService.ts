@@ -279,7 +279,7 @@ const make = Effect.gen(function* () {
     if (!support.ownMcpServers && grants?.ownCodexMcpServers === true)
       changes.push('turn off "Use my own Codex MCP servers"');
     if (use === "task") return changes;
-    if (!support.seals) {
+    if (!support.readOnlySeal) {
       const noChanges = yield* sql<{ readonly task_id: string }>`
         SELECT task_id FROM bot_routines WHERE bot_id = ${botId} AND bot_allow_changes = 0
       `;
@@ -294,11 +294,11 @@ const make = Effect.gen(function* () {
         changes.push("pause its No changes routines or set them to Changes allowed");
       if (yield* enabledInAttachedProjects("bot_failure_diagnosis", botId))
         changes.push("turn off Diagnose failed routines");
-      if (yield* enabledInAttachedProjects("bot_home_checks", botId))
-        changes.push("turn off the Daily Home check");
     }
+    if (!support.homeSeal && (yield* enabledInAttachedProjects("bot_home_checks", botId)))
+      changes.push("turn off the Daily Home check");
     if (
-      !(support.seals && support.sealedGeneration) &&
+      !(support.homeSeal && support.sealedGeneration) &&
       (yield* enabledInAttachedProjects("bot_maintenance", botId))
     )
       changes.push("turn off Maintenance");
@@ -418,9 +418,9 @@ const make = Effect.gen(function* () {
     );
     if (input.allowChanges === false) {
       const instance = yield* providerInstances.getInstance(detail.modelSelection.instanceId);
-      if (!BotProviderSupport.botDriverSupport(instance?.driverKind).seals) {
+      if (!BotProviderSupport.botDriverSupport(instance?.driverKind).readOnlySeal) {
         return yield* botError(
-          `${context.bot.name} runs on a model that can't enforce No changes yet, so this routine can't be No changes. Choose Changes allowed, or switch the Bot to a Codex model.`,
+          `${context.bot.name} runs on a model that can't enforce No changes yet, so this routine can't be No changes. Choose Changes allowed, or switch the Bot to a Codex or Claude model.`,
           input.botId,
         )();
       }

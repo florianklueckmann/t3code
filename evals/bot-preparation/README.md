@@ -1,6 +1,6 @@
 # Bot preparation
 
-Runs Bot preparation routines and Bot home-conversation turns end to end through a T3 Code dev server and its configured Codex provider. It checks that routines follow their brief and configured change permission, including carrying out a requested file edit in **Changes allowed** mode and proposing it in **No changes** mode; that session preparation gives a reminder, a recap grounded in the recorded play, open questions and marked proposals; that a missing record of play is said rather than invented; that preparation without changes neither edits project files nor starts a turn in the home conversation; and that a Bot asked in its home conversation to prepare before a dated session sets up a one-time routine with the right session time and lead time.
+Runs Bot preparation routines and Bot home-conversation turns end to end through a T3 Code dev server and its configured Codex or Claude provider. It checks that routines follow their brief and configured change permission, including carrying out a requested file edit in **Changes allowed** mode and proposing it in **No changes** mode; that session preparation gives a reminder, a recap grounded in the recorded play, open questions and marked proposals; that a missing record of play is said rather than invented; that preparation without changes neither edits project files nor starts a turn in the home conversation; and that a Bot asked in its home conversation to prepare before a dated session sets up a one-time routine with the right session time and lead time.
 
 Like [bot-sources](../bot-sources/), nothing is replayed and it calls no model API directly. Turns count against the dev server's Codex login.
 
@@ -15,7 +15,7 @@ Like [bot-sources](../bot-sources/), nothing is replayed and it calls no model A
 
 3. Then the full set: `pnpm bot-preparation --base-dir ../.t3 --out runs/<name>`.
 
-Flags: `--model` (default `gpt-6.1-terra`), `--effort` (default `high`), `--samples` (default 3), `--concurrency` (default 2), `--case <id>` (repeatable), `--work <dir>` for the synthetic project folders (default `<out>/work`). The run stops when the server's Codex catalog does not offer the model with that effort; it never falls back to another model. `--instance` (default `codex`) must name a Codex instance: its routines and diagnoses run No changes, which only Codex enforces, and the run refuses other providers.
+Flags: `--model` (default `gpt-6.1-terra`), `--effort` (default `high`), `--samples` (default 3), `--concurrency` (default 2), `--case <id>` (repeatable), `--work <dir>` for the synthetic project folders (default `<out>/work`). The run stops when the server's Codex catalog does not offer the model with that effort; it never falls back to another model. `--instance` (default `codex`) names a Codex or Claude instance; both enforce the No changes its routines and diagnoses run in, Claude only on a macOS server.
 
 Routine cases create the routine through `schedule_task` with a `botId` and start it with `run_scheduled_task_now`, so they test the work thread's context, not the timing; the scheduler's timing is covered by the server tests. Each sample creates its own project and Bot.
 

@@ -1246,10 +1246,14 @@ describe("ClaudeAdapterV2 append-system-prompt-file launch argument", () => {
       readonly policy?: Partial<ProviderAdapter.ProviderAdapterV2RuntimePolicy>;
       readonly applicationInstructions?: string;
       readonly offered?: Array<unknown>;
+      /** What the opened process reports; "absent" leaves the report out. */
+      readonly claudeCodeVersion?: string | "absent";
     },
   ) {
     const fileSystem = yield* FileSystem.FileSystem;
     const opened: Array<ClaudeAdapterV2.ClaudeAgentSdkQueryOptions> = [];
+    let closed = 0;
+    const version = bot?.claudeCodeVersion ?? "2.1.326";
     const adapter = yield* ClaudeAdapterV2.makeClaudeAdapterV2({
       instanceId: ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID,
       settings: { ...DEFAULT_CLAUDE_SETTINGS, launchArgs },
@@ -1278,7 +1282,10 @@ describe("ClaudeAdapterV2 append-system-prompt-file launch argument", () => {
               listPermissionRules: Effect.die("unexpected permission rules read"),
               stopTask: () => Effect.void,
               interrupt: Effect.void,
-              close: Effect.void,
+              close: Effect.sync(() => {
+                closed++;
+              }),
+              ...(version === "absent" ? {} : { claudeCodeVersion: Effect.succeed(version) }),
             };
           }),
         forkSession: () => Effect.die("unused"),
@@ -1322,7 +1329,7 @@ describe("ClaudeAdapterV2 append-system-prompt-file launch argument", () => {
         }),
       )
       .pipe(Effect.exit);
-    return { exit, opened };
+    return { exit, opened, closed: () => closed };
   });
 
   const appendSystemPrompt = (options: ClaudeAdapterV2.ClaudeAgentSdkQueryOptions | undefined) =>
@@ -1510,7 +1517,12 @@ describe("ClaudeAdapterV2 append-system-prompt-file launch argument", () => {
   );
 
   it.effect.each([
-    [{ nativeTools: "readOnly" }, "darwin", "ProviderAdapterSealRefusedError", "No changes"],
+    [
+      { nativeTools: "readOnly" },
+      "linux",
+      "ProviderAdapterSealRefusedError",
+      "No changes, which its provider can't enforce here because it is only verified on macOS",
+    ],
     [
       { nativeTools: "t3BotOnly", mcpConnections: [] },
       "darwin",
@@ -1611,6 +1623,105 @@ describe("ClaudeAdapterV2 append-system-prompt-file launch argument", () => {
         ),
       ),
     ),
+  );
+
+  it.effect(
+    "seals a No changes load to read tools and dontAsk, whatever launch flags or grants ask",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const cwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-sealed-" });
+          const launchArgs = `--tools Bash,Write --allowedTools Bash --permission-mode bypassPermissions --dangerously-skip-permissions --agents '{"a":{}}' --fallback-model sonnet --settings '${JSON.stringify({ disableAllHooks: false, disableSkillShellExecution: false })}'`;
+          const open = yield* startTurnWithLaunchArgs(launchArgs, cwd, "disabled", {
+            policy: { mcpConnections: [] },
+          });
+          assert.equal(open.opened[0]?.permissionMode, "bypassPermissions");
+          assert.equal(open.opened[0]?.extraArgs?.["tools"], "Bash,Write");
+
+          const { exit, opened } = yield* startTurnWithLaunchArgs(launchArgs, cwd, "disabled", {
+            policy: { nativeTools: "readOnly", mcpConnections: [] },
+            applicationInstructions: "Report only.",
+          });
+          assert.isTrue(Exit.isSuccess(exit));
+          const options = opened[0] ?? assert.fail("Claude did not open");
+          assert.deepEqual(options.tools, [...ClaudeAdapterV2.CLAUDE_SEALED_TOOLS]);
+          assert.equal(options.permissionMode, "dontAsk");
+          assert.isUndefined(options.allowDangerouslySkipPermissions);
+          assert.deepEqual(options.allowedTools, [...ClaudeAdapterV2.CLAUDE_SEALED_TOOLS]);
+          // Whatever Claude still asks about, an ask rule say, is refused rather than approved.
+          const canUseTool = options.canUseTool ?? assert.fail("no permission callback");
+          for (const tool of ["Bash", "Write", "mcp__t3-code__t3_thread_send"]) {
+            const decision = yield* Effect.promise(() =>
+              canUseTool(tool, {}, {
+                signal: new AbortController().signal,
+                toolUseID: `toolu-${tool}`,
+              } as never),
+            );
+            assert.equal(decision?.behavior, "deny", tool);
+          }
+          assert.deepEqual(Object.keys(options.extraArgs ?? {}).sort(), [
+            "fallback-model",
+            "thinking-display",
+          ]);
+          assert.isTrue(options.strictMcpConfig);
+          assert.isUndefined(options.mcpServers);
+          assert.deepInclude(options.settings, {
+            disableAllHooks: true,
+            disableSkillShellExecution: true,
+            disableClaudeAiConnectors: true,
+            autoMemoryEnabled: false,
+          });
+          // T3's own hook callbacks carry the Bot's instructions under disableAllHooks.
+          assert.isDefined(options.hooks?.UserPromptSubmit);
+          // A guard that fails blocks the call instead of letting an allow rule decide.
+          assert.equal(options.hooks?.PreToolUse?.[0]?.onFailure, "block");
+        }).pipe(
+          Effect.provideService(HostProcess.Platform, "darwin"),
+          Effect.provide(
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              NodeCrypto.layer,
+            ),
+          ),
+        ),
+      ),
+  );
+
+  it.effect.each([["2.1.325"], ["2.1.326-beta.1"], ["absent"]] as const)(
+    "closes a No changes process on Claude Code %s before any prompt reaches it",
+    ([claudeCodeVersion]) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const cwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-version-" });
+          const offered: Array<unknown> = [];
+          const { exit, opened, closed } = yield* startTurnWithLaunchArgs("", cwd, "disabled", {
+            policy: { nativeTools: "readOnly", mcpConnections: [] },
+            offered,
+            claudeCodeVersion,
+          });
+          assert.lengthOf(opened, 1);
+          assert.equal(closed(), 1);
+          assert.lengthOf(offered, 0);
+          if (Exit.isSuccess(exit)) return assert.fail("the sealed turn started");
+          const error = Cause.squash(exit.cause) as { readonly _tag: string; message: string };
+          assert.equal(error._tag, "ProviderAdapterSealRefusedError");
+          assert.include(error.message, "this Claude Code version's tools have not been verified");
+        }).pipe(
+          Effect.provideService(HostProcess.Platform, "darwin"),
+          Effect.provide(
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              NodeCrypto.layer,
+            ),
+          ),
+        ),
+      ),
   );
 
   it.effect(
@@ -4058,6 +4169,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                   stopTask: options?.stopTask ?? (() => Effect.void),
                   interrupt: Effect.void,
                   close: Queue.shutdown(processMessages),
+                  claudeCodeVersion: Effect.succeed("2.1.326"),
                 };
               }
               processQueues.push(sdkMessages);
@@ -4101,6 +4213,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                 stopTask: options?.stopTask ?? (() => Effect.void),
                 interrupt: options?.interrupt ?? Effect.void,
                 close: options?.close?.(sdkMessages) ?? Effect.void,
+                claudeCodeVersion: Effect.succeed("2.1.326"),
               };
             }),
           forkSession: options?.forkSession ?? (() => Effect.die("unused forkSession")),
@@ -4501,6 +4614,236 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         ),
       );
     },
+  );
+
+  it.effect(
+    "lets a No changes load call only the granted tools their server marks read-only",
+    () => {
+      const mail = McpConnectionId.make("2a2a2a2a-0000-4000-8000-00000000002a");
+      const mailServer = McpConnectionDelivery.grantedServerName(mail);
+      return Effect.gen(function* () {
+        let readMailMark: { readonly readOnly?: boolean } = { readOnly: true };
+        const harness = yield* makeWakeHarnessWithOptions({
+          mcp: {
+            // Read at each call, so a refreshed catalog counts.
+            mcpServerStatus: Effect.sync(() => [
+              { name: "t3-code", status: "connected" },
+              {
+                name: mailServer,
+                status: "connected",
+                tools: [
+                  { name: "read_mail", annotations: readMailMark },
+                  { name: "send_mail", annotations: { readOnly: false, destructive: true } },
+                  { name: "archive_mail" },
+                  // Both reach Claude as `peek_mail`, so the read-only mark can't tell which runs.
+                  { name: "peek.mail", annotations: { readOnly: true } },
+                  { name: "peek_mail" },
+                ],
+              },
+              // Not granted, so not this load's, whatever it marks.
+              {
+                name: "fixture",
+                status: "connected",
+                tools: [{ name: "peek", annotations: { readOnly: true } }],
+              },
+            ]),
+            readMcpResource: () => Effect.die("unexpected MCP resource read"),
+            callMcpTool: () => Effect.die("unexpected MCP tool call"),
+          },
+        }).pipe(
+          Effect.provideService(McpConnectionDelivery.McpConnectionDelivery, {
+            resolve: () =>
+              Effect.succeed({
+                identity: "identity-mail",
+                connections: [
+                  {
+                    id: mail,
+                    label: "Mail",
+                    revision: 1,
+                    transport: {
+                      type: "stdio",
+                      command: "mail-mcp",
+                      args: [],
+                      env: Redacted.make({}),
+                    },
+                  },
+                ],
+              }),
+            markRefused: () => Effect.void,
+          }),
+        );
+        yield* (yield* McpProviderSessions.McpProviderSessions).set({
+          environmentId: EnvironmentId.make("environment-claude-sealed-grants"),
+          threadId: harness.threadId,
+          providerSessionId: "mcp-session-claude-sealed-grants",
+          providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+          endpoint: "http://127.0.0.1:43123/mcp",
+          authorizationHeader: "Bearer t3-session-secret",
+          browserToolsAvailable: true,
+        });
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make("attempt-claude-sealed-grants"),
+            text: "Summarize my mail.",
+            attachments: [],
+            runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+              ...CLAUDE_TEST_RUNTIME_POLICY,
+              nativeMemory: "disabled",
+              nativeTools: "readOnly",
+              mcpConnections: [mail],
+            }),
+          }),
+        );
+        const options = harness.getOpenedOptions() ?? assert.fail("Claude did not open");
+        assert.deepEqual(Object.keys(options.mcpServers ?? {}), ["t3-code", mailServer]);
+        assert.deepEqual(options.allowedTools, [
+          ...ClaudeAdapterV2.CLAUDE_SEALED_TOOLS,
+          ...ClaudeAdapterV2.CLAUDE_READ_ONLY_T3_MCP_ALLOWED_TOOLS,
+        ]);
+        const guard = options.hooks?.PreToolUse?.[0]?.hooks[0] ?? assert.fail("no tool guard");
+        const decide = (tool: string) =>
+          Effect.promise(() =>
+            guard(
+              { hook_event_name: "PreToolUse", tool_name: tool, tool_input: {} } as never,
+              "toolu-1",
+              { signal: new AbortController().signal },
+            ),
+          ).pipe(
+            Effect.map(
+              (output) =>
+                (output as { hookSpecificOutput?: { permissionDecision?: string } })
+                  .hookSpecificOutput?.permissionDecision,
+            ),
+          );
+        for (const [tool, decision] of [
+          [`mcp__${mailServer}__read_mail`, "allow"],
+          [`mcp__${mailServer}__send_mail`, "deny"],
+          [`mcp__${mailServer}__archive_mail`, "deny"],
+          [`mcp__${mailServer}__added_later`, "deny"],
+          [`mcp__${mailServer}__peek_mail`, "deny"],
+          ["mcp__fixture__peek", "deny"],
+          ["mcp__t3-code__t3_thread_send", undefined],
+          ["Read", undefined],
+        ] as const) {
+          assert.equal(yield* decide(tool), decision, tool);
+        }
+        readMailMark = {};
+        assert.equal(yield* decide(`mcp__${mailServer}__read_mail`), "deny");
+      }).pipe(
+        Effect.provideService(HostProcess.Platform, "darwin"),
+        Effect.provide(
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            NodeCrypto.layer,
+          ),
+        ),
+      );
+    },
+  );
+
+  it.effect("never runs a No changes turn in an unsealed process, nor the reverse", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeWakeHarnessWithOptions({ freshQueueOnReopen: true });
+      const turns: ReadonlyArray<{
+        readonly sealed: boolean;
+        readonly opened: number;
+        readonly continuation?: boolean;
+        readonly refused?: boolean;
+      }> = [
+        { sealed: false, opened: 1 },
+        // Entering the seal reopens; staying in it reuses the sealed process.
+        { sealed: true, opened: 2 },
+        { sealed: true, opened: 2 },
+        { sealed: true, opened: 2, continuation: true },
+        // A continuation drains the running process, so it cannot leave the seal there.
+        { sealed: false, opened: 2, continuation: true, refused: true },
+        // Leaving the seal reopens.
+        { sealed: false, opened: 3 },
+        { sealed: true, opened: 3, continuation: true, refused: true },
+      ];
+      for (const [index, turn] of turns.entries()) {
+        const started = yield* harness.runtime
+          .startTurn(
+            makeClaudeTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now: yield* DateTime.now,
+              attemptId: RunAttemptId.make(`attempt-claude-seal-${index}`),
+              text: "Report the status.",
+              attachments: [],
+              providerTurnOrdinal: index + 1,
+              ...(turn.continuation === true
+                ? { messageCreatedBy: "agent", messageCreationSource: "provider" }
+                : {}),
+              runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+                ...CLAUDE_TEST_RUNTIME_POLICY,
+                nativeMemory: "disabled",
+                mcpConnections: [],
+                ...(turn.sealed ? { nativeTools: "readOnly" as const } : {}),
+              }),
+            }),
+          )
+          .pipe(Effect.exit);
+        if (turn.refused === true) {
+          assert.isTrue(Exit.isFailure(started), `turn ${index + 1}`);
+          if (Exit.isFailure(started))
+            assert.include(Cause.pretty(started.cause), "ProviderAdapterSealRefusedError");
+          assert.lengthOf(harness.processQueues, turn.opened, `turn ${index + 1}`);
+          continue;
+        }
+        assert.isTrue(Exit.isSuccess(started), `turn ${index + 1}`);
+        assert.lengthOf(harness.processQueues, turn.opened, `turn ${index + 1}`);
+        const options = harness.getOpenedOptions() ?? assert.fail("Claude did not open");
+        assert.equal(options.permissionMode === "dontAsk", turn.sealed, `turn ${index + 1}`);
+        yield* Queue.offer(
+          harness.processQueues.at(-1)!,
+          makeResultFrame({
+            uuid: `00000000-0000-4000-8000-00000000006${index}`,
+            result: "Done.",
+          }),
+        );
+        assert.equal((yield* Queue.take(harness.terminalReceipts)).status, "completed");
+      }
+      // Claude would continue an interrupted turn as it starts, before its version is checked.
+      const resumed = yield* harness.runtime
+        .startTurn({
+          ...makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make("attempt-claude-seal-resume"),
+            text: "",
+            attachments: [],
+            providerTurnOrdinal: turns.length + 1,
+            runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+              ...CLAUDE_TEST_RUNTIME_POLICY,
+              nativeTools: "readOnly",
+              mcpConnections: [],
+            }),
+          }),
+          resume: true,
+        })
+        .pipe(Effect.exit);
+      assert.isTrue(Exit.isFailure(resumed));
+      if (Exit.isFailure(resumed))
+        assert.include(Cause.pretty(resumed.cause), "ProviderAdapterSealRefusedError");
+      assert.lengthOf(harness.processQueues, 3);
+    }).pipe(
+      Effect.provideService(HostProcess.Platform, "darwin"),
+      Effect.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+        ),
+      ),
+    ),
   );
 
   it.effect("reopens the Claude query when native memory is disabled and restored", () =>
@@ -7015,6 +7358,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     >,
     toolName = "mcp__probe_server__show_weather",
     toolUseResult: unknown = { content: '{"tempC":21}', structuredContent: { tempC: 21 } },
+    runtimePolicy?: ProviderAdapter.ProviderAdapterV2RuntimePolicy,
   ) {
     const mcpRequests: Array<unknown> = [];
     const harness = yield* makeWakeHarnessWithOptions({
@@ -7052,6 +7396,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         attemptId: RunAttemptId.make("mcp-app"),
         text: "Show the weather",
         attachments: [],
+        ...(runtimePolicy === undefined ? {} : { runtimePolicy }),
       }),
     );
     const id = "weather-app-call";
@@ -7409,6 +7754,50 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       );
     }).pipe(
       Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+        ),
+      ),
+    ),
+  );
+
+  it.effect("refuses a No changes load's app calls, read-only tools included", () =>
+    Effect.gen(function* () {
+      // refresh_weather is marked read-only; the mark could change before Claude runs it.
+      const { harness, mcpRequests } = yield* runClaudeMcpAppToolTurn(
+        MCP_APP_CAPABILITIES,
+        undefined,
+        undefined,
+        undefined,
+        ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+          ...CLAUDE_TEST_RUNTIME_POLICY,
+          nativeTools: "readOnly",
+          mcpConnections: [],
+        }),
+      );
+      const exit = yield* Effect.exit(
+        harness.runtime.mcpApps!.callTool({
+          providerThread: harness.providerThread,
+          server: PROBE_SERVER_STATUS.name,
+          tool: "refresh_weather",
+          arguments: {},
+        }),
+      );
+      assert.isTrue(Exit.isFailure(exit));
+      if (Exit.isFailure(exit)) assert.include(Cause.pretty(exit.cause), "No changes");
+      assert.deepEqual(
+        mcpRequests.filter(
+          (request) => typeof request === "object" && request !== null && "arguments" in request,
+        ),
+        [],
+      );
+    }).pipe(
+      Effect.scoped,
+      Effect.provideService(HostProcess.Platform, "darwin"),
       Effect.provide(
         Layer.mergeAll(
           IdAllocator.layer,

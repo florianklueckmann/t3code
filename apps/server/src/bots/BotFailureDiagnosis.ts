@@ -111,7 +111,8 @@ const make = Effect.gen(function* () {
       home: ThreadId.make(context.home_thread_id),
       active: bot.archived_at === null && context.detached_at === null,
       unavailableReason:
-        (yield* BotRuntimePolicy.restrictionUnenforceable(providers, instanceId)) ?? null,
+        (yield* BotRuntimePolicy.restrictionUnenforceable(providers, instanceId, "readOnly")) ??
+        null,
     };
   });
 
@@ -147,7 +148,7 @@ const make = Effect.gen(function* () {
       return yield* invalid("This Bot is archived or detached, so failure diagnosis stays off.");
     if (input.enabled && !wasEnabled && unavailableReason !== null)
       return yield* invalid(
-        "A diagnosis runs No changes, which needs this Bot on Codex with T3 Code running on a Mac, so failure diagnosis stays off.",
+        "A diagnosis runs No changes, which needs this Bot on Codex or Claude with T3 Code running on a Mac, so failure diagnosis stays off.",
       );
     const now = DateTime.formatIso(yield* DateTime.now);
     const committed = yield* sql.withTransaction(

@@ -21,17 +21,25 @@ const driverOf = (providerInstances: ProviderInstances, instanceId: ProviderInst
     .pipe(Effect.map((instance) => instance?.driverKind as string | undefined));
 
 /**
- * Why a sealed Bot run cannot be enforced on this instance here, or undefined. Only Codex seals a
- * run, and only where that was verified natively.
+ * Why a sealed Bot run cannot be enforced on this instance here, or undefined. Codex seals both
+ * modes, Claude only No changes, each only where that was verified natively.
  */
 export const restrictionUnenforceable = Effect.fn("BotRuntimePolicy.restrictionUnenforceable")(
-  function* (providerInstances: ProviderInstances, instanceId: ProviderInstanceId) {
+  function* (
+    providerInstances: ProviderInstances,
+    instanceId: ProviderInstanceId,
+    seal: NonNullable<ProviderAdapter.ProviderAdapterV2RuntimePolicy["nativeTools"]>,
+  ) {
     const driver = yield* driverOf(providerInstances, instanceId);
-    if (!BotProviderSupport.botDriverSupport(driver).seals)
+    const support = BotProviderSupport.botDriverSupport(driver);
+    if (!(seal === "readOnly" ? support.readOnlySeal : support.homeSeal))
       return BotProviderSupport.unsupportedReason(driver);
-    return CodexAdapterV2.codexSealPlatformSupported(yield* HostProcess.Platform)
-      ? undefined
-      : ("platform" as const);
+    const platform = yield* HostProcess.Platform;
+    const measured =
+      driver === "claudeAgent"
+        ? ClaudeAdapterV2.claudeSealPlatformSupported(platform)
+        : CodexAdapterV2.codexSealPlatformSupported(platform);
+    return measured ? undefined : ("platform" as const);
   },
 );
 
@@ -67,8 +75,10 @@ export const layer: Layer.Layer<
         const bot = yield* botTurnContext
           .forThread(input.thread.id)
           .pipe(Effect.mapError(resolveError));
-        const sealUnenforceable = () =>
-          restrictionUnenforceable(providerInstances, input.modelSelection.instanceId).pipe(
+        const sealUnenforceable = (
+          seal: NonNullable<ProviderAdapter.ProviderAdapterV2RuntimePolicy["nativeTools"]>,
+        ) =>
+          restrictionUnenforceable(providerInstances, input.modelSelection.instanceId, seal).pipe(
             Effect.map((reason) =>
               reason === BotProviderSupport.CLAUDE_UNSUPPORTED ? "provider" : reason,
             ),
@@ -79,7 +89,7 @@ export const layer: Layer.Layer<
             bot.scope.taskId !== null ||
             bot.scope.homeThreadId !== input.thread.id
               ? ("home" as const)
-              : yield* sealUnenforceable();
+              : yield* sealUnenforceable("t3BotOnly");
           if (reason !== undefined) {
             return yield* new RuntimePolicy.RuntimePolicyUnsupportedError({
               threadId: input.thread.id,
@@ -101,7 +111,7 @@ export const layer: Layer.Layer<
           .pipe(Effect.mapError(resolveError));
         const noChanges = constraint === "no-changes";
         if (noChanges) {
-          const reason = yield* sealUnenforceable();
+          const reason = yield* sealUnenforceable("readOnly");
           if (reason !== undefined) {
             return yield* new RuntimePolicy.RuntimePolicyUnsupportedError({
               threadId: input.thread.id,

@@ -49,14 +49,11 @@ Some features need a Codex model for now. On a Claude Bot, **Settings → Bots**
 shows them as unavailable and says why:
 
 - **Use my own Codex MCP servers**
-- **No changes** routines. A new routine on a Claude Bot starts as **Changes
-  allowed**.
-- Maintenance, the Daily Home check and Diagnose failed routines
+- Maintenance and the Daily Home check
 
 To switch a Bot from Codex to Claude, first turn off what Claude can't do yet.
 Otherwise the switch is refused, the message lists what to change, and the Bot
-keeps its model. Paused No changes routines may stay; they cannot be resumed as
-No changes on Claude.
+keeps its model.
 
 Each Bot gets its own little figure. To change its color, face or topper, open
 the Bot and select the figure next to its name (on mobile, **Change look**).
@@ -141,23 +138,24 @@ then pick a timing:
 
 Choose **No changes** to have the Bot report results and propose changes
 without editing files or data or sending messages. Choose **Changes allowed**
-to authorize the edits or messages requested in the brief. New routines on a Codex
-Bot, and older routines saved without a choice, default to **No changes** until you
+to authorize the edits or messages requested in the brief. New routines, and
+older routines saved without a choice, default to **No changes** until you
 choose otherwise. The brief determines
 the result's content and format.
 
 **Changes allowed** runs in **Full access** without approval prompts. **No changes**
-is enforced, not only requested: the routine's task runs with a read-only
-sandbox, no network for its commands, and no approval prompts. It can read files
-and search the web, but it cannot write files, reach other machines from the
+is enforced, not only requested, and runs without approval prompts. It can read
+files and search the web, but it cannot write files, reach other machines from a
 shell, run subagents, use your MCP servers, apps, plugins or hooks, or use T3
 Code actions that change something, such as sending to threads, scheduling,
-delegating or saving what the Bot learned. It uses the provider account you
-selected for the Bot, including a ChatGPT sign-in. The task's result is saved
-as usual.
+delegating or saving what the Bot learned. On Codex the task keeps a shell for
+reading, in a read-only sandbox without network. On Claude it has no shell at
+all, and your permission rules, skills and launch arguments can't give it more
+tools. It uses the provider account you selected for the Bot, including a
+ChatGPT sign-in. The task's result is saved as usual.
 
-No changes currently works only on macOS, with Codex 0.166.0 or later. A
-Claude Bot doesn't offer it. Anywhere else the routine's task fails with the
+No changes currently works only on macOS, with Codex 0.166.0 or Claude Code
+2.1.326 or later. Anywhere else the routine's task fails with the
 reason instead of running with more access. Follow-up messages in a routine's task stay No changes, and its
 work thread shows No changes as its fixed permission; to have the
 Bot make the changes it proposed, ask it directly. Tasks you ask for directly
@@ -180,8 +178,7 @@ run's work thread.
 
 A diagnostic task always runs as **No changes**, in the failed routine's
 project, on the Bot's model, whatever the routine itself was allowed to do, and
-without the Bot's MCP connections. Like No changes, it needs a Codex model on a
-Mac server. Each
+without the Bot's MCP connections. Like No changes, it needs a Mac server. Each
 failed run gets at most one diagnosis, and a diagnosis that fails is not
 diagnosed again. Only routine runs that fail count: cancelled, interrupted or
 rolled-back runs, routines that could not start, and tasks you asked for
@@ -369,8 +366,8 @@ service, add a second connection and sign in with the other account.
 - On Claude, MCP connections apply only on a macOS server. Elsewhere a Claude
   Bot with connections does not run; one without loads only T3 Code's own tools.
 - On a Claude Bot, plugins and hooks your organization manages for Claude still
-  load. Own MCP servers, No changes routines, maintenance, the Daily Home check
-  and Diagnose failed routines are not available yet.
+  load, in No changes routines too. Own MCP servers, maintenance and the Daily
+  Home check are not available yet.
 - Bots turn off Claude's automatic memory.
 - Built-in email and calendar connections are not available.
 

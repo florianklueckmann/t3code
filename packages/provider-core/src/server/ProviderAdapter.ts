@@ -258,14 +258,15 @@ export class ProviderAdapterOpenSessionError extends Schema.TaggedError<Provider
   }
 }
 
-const sealRefusalText = {
-  provider: "only Codex can enforce it",
-  version: "this Codex version's tools have not been verified",
-  platform: "it is only verified on macOS",
-  children: "this conversation already has agents it could reach",
-  seal: "the conversation's current tool setup could not be confirmed",
-  unavailable: "it needs an existing conversation with T3 Code's tools connected",
-} as const;
+const sealRefusalText = (driver: string) =>
+  ({
+    provider: "only Codex can enforce it",
+    version: `this ${driver === "claudeAgent" ? "Claude Code" : "Codex"} version's tools have not been verified`,
+    platform: "it is only verified on macOS",
+    children: "this conversation already has agents it could reach",
+    seal: "the conversation's current tool setup could not be confirmed",
+    unavailable: "it needs an existing conversation with T3 Code's tools connected",
+  }) as const;
 
 /** A `nativeTools` load or turn the adapter could not enforce. Nothing ran. */
 export class ProviderAdapterSealRefusedError extends Schema.TaggedError<ProviderAdapterSealRefusedError>()(
@@ -278,9 +279,10 @@ export class ProviderAdapterSealRefusedError extends Schema.TaggedError<Provider
   },
 ) {
   override get message(): string {
+    const because = sealRefusalText(this.driver)[this.reason];
     return this.seal === "readOnly"
-      ? `This routine task is set to No changes, which its provider can't enforce here because ${sealRefusalText[this.reason]}, so nothing ran. Start a new routine task once that is fixed, or ask the Bot directly.`
-      : `This Bot maintenance turn can't be restricted here because ${sealRefusalText[this.reason]}, so nothing ran.`;
+      ? `This routine task is set to No changes, which its provider can't enforce here because ${because}, so nothing ran. Start a new routine task once that is fixed, or ask the Bot directly.`
+      : `This Bot maintenance turn can't be restricted here because ${because}, so nothing ran.`;
   }
 }
 

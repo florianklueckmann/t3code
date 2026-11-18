@@ -116,6 +116,7 @@ export const make = Effect.gen(function* () {
       (yield* BotRuntimePolicy.restrictionUnenforceable(
         providers,
         ProviderInstanceId.make(instance),
+        "t3BotOnly",
       )) ?? null
     );
   });
