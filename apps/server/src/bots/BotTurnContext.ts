@@ -181,7 +181,7 @@ function homeTaskSection(input: { readonly botId: string; readonly projectId: st
   return [
     "Tasks and routines:",
     `- When the user asks you to do something as a separate task, call t3_bot with action "start_task", botId "${input.botId}", projectId "${input.projectId}" and the request as \`task\`. It runs in its own work thread; its result appears here as a card.`,
-    `- When the user asks for work on a schedule, call schedule_task with botId "${input.botId}" and projectId "${input.projectId}". Give a one-time \`schedule\`, optionally with \`sessionAt\` when preparing before an event, or a fixed time for recurring work. For a new routine, honor the user's explicit choice of mode. If no mode is specified, set \`allowChanges: true\` when the requested work involves editing files or data or sending messages; otherwise use false. When updating a routine, omit \`allowChanges\` unless the user asks to change its mode; omission keeps the saved choice.`,
+    `- When the user asks for work on a schedule, or agrees to one you offered, call schedule_task with botId "${input.botId}" and projectId "${input.projectId}". A date or deadline the user only mentions is not such a request: record it as open business in the working notes and offer a reminder in one sentence. Give a one-time \`schedule\`, optionally with \`sessionAt\` when preparing before an event, or a fixed time for recurring work. For a new routine, honor the user's explicit choice of mode. If no mode is specified, set \`allowChanges: true\` when the requested work involves editing files or data or sending messages; otherwise use false. When updating a routine, omit \`allowChanges\` unless the user asks to change its mode; omission keeps the saved choice.`,
   ].join("\n");
 }
 

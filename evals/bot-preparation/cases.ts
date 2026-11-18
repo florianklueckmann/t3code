@@ -75,7 +75,10 @@ export type PreparationCase =
       readonly taskEffort?: string;
       readonly expectedFiles?: Readonly<Record<string, string>>;
       readonly existingRoutine?: { readonly title: string; readonly allowChanges: boolean };
-      /** The routine the turn should set up, or none. A plain reminder: its Berlin date and a regex for its title or brief. */
+      /**
+       * The routine the turn should set up, or none. A plain reminder: its Berlin date or inclusive
+       * date range, a regex for its title or brief, and whether only the last turn asks for it.
+       */
       readonly routine:
         | {
             readonly sessionAt: string;
@@ -83,13 +86,20 @@ export type PreparationCase =
             readonly allowChanges?: boolean;
             readonly title?: string;
           }
-        | { readonly runOn: string; readonly about: string }
+        | {
+            readonly runOn: string | readonly [from: string, to: string];
+            readonly about: string;
+            readonly askedInLastTurn?: boolean;
+          }
         | null;
       /** Whether the turn should start a separate task. */
       readonly startsTask: boolean;
     };
 
 const RESULT_SECTIONS = ["reminder", "recap", "open questions?", "proposal"];
+
+const DINNER_DEADLINE =
+  "Heads up: friends come for dinner on Thursday 2027-11-18 and I have not decided between pancakes and lentil soup yet. If we go with the soup I must buy red lentils before Wednesday. I will need to decide by Tuesday evening.";
 
 /** A bulky reference paste with nothing to act on, about 17,000 characters like the original. */
 const referenceExport = (prefix: string) => {
@@ -221,9 +231,9 @@ export const CASES: ReadonlyArray<PreparationCase> = [
     world: "with-records",
     trigger: "home",
     prompt:
-      "Our next session is on 2026-11-13 at 19:00 Berlin time (UTC+01:00). Prepare me a day before it.",
+      "Our next session is on 2027-11-12 at 19:00 Berlin time (UTC+01:00). Prepare me a day before it.",
     answerMust: [],
-    routine: { sessionAt: "2026-11-13T18:00:00.000Z", leadHours: 24 },
+    routine: { sessionAt: "2027-11-12T18:00:00.000Z", leadHours: 24 },
     startsTask: false,
   },
   {
@@ -232,9 +242,9 @@ export const CASES: ReadonlyArray<PreparationCase> = [
     world: "with-records",
     trigger: "home",
     prompt:
-      "Our planning meeting is on 2026-11-13 at 19:00 Berlin time (UTC+01:00). A day before it, update world/notes.md by adding a Planning section with the recorded open questions. Set up a routine for that.",
+      "Our planning meeting is on 2027-11-12 at 19:00 Berlin time (UTC+01:00). A day before it, update world/notes.md by adding a Planning section with the recorded open questions. Set up a routine for that.",
     answerMust: [],
-    routine: { sessionAt: "2026-11-13T18:00:00.000Z", leadHours: 24, allowChanges: true },
+    routine: { sessionAt: "2027-11-12T18:00:00.000Z", leadHours: 24, allowChanges: true },
     startsTask: false,
   },
   {
@@ -243,9 +253,9 @@ export const CASES: ReadonlyArray<PreparationCase> = [
     world: "with-records",
     trigger: "home",
     prompt:
-      "Our next session is on 2026-11-13 at 19:00 Berlin time (UTC+01:00). Set up a routine to recap the session logs a day before it. I explicitly choose Changes allowed for this routine, even though the current brief only asks for a report.",
+      "Our next session is on 2027-11-12 at 19:00 Berlin time (UTC+01:00). Set up a routine to recap the session logs a day before it. I explicitly choose Changes allowed for this routine, even though the current brief only asks for a report.",
     answerMust: [],
-    routine: { sessionAt: "2026-11-13T18:00:00.000Z", leadHours: 24, allowChanges: true },
+    routine: { sessionAt: "2027-11-12T18:00:00.000Z", leadHours: 24, allowChanges: true },
     startsTask: false,
   },
   {
@@ -254,9 +264,9 @@ export const CASES: ReadonlyArray<PreparationCase> = [
     world: "with-records",
     trigger: "home",
     prompt:
-      "Our next session is on 2026-11-13 at 19:00 Berlin time (UTC+01:00). Set up a routine a day before it about adding a Planning section to world/notes.md. I explicitly choose No changes: propose the edit without applying it.",
+      "Our next session is on 2027-11-12 at 19:00 Berlin time (UTC+01:00). Set up a routine a day before it about adding a Planning section to world/notes.md. I explicitly choose No changes: propose the edit without applying it.",
     answerMust: [],
-    routine: { sessionAt: "2026-11-13T18:00:00.000Z", leadHours: 24, allowChanges: false },
+    routine: { sessionAt: "2027-11-12T18:00:00.000Z", leadHours: 24, allowChanges: false },
     startsTask: false,
   },
   {
@@ -268,7 +278,7 @@ export const CASES: ReadonlyArray<PreparationCase> = [
     prompt: "Rename my existing routine to Campaign recap. Keep its timing and brief unchanged.",
     answerMust: [],
     routine: {
-      sessionAt: "2026-11-13T18:00:00.000Z",
+      sessionAt: "2027-11-12T18:00:00.000Z",
       leadHours: 24,
       allowChanges: true,
       title: "Campaign recap",
@@ -276,19 +286,36 @@ export const CASES: ReadonlyArray<PreparationCase> = [
     startsTask: false,
   },
   // T3B-62: the Home set the reminder, then set it again on the next, unrelated message.
+  // Its first turn is also the T3B-71 case: a deadline mentioned with no request gets no routine.
   {
     id: "reminder-set-once",
     kind: "new",
     world: "with-records",
     trigger: "home",
-    prompt:
-      "Heads up: friends come for dinner on Thursday 2027-11-18 and I have not decided between pancakes and lentil soup yet. If we go with the soup I must buy red lentils before Wednesday. I will need to decide by Tuesday evening.",
+    prompt: DINNER_DEADLINE,
     laterTurns: [
       `Pantry inventory export for the notebook (reference data, nothing in it needs a decision). One open request from me: please remind me on Friday 2027-11-19 to descale the oven.\n\n${referenceExport("INV-A")}`,
       `Second reference export (shopping history). Decision from me: from now on all quantities in this notebook are metric only, no cups or ounces.\n\n${referenceExport("INV-B")}`,
     ],
     answerMust: [],
     routine: { runOn: "2027-11-19", about: "descal" },
+    startsTask: false,
+  },
+  // T3B-71: a mentioned deadline gets a reminder once the user agrees to one, not before.
+  {
+    id: "reminder-after-agreement",
+    kind: "control",
+    world: "with-records",
+    trigger: "home",
+    prompt: DINNER_DEADLINE,
+    laterTurns: ["Yes, please remind me."],
+    answerMust: [],
+    routine: {
+      runOn: ["2027-11-11", "2027-11-16"],
+      // The reminder must be to decide, not an errand that depends on the decision.
+      about: "^(decide|choose)|decision|remind (me|the user) to (decide|choose)",
+      askedInLastTurn: true,
+    },
     startsTask: false,
   },
   {
