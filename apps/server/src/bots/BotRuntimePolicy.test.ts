@@ -314,20 +314,25 @@ it.effect("keeps a Codex Bot on Windows on Codex's own MCP setup unless it has g
   }),
 );
 
-it.effect("seals a restricted run only in an active Bot Home on Codex and macOS", () =>
+it.effect("seals a restricted run only in an active Bot Home on Codex or Claude and macOS", () =>
   Effect.gen(function* () {
-    const sealed = yield* resolveFor(botThread, { restriction: "botNote" });
-    assert.equal(sealed.nativeTools, "t3BotOnly");
-    assert.equal(sealed.nativeMemory, "disabled");
+    // In this suite the instance id "codex" runs the Claude driver.
+    for (const instanceId of ["codex_work", "codex"]) {
+      const sealed = yield* resolveFor(botThread, { instanceId, restriction: "botNote" });
+      assert.equal(sealed.nativeTools, "t3BotOnly", instanceId);
+      assert.equal(sealed.nativeMemory, "disabled");
+      assert.deepEqual(sealed.mcpConnections, []);
+    }
     assert.isUndefined((yield* resolveFor(botThread)).nativeTools);
     for (const [threadId, options, reason] of [
       [workThread, {}, "home"],
       [noChangesThread, {}, "home"],
       [archivedBotThread, {}, "home"],
       [ThreadId.make("plain"), {}, "home"],
-      [botThread, { instanceId: "codex" }, "provider"],
+      [botThread, { instanceId: "pi" }, "provider"],
       [botThread, { instanceId: "missing" }, "provider"],
       [botThread, { platform: "linux" }, "platform"],
+      [botThread, { instanceId: "codex", platform: "linux" }, "platform"],
     ] as const) {
       const refused = yield* resolveFor(threadId, { ...options, restriction: "botWaiting" }).pipe(
         Effect.flip,

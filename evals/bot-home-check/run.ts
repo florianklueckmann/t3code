@@ -329,7 +329,6 @@ const main = Effect.gen(function* () {
         instance: values.instance,
         model: values.model,
         effort: values.effort,
-        codexOnly: "the Home check is a sealed run, which only Codex enforces.",
       });
       const work = NodePath.resolve(values.work ?? NodePath.join(out, "work"));
       const fixtures: Fixture[] = [];

@@ -397,17 +397,28 @@ it.effect("stays off at 08:00 by default and configures by compare-and-set", () 
         .unavailableReason,
       "platform",
     );
-    // A Claude Home gets neither check, and one reason covers both switches.
+    // A Home on a provider without the seal gets neither check, and one reason covers both.
     const main = yield* SqlClient.SqlClient;
-    yield* main`UPDATE orchestration_v2_projection_threads SET provider_instance_id = 'claudeAgent' WHERE thread_id = ${home}`;
-    const claude = yield* onMac(
+    yield* main`UPDATE orchestration_v2_projection_threads SET provider_instance_id = 'pi' WHERE thread_id = ${home}`;
+    const pi = yield* onMac(
       check.configure({ ...scope, baseRevision: 5, enabled: true, early: true }),
     ).pipe(Effect.flip);
-    assert.include(claude.message, "Codex");
+    assert.include(pi.message, "Codex or Claude");
     assert.deepInclude(yield* onMac(check.get(scope)), {
       enabled: false,
       early: false,
-      unavailableReason: "claude_unsupported",
+      unavailableReason: "provider",
+    });
+    // A Claude Home seals the check, so both switches turn on.
+    yield* main`UPDATE orchestration_v2_projection_threads SET provider_instance_id = 'claudeAgent' WHERE thread_id = ${home}`;
+    assert.deepInclude(
+      yield* onMac(check.configure({ ...scope, baseRevision: 5, enabled: true, early: true })),
+      { _tag: "saved" },
+    );
+    assert.deepInclude(yield* onMac(check.get(scope)), {
+      enabled: true,
+      early: true,
+      unavailableReason: null,
     });
   }).pipe(Effect.provide(services)),
 );
@@ -647,7 +658,7 @@ it.effect.each([
 );
 
 it.effect.each([
-  { name: "a Home on another provider", provider: "claudeAgent", platform: "darwin" },
+  { name: "a Home on another provider", provider: "pi", platform: "darwin" },
   { name: "a Linux host", provider: "codex", platform: "linux" },
 ] as const)("records $name as unsupported once a slot", ({ provider, platform }) =>
   Effect.gen(function* () {
@@ -674,7 +685,7 @@ it.effect.each([
         {
           kind: "unsupported",
           at: "2026-11-09T09:00:00.000Z",
-          reason: provider === "codex" ? "platform" : "claude_unsupported",
+          reason: provider === "codex" ? "platform" : "provider",
         },
       ],
     );

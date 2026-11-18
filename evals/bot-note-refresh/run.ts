@@ -365,7 +365,8 @@ const main = Effect.gen(function* () {
         instance: values.instance,
         model: values.model,
         effort: values.effort,
-        codexOnly: "the note refresh is a sealed run, which only Codex enforces.",
+        codexOnly:
+          "the note refresh runs in a maintenance night, whose learning step needs Codex's sealed generation.",
       });
       const work = NodePath.resolve(values.work ?? NodePath.join(out, "work"));
       const fixtures: Fixture[] = [];

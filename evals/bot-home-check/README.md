@@ -6,21 +6,21 @@ The check prompt is `HOME_CHECK_PROMPT` in `apps/server/src/bots/BotHomeCheck.ts
 
 ## How a check is started
 
-No client can start a check at once. After seeding, the eval checks that each Home is idle with a completed ordinary turn and its native provider conversation. It waits out the server's ten-minute quiet period and writes each Home's `bot_home_checks` row in that server's `bots.sqlite` so a daily time has just passed. The server's scheduler, quiet check, admission, scoped Codex turn, Waiting save rules and outcome reconcile all run as they would for a user. An early case (T3B-79) instead turns daily and early checks on before its task starts, with the daily time just passed, so only the finished task's outcome starts the check after the quiet period. The eval refuses `~/.t3`; point `--base-dir` only at a synthetic home.
+No client can start a check at once. After seeding, the eval checks that each Home is idle with a completed ordinary turn and its native provider conversation. It waits out the server's ten-minute quiet period and writes each Home's `bot_home_checks` row in that server's `bots.sqlite` so a daily time has just passed. The server's scheduler, quiet check, admission, scoped provider turn, Waiting save rules and outcome reconcile all run as they would for a user. An early case (T3B-79) instead turns daily and early checks on before its task starts, with the daily time just passed, so only the finished task's outcome starts the check after the quiet period. The eval refuses `~/.t3`; point `--base-dir` only at a synthetic home.
 
 ## Run
 
-Start a synthetic server on a Mac with a signed-in Codex (for example `vp run dev --home-dir /synthetic/home --no-seed`). From `evals/`, check the setup with one case and one sample first:
+Start a synthetic server on a Mac with a signed-in Codex or Claude (for example `vp run dev --home-dir /synthetic/home --no-seed`). From `evals/`, check the setup with one case and one sample first:
 
 ```sh
 pnpm bot-home-check --base-dir /synthetic/home --out runs/check --case nothing-useful-noop --samples 1
 ```
 
-Then the full set: `pnpm bot-home-check --base-dir /synthetic/home --out runs/<name>`. A full run waits about 25 minutes of wall time for quiet periods, plus the turns. It costs about 48 Codex turns on the chosen model: per sample one seed turn and one check, with a separate task for the decision case, and for the removal control a second check and turn.
+Then the full set: `pnpm bot-home-check --base-dir /synthetic/home --out runs/<name>`. A full run waits about 25 minutes of wall time for quiet periods, plus the turns. It costs about 48 turns on the chosen model: per sample one seed turn and one check, with a separate task for the decision case, and for the removal control a second check and turn.
 
 A case with a `remit` writes it into the Bot's `bot_attention` row as Bot settings would. `--omit-remit` leaves it out, which shows what the remit decides: `remit-rules-out-event` must fail that way, as the same appointment goes to Waiting.
 
-Flags: `--model` (default `gpt-6.1-terra`), `--effort` (default `high`), `--samples` (default 3), `--case <id>` (repeatable), `--work <dir>` for the synthetic project folders, `--baseline <results.jsonl>` to keep an earlier run beside this one. It never falls back to another model. `--instance` (default `codex`) must name a Codex instance: the check is a sealed run only Codex enforces, and the run refuses other providers.
+Flags: `--model` (default `gpt-6.1-terra`), `--effort` (default `high`), `--samples` (default 3), `--case <id>` (repeatable), `--work <dir>` for the synthetic project folders, `--baseline <results.jsonl>` to keep an earlier run beside this one. It never falls back to another model. `--instance` (default `codex`) must name a Codex or Claude instance (Claude Code 2.1.327 or later): the check is a sealed run only those two enforce.
 
 ## Baseline
 

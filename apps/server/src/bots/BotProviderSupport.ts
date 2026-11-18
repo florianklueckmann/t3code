@@ -16,8 +16,8 @@ export const unsupportedReason = (driver: string | undefined) =>
 
 /**
  * What a driver can enforce for a Bot, before any platform or sign-in check. Claude keeps a Bot's
- * threads to T3 Code's own MCP server and its grants and seals No changes runs, but has no Home
- * seal or sealed generation yet, and the user's own servers are Codex's.
+ * threads to T3 Code's own MCP server and its grants and seals No changes runs and the Home's
+ * scoped turns, but has no sealed generation yet, and the user's own servers are Codex's.
  */
 export function botDriverSupport(driver: string | undefined) {
   const codex = driver === "codex";
@@ -27,8 +27,8 @@ export function botDriverSupport(driver: string | undefined) {
     ownMcpServers: codex,
     /** No changes ("readOnly"): routines and failure diagnosis. */
     readOnlySeal: mcpIsolation,
-    /** The Home's scoped turns ("t3BotOnly"): the Home check and maintenance. */
-    homeSeal: codex,
+    /** The Home's scoped turns ("t3BotOnly"): the Home check and maintenance's note refresh. */
+    homeSeal: mcpIsolation,
     sealedGeneration: codex,
     /** Loads no MCP server but T3 Code's own and the Bot's grants. */
     mcpIsolation,

@@ -167,6 +167,7 @@ import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { snapshotMcpApp } from "../../mcpApps/McpAppSnapshot.ts";
 import * as McpConnectionDelivery from "../../mcpConnections/McpConnectionDelivery.ts";
+import * as McpInvocationContext from "../../mcp/McpInvocationContext.ts";
 import { resolveClaudeSdkExecutablePath } from "../../provider/Drivers/ClaudeExecutable.ts";
 import * as ProviderInstallationGate from "../../provider/ProviderInstallationGate.ts";
 import {
@@ -2403,21 +2404,27 @@ const CLAUDE_GRANTED_MCP_STATUS_TIMEOUT = "10 seconds";
 export const claudeMcpGrantsPlatformSupported = (platform: NodeJS.Platform) =>
   platform === "darwin";
 
-/** Where the No changes seal was measured natively. */
+/** Where the No changes and Home seals were measured natively. */
 export const claudeSealPlatformSupported = (platform: NodeJS.Platform) => platform === "darwin";
+type ClaudeSeal = NonNullable<ProviderAdapter.ProviderAdapterV2RuntimePolicy["nativeTools"]>;
+
 /**
  * The oldest Claude Code whose sealed load was measured natively. A newer one is accepted: a tool
  * it adds by default is still outside `tools`.
  */
-const CLAUDE_SEAL_MIN_VERSION = "2.1.326";
-const claudeSealVersionSupported = (version: string | undefined) =>
+const CLAUDE_SEAL_MIN_VERSION: Record<ClaudeSeal, string> = {
+  readOnly: "2.1.326",
+  t3BotOnly: "2.1.327",
+};
+const claudeSealVersionSupported = (seal: ClaudeSeal, version: string | undefined) =>
   version !== undefined &&
   parseSemver(version) !== null &&
-  compareSemverVersions(version, CLAUDE_SEAL_MIN_VERSION) >= 0;
+  compareSemverVersions(version, CLAUDE_SEAL_MIN_VERSION[seal]) >= 0;
 
 /**
- * Claude seals only No changes, has none of the user's own Codex servers, and loads grants only
- * where that was measured: a Bot thread asking for more is refused before anything native starts.
+ * Claude seals only where that was measured, has none of the user's own Codex servers, and loads
+ * grants only where that was measured: a Bot thread asking for more is refused before anything
+ * native starts.
  */
 function claudeBotPolicyRefusal(
   policy: ProviderAdapter.ProviderAdapterV2RuntimePolicy,
@@ -2426,13 +2433,7 @@ function claudeBotPolicyRefusal(
   | ProviderAdapter.ProviderAdapterSealRefusedError
   | ProviderAdapter.ProviderAdapterMcpConnectionsRefusedError
   | undefined {
-  if (policy.nativeTools === "t3BotOnly")
-    return new ProviderAdapter.ProviderAdapterSealRefusedError({
-      driver: CLAUDE_PROVIDER,
-      seal: policy.nativeTools,
-      reason: "provider",
-    });
-  if (policy.nativeTools === "readOnly" && !claudeSealPlatformSupported(platform))
+  if (policy.nativeTools !== undefined && !claudeSealPlatformSupported(platform))
     return new ProviderAdapter.ProviderAdapterSealRefusedError({
       driver: CLAUDE_PROVIDER,
       seal: policy.nativeTools,
@@ -2514,10 +2515,18 @@ export function claudeGrantLoad(
   };
 }
 
-/** Whether a No changes load may call an MCP tool other than T3 Code's; refuses until the load is open. */
+/**
+ * A sealed load's guard. `readOnly` says whether a No changes load may call an MCP tool other than
+ * T3 Code's, and refuses until the load is open.
+ */
 interface ClaudeSealedToolGuard {
+  readonly seal: ClaudeSeal;
   readOnly: (tool: string) => Promise<boolean>;
 }
+
+/** A Home seal's only tools: T3 Code's sealed set, which its server also enforces. */
+export const CLAUDE_HOME_SEAL_TOOLS: ReadonlyArray<string> =
+  McpInvocationContext.SEALED_LOAD_TOOLS.map((tool) => `mcp__t3-code__${tool}`);
 
 /** A tool Claude routes to exactly one connected granted server, which marks it read-only now. */
 function claudeSealedToolAllowed(
@@ -2545,6 +2554,17 @@ function claudeSealedToolHook(guard: ClaudeSealedToolGuard): HookCallback {
   return async (input) => {
     if (input.hook_event_name !== "PreToolUse") return {};
     const tool = input.tool_name;
+    if (guard.seal === "t3BotOnly")
+      return CLAUDE_HOME_SEAL_TOOLS.includes(tool)
+        ? {}
+        : {
+            hookSpecificOutput: {
+              hookEventName: "PreToolUse",
+              permissionDecision: "deny",
+              permissionDecisionReason:
+                "This Bot Home turn may only read T3 Code and use the t3_bot tool, so this tool is refused.",
+            },
+          };
     if (!tool.startsWith("mcp__") || tool.startsWith(CLAUDE_T3_MCP_TOOL_PREFIX)) return {};
     const readOnly = await guard.readOnly(tool);
     return {
@@ -2930,6 +2950,8 @@ export function claudeMcpQueryOverrides(input: {
   readonly mcpSession: McpProviderSession.McpProviderSessionConfig | undefined;
   readonly readOnlySandbox: boolean;
   readonly allowedTools?: ReadonlyArray<string>;
+  /** A Home seal: the query policy's tools only, and T3 Code's server narrows itself to them. */
+  readonly homeSeal?: boolean;
 }): {
   readonly allowedTools?: ReadonlyArray<string>;
   readonly mcpServers?: ClaudeQueryOptions["mcpServers"];
@@ -2938,9 +2960,12 @@ export function claudeMcpQueryOverrides(input: {
   if (session === undefined) {
     return input.allowedTools === undefined ? {} : { allowedTools: input.allowedTools };
   }
-  const mcpAllowedTools = input.readOnlySandbox
-    ? CLAUDE_READ_ONLY_T3_MCP_ALLOWED_TOOLS
-    : [CLAUDE_T3_MCP_TOOL_WILDCARD];
+  const mcpAllowedTools =
+    input.homeSeal === true
+      ? []
+      : input.readOnlySandbox
+        ? CLAUDE_READ_ONLY_T3_MCP_ALLOWED_TOOLS
+        : [CLAUDE_T3_MCP_TOOL_WILDCARD];
   return {
     allowedTools: Array.from(new Set([...(input.allowedTools ?? []), ...mcpAllowedTools])),
     mcpServers: {
@@ -2949,6 +2974,7 @@ export function claudeMcpQueryOverrides(input: {
         url: session.endpoint,
         headers: {
           Authorization: session.authorizationHeader,
+          ...(input.homeSeal === true ? { [McpInvocationContext.SEALED_LOAD_HEADER]: "1" } : {}),
         },
         timeout: CLAUDE_T3_MCP_TOOL_TIMEOUT_MS,
       },
@@ -3735,8 +3761,8 @@ function readOnlyPolicyAllowsGlobalReads(
 function permissionModeForClaudeRuntimePolicy(
   runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy,
 ): PermissionMode {
-  // A No changes turn ignores the thread's own modes.
-  if (runtimePolicy.nativeTools === "readOnly") return "dontAsk";
+  // A sealed turn ignores the thread's own modes.
+  if (runtimePolicy.nativeTools !== undefined) return "dontAsk";
   if (runtimePolicy.interactionMode === "plan") {
     return "plan";
   }
@@ -3811,6 +3837,14 @@ export function claudeRuntimeQueryPolicyForRuntimePolicy(
       permissionMode: "dontAsk",
       tools: CLAUDE_SEALED_TOOLS,
       allowedTools: CLAUDE_SEALED_TOOLS,
+      installPermissionCallback: false,
+    };
+  // No built-in tool at all: no shell, files, web, subagents or skills.
+  if (runtimePolicy.nativeTools === "t3BotOnly")
+    return {
+      permissionMode: "dontAsk",
+      tools: [],
+      allowedTools: CLAUDE_HOME_SEAL_TOOLS,
       installPermissionCallback: false,
     };
   const requestedMode = permissionModeForClaudeRuntimePolicy(runtimePolicy);
@@ -5558,8 +5592,8 @@ interface ClaudeLiveQueryContext {
   readonly queryPolicyKey: string;
   /** Opened with only T3 Code's MCP server, its grants and no plugins, as a Bot thread needs. */
   readonly isolated: boolean;
-  /** Opened for No changes; only a No changes turn may run in it, and a No changes turn nowhere else. */
-  readonly sealed: boolean;
+  /** The seal it was opened with; only a turn with the same seal may run in it. */
+  readonly seal: ClaudeSeal | undefined;
   readonly grants: ClaudeGrantLoad | undefined;
   /** Granted servers that did not connect, until a turn of this process reports them. */
   readonly unreportedGrantFailures: Set<string>;
@@ -12587,11 +12621,13 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             } satisfies PermissionResult;
           }
           // dontAsk already refuses what is not pre-approved; anything Claude still asks is refused.
-          if (context.input.runtimePolicy.nativeTools === "readOnly") {
+          if (context.input.runtimePolicy.nativeTools !== undefined) {
             return {
               behavior: "deny",
               message:
-                "This task is set to No changes, so tools that change things are refused. Report what you found, or describe the change you propose, in your result.",
+                context.input.runtimePolicy.nativeTools === "readOnly"
+                  ? "This task is set to No changes, so tools that change things are refused. Report what you found, or describe the change you propose, in your result."
+                  : "This Bot Home turn may only read T3 Code and use the t3_bot tool, so this tool is refused.",
               toolUseID: callbackOptions.toolUseID,
             } satisfies PermissionResult;
           }
@@ -13185,16 +13221,17 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
          */
         const verifySealedProcess = Effect.fn("ClaudeAdapterV2.verifySealedProcess")(function* (
           session: ClaudeAgentSdkQuerySession,
+          seal: ClaudeSeal,
         ) {
           const version =
             session.claudeCodeVersion === undefined
               ? undefined
               : yield* session.claudeCodeVersion.pipe(Effect.orElseSucceed(() => undefined));
-          if (claudeSealVersionSupported(version)) return;
+          if (claudeSealVersionSupported(seal, version)) return;
           yield* session.close.pipe(Effect.ignore);
           return yield* new ProviderAdapter.ProviderAdapterSealRefusedError({
             driver: CLAUDE_PROVIDER,
-            seal: "readOnly",
+            seal,
             reason: "version",
           });
         });
@@ -13215,7 +13252,15 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 return pendingWake !== undefined && (yield* pendingWake) ? { continue: false } : {};
               }),
             );
-          const sealed = turnInput.runtimePolicy.nativeTools === "readOnly";
+          const seal = turnInput.runtimePolicy.nativeTools;
+          const sealed = seal !== undefined;
+          // As on Codex, a Home turn without T3 Code's server could not save what it found.
+          if (seal === "t3BotOnly" && mcpSession === undefined)
+            return yield* new ProviderAdapter.ProviderAdapterSealRefusedError({
+              driver: CLAUDE_PROVIDER,
+              seal,
+              reason: "unavailable",
+            });
           const mcpOverrides = claudeMcpQueryOverrides({
             mcpSession,
             readOnlySandbox:
@@ -13224,11 +13269,14 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             ...(queryPolicy.allowedTools === undefined
               ? {}
               : { allowedTools: queryPolicy.allowedTools }),
+            ...(seal === "t3BotOnly" ? { homeSeal: true } : {}),
           });
           // A Bot thread's load: T3 Code's server and its grants only, no plugins, and its
           // instructions per prompt.
           const isolated = sealed || turnInput.runtimePolicy.mcpConnections !== undefined;
-          const grantIds = turnInput.runtimePolicy.mcpConnections ?? [];
+          // A Home seal reaches T3 Code's tools only, whatever grants it is handed.
+          const grantIds =
+            seal === "t3BotOnly" ? [] : (turnInput.runtimePolicy.mcpConnections ?? []);
           const grants =
             grantIds.length === 0 ? undefined : yield* resolveGrants(grantIds, mcpSession);
           const botThread = turnInput.applicationInstructions !== undefined;
@@ -13241,7 +13289,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               length: botInstructions.lasting.length + botInstructions.turn.length,
             });
           // Grants are keyed by id and revision; their credentials never enter the key.
-          const queryPolicyKey = `${turnInput.runtimePolicy.nativeMemory ?? "default"}:${sealed ? "sealed" : "unsealed"}:${isolated ? `isolated[${grants?.key ?? ""}]` : "open"}:${botThread ? "bot" : "plain"}:${claudeEffectiveQueryPolicyKey(queryPolicy, mcpOverrides)}`;
+          const queryPolicyKey = `${turnInput.runtimePolicy.nativeMemory ?? "default"}:${seal === undefined ? "unsealed" : `sealed[${seal}]`}:${isolated ? `isolated[${grants?.key ?? ""}]` : "open"}:${botThread ? "bot" : "plain"}:${claudeEffectiveQueryPolicyKey(queryPolicy, mcpOverrides)}`;
           const resumeSessionAt = yield* getNativeConversationHeadId(turnInput.providerThread);
           const existing = yield* Ref.get(queryContext);
           const sameGrantSet = existing?.grants?.key === grants?.key;
@@ -13253,11 +13301,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             existing.nativeThreadId === nativeThreadId &&
             !existing.stopping &&
             isClaudeProviderContinuationTurn(turnInput) &&
-            existing.sealed !== sealed
+            existing.seal !== seal
           )
             return yield* new ProviderAdapter.ProviderAdapterSealRefusedError({
               driver: CLAUDE_PROVIDER,
-              seal: "readOnly",
+              seal: seal ?? existing.seal ?? "readOnly",
               reason: "seal",
             });
           if (
@@ -13385,9 +13433,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             ? claudeIsolatedSettings(memorySettings, pluginIds, sealed)
             : memorySettings;
           const instructionDelivery = makeClaudeBotInstructionDelivery();
-          const sealedToolGuard: ClaudeSealedToolGuard | undefined = sealed
-            ? { readOnly: async () => false }
-            : undefined;
+          const sealedToolGuard: ClaudeSealedToolGuard | undefined =
+            seal === undefined ? undefined : { seal, readOnly: async () => false };
           // A resumed interrupted turn starts from Claude's own empty prompt, before any offer.
           if (botInstructions !== undefined)
             prepareClaudeBotInstructions(
@@ -13474,7 +13521,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               ? openQueryRuntime
               : adapterOptions.installationGate.execute(adapterOptions.instanceId, openQueryRuntime)
           ).pipe(
-            Effect.tap((session) => (sealed ? verifySealedProcess(session) : Effect.void)),
+            Effect.tap((session) =>
+              seal === undefined ? Effect.void : verifySealedProcess(session, seal),
+            ),
             Effect.onError(() =>
               closedExistingNativeThreadId === nativeThreadId
                 ? Effect.gen(function* () {
@@ -13527,7 +13576,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             query: querySession,
             queryPolicyKey,
             isolated,
-            sealed,
+            seal,
             grants,
             unreportedGrantFailures: grantFailures,
             botInstructions: instructionDelivery,
@@ -13665,10 +13714,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             const refusal = claudeBotPolicyRefusal(turnInput.runtimePolicy, hostPlatform);
             if (refusal !== undefined) return yield* refusal;
             // Claude continues an interrupted turn as it starts, before its version is checked.
-            if (turnInput.resume && turnInput.runtimePolicy.nativeTools === "readOnly")
+            if (turnInput.resume && turnInput.runtimePolicy.nativeTools !== undefined)
               return yield* new ProviderAdapter.ProviderAdapterSealRefusedError({
                 driver: CLAUDE_PROVIDER,
-                seal: "readOnly",
+                seal: turnInput.runtimePolicy.nativeTools,
                 reason: "seal",
               });
             const botInstructions = claudeBotInstructionsOf(turnInput);
@@ -13746,7 +13795,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             }
             const [skills, queryPolicy] = yield* Effect.all(
               [
-                promptUuid === null
+                // A Home prompt can carry the user's words; a `$skill` there stays plain text.
+                promptUuid === null || turnInput.runtimePolicy.nativeTools === "t3BotOnly"
                   ? Effect.undefined
                   : userInvocableSkills(turnInput.runtimePolicy.cwd),
                 queryPolicyForTurn(turnInput),
@@ -14330,11 +14380,12 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               });
             }
             // A Bot thread's message goes only into a process loaded as narrowly as its turn.
-            const sealedTurn = currentTurn.input.runtimePolicy.nativeTools === "readOnly";
+            const turnSeal = currentTurn.input.runtimePolicy.nativeTools;
             if (
-              existing.sealed !== sealedTurn ||
+              existing.seal !== turnSeal ||
               existing.isolated !==
-                (sealedTurn || currentTurn.input.runtimePolicy.mcpConnections !== undefined) ||
+                (turnSeal !== undefined ||
+                  currentTurn.input.runtimePolicy.mcpConnections !== undefined) ||
               existing.grants?.key !== currentTurn.grantKey
             ) {
               return yield* new ProviderAdapter.ProviderAdapterProtocolError({
@@ -14392,7 +14443,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               attachmentsDir,
               fileSystem,
               pdfReservation,
-              skills: yield* userInvocableSkills(currentTurn.input.runtimePolicy.cwd),
+              ...(turnSeal === "t3BotOnly"
+                ? {}
+                : { skills: yield* userInvocableSkills(currentTurn.input.runtimePolicy.cwd) }),
             }).pipe(
               Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
               Effect.provideService(Path.Path, path),
@@ -14762,7 +14815,13 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               }
               // An app call skips the sealed load's tool hook, and a mark checked here could change
               // before Claude runs it. T3 Code's own tools refuse changes server-side.
-              if (liveQuery.sealed && !tool.startsWith(CLAUDE_T3_MCP_TOOL_PREFIX)) {
+              if (liveQuery.seal === "t3BotOnly" && !CLAUDE_HOME_SEAL_TOOLS.includes(tool)) {
+                return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                  driver: CLAUDE_PROVIDER,
+                  detail: `This Bot Home turn may only read T3 Code and use the t3_bot tool, so app calls to ${tool} are refused.`,
+                });
+              }
+              if (liveQuery.seal === "readOnly" && !tool.startsWith(CLAUDE_T3_MCP_TOOL_PREFIX)) {
                 return yield* new ProviderAdapter.ProviderAdapterProtocolError({
                   driver: CLAUDE_PROVIDER,
                   detail: `This task is set to No changes, so app calls to ${tool} are refused.`,

@@ -208,7 +208,7 @@ export const make = Effect.gen(function* () {
       return yield* invalid("This Bot is archived or detached, so the Home check stays off.");
     if (input.enabled && (yield* unsupported(home, bot)) !== null)
       return yield* invalid(
-        "The Home check needs this Bot's Home on Codex with T3 Code running on a Mac, so it stays off.",
+        "The Home check needs this Bot's Home on Codex or Claude with T3 Code running on a Mac, so it stays off.",
       );
     const now = DateTime.formatIso(yield* DateTime.now);
     // Turning on, resuming or moving the time starts the schedule over, so nothing runs at once.
