@@ -3115,36 +3115,45 @@ it.effect.each([
   }).pipe(Effect.provide(storeOnly)),
 );
 
-/** What the Codex adapter projects for a compaction item and a hook that stopped the turn. */
+/** What the Codex adapter projects for a compaction item and the reason a turn was stopped. */
 const compactionTrace = Effect.fn("fixture.compactionTrace")(function* (
   runId: string,
-  trace: {
-    readonly compaction: "completed" | null;
-    readonly hookStop: "preCompact" | "postCompact" | null;
-  },
+  trace: { readonly compaction: "completed" | null; readonly stop: string | null },
 ) {
   const main = yield* SqlClient.SqlClient;
   if (trace.compaction !== null)
     yield* main`INSERT INTO orchestration_v2_projection_turn_items (turn_item_id, thread_id, run_id, ordinal, type, status, updated_at, payload_json)
       VALUES (${`${runId}:compaction`}, ${home}, ${runId}, 1, 'compaction', ${trace.compaction}, ${now}, '{}')`;
-  if (trace.hookStop !== null)
+  if (trace.stop !== null)
     yield* main`INSERT INTO orchestration_v2_projection_turn_items (turn_item_id, thread_id, run_id, ordinal, type, status, updated_at, payload_json)
       VALUES (${`${runId}:interrupt-result`}, ${home}, ${runId}, 98, 'run_interrupt_result', 'interrupted', ${now},
-        ${JSON.stringify({ message: `${trace.hookStop} hook (user): Review the summary first.` })})`;
+        ${JSON.stringify({ message: trace.stop })})`;
 });
+const postCompactStop = "postCompact hook (user): Review the summary first.";
 
 it.effect.each([
-  { name: "a failed run", status: "failed", compaction: null, hookStop: null },
+  { name: "a failed run", status: "failed", compaction: null, stop: null },
   {
     name: "a postCompact stop without a completed compaction",
     status: "interrupted",
     compaction: null,
-    hookStop: "postCompact",
+    stop: postCompactStop,
   },
-  { name: "a preCompact stop", status: "interrupted", compaction: null, hookStop: "preCompact" },
+  {
+    name: "a preCompact stop",
+    status: "interrupted",
+    compaction: null,
+    stop: "preCompact hook (user): Save a checkpoint.",
+  },
+  {
+    name: "a user stop after the compaction",
+    status: "interrupted",
+    compaction: "completed",
+    stop: "Stopped by the user",
+  },
 ] as const)(
   "retries a compaction that ended with $name under a new identity, at most twice in a row",
-  ({ status, compaction, hookStop }) =>
+  ({ status, compaction, stop }) =>
     Effect.gen(function* () {
       yield* compactableHome(large);
       const { generate } = yield* recordingGenerator(() => Effect.succeed({ operations: [] }));
@@ -3160,7 +3169,7 @@ it.effect.each([
               .compactHome(scope)
               .pipe(Effect.forkChild({ startImmediately: true }));
             const runId = yield* Queue.take(turns.started);
-            yield* compactionTrace(runId, { compaction, hookStop });
+            yield* compactionTrace(runId, { compaction, stop });
             yield* endScopedRun(runId, status, homeSequence, homeEvents);
             const result = yield* Fiber.join(attempt);
             assert.deepEqual(result.status === "failed" && result.reason, `run_${status}`);
@@ -3212,7 +3221,7 @@ it.effect("counts a compaction a postCompact hook stopped afterwards as compacte
           .compactHome(scope)
           .pipe(Effect.forkChild({ startImmediately: true }));
         const runId = yield* Queue.take(turns.started);
-        yield* compactionTrace(runId, { compaction: "completed", hookStop: "postCompact" });
+        yield* compactionTrace(runId, { compaction: "completed", stop: postCompactStop });
         yield* endScopedRun(runId, "interrupted", homeSequence, homeEvents);
         const result = yield* Fiber.join(attempt);
         assert.deepEqual(result.status === "compacted" && result.homeRunId, runId);
@@ -3224,7 +3233,7 @@ it.effect("counts a compaction a postCompact hook stopped afterwards as compacte
               {
                 compact: "compacted",
                 homeRunId: runId,
-                hookStop: "postCompact hook (user): Review the summary first.",
+                hookStop: postCompactStop,
               },
             ],
           ],
