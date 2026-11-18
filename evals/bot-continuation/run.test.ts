@@ -225,6 +225,17 @@ it("correction requires the seed to have actually persisted before removal", () 
     calls: [...observation().calls, { ...observation().calls[0]!, runId: "run-2" }],
   };
   expect(passes(run, 1)).toBe(true);
+  for (const answer of [
+    "Only Harbor is open. Neither the Lantern request nor the blue packaging proposal has returned.",
+    "Harbor is open; Lantern and blue packaging have not come back.",
+  ])
+    expect(passes({ ...run, answer }, 1)).toBe(true);
+  for (const answer of [
+    "Harbor is open, and Lantern is back.",
+    "Harbor is open. I'm not sure about blue packaging, but Lantern has returned.",
+    "Harbor is open. Blue packaging is gone, but Lantern is back.",
+  ])
+    expect(passes({ ...run, answer }, 1)).toBe(false);
   expect(passes({ ...run, seed: null }, 1)).toBe(false);
   expect(passes({ ...run, seed: { ...note(), note: { ...note().note, waiting: [] } } }, 1)).toBe(
     false,
