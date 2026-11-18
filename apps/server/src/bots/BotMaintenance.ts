@@ -140,7 +140,7 @@ export type HomeCompaction =
   | {
       readonly status: "failed";
       readonly runId: string;
-      /** `run_<status>` when the compaction run ended any way but completed. */
+      /** `run_<status>` when the compaction run ended without compacting. */
       readonly reason: "start_refused" | "run_missing" | `run_${string}`;
     }
   | { readonly status: "deferred"; readonly runId: string; readonly reason: CompactDeferReason };
@@ -936,6 +936,28 @@ export const make = Effect.gen(function* () {
   });
 
   /**
+   * The reason of a `postCompact` hook that stopped a run after its compaction completed. Codex
+   * installs the compacted context before those hooks run, so that run did compact. Remote Codex
+   * can complete the item without installing anything, so the item alone is not enough.
+   */
+  const postCompactStop = Effect.fn("BotMaintenance.postCompactStop")(function* (run: {
+    readonly runId: string;
+    readonly status: string;
+  }) {
+    if (run.status !== "interrupted") return undefined;
+    // The Codex adapter words a hook stop `<eventName> hook (<source>): <reason>`.
+    const [stop] = yield* main<{
+      readonly message: string;
+    }>`SELECT json_extract(s.payload_json, '$.message') AS message FROM orchestration_v2_projection_turn_items s
+      WHERE s.run_id = ${run.runId} AND s.type = 'run_interrupt_result'
+        AND json_extract(s.payload_json, '$.message') LIKE 'postCompact hook%'
+        AND EXISTS (SELECT 1 FROM orchestration_v2_projection_turn_items c
+          WHERE c.run_id = ${run.runId} AND c.type = 'compaction' AND c.status = 'completed')
+      LIMIT 1`;
+    return stop?.message;
+  });
+
+  /**
    * Coverage is derived from the note and the Home, never stored here, so a refresh that fails
    * consumes nothing and the next one sees the same evidence. One outcome row per attempt.
    */
@@ -1057,30 +1079,37 @@ export const make = Effect.gen(function* () {
    */
   const compactionNeed = Effect.fn("BotMaintenance.compactionNeed")(function* (home: ThreadId) {
     const recent = yield* main<{
+      readonly run_id: string;
       readonly status: string;
       readonly payload_json: string | null;
-    }>`SELECT r.status, m.payload_json FROM orchestration_v2_projection_runs r
+    }>`SELECT r.run_id, r.status, m.payload_json FROM orchestration_v2_projection_runs r
       LEFT JOIN orchestration_v2_projection_messages m ON m.message_id = json_extract(r.payload_json, '$.userMessageId')
       WHERE r.thread_id = ${home} AND r.status <> 'queued'
         AND NOT (r.status = 'cancelled' AND json_extract(r.payload_json, '$.startedAt') IS NULL)
       ORDER BY r.ordinal DESC LIMIT ${COMPACT_ATTEMPTS}`;
-    const runs = recent.map((row) => ({
-      status: row.status,
-      message:
-        row.payload_json === null
-          ? undefined
-          : Option.getOrUndefined(decodeMessage(row.payload_json)),
-    }));
+    const runs = yield* Effect.forEach(recent, (row) =>
+      Effect.gen(function* () {
+        return {
+          succeeded:
+            row.status === "completed" ||
+            (yield* postCompactStop({ runId: row.run_id, status: row.status })) !== undefined,
+          message:
+            row.payload_json === null
+              ? undefined
+              : Option.getOrUndefined(decodeMessage(row.payload_json)),
+        };
+      }),
+    );
     const latest = runs[0];
     if (
-      latest?.status === "completed" &&
+      latest?.succeeded === true &&
       latest.message !== undefined &&
       isCompactionCommandMessage(latest.message)
     )
       return { _tag: "not_needed", reason: "already_compacted" } as const;
     if (
       runs.length === COMPACT_ATTEMPTS &&
-      runs.every((run) => run.status !== "completed" && isBotMaintenanceCompaction(run.message))
+      runs.every((run) => !run.succeeded && isBotMaintenanceCompaction(run.message))
     )
       return { _tag: "deferred", reason: "retry_exhausted" } as const;
     const [native] = yield* main<{
@@ -1205,10 +1234,16 @@ export const make = Effect.gen(function* () {
     // Admission is not the result: only the persisted run says whether the provider compacted.
     const run = yield* homeRunEnding(home, messageId, sequence);
     if (run === undefined) return yield* failed("run_missing", null);
-    if (run.status !== "completed") return yield* failed(`run_${run.status}`, run.runId);
+    const hookStop = yield* postCompactStop(run);
+    if (run.status !== "completed" && hookStop === undefined)
+      return yield* failed(`run_${run.status}`, run.runId);
     return yield* settle<HomeCompaction>(
       "applied",
-      { compact: "compacted", homeRunId: run.runId },
+      {
+        compact: "compacted",
+        homeRunId: run.runId,
+        ...(hookStop === undefined ? {} : { hookStop }),
+      },
       { status: "compacted", runId, homeRunId: run.runId },
     );
   }, Effect.mapError(failure));

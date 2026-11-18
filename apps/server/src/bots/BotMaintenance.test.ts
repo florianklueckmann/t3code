@@ -3115,7 +3115,100 @@ it.effect.each([
   }).pipe(Effect.provide(storeOnly)),
 );
 
-it.effect("retries a failed compaction under a new identity, at most twice in a row", () =>
+/** What the Codex adapter projects for a compaction item and the reason a turn was stopped. */
+const compactionTrace = Effect.fn("fixture.compactionTrace")(function* (
+  runId: string,
+  trace: { readonly compaction: "completed" | null; readonly stop: string | null },
+) {
+  const main = yield* SqlClient.SqlClient;
+  if (trace.compaction !== null)
+    yield* main`INSERT INTO orchestration_v2_projection_turn_items (turn_item_id, thread_id, run_id, ordinal, type, status, updated_at, payload_json)
+      VALUES (${`${runId}:compaction`}, ${home}, ${runId}, 1, 'compaction', ${trace.compaction}, ${now}, '{}')`;
+  if (trace.stop !== null)
+    yield* main`INSERT INTO orchestration_v2_projection_turn_items (turn_item_id, thread_id, run_id, ordinal, type, status, updated_at, payload_json)
+      VALUES (${`${runId}:interrupt-result`}, ${home}, ${runId}, 98, 'run_interrupt_result', 'interrupted', ${now},
+        ${JSON.stringify({ message: trace.stop })})`;
+});
+const postCompactStop = "postCompact hook (user): Review the summary first.";
+
+it.effect.each([
+  { name: "a failed run", status: "failed", compaction: null, stop: null },
+  {
+    name: "a postCompact stop without a completed compaction",
+    status: "interrupted",
+    compaction: null,
+    stop: postCompactStop,
+  },
+  {
+    name: "a preCompact stop",
+    status: "interrupted",
+    compaction: null,
+    stop: "preCompact hook (user): Save a checkpoint.",
+  },
+  {
+    name: "a user stop after the compaction",
+    status: "interrupted",
+    compaction: "completed",
+    stop: "Stopped by the user",
+  },
+] as const)(
+  "retries a compaction that ended with $name under a new identity, at most twice in a row",
+  ({ status, compaction, stop }) =>
+    Effect.gen(function* () {
+      yield* compactableHome(large);
+      const { generate } = yield* recordingGenerator(() => Effect.succeed({ operations: [] }));
+      yield* withEngine(generate, ({ maintenance, homeSequence, homeTurns, homeEvents }) =>
+        Effect.gen(function* () {
+          yield* enable(maintenance);
+          const turns = yield* scopedTurns(homeSequence);
+          yield* Ref.set(homeTurns, turns.dispatch);
+          const failedAttempt = Effect.gen(function* () {
+            // Learning sets the previous attempt's `/compact` aside as not the user's.
+            yield* maintenance.runNow(scope);
+            const attempt = yield* maintenance
+              .compactHome(scope)
+              .pipe(Effect.forkChild({ startImmediately: true }));
+            const runId = yield* Queue.take(turns.started);
+            yield* compactionTrace(runId, { compaction, stop });
+            yield* endScopedRun(runId, status, homeSequence, homeEvents);
+            const result = yield* Fiber.join(attempt);
+            assert.deepEqual(result.status === "failed" && result.reason, `run_${status}`);
+            return runId;
+          });
+          const first = yield* failedAttempt;
+          const second = yield* failedAttempt;
+          assert.notEqual(first, second);
+          assert.deepEqual(
+            new Set((yield* Ref.get(turns.commands)).map((command) => command.commandId)).size,
+            2,
+          );
+
+          yield* maintenance.runNow(scope);
+          const exhausted = yield* maintenance.compactHome(scope);
+          assert.deepEqual(exhausted.status === "deferred" && exhausted.reason, "retry_exhausted");
+          assert.lengthOf(yield* Ref.get(turns.commands), 2);
+          assert.deepEqual(
+            (yield* compactOutcomes).map((row) => [row.status, row.outcome]),
+            [
+              ["failed", { compact: "failed", reason: `run_${status}`, homeRunId: first }],
+              ["failed", { compact: "failed", reason: `run_${status}`, homeRunId: second }],
+              ["deferred", { compact: "deferred", reason: "retry_exhausted" }],
+            ],
+          );
+          // The failed attempts leave the Home's history and saved note as they were.
+          const notes = yield* BotContinuation.BotContinuation;
+          assert.deepEqual(yield* notes.coverage(scope), { _tag: "current" });
+          const main = yield* SqlClient.SqlClient;
+          assert.lengthOf(
+            yield* main`SELECT message_id FROM orchestration_v2_projection_messages WHERE thread_id = ${home}`,
+            2,
+          );
+        }),
+      );
+    }).pipe(Effect.provide(storeOnly)),
+);
+
+it.effect("counts a compaction a postCompact hook stopped afterwards as compacted", () =>
   Effect.gen(function* () {
     yield* compactableHome(large);
     const { generate } = yield* recordingGenerator(() => Effect.succeed({ operations: [] }));
@@ -3124,46 +3217,39 @@ it.effect("retries a failed compaction under a new identity, at most twice in a 
         yield* enable(maintenance);
         const turns = yield* scopedTurns(homeSequence);
         yield* Ref.set(homeTurns, turns.dispatch);
-        const failedAttempt = Effect.gen(function* () {
-          // Learning sets the previous attempt's `/compact` aside as not the user's.
-          yield* maintenance.runNow(scope);
-          const attempt = yield* maintenance
-            .compactHome(scope)
-            .pipe(Effect.forkChild({ startImmediately: true }));
-          const runId = yield* Queue.take(turns.started);
-          yield* endScopedRun(runId, "failed", homeSequence, homeEvents);
-          const result = yield* Fiber.join(attempt);
-          assert.deepEqual(result.status === "failed" && result.reason, "run_failed");
-          return runId;
-        });
-        const first = yield* failedAttempt;
-        const second = yield* failedAttempt;
-        assert.notEqual(first, second);
-        assert.deepEqual(
-          new Set((yield* Ref.get(turns.commands)).map((command) => command.commandId)).size,
-          2,
-        );
-
-        yield* maintenance.runNow(scope);
-        const exhausted = yield* maintenance.compactHome(scope);
-        assert.deepEqual(exhausted.status === "deferred" && exhausted.reason, "retry_exhausted");
-        assert.lengthOf(yield* Ref.get(turns.commands), 2);
+        const attempt = yield* maintenance
+          .compactHome(scope)
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        const runId = yield* Queue.take(turns.started);
+        yield* compactionTrace(runId, { compaction: "completed", stop: postCompactStop });
+        yield* endScopedRun(runId, "interrupted", homeSequence, homeEvents);
+        const result = yield* Fiber.join(attempt);
+        assert.deepEqual(result.status === "compacted" && result.homeRunId, runId);
         assert.deepEqual(
           (yield* compactOutcomes).map((row) => [row.status, row.outcome]),
           [
-            ["failed", { compact: "failed", reason: "run_failed", homeRunId: first }],
-            ["failed", { compact: "failed", reason: "run_failed", homeRunId: second }],
-            ["deferred", { compact: "deferred", reason: "retry_exhausted" }],
+            [
+              "applied",
+              {
+                compact: "compacted",
+                homeRunId: runId,
+                hookStop: postCompactStop,
+              },
+            ],
           ],
         );
-        // The failed attempts leave the Home's history and saved note as they were.
-        const notes = yield* BotContinuation.BotContinuation;
-        assert.deepEqual(yield* notes.coverage(scope), { _tag: "current" });
+        // The interrupted Home run stays as it ended, and the next night does not compact again.
         const main = yield* SqlClient.SqlClient;
-        assert.lengthOf(
-          yield* main`SELECT message_id FROM orchestration_v2_projection_messages WHERE thread_id = ${home}`,
-          2,
+        assert.deepEqual(
+          yield* main`SELECT status FROM orchestration_v2_projection_runs WHERE run_id = ${runId}`,
+          [{ status: "interrupted" }],
         );
+        yield* maintenance.runNow(scope);
+        assert.deepEqual(yield* maintenance.compactHome(scope), {
+          status: "not_needed",
+          reason: "already_compacted",
+        });
+        assert.lengthOf(yield* Ref.get(turns.commands), 1);
       }),
     );
   }).pipe(Effect.provide(storeOnly)),
