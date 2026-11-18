@@ -27,10 +27,12 @@ import {
   taskList,
 } from "../shared/botHome.ts";
 import {
+  type BotModelSelection,
   type Call,
   encodeJson,
+  INSTANCE_FLAG,
   readItems,
-  requireCodexModel,
+  requireBotModel,
   runTurn,
   SampleError,
   withTools,
@@ -104,11 +106,10 @@ const setUp = Effect.fn("botHomeCheckEval.setUp")(function* (
   testCase: HomeCheckCase,
   sample: number,
   work: string,
-  model: string,
-  effort: string,
+  modelSelection: BotModelSelection,
 ) {
   const tag = `bhc-${testCase.id}-${sample}-${NodeCrypto.randomBytes(3).toString("hex")}`;
-  const home = yield* createBotHome(call, { tag, work, model, effort });
+  const home = yield* createBotHome(call, { tag, work, modelSelection });
   const { homeThreadId } = home;
   const userMessageIds: string[] = [];
   for (const text of testCase.seed) {
@@ -246,6 +247,7 @@ const main = Effect.gen(function* () {
       out: { type: "string" },
       "base-dir": { type: "string" },
       work: { type: "string" },
+      instance: INSTANCE_FLAG,
       model: { type: "string", default: "gpt-6.1-terra" },
       effort: { type: "string", default: "high" },
       samples: { type: "string", default: "3" },
@@ -288,12 +290,17 @@ const main = Effect.gen(function* () {
   );
   yield* withTools(baseDir, "bot-home-check", (call) =>
     Effect.gen(function* () {
-      yield* requireCodexModel(call, values.model, values.effort);
+      const modelSelection = yield* requireBotModel(call, {
+        instance: values.instance,
+        model: values.model,
+        effort: values.effort,
+        codexOnly: "the Home check is a sealed run, which only Codex enforces.",
+      });
       const work = NodePath.resolve(values.work ?? NodePath.join(out, "work"));
       const fixtures: Fixture[] = [];
       for (const testCase of selected)
         for (let sample = 0; sample < samples; sample += 1)
-          fixtures.push(yield* setUp(call, testCase, sample, work, values.model, values.effort));
+          fixtures.push(yield* setUp(call, testCase, sample, work, modelSelection));
       const setup = new Map(fixtures.map((fixture) => [fixture, [] as string[]]));
 
       // The control's first check proposes; the user then removes it before the graded check.

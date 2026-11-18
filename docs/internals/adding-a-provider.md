@@ -100,12 +100,14 @@ produce catches them.
 - **Application instructions arrive on every turn.** `applicationInstructions` on the turn input is
   trusted, user-configured text, such as a Bot's, read fresh for each turn. Deliver it as
   instructions on that turn, not as quoted context and not only at session start, or edits stop
-  reaching resumed sessions. Bot conversations refuse other drivers at turn start
-  ([`RunExecutionService`](../../apps/server/src/orchestration-v2/RunExecutionService.ts)) until
-  their adapter does this. Where each copy stays in the conversation, an unchanged copy per turn
+  reaching resumed sessions. Where each copy stays in the conversation, an unchanged copy per turn
   fills the context: `applicationInstructionParts` splits off the part that changes every turn,
   and the lasting part needs resending only when it changed or the history may have lost it
-  (a new process, a compaction), as the Claude adapter does.
+  (a new process, a compaction), as the Claude adapter does. Bots run only on the drivers in
+  [`BotProviderSupport`](../../apps/server/src/bots/BotProviderSupport.ts), and every thread of a
+  Bot's lineage on another driver is refused at turn start. A driver joins that list once its
+  adapter delivers these instructions, loads no MCP server but T3 Code's own for a Bot thread, and
+  refuses the sealed run modes and MCP grants it cannot enforce instead of ignoring them.
 - **Paths and environment.** Test a symlinked workspace, such as macOS `/tmp`; an agent that
   compares canonical paths fails every turn there. Drop inherited credentials the instance did not
   configure. Report unknown sign-in as unknown rather than as signed in.

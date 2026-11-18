@@ -2,6 +2,7 @@ import {
   mcpConnectionDefinitionProblem,
   mcpConnectionOAuthFailureMessage,
   mcpConnectionProblemMessage,
+  type BotCapabilities,
   type BotId,
   type BotMcpGrants,
   type BotSetMcpGrantsInput,
@@ -22,6 +23,8 @@ import {
 } from "@t3tools/contracts";
 import { isLocalLoopbackHost } from "@t3tools/shared/hostClassification";
 import * as DateTime from "effect/DateTime";
+
+import { botCapabilityUnavailableLabel } from "./bots.ts";
 
 /** What a create or edit form holds. Endpoint fields are fixed once a connection exists. */
 export interface McpConnectionDraft {
@@ -333,10 +336,14 @@ export interface BotOwnMcpServersSwitch {
   readonly label: string;
   readonly description: string;
   readonly on: boolean;
+  /** False where the Bot's model can't load them; turning the switch off always works. */
+  readonly canTurnOn: boolean;
 }
 
 export interface BotMcpGrantsSection {
   readonly rows: ReadonlyArray<BotMcpGrantRow>;
+  /** False where the Bot's model can't load connections; removing a grant always works. */
+  readonly canGrant: boolean;
   /** Null on servers without the switch. */
   readonly ownServers: BotOwnMcpServersSwitch | null;
   readonly notes: ReadonlyArray<BotMcpGrantsNote>;
@@ -372,6 +379,8 @@ export function botMcpGrantsSection(input: {
   /** From `codexMcpServerNames`. */
   readonly codexMcpServerNames: ReadonlyArray<string> | null;
   readonly catalog: ReadonlyArray<McpConnectionSummary>;
+  /** From the Bot's detail; absent on servers that run Bots on Codex only. */
+  readonly capabilities: BotCapabilities | undefined;
   readonly providerDriver: ProviderDriverKind | undefined;
   readonly platformOs: ExecutionEnvironmentPlatformOs;
   readonly environmentLabel: string;
@@ -415,14 +424,19 @@ export function botMcpGrantsSection(input: {
       })),
   ];
   const usable = rows.some((row) => row.granted && row.transport !== null);
+  const grantsUnavailable = botCapabilityUnavailableLabel(input.capabilities, "mcpGrants");
+  const ownServersUnavailable = botCapabilityUnavailableLabel(input.capabilities, "ownMcpServers");
+  // Servers that send capabilities decide the model's support; older ones run Bots on Codex.
   const unenforceable =
-    input.providerDriver !== "codex"
+    input.capabilities === undefined && input.providerDriver !== "codex"
       ? "This Bot's model is not on a Codex provider, so without connections it uses that provider's own MCP setup."
       : input.platformOs !== "darwin" && input.platformOs !== "linux"
         ? `On ${input.environmentLabel}, this Bot without connections uses Codex's own MCP setup.`
         : null;
   const notes: Array<BotMcpGrantsNote> = [];
-  if (unenforceable !== null) {
+  if (grantsUnavailable !== null) {
+    notes.push({ tone: "muted", text: grantsUnavailable });
+  } else if (unenforceable !== null) {
     notes.push({
       tone: "warning",
       text: `MCP connections apply only to Codex on macOS and Linux. ${unenforceable} A Bot with connections does not run there.`,
@@ -433,7 +447,12 @@ export function botMcpGrantsSection(input: {
   }
   const ownServersOn = input.grants.ownCodexMcpServers === true;
   if (!usable) {
-    if (unenforceable === null && !ownServersOn && input.catalog.length > 0) {
+    if (
+      grantsUnavailable === null &&
+      unenforceable === null &&
+      !ownServersOn &&
+      input.catalog.length > 0
+    ) {
       notes.push({ tone: "muted", text: "This Bot has no MCP connections." });
     }
   } else if (
@@ -455,13 +474,16 @@ export function botMcpGrantsSection(input: {
   notes.push({ tone: "muted", text: "Changes apply from the Bot's next turn." });
   return {
     rows,
+    canGrant: grantsUnavailable === null,
     ownServers:
       input.grants.ownCodexMcpServers === undefined
         ? null
         : {
             label: "Use my own Codex MCP servers",
-            description: ownMcpServersDescription(input.codexMcpServerNames),
+            description:
+              ownServersUnavailable ?? ownMcpServersDescription(input.codexMcpServerNames),
             on: ownServersOn,
+            canTurnOn: ownServersUnavailable === null,
           },
     notes,
     editable: input.canChange && !input.archived,

@@ -18,7 +18,7 @@ pnpm bot-home-check --base-dir /synthetic/home --out runs/check --case nothing-u
 
 Then the full set: `pnpm bot-home-check --base-dir /synthetic/home --out runs/<name>`. A full run waits about 25 minutes of wall time for quiet periods, plus the turns. It costs about 48 Codex turns on the chosen model: per sample one seed turn and one check, with a separate task for the decision case, and for the removal control a second check and turn.
 
-Flags: `--model` (default `gpt-6.1-terra`), `--effort` (default `high`), `--samples` (default 3), `--case <id>` (repeatable), `--work <dir>` for the synthetic project folders, `--baseline <results.jsonl>` to keep an earlier run beside this one. It never falls back to another model.
+Flags: `--model` (default `gpt-6.1-terra`), `--effort` (default `high`), `--samples` (default 3), `--case <id>` (repeatable), `--work <dir>` for the synthetic project folders, `--baseline <results.jsonl>` to keep an earlier run beside this one. It never falls back to another model. `--instance` (default `codex`) must name a Codex instance: the check is a sealed run only Codex enforces, and the run refuses other providers.
 
 ## Baseline
 

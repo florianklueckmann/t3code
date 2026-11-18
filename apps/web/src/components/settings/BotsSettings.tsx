@@ -8,8 +8,11 @@ import {
   botLearningScopeChange,
   botLearningViews,
   botProjectContextChanges,
+  botNoProviderLabel,
   botProjectContextDraft,
+  botProviderDrivers,
   botRoutineDraft,
+  botRoutineNoChanges,
   botRoutinesFor,
   botRoutineUpsertInput,
   botTurnLearningView,
@@ -33,7 +36,6 @@ import {
 import {
   BotId,
   CommandId,
-  ProviderDriverKind,
   type BotAppearance,
   type BotDetail,
   type BotLearningEntry,
@@ -123,9 +125,6 @@ import {
   SettingsSection,
 } from "./settingsLayout";
 
-/** The server accepts only Codex instances until other adapters deliver Bot instructions. */
-const CODEX_DRIVER_KIND = ProviderDriverKind.make("codex");
-
 const LEARNING_POLICY_OPTIONS: ReadonlyArray<{
   readonly value: BotLearningPolicy;
   readonly label: string;
@@ -175,14 +174,18 @@ function useEnvironmentProjectTitles(environmentId: EnvironmentId) {
   };
 }
 
-function useCodexInstanceEntries(environmentId: EnvironmentId) {
+/** The provider instances a Bot can run on, as the server reports them. */
+function useBotInstanceEntries(environmentId: EnvironmentId) {
   const settings = useEnvironmentSettings(environmentId);
   const providers =
     useAtomValue(serverEnvironment.providersValueAtom(environmentId)) ?? EMPTY_SERVER_PROVIDERS;
-  const entries = providerInstanceEntriesFor(providers, settings, null).filter(
-    (entry) => entry.driverKind === CODEX_DRIVER_KIND,
+  const drivers = botProviderDrivers(
+    useEnvironment(environmentId)?.serverConfig?.environment.capabilities,
   );
-  return { settings, providers, entries };
+  const entries = providerInstanceEntriesFor(providers, settings, null).filter((entry) =>
+    drivers.includes(entry.driverKind),
+  );
+  return { settings, providers, drivers, entries };
 }
 
 function modelLabel(
@@ -305,7 +308,7 @@ function BotRow({
     label: "bot set archived",
   });
   const [busy, setBusy] = useState(false);
-  const { entries } = useCodexInstanceEntries(environmentId);
+  const { entries } = useBotInstanceEntries(environmentId);
   const { titleOf } = useEnvironmentProjectTitles(environmentId);
   const openConversation = useOpenBotConversation(environmentId);
   const archived = bot.archivedAt !== null;
@@ -531,7 +534,9 @@ function BotEditorForm({
   const [contextDrafts, setContextDrafts] = useState<
     ReadonlyMap<ProjectId, BotProjectContextDraft>
   >(() => new Map());
-  const { settings, providers, entries } = useCodexInstanceEntries(environmentId);
+  const { settings, providers, drivers, entries } = useBotInstanceEntries(environmentId);
+  // A refused model change, shown under the picker, which falls back to the saved model.
+  const [modelError, setModelError] = useState<string | null>(null);
   const { titleOf } = useEnvironmentProjectTitles(environmentId);
   const canOperate = useAtomValue(serverEnvironment.createBot.permissionAtom(environmentId));
   const createBot = useAtomCommand(serverEnvironment.createBot, { label: "bot create" });
@@ -613,6 +618,18 @@ function BotEditorForm({
           ...(appearanceChanged ? { appearance: draft.appearance } : {}),
         },
       });
+      // The server checks a new model before anything else, so a refusal then is about the model.
+      if (
+        draft.modelSelection !== null &&
+        result._tag === "Failure" &&
+        !isAtomCommandInterrupted(result)
+      ) {
+        const error = squashAtomCommandFailure(result);
+        setModelError(error instanceof Error ? error.message : String(error));
+        setDraft((prev) => ({ ...prev, modelSelection: null }));
+        setSaving(false);
+        return;
+      }
       if (!settled("Could not save Bot", result)) {
         setSaving(false);
         return;
@@ -683,11 +700,9 @@ function BotEditorForm({
           </Field>
           <Field label="Model">
             {activeInstanceId === undefined ? (
-              <p className="text-sm text-muted-foreground">
-                Bots run on Codex. Add a Codex provider in Providers to pick a model.
-              </p>
+              <p className="text-sm text-muted-foreground">{botNoProviderLabel(drivers)}</p>
             ) : (
-              <div>
+              <div className="space-y-1.5">
                 <ProviderModelPicker
                   environmentId={environmentId}
                   disabled={saving || archived}
@@ -698,10 +713,16 @@ function BotEditorForm({
                   modelOptionsByInstance={modelOptionsByInstance}
                   isComposerOwned={false}
                   triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
-                  onInstanceModelChange={(instanceId, model) =>
-                    setDraft((prev) => ({ ...prev, modelSelection: { instanceId, model } }))
-                  }
+                  onInstanceModelChange={(instanceId, model) => {
+                    setModelError(null);
+                    setDraft((prev) => ({ ...prev, modelSelection: { instanceId, model } }));
+                  }}
                 />
+                {modelError === null ? null : (
+                  <p role="alert" className="text-sm text-destructive">
+                    {modelError}
+                  </p>
+                )}
               </div>
             )}
           </Field>
@@ -735,6 +756,7 @@ function BotEditorForm({
             <BotMcpGrantsSetting
               environment={environment}
               botId={current.id}
+              capabilities={current.capabilities}
               formLocked={saving || archived}
             />
           ) : null}
@@ -1709,8 +1731,11 @@ function BotRoutineEditor({
   // Chosen once per form so a retried create stays idempotent.
   const [commandId] = useState(() => CommandId.make(randomUUID()));
   const [form, setForm] = useState(() =>
-    botRoutineForm((task === null ? null : botRoutineDraft(task)) ?? emptyBotRoutineDraft()),
+    botRoutineForm(
+      (task === null ? null : botRoutineDraft(task)) ?? emptyBotRoutineDraft(bot.capabilities),
+    ),
   );
+  const noChanges = botRoutineNoChanges(bot.capabilities, task);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const canOperate = useAtomValue(
@@ -1778,7 +1803,9 @@ function BotRoutineEditor({
             }
           }}
         >
-          <Toggle value="none">No changes</Toggle>
+          <Toggle value="none" disabled={!noChanges.offered}>
+            No changes
+          </Toggle>
           <Toggle value="allow">Changes allowed</Toggle>
         </ToggleGroup>
         <p className="text-xs text-muted-foreground">
@@ -1786,6 +1813,9 @@ function BotRoutineEditor({
             ? "The Bot carries out the edits or messages requested in the brief, in Full access without approval prompts."
             : "The Bot reports results and proposes changes. It cannot edit files or data or send messages; this is enforced with Codex on a Mac server, and elsewhere the run fails instead."}
         </p>
+        {noChanges.unavailableLabel === null ? null : (
+          <p className="text-xs text-muted-foreground">{noChanges.unavailableLabel}</p>
+        )}
       </div>
       <div className="space-y-2">
         <div className="flex flex-wrap items-center justify-between gap-2">

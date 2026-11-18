@@ -41,7 +41,7 @@ describe("toggleBotRoutineWeekday", () => {
 
 describe("withBotRoutineTiming", () => {
   it("keeps the name and brief and resets the timing", () => {
-    const session = { ...emptyBotRoutineDraft(), prompt: "Recap", allowChanges: true };
+    const session = { ...emptyBotRoutineDraft(undefined), prompt: "Recap", allowChanges: true };
     const recurring = withBotRoutineTiming(session, "recurring");
     expect(recurring).toEqual({
       title: session.title,

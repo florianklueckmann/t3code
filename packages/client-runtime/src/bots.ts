@@ -24,6 +24,7 @@ import type {
   BotProjectContext,
   BotProjectContextSummary,
   BotSourcePreference,
+  BotCapabilities,
   BotSummary,
   BotTaskResult,
   BotTaskStatus,
@@ -37,6 +38,62 @@ import type {
   ThreadId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+
+/** The provider drivers a Bot's model picker offers. Servers that don't say run Bots on Codex only. */
+export function botProviderDrivers(
+  capabilities: { readonly botProviders?: ReadonlyArray<string> } | undefined,
+): ReadonlyArray<string> {
+  return capabilities?.botProviders ?? ["codex"];
+}
+
+const BOT_DRIVER_NAMES: ReadonlyMap<string, string> = new Map([
+  ["codex", "Codex"],
+  ["claudeAgent", "Claude"],
+]);
+/** Shown in place of the model picker when no provider a Bot can run on is set up. */
+export function botNoProviderLabel(drivers: ReadonlyArray<string>): string {
+  const names = drivers.map((driver) => BOT_DRIVER_NAMES.get(driver) ?? driver);
+  const list =
+    names.length <= 1 ? (names[0] ?? "") : `${names.slice(0, -1).join(", ")} or ${names.at(-1)}`;
+  return `Bots run on ${list}. Add a ${list} provider in Providers to pick a model.`;
+}
+
+type BotCapabilityFeature = "mcpGrants" | "ownMcpServers" | "noChangesRoutines";
+const BOT_CAPABILITY_LABELS: Record<BotCapabilityFeature, ReadonlyMap<string, string>> = {
+  mcpGrants: new Map([
+    [
+      "claude_unsupported",
+      "MCP connections aren't available on Claude yet. A Claude Bot loads only T3 Code's own tools; switch it to a Codex model to grant connections.",
+    ],
+    ["provider", "MCP connections need a Codex model for this Bot."],
+  ]),
+  ownMcpServers: new Map([
+    [
+      "claude_unsupported",
+      "Not available on Claude yet. A Claude Bot loads none of your own MCP servers.",
+    ],
+    ["provider", "Needs a Codex model for this Bot."],
+  ]),
+  noChangesRoutines: new Map([
+    [
+      "claude_unsupported",
+      "No changes isn't available on Claude yet, because Claude can't enforce it. Switch the Bot to a Codex model for No changes routines.",
+    ],
+    ["provider", "No changes needs a Codex model for this Bot."],
+  ]),
+};
+/**
+ * Why a Bot's model can't use a feature, or null when it can. Servers without `capabilities` run
+ * Bots on Codex, where everything is available; unknown reasons from newer servers stay readable.
+ */
+export function botCapabilityUnavailableLabel(
+  capabilities: BotCapabilities | undefined,
+  feature: BotCapabilityFeature,
+): string | null {
+  const reason = capabilities?.[feature] ?? null;
+  if (reason === null) return null;
+  return BOT_CAPABILITY_LABELS[feature].get(reason) ?? "Not available on this Bot's model.";
+}
 
 /** One editable preferred-source row. */
 export interface BotSourceDraft {
@@ -628,11 +685,12 @@ export type BotRoutineDraft = {
 
 const isoAt = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
 
-export function emptyBotRoutineDraft(): BotRoutineDraft {
+/** A new routine starts as No changes, or as Changes allowed where the Bot's model can't enforce it. */
+export function emptyBotRoutineDraft(capabilities: BotCapabilities | undefined): BotRoutineDraft {
   return {
     title: "",
     prompt: "",
-    allowChanges: false,
+    allowChanges: (capabilities?.noChangesRoutines ?? null) !== null,
     timing: "recurring",
     timeOfDay: "09:00",
     weekdays: [],
@@ -660,6 +718,21 @@ export function botRoutineDraft(task: ScheduledTask): BotRoutineDraft | null {
     };
   }
   return null;
+}
+
+/**
+ * Whether the routine form offers No changes, and why not. A routine already saved as No changes
+ * keeps the choice, so editing it never flips its access silently; the server keeps it paused.
+ */
+export function botRoutineNoChanges(
+  capabilities: BotCapabilities | undefined,
+  saved: ScheduledTask | null,
+): { readonly offered: boolean; readonly unavailableLabel: string | null } {
+  const unavailableLabel = botCapabilityUnavailableLabel(capabilities, "noChangesRoutines");
+  return {
+    offered: unavailableLabel === null || (saved !== null && saved.bot?.allowChanges !== true),
+    unavailableLabel,
+  };
 }
 
 /**

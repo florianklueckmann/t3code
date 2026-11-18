@@ -16,8 +16,8 @@ import {
   botDraftFromDetail,
   detachBotProjectDraft,
   emptyBotSourceDraft,
+  botModelOptionFilter,
   hasBotDraftChanges,
-  isBotModelOption,
   newBotDraft,
   planBotSave,
   updateBotProjectDraft,
@@ -155,13 +155,24 @@ describe("hasBotDraftChanges", () => {
 
 describe("Bot model picker", () => {
   // regression: T3B-7 managing hidden models offered providers Bots cannot run on
-  it("reveals hidden Codex models without offering other providers", () => {
+  it.each([
+    ["an older server", undefined, ["codex_work", "codex_personal"]],
+    [
+      "a server that runs Bots on Codex and Claude",
+      ["codex", "claudeAgent"],
+      ["codex_work", "codex_personal", "claudeAgent"],
+    ],
+  ] as const)("reveals hidden models only on providers %s accepts", (_, botProviders, offered) => {
     const instances = [
       ["codex_work", "codex"],
       ["codex_personal", "codex"],
       ["claudeAgent", "claudeAgent"],
+      ["opencode", "opencode"],
     ] as const;
     const config = {
+      environment: {
+        capabilities: botProviders === undefined ? {} : { botProviders: [...botProviders] },
+      },
       settings: {
         ...DEFAULT_SERVER_SETTINGS,
         providerInstances: Object.fromEntries(
@@ -183,7 +194,7 @@ describe("Bot model picker", () => {
         ],
       })),
     } as unknown as ServerConfig;
-    const managedGroups = (isEligible: typeof isBotModelOption | undefined) =>
+    const managedGroups = (isEligible: ReturnType<typeof botModelOptionFilter> | undefined) =>
       buildHiddenModelManagementGroups({
         config,
         selectedModel: null,
@@ -192,14 +203,14 @@ describe("Bot model picker", () => {
         isEligible,
       }).map((group) => [group.providerKey, group.models.map((option) => option.selection.model)]);
 
-    expect(managedGroups(isBotModelOption)).toEqual([
-      ["codex_work", ["gpt-5", "gpt-old"]],
-      ["codex_personal", ["gpt-5", "gpt-old"]],
-    ]);
+    expect(managedGroups(botModelOptionFilter(config))).toEqual(
+      offered.map((providerKey) => [providerKey, ["gpt-5", "gpt-old"]]),
+    );
     expect(managedGroups(undefined).map(([providerKey]) => providerKey)).toEqual([
       "codex_work",
       "codex_personal",
       "claudeAgent",
+      "opencode",
     ]);
   });
 });

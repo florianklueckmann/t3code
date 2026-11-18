@@ -73,6 +73,7 @@ const section = (
     },
     codexMcpServerNames: ["docs", "probe"],
     catalog: CATALOG,
+    capabilities: undefined,
     providerDriver: ProviderDriverKind.make("codex"),
     platformOs: "darwin",
     environmentLabel: "Studio Mac",
@@ -147,9 +148,9 @@ describe("botMcpGrantsSection", () => {
   const codex = ProviderDriverKind.make("codex");
 
   it.each([
-    ["Claude, with grants", claude, "darwin", [MAIL], [PROVIDER_LIMIT]],
-    ["Claude, without grants", claude, "darwin", [], [PROVIDER_LIMIT]],
-    ["a missing instance", undefined, "darwin", [MAIL], [PROVIDER_LIMIT]],
+    ["an older server, Claude, with grants", claude, "darwin", [MAIL], [PROVIDER_LIMIT]],
+    ["an older server, Claude, without grants", claude, "darwin", [], [PROVIDER_LIMIT]],
+    ["an older server, a missing instance", undefined, "darwin", [MAIL], [PROVIDER_LIMIT]],
     ["Codex on Windows, with grants", codex, "windows", [MAIL], [PLATFORM_LIMIT]],
     ["Codex on Windows, without grants", codex, "windows", [], [PLATFORM_LIMIT]],
     ["Codex on Linux, with grants", codex, "linux", [MAIL], []],
@@ -164,6 +165,64 @@ describe("botMcpGrantsSection", () => {
       ).toEqual([...expected, "Changes apply from the Bot's next turn."]);
     },
   );
+  const available = {
+    mcpGrants: null,
+    ownMcpServers: null,
+    noChangesRoutines: null,
+    maintenance: null,
+    homeCheck: null,
+    failureDiagnosis: null,
+  };
+  const onClaude = {
+    mcpGrants: "claude_unsupported",
+    ownMcpServers: "claude_unsupported",
+    noChangesRoutines: "claude_unsupported",
+    maintenance: "claude_unsupported",
+    homeCheck: "claude_unsupported",
+    failureDiagnosis: "claude_unsupported",
+  };
+  const CLAUDE_GRANTS =
+    "MCP connections aren't available on Claude yet. A Claude Bot loads only T3 Code's own tools; switch it to a Codex model to grant connections.";
+
+  it.each([
+    ["available, with grants", available, "darwin", [MAIL], [], true],
+    ["available, on Windows", available, "windows", [MAIL], [PLATFORM_LIMIT], true],
+    ["unavailable on Claude, with grants", onClaude, "darwin", [MAIL], [CLAUDE_GRANTS], false],
+    ["unavailable on Claude, on Windows", onClaude, "windows", [], [CLAUDE_GRANTS], false],
+    [
+      "unavailable for a reason this client doesn't know",
+      { ...available, mcpGrants: "newer_reason" },
+      "darwin",
+      [],
+      ["Not available on this Bot's model."],
+      false,
+    ],
+  ] as const)(
+    "follows the server's capabilities when it sends them: %s",
+    (_, capabilities, platformOs, granted, expected, canGrant) => {
+      // The driver no longer decides once the server reports what the model supports.
+      const result = section({
+        capabilities,
+        providerDriver: claude,
+        platformOs,
+        granted: [...granted],
+        routines: null,
+      });
+      expect(noteTexts(result)).toEqual([...expected, "Changes apply from the Bot's next turn."]);
+      expect(result.canGrant).toBe(canGrant);
+    },
+  );
+
+  it("offers only turning the own-servers switch off where the model can't load them", () => {
+    const result = section({ capabilities: onClaude, ownServers: false });
+    expect(result.ownServers).toEqual({
+      label: "Use my own Codex MCP servers",
+      description: "Not available on Claude yet. A Claude Bot loads none of your own MCP servers.",
+      on: false,
+      canTurnOn: false,
+    });
+  });
+
   const READ_ONLY_TOOLS =
     "No changes routines use only the tools a connection marks as read-only. The connection's server sets that mark, so a tool marked read-only can still change things.";
 
@@ -224,7 +283,9 @@ describe("botMcpGrantsSection", () => {
       codexMcpServerNames: names === null ? null : [...names],
     });
     expect(result.ownServers).toEqual(
-      expected === null ? null : { label: "Use my own Codex MCP servers", ...expected },
+      expected === null
+        ? null
+        : { label: "Use my own Codex MCP servers", canTurnOn: true, ...expected },
     );
   });
 

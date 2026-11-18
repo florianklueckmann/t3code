@@ -20,7 +20,7 @@ pnpm bot-note-refresh --base-dir /synthetic/home --out runs/check --case records
 
 Then the full set: `pnpm bot-note-refresh --base-dir /synthetic/home --out runs/<name>`. A full run takes a few minutes of wall time after the seeds. Per sample it costs one or two seed turns, one stopped turn per unrecorded input, which ends before the model answers, and one refresh turn per page, so about 24 Codex turns for the full set.
 
-Flags: `--model` (default `gpt-6.1-terra`), `--effort` (default `high`), `--samples` (default 3), `--case <id>` (repeatable), `--work <dir>` for the synthetic project folders, `--baseline <results.jsonl>` to keep an earlier run beside this one. It never falls back to another model.
+Flags: `--model` (default `gpt-6.1-terra`), `--effort` (default `high`), `--samples` (default 3), `--case <id>` (repeatable), `--work <dir>` for the synthetic project folders, `--baseline <results.jsonl>` to keep an earlier run beside this one. It never falls back to another model. `--instance` (default `codex`) must name a Codex instance: the refresh is a sealed run only Codex enforces, and the run refuses other providers.
 
 ## Cases
 

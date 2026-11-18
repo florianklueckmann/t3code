@@ -15,6 +15,7 @@ import * as Schema from "effect/Schema";
 
 import packageJson from "../../package.json" with { type: "json" };
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
+import { BOT_DRIVERS } from "../bots/BotProviderSupport.ts";
 import { resolveServerInstallation } from "../cli/invocation.ts";
 import { readAgentActivityPublishingActive } from "../cloud/config.ts";
 import { resolveServerSelfUpdateCapability } from "../cloud/selfUpdate.ts";
@@ -290,6 +291,7 @@ export const make = Effect.gen(function* () {
       botHomeCheck: true,
       botFailureDiagnosis: true,
       botLearningNotices: true,
+      botProviders: BOT_DRIVERS,
       botAppearance: true,
       botRoutines: true,
       botTaskResults: true,

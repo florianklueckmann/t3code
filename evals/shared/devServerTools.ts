@@ -112,24 +112,64 @@ export const withTools = Effect.fn("evals.withTools")(function* <A, E, R>(
 
 const Capabilities = Schema.Struct({ providers: Schema.Array(OrchestratorMcpProviderCapability) });
 
-/** No fallback: a model or effort the server's Codex catalog does not offer stops the run. */
-export const requireCodexModel = Effect.fn("evals.requireCodexModel")(function* (
+export interface BotModelSelection {
+  readonly instanceId: string;
+  readonly model: string;
+  readonly options: ReadonlyArray<{ readonly id: string; readonly value: string }>;
+}
+
+/** Codex names its effort option `reasoningEffort`, Claude `effort`. */
+const EFFORT_OPTION_IDS = ["reasoningEffort", "effort"];
+
+/**
+ * The Bot model a run creates its Bots with, from `--instance`, `--model` and `--effort`. No
+ * fallback: what the server's catalog does not offer stops the run. An eval of a feature only Codex
+ * Bots have passes `codexOnly`, the reason, and refuses other providers.
+ */
+export const requireBotModel = Effect.fn("evals.requireBotModel")(function* (
   call: Call,
-  model: string,
-  effort: string,
+  input: {
+    readonly instance: string;
+    readonly model: string;
+    readonly effort: string;
+    readonly codexOnly?: string;
+  },
 ) {
-  const { providers } = yield* call("orchestrator_capabilities", {}, Capabilities);
-  const offered = providers
-    .find((provider) => provider.providerInstanceId === "codex")
-    ?.models.find((candidate) => candidate.id === model)
-    ?.options?.find((option) => option.id === "reasoningEffort")
-    ?.values?.includes(effort);
-  if (offered !== true) {
+  // The search keeps a model past the default short list in the answer.
+  const { providers } = yield* call(
+    "orchestrator_capabilities",
+    { search: input.model },
+    Capabilities,
+  );
+  const provider = providers.find((candidate) => candidate.providerInstanceId === input.instance);
+  if (provider === undefined) {
+    return yield* Effect.die(new Error(`This server has no provider instance ${input.instance}.`));
+  }
+  if (input.codexOnly !== undefined && provider.driverKind !== "codex") {
     return yield* Effect.die(
-      new Error(`Codex does not offer ${model} with reasoningEffort ${effort}.`),
+      new Error(
+        `This eval runs only on Codex: ${input.codexOnly} (${input.instance} is ${provider.driverKind}).`,
+      ),
     );
   }
+  const effortOption = provider.models
+    .find((candidate) => candidate.id === input.model)
+    ?.options?.find((option) => EFFORT_OPTION_IDS.includes(option.id));
+  if (effortOption === undefined || !effortOption.values.includes(input.effort)) {
+    return yield* Effect.die(
+      new Error(`${input.instance} does not offer ${input.model} with effort ${input.effort}.`),
+    );
+  }
+  const selection: BotModelSelection = {
+    instanceId: input.instance,
+    model: input.model,
+    options: [{ id: effortOption.id, value: input.effort }],
+  };
+  return selection;
 });
+
+/** The `--instance` flag of the Bot evals. */
+export const INSTANCE_FLAG = { type: "string", default: "codex" } as const;
 
 /** Waits for a run, or the thread's latest when `runId` is omitted, to end; fails unless it completed. */
 export const waitForRun = Effect.fn("evals.waitForRun")(function* (

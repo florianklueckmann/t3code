@@ -21,10 +21,12 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import {
+  type BotModelSelection,
   type Call,
   encodeJson,
+  INSTANCE_FLAG,
   readItems,
-  requireCodexModel,
+  requireBotModel,
   runTurn,
   type ToolActivity,
   toolActivity,
@@ -159,7 +161,7 @@ export const gradeSample = (testCase: BotSourcesCase, run: SampleRun) => {
 const runSample = Effect.fn("botSources.runSample")(function* (
   call: Call,
   testCase: BotSourcesCase,
-  options: { readonly work: string; readonly model: string; readonly effort: string },
+  options: { readonly work: string; readonly modelSelection: BotModelSelection },
 ) {
   const tag = `${testCase.id}-${NodeCrypto.randomBytes(3).toString("hex")}`;
   const projectIds = {} as Record<ProjectKey, string>;
@@ -176,11 +178,7 @@ const runSample = Effect.fn("botSources.runSample")(function* (
     );
     projectIds[key] = project.id;
   }
-  const modelSelection = {
-    instanceId: "codex",
-    model: options.model,
-    options: [{ id: "reasoningEffort", value: options.effort }],
-  };
+  const modelSelection = options.modelSelection;
   const create = (botId: string) =>
     call(
       "t3_bot",
@@ -331,6 +329,7 @@ const main = Effect.gen(function* () {
       out: { type: "string" },
       "base-dir": { type: "string" },
       work: { type: "string" },
+      instance: INSTANCE_FLAG,
       model: { type: "string", default: "gpt-6.1-terra" },
       effort: { type: "string", default: "high" },
       samples: { type: "string", default: "3" },
@@ -353,11 +352,11 @@ const main = Effect.gen(function* () {
     Array.from({ length: samples }, (_, sample) => ({ testCase, sample })),
   );
   NodeFS.mkdirSync(out, { recursive: true });
-  const runJobs = (call: Call) =>
+  const runJobs = (call: Call, modelSelection: BotModelSelection) =>
     Effect.forEach(
       jobs,
       ({ testCase, sample }) =>
-        runSample(call, testCase, { work, model: values.model, effort: values.effort }).pipe(
+        runSample(call, testCase, { work, modelSelection }).pipe(
           Effect.map((run) => {
             const checks = gradeSample(testCase, run);
             return {
@@ -389,8 +388,12 @@ const main = Effect.gen(function* () {
     );
   const rows = yield* withTools(baseDir, "bot-sources", (call) =>
     Effect.gen(function* () {
-      yield* requireCodexModel(call, values.model, values.effort);
-      return yield* runJobs(call);
+      const modelSelection = yield* requireBotModel(call, {
+        instance: values.instance,
+        model: values.model,
+        effort: values.effort,
+      });
+      return yield* runJobs(call, modelSelection);
     }),
   );
   const lines = selected.map((testCase) => {
@@ -401,7 +404,7 @@ const main = Effect.gen(function* () {
     return `| ${testCase.id} | ${testCase.kind} | ${passed}/${own.length} | ${errors} | ${homeReads} |`;
   });
   const summary = [
-    `Commit \`${commit}\`, ${values.model} at ${values.effort} effort, ${samples} samples per case.`,
+    `Commit \`${commit}\`, ${values.instance} ${values.model} at ${values.effort} effort, ${samples} samples per case.`,
     "",
     "| Case | Kind | Passed | Errors | Samples with home reads |",
     "| ---- | ---- | ------ | ------ | ----------------------- |",

@@ -3,6 +3,8 @@ import type { BotCapabilities } from "@t3tools/contracts";
 export const BOT_DRIVERS_MESSAGE = "Bots run on Codex and Claude providers only.";
 
 /** The drivers a Bot, its tasks and every thread of its lineage may run on. */
+export const BOT_DRIVERS: ReadonlyArray<string> = ["codex", "claudeAgent"];
+
 export const isBotDriver = (driver: string | undefined): boolean =>
   botDriverSupport(driver).mcpIsolation;
 
@@ -25,7 +27,7 @@ export function botDriverSupport(driver: string | undefined) {
     seals: codex,
     sealedGeneration: codex,
     /** Loads no MCP server but T3 Code's own when the Bot has no grants. */
-    mcpIsolation: codex || driver === "claudeAgent",
+    mcpIsolation: driver !== undefined && BOT_DRIVERS.includes(driver),
   };
 }
 

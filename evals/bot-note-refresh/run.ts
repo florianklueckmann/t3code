@@ -32,10 +32,12 @@ import {
   taskList,
 } from "../shared/botHome.ts";
 import {
+  type BotModelSelection,
   type Call,
   encodeJson,
+  INSTANCE_FLAG,
   readItems,
-  requireCodexModel,
+  requireBotModel,
   runTurn,
   SampleError,
   withTools,
@@ -194,11 +196,10 @@ const setUp = Effect.fn("botNoteRefreshEval.setUp")(function* (
   testCase: NoteRefreshCase,
   sample: number,
   work: string,
-  model: string,
-  effort: string,
+  modelSelection: BotModelSelection,
 ) {
   const tag = `bnr-${testCase.id}-${sample}-${NodeCrypto.randomBytes(3).toString("hex")}`;
-  const home = yield* createBotHome(call, { tag, work, model, effort });
+  const home = yield* createBotHome(call, { tag, work, modelSelection });
   for (const text of testCase.seed) yield* runTurn(call, home.homeThreadId, text);
   const stopped: Array<{ readonly messageId: string; readonly status: string }> = [];
   for (const text of testCase.unrecorded)
@@ -314,6 +315,7 @@ const main = Effect.gen(function* () {
       out: { type: "string" },
       "base-dir": { type: "string" },
       work: { type: "string" },
+      instance: INSTANCE_FLAG,
       model: { type: "string", default: "gpt-6.1-terra" },
       effort: { type: "string", default: "high" },
       samples: { type: "string", default: "3" },
@@ -359,12 +361,17 @@ const main = Effect.gen(function* () {
   );
   yield* withTools(baseDir, "bot-note-refresh", (call) =>
     Effect.gen(function* () {
-      yield* requireCodexModel(call, values.model, values.effort);
+      const modelSelection = yield* requireBotModel(call, {
+        instance: values.instance,
+        model: values.model,
+        effort: values.effort,
+        codexOnly: "the note refresh is a sealed run, which only Codex enforces.",
+      });
       const work = NodePath.resolve(values.work ?? NodePath.join(out, "work"));
       const fixtures: Fixture[] = [];
       for (const testCase of selected)
         for (let sample = 0; sample < samples; sample += 1)
-          fixtures.push(yield* setUp(call, testCase, sample, work, values.model, values.effort));
+          fixtures.push(yield* setUp(call, testCase, sample, work, modelSelection));
 
       const before = new Map<Fixture, { note: ObservedNote; tasks: number; setup: string[] }>();
       for (const fixture of fixtures) {

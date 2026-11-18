@@ -34,8 +34,11 @@ import {
   botOfHomeThread,
   botProjectContextChanges,
   botProjectContextDraft,
+  botProviderDrivers,
   botRoutineDraft,
+  botRoutineNoChanges,
   botRoutineUpsertInput,
+  emptyBotRoutineDraft,
   botSourceDrafts,
   botTaskCardKey,
   botTaskResultMatchesThread,
@@ -347,6 +350,72 @@ describe("home Bot learning notices", () => {
       entriesOf(homeBotLearningNoticeGroups(other, notices.slice(3, 5), hidden).visible),
     ).toEqual(["d", "c"]);
   });
+});
+
+describe("Bot model support", () => {
+  it.each([
+    ["an older server", {}, ["codex"]],
+    [
+      "a server that names its Bot providers",
+      { botProviders: ["codex", "claudeAgent"] },
+      ["codex", "claudeAgent"],
+    ],
+  ] as const)("offers the providers %s accepts", (_, capabilities, expected) => {
+    expect(botProviderDrivers(capabilities)).toEqual(expected);
+  });
+
+  const capabilities = (noChangesRoutines: string | null) => ({
+    mcpGrants: null,
+    ownMcpServers: null,
+    noChangesRoutines,
+    maintenance: null,
+    homeCheck: null,
+    failureDiagnosis: null,
+  });
+  const saved = (allowChanges: boolean) =>
+    ({
+      bot: { botId: BotId.make("b"), allowChanges },
+      schedule: { type: "fixed_time", timeOfDay: "09:00" },
+    }) as ScheduledTask;
+  const CLAUDE_NO_CHANGES =
+    "No changes isn't available on Claude yet, because Claude can't enforce it. Switch the Bot to a Codex model for No changes routines.";
+
+  it.each([
+    ["an older server, new routine", undefined, null, false, true, null],
+    ["a Codex Bot, new routine", capabilities(null), null, false, true, null],
+    [
+      "a Claude Bot, new routine",
+      capabilities("claude_unsupported"),
+      null,
+      true,
+      false,
+      CLAUDE_NO_CHANGES,
+    ],
+    [
+      "a Claude Bot, routine saved with changes allowed",
+      capabilities("claude_unsupported"),
+      saved(true),
+      true,
+      false,
+      CLAUDE_NO_CHANGES,
+    ],
+    // Its access is never flipped silently; the server keeps it paused.
+    [
+      "a Claude Bot, routine saved as No changes",
+      capabilities("claude_unsupported"),
+      saved(false),
+      false,
+      true,
+      CLAUDE_NO_CHANGES,
+    ],
+  ] as const)(
+    "starts the routine form for %s on a choice the server accepts",
+    (_, caps, task, allowChanges, offered, unavailableLabel) => {
+      const draft = (task === null ? null : botRoutineDraft(task)) ?? emptyBotRoutineDraft(caps);
+      expect(draft.allowChanges).toBe(allowChanges);
+      expect(botRoutineNoChanges(caps, task)).toEqual({ offered, unavailableLabel });
+    },
+  );
 });
 
 describe("botRoutineUpsertInput", () => {

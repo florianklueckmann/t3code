@@ -37,10 +37,12 @@ import * as ServerConfig from "../../apps/server/src/config.ts";
 import { readPersistedServerRuntimeState } from "../../apps/server/src/serverRuntimeState.ts";
 import { createBotHome } from "../shared/botHome.ts";
 import {
+  type BotModelSelection,
   type Call,
   encodeJson,
+  INSTANCE_FLAG,
   readItems,
-  requireCodexModel,
+  requireBotModel,
   runTurn,
   SampleError,
   type ToolActivity,
@@ -146,7 +148,7 @@ const runSample = Effect.fn("botGrants.runSample")(function* (
   call: Call,
   rpc: WsClient,
   testCase: GrantCase,
-  options: { readonly work: string; readonly model: string; readonly effort: string },
+  options: { readonly work: string; readonly modelSelection: BotModelSelection },
 ) {
   const tag = `bg-${testCase.id}-${NodeCrypto.randomBytes(3).toString("hex")}`;
   const home = yield* createBotHome(call, { tag, ...options });
@@ -207,6 +209,7 @@ const main = Effect.gen(function* () {
       out: { type: "string" },
       "base-dir": { type: "string" },
       work: { type: "string" },
+      instance: INSTANCE_FLAG,
       model: { type: "string", default: "gpt-6.1-terra" },
       effort: { type: "string", default: "high" },
       samples: { type: "string", default: "3" },
@@ -232,15 +235,16 @@ const main = Effect.gen(function* () {
   const rows = yield* withTools(baseDir, "bot-grants", (call) =>
     withRpc(baseDir, (rpc) =>
       Effect.gen(function* () {
-        yield* requireCodexModel(call, values.model, values.effort);
+        const modelSelection = yield* requireBotModel(call, {
+          instance: values.instance,
+          model: values.model,
+          effort: values.effort,
+          codexOnly: "MCP grants need a Codex Bot.",
+        });
         return yield* Effect.forEach(
           jobs,
           ({ testCase, sample }) =>
-            runSample(call, rpc, testCase, {
-              work,
-              model: values.model,
-              effort: values.effort,
-            }).pipe(
+            runSample(call, rpc, testCase, { work, modelSelection }).pipe(
               Effect.map((run) => {
                 const checks = gradeSample(testCase, run);
                 return {

@@ -34,6 +34,7 @@ import { batchFor, casePasses, gradeSample, type SampleGrade } from "./grade.ts"
 const { values } = NodeUtil.parseArgs({
   options: {
     out: { type: "string" },
+    instance: { type: "string", default: "codex" },
     model: { type: "string", default: "gpt-6.1-terra" },
     effort: { type: "string", default: "high" },
     samples: { type: "string", default: "3" },
@@ -42,6 +43,9 @@ const { values } = NodeUtil.parseArgs({
   },
 });
 if (!values.out) throw new Error("Use --out <directory>.");
+if (values.instance !== "codex") {
+  throw new Error("This eval runs only on Codex: maintenance uses Codex's sealed generation.");
+}
 /** The live process environment: Codex children and `os.tmpdir()` both read it. */
 const environment = process.env;
 const out = NodePath.resolve(values.out);

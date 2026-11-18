@@ -19,6 +19,7 @@ import { AppText as Text } from "../../components/ui/AppText";
 import { SymbolView } from "../../components/ui/AppSymbol";
 import * as Dialog from "../../components/ui/Dialog";
 import { Menu } from "../../components/ui/Menu";
+import { appAtomRegistry } from "../../state/atom-registry";
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -83,13 +84,16 @@ export function BotRoutinesSection(props: {
   const recentTasks = (tasks.data?.tasks ?? []).slice(0, RECENT_TASKS_SHOWN);
   const actionsDisabled = props.disabled || !canOperate;
 
-  const openRoutine = (taskId?: ScheduledTaskId) =>
+  const openRoutine = (taskId?: ScheduledTaskId) => {
+    // The form starts from the Bot's capabilities, which another client may have changed.
+    appAtomRegistry.refresh(serverEnvironment.botDetail({ environmentId, input: { botId } }));
     navigation.navigate("SettingsBotRoutine", {
       environmentId,
       botId,
       projectId,
       ...(taskId === undefined ? {} : { taskId }),
     });
+  };
 
   const act = async (task: ScheduledTask, action: "toggle" | "run" | "delete") => {
     const input = { id: task.id };

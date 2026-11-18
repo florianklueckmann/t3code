@@ -18,10 +18,12 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import {
+  type BotModelSelection,
   type Call,
   encodeJson,
+  INSTANCE_FLAG,
   readItems,
-  requireCodexModel,
+  requireBotModel,
   withTools,
 } from "../shared/devServerTools.ts";
 import { CASES, type ContinuationCase } from "./cases.ts";
@@ -76,6 +78,8 @@ const Capture = Schema.Struct({
 });
 const Manifest = Schema.Struct({
   version: Schema.Literal(1),
+  /** Absent from manifests captured before `--instance`, which all ran on Codex. */
+  instance: Schema.optional(Schema.String),
   model: Schema.String,
   effort: Schema.String,
   captures: Schema.Array(Capture),
@@ -162,8 +166,7 @@ const capture = Effect.fn("botContinuationEval.capture")(function* (
   testCase: ContinuationCase,
   sample: number,
   work: string,
-  model: string,
-  effort: string,
+  modelSelection: BotModelSelection,
 ) {
   const tag = `bc-${testCase.id}-${sample}-${NodeCrypto.randomBytes(3).toString("hex")}`;
   const root = NodePath.join(work, tag);
@@ -183,11 +186,7 @@ const capture = Effect.fn("botContinuationEval.capture")(function* (
       instructions:
         "Help plan synthetic Acme launches. Do not create tasks, routines, learning or change sources unless explicitly asked.",
       learningPolicy: "after_adoption",
-      modelSelection: {
-        instanceId: "codex",
-        model,
-        options: [{ id: "reasoningEffort", value: effort }],
-      },
+      modelSelection,
     },
     Schema.Unknown,
   );
@@ -329,6 +328,7 @@ const main = Effect.gen(function* () {
       work: { type: "string" },
       phase: { type: "string", default: "all" },
       manifest: { type: "string" },
+      instance: INSTANCE_FLAG,
       model: { type: "string", default: "gpt-6-luna" },
       effort: { type: "string", default: "medium" },
       samples: { type: "string", default: "3" },
@@ -360,15 +360,29 @@ const main = Effect.gen(function* () {
   if (selected.length === 0) return yield* Effect.die(new Error("No matching cases."));
   yield* withTools(values["base-dir"], "bot-continuation", (call) =>
     Effect.gen(function* () {
-      yield* requireCodexModel(call, values.model, values.effort);
+      const modelSelection = yield* requireBotModel(call, {
+        instance: values.instance,
+        model: values.model,
+        effort: values.effort,
+      });
       let manifest: typeof Manifest.Type;
       if (values.phase === "resume") {
         manifest = yield* decodeManifest(NodeFS.readFileSync(manifestPath, "utf8"));
-        if (manifest.model !== values.model || manifest.effort !== values.effort)
+        if (
+          (manifest.instance ?? "codex") !== values.instance ||
+          manifest.model !== values.model ||
+          manifest.effort !== values.effort
+        )
           return yield* Effect.die(
-            new Error("Resume must use the captured model and effort; no fallback."),
+            new Error("Resume must use the captured instance, model and effort; no fallback."),
           );
       } else {
+        const run = {
+          version: 1 as const,
+          instance: values.instance,
+          model: values.model,
+          effort: values.effort,
+        };
         const captures: Captured[] = [];
         for (const testCase of selected)
           for (let sample = 0; sample < Number(values.samples); sample += 1) {
@@ -377,16 +391,12 @@ const main = Effect.gen(function* () {
               testCase,
               sample,
               NodePath.resolve(values.work ?? NodePath.join(out, "work")),
-              values.model,
-              values.effort,
+              modelSelection,
             );
             captures.push(captured);
-            NodeFS.writeFileSync(
-              manifestPath,
-              encodeJson({ version: 1, model: values.model, effort: values.effort, captures }),
-            );
+            NodeFS.writeFileSync(manifestPath, encodeJson({ ...run, captures }));
           }
-        manifest = { version: 1, model: values.model, effort: values.effort, captures };
+        manifest = { ...run, captures };
       }
       NodeFS.writeFileSync(
         NodePath.join(out, "metadata.json"),
@@ -395,6 +405,7 @@ const main = Effect.gen(function* () {
             encoding: "utf8",
           }).trim(),
           phase: values.phase,
+          instance: values.instance,
           model: values.model,
           effort: values.effort,
           baseline:

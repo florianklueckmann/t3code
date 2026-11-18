@@ -30,10 +30,12 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import {
+  type BotModelSelection,
   type Call,
   encodeJson,
+  INSTANCE_FLAG,
   readItems,
-  requireCodexModel,
+  requireBotModel,
   runTurn,
   SampleError,
   type ToolActivity,
@@ -320,8 +322,7 @@ const runSample = Effect.fn("botPreparation.runSample")(function* (
   testCase: PreparationCase,
   options: {
     readonly work: string;
-    readonly model: string;
-    readonly effort: string;
+    readonly modelSelection: BotModelSelection;
     readonly baseDir: string;
   },
 ) {
@@ -345,11 +346,7 @@ const runSample = Effect.fn("botPreparation.runSample")(function* (
       botId,
       name: BOT_NAME,
       instructions: BOT_INSTRUCTIONS,
-      modelSelection: {
-        instanceId: "codex",
-        model: options.model,
-        options: [{ id: "reasoningEffort", value: options.effort }],
-      },
+      modelSelection: options.modelSelection,
       learningPolicy: "after_adoption",
     },
     Schema.Struct({ bot: BotDetail }),
@@ -500,6 +497,7 @@ const main = Effect.gen(function* () {
       out: { type: "string" },
       "base-dir": { type: "string" },
       work: { type: "string" },
+      instance: INSTANCE_FLAG,
       model: { type: "string", default: "gpt-6.1-terra" },
       effort: { type: "string", default: "high" },
       samples: { type: "string", default: "3" },
@@ -524,16 +522,16 @@ const main = Effect.gen(function* () {
   NodeFS.mkdirSync(out, { recursive: true });
   const rows = yield* withTools(baseDir, "bot-preparation", (call) =>
     Effect.gen(function* () {
-      yield* requireCodexModel(call, values.model, values.effort);
+      const modelSelection = yield* requireBotModel(call, {
+        instance: values.instance,
+        model: values.model,
+        effort: values.effort,
+        codexOnly: "its routines and diagnoses run No changes, which only Codex enforces.",
+      });
       return yield* Effect.forEach(
         jobs,
         ({ testCase, sample }) =>
-          runSample(call, testCase, {
-            work,
-            model: values.model,
-            effort: values.effort,
-            baseDir,
-          }).pipe(
+          runSample(call, testCase, { work, modelSelection, baseDir }).pipe(
             Effect.map((run) => {
               const checks = gradeSample(testCase, run);
               return {

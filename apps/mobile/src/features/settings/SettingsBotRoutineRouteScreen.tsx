@@ -3,6 +3,7 @@ import { DateTimePicker } from "@expo/ui/community/datetime-picker";
 import { useNavigation, usePreventRemove, type StaticScreenProps } from "@react-navigation/native";
 import {
   botRoutineDraft,
+  botRoutineNoChanges,
   botRoutineUpsertInput,
   emptyBotRoutineDraft,
   type BotRoutineDraft,
@@ -67,7 +68,11 @@ export function SettingsBotRoutineRouteScreen({
   const scheduled = useEnvironmentQuery(
     serverEnvironment.scheduledTasksLive({ environmentId, input: {} }),
   );
+  const detail = useEnvironmentQuery(
+    serverEnvironment.botDetail({ environmentId, input: { botId } }),
+  );
   const bot = bots.data?.bots.find((entry) => entry.id === botId);
+  const capabilities = detail.data?.capabilities;
   const attached =
     bot !== undefined &&
     bot.archivedAt === null &&
@@ -75,14 +80,14 @@ export function SettingsBotRoutineRouteScreen({
   const task =
     taskId === undefined ? null : scheduled.data?.tasks.find((entry) => entry.id === taskId);
   const initialDraft =
-    taskId === undefined ? emptyBotRoutineDraft() : task ? botRoutineDraft(task) : null;
+    taskId === undefined ? emptyBotRoutineDraft(capabilities) : task ? botRoutineDraft(task) : null;
 
   const unavailable =
     config?.environment.capabilities.botRoutines !== true
       ? "Update T3 Code on this environment to use routines."
-      : bots.error || scheduled.error
-        ? (bots.error ?? scheduled.error)
-        : !bots.data || !scheduled.data
+      : bots.error || scheduled.error || detail.error
+        ? (bots.error ?? scheduled.error ?? detail.error)
+        : !bots.data || !scheduled.data || !detail.data
           ? null
           : !attached
             ? "This Bot no longer works in this project."
@@ -93,7 +98,7 @@ export function SettingsBotRoutineRouteScreen({
                 : null;
 
   const title = taskId === undefined ? "New routine" : "Edit routine";
-  if (unavailable === null && bot && initialDraft && task !== undefined) {
+  if (unavailable === null && bot && detail.data && initialDraft && task !== undefined) {
     return (
       <BotRoutineForm
         key={taskId ?? "new"}
@@ -101,6 +106,7 @@ export function SettingsBotRoutineRouteScreen({
         bot={bot}
         projectId={projectId}
         task={task}
+        noChanges={botRoutineNoChanges(capabilities, task)}
         initialDraft={initialDraft}
         timeZone={config?.environment.timeZone}
         title={title}
@@ -145,6 +151,7 @@ function BotRoutineForm(props: {
   readonly projectId: ProjectId;
   /** The live routine being edited; null for a new one. */
   readonly task: ScheduledTask | null;
+  readonly noChanges: ReturnType<typeof botRoutineNoChanges>;
   readonly initialDraft: BotRoutineDraft;
   readonly timeZone: string | undefined;
   readonly title: string;
@@ -153,6 +160,10 @@ function BotRoutineForm(props: {
   const navigation = useNavigation();
   const [baseline] = useState(props.initialDraft);
   const [draft, setDraftState] = useState(props.initialDraft);
+  // Capabilities can arrive after the draft started: a new routine follows them until the user
+  // picks, and No changes is never saved where it is not offered.
+  const [accessChosen, setAccessChosen] = useState(task !== null);
+  const allowChanges = !props.noChanges.offered || (accessChosen && draft.allowChanges);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [picker, setPicker] = useState<"date" | "time" | "timeOfDay" | null>(null);
@@ -196,7 +207,7 @@ function BotRoutineForm(props: {
   const save = async () => {
     if (submissionPending.current || !canOperate) return;
     const result = botRoutineUpsertInput(
-      draft,
+      { ...draft, allowChanges },
       {
         botId: props.bot.id,
         projectId: props.projectId,
@@ -252,23 +263,33 @@ function BotRoutineForm(props: {
         </SettingsSection>
         <SettingsSection
           title="Changes"
-          footer={
-            draft.allowChanges
+          footer={[
+            allowChanges
               ? "The Bot carries out the edits or messages requested in the brief, in Full access without approval prompts."
-              : "The Bot reports results and proposes changes. It cannot edit files or data or send messages; this is enforced with Codex on a Mac server, and elsewhere the run fails instead."
-          }
+              : "The Bot reports results and proposes changes. It cannot edit files or data or send messages; this is enforced with Codex on a Mac server, and elsewhere the run fails instead.",
+            props.noChanges.unavailableLabel,
+          ]
+            .filter((line) => line !== null)
+            .join(" ")}
         >
-          <View className="px-4 py-3">
-            <SegmentedControl
-              variant="card"
-              options={[
-                { value: "none", label: "No changes" },
-                { value: "allow", label: "Changes allowed" },
-              ]}
-              selected={draft.allowChanges ? "allow" : "none"}
-              onSelect={(value) => setDraft({ ...draft, allowChanges: value === "allow" })}
-            />
-          </View>
+          {props.noChanges.offered ? (
+            <View className="px-4 py-3">
+              <SegmentedControl
+                variant="card"
+                options={[
+                  { value: "none", label: "No changes" },
+                  { value: "allow", label: "Changes allowed" },
+                ]}
+                selected={allowChanges ? "allow" : "none"}
+                onSelect={(value) => {
+                  setAccessChosen(true);
+                  setDraft({ ...draft, allowChanges: value === "allow" });
+                }}
+              />
+            </View>
+          ) : (
+            <SelectRow label="Changes allowed" value="" actions={[]} onSelect={() => {}} />
+          )}
         </SettingsSection>
         <SettingsSection
           title="Timing"
