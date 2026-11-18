@@ -196,6 +196,52 @@ startup and keeps its own SQLite data, signing key, and revocation state. Deskto
 servers ignore the value. See [environment authentication](../internals/environment-auth.md#reusable-dev-credential)
 for the security model.
 
+## macOS Calendar Helper
+
+From the repository root on macOS 14 or later, run the following command in the logged-in user's
+session. Use a checkout on the same volume as `~/Applications` and a login keychain with one valid
+Apple Development signing identity.
+
+```sh
+node native/calendar-helper/install.mjs
+```
+
+The command runs the Swift tests and installs the signed
+`~/Applications/T3 Calendar Helper.app`. Its bundle ID is
+`com.florianklueckmann.t3code.calendar-helper`. This install is separate from the Electron launcher
+and desktop release build. Reuse the same signing identity for rebuilds.
+
+Send one JSON request per LaunchServices invocation. Create a fresh mode `0700` directory under the
+user's Darwin temp directory and write a mode `0600` `request.json`. Pass the directory basename to
+`open` and wait for the helper to exit before reading `response.json`.
+
+```sh
+request_dir=$(mktemp -d "$(getconf DARWIN_USER_TEMP_DIR)t3-calendar.XXXXXXXX")
+(umask 077; printf '%s\n' '{"command":"status"}' > "$request_dir/request.json")
+open -n -W -g -a "$HOME/Applications/T3 Calendar Helper.app" --args "${request_dir##*/}"
+cat "$request_dir/response.json"
+```
+
+Use a new directory for each call and remove the files and directory after reading the response.
+The helper accepts up to 32 KiB of JSON. Treat a missing, empty, or malformed response as a
+transport failure even if `open` exits successfully.
+
+- `status` returns `{"status":{"authorization":"notDetermined"}}` before an access decision. The other
+  authorization values are `fullAccess`, `writeOnly`, `denied`, `restricted`, and `unknown`.
+  Use `setup` in the logged-in user's session to request Full Access explicitly. It returns the same
+  response shape. If access was denied, change it in System Settings under Privacy & Security >
+  Calendars.
+- `list-calendars` returns `calendars.items` with each calendar's `id`, `title`, `sourceName`,
+  and `writable` flag.
+- `list-events` requires RFC 3339 `start` and `end` timestamps with offsets and a nonempty
+  `calendarIds` array. Use a window of at most 14 elapsed days. The optional integer `limit`
+  defaults to 50 and accepts 1 through 100. The response contains `events.items` in start-time
+  order. Each item has `title`, `calendar` (`id` and `title`), UTC `start` and `end`,
+  `allDay`, and an opaque `reference`. EventKit supplies all-day boundaries in the host's time
+  zone before conversion to UTC.
+- Errors return `error.code` with `notAuthorized`, `invalidRequest`, `unknownCalendar`, or
+  `storeUnavailable`. Reads require Full Access. An unknown calendar ID fails the entire request.
+
 ## Checks
 
 `vp run check:changed` runs CI's fast checks for your branch's changes: format and lint of the
