@@ -1,8 +1,23 @@
-import { BOT_TURN_LEARNING_LIMITS } from "@t3tools/contracts";
-import { expect, it } from "vite-plus/test";
+import { expect, it } from "@effect/vitest";
+import {
+  BOT_TURN_LEARNING_LIMITS,
+  BotId,
+  BotTaskId,
+  ProjectId,
+  ThreadId,
+} from "@t3tools/contracts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import * as DateTime from "effect/DateTime";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as Ref from "effect/Ref";
+import * as SqlClient from "effect/sql/SqlClient";
+import * as TestClock from "effect/testing/TestClock";
 
-import { turnLearning } from "./BotLearning.ts";
-import type { BotLearningRow } from "./BotStore.ts";
+import * as BotLearning from "./BotLearning.ts";
+import * as BotStore from "./BotStore.ts";
+import * as BotDatabase from "./persistence/BotDatabase.ts";
+import * as BotMigrations from "./persistence/Migrations.ts";
 
 const projectA = "project-a";
 const projectB = "project-b";
@@ -13,10 +28,10 @@ const row = (
   options: {
     readonly projectId?: string | null;
     readonly origin?: "instruction" | "correction";
-    readonly status?: BotLearningRow["status"];
+    readonly status?: BotStore.BotLearningRow["status"];
     readonly text?: string;
   } = {},
-): BotLearningRow => ({
+): BotStore.BotLearningRow => ({
   entry_id: id,
   revision: 1,
   bot_id: "bot",
@@ -117,7 +132,7 @@ it.each([
     eligible: 2,
   },
 ])("$name", ({ rows, selected, eligible, ...expected }) => {
-  const turn = turnLearning(rows, projectA);
+  const turn = BotLearning.turnLearning(rows, projectA);
   expect(turn.summary.selected).toEqual(selected);
   expect(turn.summary.eligible).toBe(eligible);
   expect(turn.omitted).toBe(eligible - selected.length);
@@ -126,3 +141,191 @@ it.each([
   expect(turn.summary.chars).toBe(turn.lines.reduce((sum, line) => sum + line.length, 0));
   if ("chars" in expected) expect(turn.summary.chars).toBe(expected.chars);
 });
+
+const botId = BotId.make("bot");
+const policy = "automatic";
+const correction = {
+  botId,
+  projectId: ProjectId.make(projectA),
+  kind: "preference",
+  text: "Use metric units.",
+  origin: "correction",
+  source: { kind: "thread", threadId: ThreadId.make("bot-home") },
+} as const;
+const user = { origin: "instruction", source: { kind: "user" } } as const;
+
+const storeLayer = BotStore.layer.pipe(
+  Layer.provide(
+    Layer.effect(
+      BotDatabase.BotDatabase,
+      Effect.gen(function* () {
+        yield* BotMigrations.runMigrations();
+        return yield* SqlClient.SqlClient;
+      }),
+    ).pipe(Layer.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  ),
+);
+
+const fixture = Effect.gen(function* () {
+  const store = yield* BotStore.BotStore;
+  const now = DateTime.now.pipe(Effect.map(DateTime.formatIso));
+  const createdAt = yield* now;
+  yield* store.insertBot({
+    bot_id: botId,
+    name: "Companion",
+    instructions: "",
+    model_selection_json: '{"instanceId":"codex","model":"gpt-6-luna"}',
+    learning_policy: policy,
+    appearance_json: null,
+    created_at: createdAt,
+    updated_at: createdAt,
+    archived_at: null,
+  });
+  const nextId = yield* Ref.make(0);
+  const taskStatus = yield* Ref.make<"running" | "completed">("running");
+  const learning = BotLearning.make({
+    store,
+    now,
+    newEntryId: Ref.updateAndGet(nextId, (id) => id + 1).pipe(Effect.map((id) => `lesson-${id}`)),
+    taskStatus: () => Ref.get(taskStatus),
+  });
+  return { learning, rows: store.listLearning(botId), taskStatus };
+});
+
+it.effect("restores the origin of the earlier revision after a user edit", () =>
+  Effect.gen(function* () {
+    const { learning, rows } = yield* fixture;
+    const { entryId, revision } = yield* learning.record(policy, correction);
+    yield* learning.record(policy, {
+      ...correction,
+      ...user,
+      text: "Use imperial units.",
+      replaces: { entryId, revision },
+    });
+    expect((yield* rows).find((row) => row.status === "active")?.origin).toBe("instruction");
+
+    const restore = { botId, entryId, revision, source: user.source };
+    yield* learning.restore(restore);
+    expect((yield* rows).find((row) => row.status === "active")).toMatchObject({
+      origin: "correction",
+      text: correction.text,
+      restored_from: revision,
+    });
+    yield* learning.restore(restore);
+    expect(yield* rows).toHaveLength(3);
+  }).pipe(Effect.provide(storeLayer)),
+);
+
+it.effect.each([
+  {
+    name: "keeps the learned shared entry when moving an identical project lesson",
+    origin: "correction",
+    sharedRevision: 1,
+    duplicate: true,
+  },
+  {
+    name: "makes the shared entry an instruction when moving an identical project instruction",
+    origin: "instruction",
+    sharedRevision: 2,
+    duplicate: false,
+  },
+] as const)("$name", ({ origin, sharedRevision, duplicate }) =>
+  Effect.gen(function* () {
+    const { learning, rows } = yield* fixture;
+    const shared = yield* learning.record(policy, {
+      ...correction,
+      projectId: ProjectId.make(projectB),
+      scope: "bot",
+    });
+    yield* learning.decide({
+      botId,
+      entryId: shared.entryId,
+      revision: shared.revision,
+      decision: "adopt",
+    });
+    const local = yield* learning.record(
+      policy,
+      origin === "instruction" ? { ...correction, ...user } : correction,
+    );
+    const moved = yield* learning.record(policy, {
+      ...correction,
+      ...user,
+      scope: "bot",
+      replaces: { entryId: local.entryId, revision: local.revision },
+    });
+
+    const revisions = yield* rows;
+    expect(revisions.find((row) => row.status === "active")).toMatchObject({
+      entry_id: shared.entryId,
+      revision: sharedRevision,
+      project_id: null,
+      origin,
+    });
+    expect(revisions.find((row) => row.entry_id === local.entryId)?.status).toBe("retired");
+    expect(moved).toEqual({
+      entryId: shared.entryId,
+      revision: sharedRevision,
+      status: "active",
+      duplicate,
+    });
+  }).pipe(Effect.provide(storeLayer)),
+);
+
+it.effect("keeps a standing instruction when adopting a task's proposal to move it", () =>
+  Effect.gen(function* () {
+    const { learning, rows, taskStatus } = yield* fixture;
+    const instruction = yield* learning.record(policy, { ...correction, ...user });
+    const taskId = BotTaskId.make("task");
+    const proposal = yield* learning.record(policy, {
+      ...correction,
+      scope: "bot",
+      source: { kind: "task", taskId },
+      replaces: { entryId: instruction.entryId, revision: instruction.revision },
+    });
+
+    expect(proposal.status).toBe("pending");
+    const adopt = learning.decide({
+      botId,
+      entryId: proposal.entryId,
+      revision: proposal.revision,
+      decision: "adopt",
+    });
+    expect((yield* Effect.flip(adopt)).message).toContain("did not complete");
+    yield* Ref.set(taskStatus, "completed");
+    expect(yield* learning.settleTask({ botId, policy, taskId, status: "completed" })).toBe(false);
+    yield* adopt;
+
+    expect((yield* rows).find((row) => row.status === "active")).toMatchObject({
+      revision: proposal.revision,
+      project_id: null,
+      origin: "instruction",
+    });
+  }).pipe(Effect.provide(storeLayer)),
+);
+
+it.effect("keeps a moved lesson behind newer lessons of the same origin", () =>
+  Effect.gen(function* () {
+    const { learning, rows } = yield* fixture;
+    const local = yield* learning.record(policy, correction);
+    yield* TestClock.adjust("1 minute");
+    const newer = yield* learning.record(policy, { ...correction, text: "Use ISO dates." });
+    yield* TestClock.adjust("1 minute");
+    yield* learning.record(policy, {
+      ...correction,
+      ...user,
+      scope: "bot",
+      replaces: { entryId: local.entryId, revision: local.revision },
+    });
+
+    const revisions = yield* rows;
+    expect(BotLearning.turnLearning(revisions, projectA).summary.selected).toEqual([
+      newer.entryId,
+      local.entryId,
+    ]);
+    expect(revisions.at(-1)).toMatchObject({
+      entry_id: local.entryId,
+      revision: 2,
+      created_at: "1970-01-01T00:02:00.000Z",
+    });
+  }).pipe(Effect.provide(storeLayer)),
+);

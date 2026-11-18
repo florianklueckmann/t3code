@@ -43,6 +43,12 @@ const revisionsOf = (rows: ReadonlyArray<BotStore.BotLearningRow>, entryId: stri
 const activeOf = (revisions: ReadonlyArray<BotStore.BotLearningRow>) =>
   revisions.find((row) => row.status === "active");
 
+const isScopeOnlyMove = (
+  base: BotStore.BotLearningRow,
+  projectId: string | null,
+  normalized: string,
+) => projectId === null && base.project_id !== null && base.normalized_text === normalized;
+
 /**
  * The status a new, non-stale revision starts in. A user's standing instruction applies at once.
  * Inferred lessons wait for the user when they would override a standing instruction or reach
@@ -113,11 +119,18 @@ export const make = (deps: {
       }
     }
     if (activated.status !== "active") {
+      const base = rows.find(
+        (row) => row.entry_id === activated.entry_id && row.revision === activated.base_revision,
+      );
       yield* store.setLearningStatus({
         entryId: activated.entry_id,
         revision: activated.revision,
         status: "active",
         decidedAt: now,
+        ...(base !== undefined &&
+        isScopeOnlyMove(base, activated.project_id, activated.normalized_text)
+          ? { origin: base.origin }
+          : {}),
       });
     }
   });
@@ -172,6 +185,7 @@ export const make = (deps: {
       const projectId = input.scope === "bot" ? null : scope;
       const head = activeOf(revisions);
       const stale = head === undefined || head.revision !== input.replaces.revision;
+      const moved = !stale && isScopeOnlyMove(head, projectId, normalized);
       // Moving into a scope that already has this lesson keeps that entry; a move that applies
       // at once retires this copy, which stays restorable.
       const existing =
@@ -186,13 +200,17 @@ export const make = (deps: {
                 row.normalized_text === normalized,
             );
       if (existing !== undefined) {
-        const kept = yield* record(policy, {
-          ...input,
-          replaces: {
-            entryId: BotLearningEntryId.make(existing.entry_id),
-            revision: existing.revision,
-          },
-        });
+        const keepShared =
+          moved && !(head.origin === "instruction" && existing.origin === "correction");
+        const kept = keepShared
+          ? duplicateOf(existing)
+          : yield* record(policy, {
+              ...input,
+              replaces: {
+                entryId: BotLearningEntryId.make(existing.entry_id),
+                revision: existing.revision,
+              },
+            });
         if (input.origin === "instruction") {
           yield* retire({ botId: input.botId, entryId: input.replaces.entryId });
         }
@@ -223,15 +241,11 @@ export const make = (deps: {
             policy,
             fromTask,
           });
-      // The user moving an entry changes where it applies, not who it came from.
-      const moved =
-        !stale &&
-        input.origin === "instruction" &&
-        head.project_id !== projectId &&
-        head.normalized_text === normalized;
       const row: BotStore.BotLearningRow = {
         ...base,
-        ...(moved ? { origin: head.origin, source_json: head.source_json } : {}),
+        ...(moved && status === "active"
+          ? { origin: head.origin, source_json: head.source_json }
+          : {}),
         entry_id: first.entry_id,
         revision: Math.max(...revisions.map((revision) => revision.revision)) + 1,
         project_id: projectId,
@@ -420,10 +434,9 @@ export const make = (deps: {
     yield* requireEligible(target);
     const revisions = revisionsOf(rows, input.entryId);
     const head = activeOf(revisions);
-    // A repeated restore finds the text already in use as an instruction and changes nothing.
     if (
       head !== undefined &&
-      head.origin === "instruction" &&
+      head.origin === target.origin &&
       head.normalized_text === target.normalized_text &&
       head.project_id === target.project_id
     ) {
@@ -434,8 +447,6 @@ export const make = (deps: {
       ...target,
       revision: Math.max(...revisions.map((revision) => revision.revision)) + 1,
       rationale: `Restored revision ${target.revision}.`,
-      // Restoring is the user's own decision, so it counts as a standing instruction.
-      origin: "instruction",
       source_json: BotStore.encodeLearningSource(input.source),
       status: "active",
       base_revision: head?.revision ?? null,
@@ -469,18 +480,35 @@ const duplicateOf = (row: BotStore.BotLearningRow): RecordLearningResult => ({
  * context and the Bot's detail both read it, so what settings show cannot drift from a turn.
  */
 export function turnLearning(rows: ReadonlyArray<BotStore.BotLearningRow>, projectId: string) {
-  const eligible = rows
-    .filter(
-      (row) => row.status === "active" && (row.project_id === null || row.project_id === projectId),
-    )
-    .toSorted(
-      (a, b) =>
-        Number(b.origin === "instruction") - Number(a.origin === "instruction") ||
-        b.created_at.localeCompare(a.created_at),
-    );
+  const projectRevisions = new Map<string, number>();
+  for (const [index, row] of rows.entries()) {
+    if (row.project_id !== null) projectRevisions.set(`${row.entry_id}:${row.revision}`, index);
+  }
+  const eligible = rows.flatMap((row, index) => {
+    if (row.status !== "active" || (row.project_id !== null && row.project_id !== projectId)) {
+      return [];
+    }
+    // Revisions keep their actual timestamps for history and notices.
+    const baseIndex =
+      row.project_id === null && row.base_revision !== null && row.restored_from === null
+        ? projectRevisions.get(`${row.entry_id}:${row.base_revision}`)
+        : undefined;
+    const base = baseIndex === undefined ? undefined : rows[baseIndex];
+    const rank =
+      base?.origin === row.origin && isScopeOnlyMove(base, row.project_id, row.normalized_text)
+        ? { at: base.created_at, index: baseIndex ?? index }
+        : { at: row.created_at, index };
+    return [{ row, rank }];
+  });
+  eligible.sort(
+    (a, b) =>
+      Number(b.row.origin === "instruction") - Number(a.row.origin === "instruction") ||
+      b.rank.at.localeCompare(a.rank.at) ||
+      a.rank.index - b.rank.index,
+  );
   const lines: Array<string> = [];
   let chars = 0;
-  for (const row of eligible) {
+  for (const { row } of eligible) {
     const line = `- [${row.entry_id} r${row.revision}; ${row.kind}${
       row.project_id === null ? ", all projects" : ""
     }${row.origin === "instruction" ? ", standing instruction" : ""}] ${row.text}`;
@@ -497,7 +525,9 @@ export function turnLearning(rows: ReadonlyArray<BotStore.BotLearningRow>, proje
     lines,
     omitted: eligible.length - lines.length,
     summary: {
-      selected: eligible.slice(0, lines.length).map((row) => BotLearningEntryId.make(row.entry_id)),
+      selected: eligible
+        .slice(0, lines.length)
+        .map(({ row }) => BotLearningEntryId.make(row.entry_id)),
       eligible: eligible.length,
       chars,
     } satisfies BotTurnLearning,

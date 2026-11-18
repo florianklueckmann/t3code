@@ -184,8 +184,9 @@ export const BOT_LEARNING_STATUS_LABELS: Record<BotLearningStatus, string> = {
 };
 
 export function botLearningOriginLabel(revision: BotLearningRevision): string {
+  if (revision.origin === "instruction") return "Your instruction";
   if (revision.source.kind === "task") return "Proposed by a task";
-  return revision.origin === "instruction" ? "Your instruction" : "Learned from a correction";
+  return "Learned from a correction";
 }
 
 export interface BotLearningView {

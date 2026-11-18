@@ -134,6 +134,7 @@ export class BotStore extends Context.Service<
       readonly revision: number;
       readonly status: BotLearningStatus;
       readonly decidedAt: string;
+      readonly origin?: string;
     }) => Effect.Effect<void, BotStoreError>;
     /** Every Bot's grants, or one Bot's; a Bot without any has revision 0 or its last one. */
     readonly listMcpGrants: (
@@ -449,10 +450,12 @@ export const layer = Layer.effect(
         readonly revision: number;
         readonly status: BotLearningStatus;
         readonly decidedAt: string;
+        readonly origin?: string;
       }) {
         yield* sql`
         UPDATE bot_learning_revisions SET
           status = ${input.status},
+          origin = COALESCE(${input.origin ?? null}, origin),
           decided_at = ${input.decidedAt},
           activated_at = CASE WHEN ${input.status} = 'active'
             THEN COALESCE(activated_at, ${input.decidedAt}) ELSE activated_at END
