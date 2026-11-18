@@ -199,13 +199,13 @@ export const make = (deps: {
         return kept;
       }
       // The user restating an inferred lesson makes it their instruction, which later
-      // inferred lessons cannot override, so it gets its own revision. A retried edit whose base
-      // has moved on already says what is current, so it is no new proposal either.
+      // inferred lessons cannot override, so it gets its own revision. A retried edit or move
+      // whose base has moved on already says what is current, so it is no new proposal either.
       if (
         head !== undefined &&
         head.normalized_text === normalized &&
         head.project_id === projectId &&
-        !confirmsInference(input, head)
+        (!confirmsInference(input, head) || head.base_revision === input.replaces.revision)
       ) {
         return duplicateOf(head);
       }

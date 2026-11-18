@@ -1193,6 +1193,16 @@ it.effect("keeps facts in their project by default and shares them when explicit
           yield* instructionsFor(turnContext, homeB ?? assert.fail()),
           `[${local.learned.entryId} r2; fact, all projects] Strahd fled to the Amber Temple.`,
         );
+        const replayedMove = yield* bots.recordLearning({
+          ...user,
+          botId,
+          projectId: campaignA,
+          scope: "bot",
+          kind: "fact",
+          text: "Strahd fled to the Amber Temple.",
+          replaces: { entryId: local.learned.entryId, revision: 1 },
+        });
+        assert.deepEqual(replayedMove.learned, { ...moved.learned, duplicate: true });
         const edited = yield* bots.recordLearning({
           ...user,
           botId,
