@@ -273,7 +273,9 @@ not start while a pass is already running for that project.
 Once the lessons and the Bot's working notes are saved, maintenance compacts a
 long Bot conversation's context, so the next day starts small. The conversation
 and its history stay as they were. A message you send before compaction starts
-skips it for that night.
+skips it for that night. Your Codex hooks run on the Bot's conversation turns,
+including this compaction, and not on No changes routines, the working notes
+refresh, the Daily Home check or the learning step.
 
 **Daily Home check**, next to Maintenance, has the Bot look over that
 project's conversation once a day at the time you choose (08:00 server time by
