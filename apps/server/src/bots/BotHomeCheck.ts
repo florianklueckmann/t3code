@@ -248,13 +248,16 @@ export const make = Effect.gen(function* () {
     sql.withTransaction(recordEnd(home, messageId, end)).pipe(Effect.as(true));
 
   /** Records a started check; an early one also spends one of the Bot's early checks. */
-  const started = (home: string, messageId: string, at: string) =>
-    isEarly(messageId)
-      ? sql`UPDATE bot_home_checks SET check_message_id = ${messageId}, last_outcome_json = NULL,
-          early_previous_at = early_started_at, early_started_at = ${at}, updated_at = ${at}
-        WHERE home_thread_id = ${home}`
-      : sql`UPDATE bot_home_checks SET done_through = ${at}, check_message_id = ${messageId},
-          last_outcome_json = NULL, updated_at = ${at} WHERE home_thread_id = ${home}`;
+  const started = Effect.fnUntraced(function* (home: string, messageId: string, at: string) {
+    if (!isEarly(messageId))
+      return yield* sql`UPDATE bot_home_checks SET done_through = ${at}, check_message_id = ${messageId},
+        last_outcome_json = NULL, updated_at = ${at} WHERE home_thread_id = ${home}`;
+    // The limit counts from when the check went out, not from when the tick began.
+    const sent = DateTime.formatIso(yield* DateTime.now);
+    yield* sql`UPDATE bot_home_checks SET check_message_id = ${messageId}, last_outcome_json = NULL,
+        early_previous_at = early_started_at, early_started_at = ${sent}, updated_at = ${sent}
+      WHERE home_thread_id = ${home}`;
+  });
 
   /** Whether the Bot has an early check left: two in any 24 hours, an hour apart, across its Homes. */
   const earlyAllowed = Effect.fnUntraced(function* (botId: string, nowMs: number) {
