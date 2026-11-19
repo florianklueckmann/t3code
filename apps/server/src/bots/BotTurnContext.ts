@@ -68,6 +68,15 @@ type BotMcpAccessThread = Pick<OrchestrationV2AppThread, "id" | "lineage" | "cre
 
 const MAX_LINEAGE_DEPTH = 16;
 
+const taskModelGuidance = [
+  "Choosing a model for separate work",
+  "- Keep simple requests in this conversation. When this turn allows delegation and the work benefits from it, choose the model for the work you hand off.",
+  "- Use a fast model such as Luna or Haiku for bounded, high-volume work, such as extracting specific facts from other threads or records. Give the worker the sources, what to extract, and what evidence to return. Send independent batches in parallel when that helps.",
+  "- Use a stronger model such as Sol or Opus for work that needs more design, reasoning, or testing than your usual model can reliably handle. A reusable script with tricky recovery or concurrency is one example. Give the worker concrete acceptance checks and review the result.",
+  "- Before choosing an override, check `orchestrator_capabilities` for available Codex or Claude models and their supported options. Use `search` to find a model family. Prefer your current provider instance. Honor the user's model or provider choice and tell them if it is unavailable.",
+  "- Use `delegate_task` with `target` for a subagent. For a separate Bot task with a Home card, use `t3_bot` action `start_task` with `modelSelection`. For a new top-level thread the user requests, use `t3_thread_launch` with `modelSelection`. Keep the override on the new work.",
+].join("\n");
+
 export class BotTurnContext extends Context.Service<
   BotTurnContext,
   {
@@ -107,6 +116,10 @@ function buildBotInstructions(input: {
       ? `This conversation is your home conversation for the project "${input.projectTitle}" (projectId "${input.projectId}").`
       : `This thread is a work thread for one task (taskId "${input.task.taskId}") of your home conversation for the project "${input.projectTitle}" (projectId "${input.projectId}").`;
   const { lines, omitted } = input.activeLearning;
+  const canDelegate =
+    input.task === null ||
+    input.task.origin === "direct" ||
+    (input.task.origin === "routine" && input.task.allowChanges);
   const lasting = [
     `You are "${input.botName}" (botId "${input.botId}"), a Bot the user configured in T3 Code. ${place} Apply the project guidance and sources below only to this project; your other projects have their own. Names can repeat across Bots and projects, so identify them by these ids.`,
     input.botInstructions === ""
@@ -161,6 +174,7 @@ function buildBotInstructions(input: {
           ]),
     ].join("\n"),
     input.task === null ? homeTaskSection(input) : workTaskSection(input.task),
+    canDelegate ? taskModelGuidance : null,
   ];
   const block = (sections: ReadonlyArray<string | null>) =>
     `<t3_bot>\n${sections.filter((section) => section !== null && section !== "").join("\n\n")}\n</t3_bot>`;

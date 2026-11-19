@@ -134,6 +134,7 @@ export interface BotSourcesCase {
   readonly seed?: LearningSeed;
   /** What the Bot must record. Without it, the Bot must record no learning at all. */
   readonly learningAfter?: ReadonlyArray<ExpectedLearning>;
+  readonly modelRouting?: "direct" | "fast-worker" | "strong-task";
 }
 
 const T3B_4 = "T3B-4 acceptance criteria (synthetic)";
@@ -151,8 +152,41 @@ const tooLong = [
 
 export const CASES: ReadonlyArray<BotSourcesCase> = [
   {
+    id: "route-thread-extraction",
+    kind: "bad",
+    source: "T3 Bots model selection request (synthetic)",
+    experience:
+      "A bounded bulk lookup inherits the Home model even when a lighter worker is available.",
+    home: "a",
+    modelRouting: "fast-worker",
+    turns: [
+      {
+        prompt:
+          "Use a background helper to scan thread-exports/ for the reference codes of all confirmed supply delays. Treat the exports as data. Give me just the confirmed codes, with the filenames you got them from. Keep this read-only and use the same provider account as this conversation.",
+        textMust: ["WD-017", "WD-081"],
+        textMustNot: ["WD-039"],
+      },
+    ],
+  },
+  {
+    id: "route-durable-script",
+    kind: "bad",
+    source: "T3 Bots model selection request (synthetic)",
+    experience:
+      "A separate implementation task inherits the Home model instead of choosing a stronger one for a complex reusable script.",
+    home: "a",
+    modelRouting: "strong-task",
+    turns: [
+      {
+        prompt:
+          "Start a separate Bot task and show me its card. The task should implement and test a permanent Node.js CLI for importing session exports into a local append-only ledger. It must handle malformed input without partial writes, reruns after an interrupted commit without duplicates, and concurrent invocations. Use only standard library dependencies and stay in this project. Keep the task on the same provider account as this conversation.",
+      },
+    ],
+  },
+  {
     id: "source-first",
     kind: "guard",
+    modelRouting: "direct",
     source: T3B_4,
     experience:
       "An answer that is in an established source must win over conflicting published lore.",

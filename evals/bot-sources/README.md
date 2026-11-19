@@ -29,6 +29,8 @@ To compare a Bot context change, run the same cases with the same model and effo
 
 Add a case to `CASES`. Run it against the old context, where a `bad` case should fail, and against the new one.
 
+The `route-thread-extraction` and `route-durable-script` cases use a Terra or Sonnet Home and a provider account that offers both a faster and a stronger model. They grade the model returned by the delegation or task tool. `source-first` checks that a simple lookup stays in Home.
+
 ## Output
 
 `results.jsonl` has one row per sample: checks, answers, the thread's tool activity, the stored sources, and the ids. `summary.md` has the pass counts per case and how many samples ran a tool call that touched your home directory. Those samples are not fully synthetic; check what they read before trusting their score. The rows hold the Bot's full answers; read them before quoting any.

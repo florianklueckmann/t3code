@@ -122,12 +122,13 @@ cancelled tasks keep their status on the card without starting a result turn.
 Detach, archive, and cancelling the task revoke a pending return. Routines and
 older tasks do not gain automatic returns.
 
-A direct task runs on the Bot's model unless you ask the Bot to use another
-Codex or Claude model or reasoning level for that task. Only that task uses it;
-the Bot and its conversations keep their model. A model or option the provider
-does not offer, a provider turned off for the project, or a Claude model for a
-Bot with settings Claude can't honor yet is refused before the task starts, and
-the Bot tells you why. Routines always follow the Bot's current model.
+A direct task starts with the Bot's model by default. The Bot can choose a
+different Codex or Claude model for a task or subagent and can use a specific
+model or reasoning level you request. It might use Luna or Haiku to pull facts
+from many threads, or Sol or Opus to design and test a complex script. The choice
+applies only to that work. If a requested model or option is unavailable, or the
+provider can't run the task with your Bot's settings, the Bot tells you why.
+Routine runs use the Bot's current model.
 
 A **routine** runs a task on a schedule. In **Settings → Bots**, edit
 the Bot and choose **Add routine** under the project. Describe what the Bot should do,

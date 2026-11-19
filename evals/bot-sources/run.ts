@@ -12,7 +12,13 @@ import * as NodeUtil from "node:util";
 import * as NodePlatformCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { BotDetail, OrchestratorMcpThreadReadResult, Project } from "@t3tools/contracts";
+import {
+  BotDetail,
+  BotTaskSummary,
+  OrchestratorMcpDelegateTaskResult,
+  OrchestratorMcpThreadReadResult,
+  Project,
+} from "@t3tools/contracts";
 import * as Net from "@t3tools/shared/Net";
 import { parseThreadLinkHref } from "@t3tools/shared/threadLinks";
 import * as Effect from "effect/Effect";
@@ -58,6 +64,7 @@ export interface SampleRun {
   readonly ids: { readonly botId: string; readonly projectIds: Record<ProjectKey, string> };
   /** The Bot's learning entries after the turns, by their newest revision. */
   readonly learning: ReadonlyArray<LearnedEntry>;
+  readonly homeModel?: BotModelSelection;
 }
 
 export interface LearnedEntry {
@@ -70,7 +77,7 @@ export interface LearnedEntry {
   readonly byBot: boolean;
 }
 
-/** A Codex MCP call as T3 records it in the thread's activity. */
+/** An MCP call as T3 records it in the thread's activity. */
 const decodeToolCall = Schema.decodeUnknownOption(
   Schema.fromJsonString(
     Schema.Struct({
@@ -80,8 +87,14 @@ const decodeToolCall = Schema.decodeUnknownOption(
         botId: Schema.optional(Schema.String),
         projectId: Schema.optional(Schema.String),
       }),
+      output: Schema.optional(Schema.Unknown),
     }),
   ),
+);
+const decodeWorker = Schema.decodeUnknownOption(OrchestratorMcpDelegateTaskResult);
+const decodeTask = Schema.decodeUnknownOption(Schema.Struct({ task: BotTaskSummary }));
+const decodeToolEnvelope = Schema.decodeUnknownOption(
+  Schema.Struct({ structuredContent: Schema.Unknown }),
 );
 
 /** The messages an answer's thread links open at. */
@@ -120,14 +133,61 @@ export const gradeSample = (testCase: BotSourcesCase, run: SampleRun) => {
     add(`sources ${key}`, sameSet(run.sources.bot[key], expected));
   }
   add("twin sources unchanged", sameSet(run.sources.twin, locations(TWIN_SOURCES)));
-  const updates = run.tools.flatMap((tool) => {
+  const calls = run.tools.flatMap((tool) => {
     const call = decodeToolCall(tool.text ?? "");
-    return Option.isSome(call) &&
-      call.value.toolName.endsWith("t3_bot") &&
-      call.value.input.action === "update"
-      ? [call.value.input]
-      : [];
+    if (Option.isNone(call)) return [];
+    const output = Option.getOrUndefined(decodeToolEnvelope(call.value.output))?.structuredContent;
+    return [{ ...call.value, output: output ?? call.value.output }];
   });
+  const botCalls = calls.filter(({ toolName }) => toolName.endsWith("t3_bot"));
+  const updates = botCalls
+    .filter(({ input }) => input.action === "update")
+    .map(({ input }) => input);
+  if (testCase.modelRouting !== undefined) {
+    const workers = calls.filter(({ toolName }) => toolName.endsWith("delegate_task"));
+    const tasks = botCalls.filter(({ input }) => input.action === "start_task");
+    if (testCase.modelRouting === "direct") {
+      add("ordinary lookup stays in Home", workers.length === 0 && tasks.length === 0);
+    } else {
+      const home = run.homeModel;
+      const isClaude = home?.model.startsWith("claude-") === true;
+      const fast = isClaude ? /haiku/ : /luna/;
+      const strong = isClaude ? /opus|fable/ : /sol|astra/;
+      if (testCase.modelRouting === "fast-worker") {
+        add(
+          "used a lighter model on the same provider for each worker",
+          home !== undefined &&
+            workers.length > 0 &&
+            tasks.length === 0 &&
+            workers.every(({ output }) => {
+              const worker = Option.getOrUndefined(decodeWorker(output));
+              return (
+                worker !== undefined &&
+                worker.childThreadId !== null &&
+                worker.providerInstanceId === home.instanceId &&
+                worker.model !== null &&
+                worker.model !== home.model &&
+                fast.test(worker.executedModel ?? worker.model)
+              );
+            }),
+        );
+      } else {
+        const task = Option.getOrUndefined(decodeTask(tasks[0]?.output))?.task;
+        const selection = task?.modelSelection;
+        add(
+          "started one separate Bot task on a stronger model on the same provider",
+          home !== undefined &&
+            tasks.length === 1 &&
+            task !== undefined &&
+            task.workThreadId !== null &&
+            selection !== undefined &&
+            selection.instanceId === home.instanceId &&
+            selection.model !== home.model &&
+            strong.test(selection.model),
+        );
+      }
+    }
+  }
   const learnedByBot = run.learning.filter((entry) => entry.byBot);
   if (testCase.learningAfter === undefined) {
     add("no learning recorded", learnedByBot.length === 0);
@@ -170,6 +230,18 @@ const runSample = Effect.fn("botSources.runSample")(function* (
     for (const [file, text] of Object.entries(PROJECTS[key].files)) {
       NodeFS.mkdirSync(NodePath.dirname(NodePath.join(root, file)), { recursive: true });
       NodeFS.writeFileSync(NodePath.join(root, file), text);
+    }
+    if (key === testCase.home && testCase.modelRouting === "fast-worker") {
+      const exports = NodePath.join(root, "thread-exports");
+      NodeFS.mkdirSync(exports, { recursive: true });
+      for (let batch = 0; batch < 8; batch += 1) {
+        const entries = Array.from({ length: 32 }, (_, index) => {
+          const number = batch * 32 + index;
+          const status = number === 17 || number === 81 ? "Confirmed" : "Tentative";
+          return `${status} supply delay WD-${String(number).padStart(3, "0")}`;
+        });
+        NodeFS.writeFileSync(NodePath.join(exports, `thread-${batch}.txt`), entries.join("\n"));
+      }
     }
     const project = yield* call(
       "t3_project_create",
@@ -247,6 +319,7 @@ const runSample = Effect.fn("botSources.runSample")(function* (
     }
     const runId = yield* runTurn(call, home.homeThreadId, turn.prompt, {
       freshContext: turn.freshContext === true,
+      untilDelegatedWorkSettled: testCase.modelRouting === "fast-worker",
     });
     const messages = yield* readItems(call, home.homeThreadId, "messages");
     answers.push(
@@ -275,6 +348,7 @@ const runSample = Effect.fn("botSources.runSample")(function* (
     locations(detail.projects.find((p) => p.projectId === projectIds[key])?.sources ?? []);
   const run: SampleRun = {
     answers,
+    homeModel: modelSelection,
     turnMessageIds,
     tools,
     sources: {

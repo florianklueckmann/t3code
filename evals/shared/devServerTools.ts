@@ -176,11 +176,17 @@ export const waitForRun = Effect.fn("evals.waitForRun")(function* (
   call: Call,
   threadId: string,
   runId?: string,
+  untilDelegatedWorkSettled = false,
 ) {
   while (true) {
     const waited = yield* call(
       "t3_thread_wait",
-      { threadId, ...(runId === undefined ? {} : { runId }), timeoutMs: WAIT_SLICE_MS },
+      {
+        threadId,
+        ...(runId === undefined ? {} : { runId }),
+        ...(untilDelegatedWorkSettled ? { untilDelegatedWorkSettled: true } : {}),
+        timeoutMs: WAIT_SLICE_MS,
+      },
       OrchestratorMcpThreadWaitResult,
     );
     if (!waited.timedOut) {
@@ -189,7 +195,7 @@ export const waitForRun = Effect.fn("evals.waitForRun")(function* (
           message: `run ${waited.runId ?? runId} in ${threadId} ended ${waited.status}`,
         });
       }
-      return waited.runId;
+      return waited.resultRun?.runId ?? waited.runId;
     }
     const { thread } = yield* call(
       "t3_thread_read",
@@ -206,15 +212,17 @@ export const runTurn = Effect.fn("evals.runTurn")(function* (
   call: Call,
   threadId: string,
   prompt: string,
-  options?: { readonly freshContext?: boolean },
+  options?: { readonly freshContext?: boolean; readonly untilDelegatedWorkSettled?: boolean },
 ) {
   const sent = yield* call(
     "t3_thread_send",
     { threadId, message: prompt, ...(options?.freshContext ? { freshContext: true } : {}) },
     OrchestratorMcpThreadSendResult,
   );
-  yield* waitForRun(call, threadId, sent.runId);
-  return sent.runId;
+  return (
+    (yield* waitForRun(call, threadId, sent.runId, options?.untilDelegatedWorkSettled)) ??
+    sent.runId
+  );
 });
 
 export const readItems = Effect.fn("evals.readItems")(function* (
