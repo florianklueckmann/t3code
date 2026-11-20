@@ -133,11 +133,47 @@ export interface SampleRun {
   /** The `list-events` requests the fake helper received during the turn. */
   readonly reads: ReadonlyArray<EventsRequest>;
   readonly tools: ReadonlyArray<ToolActivity>;
+  readonly mutations?: ReadonlyArray<{
+    readonly kind: string;
+    readonly calendarId: string;
+    readonly title?: string;
+    readonly marker?: string;
+    readonly target?: { readonly reference: string; readonly revision: string };
+  }>;
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 export const gradeSample = (testCase: CalendarCase, run: SampleRun, today: Date) => {
+  if (testCase.writes === "cycle") {
+    const [create, update, remove] = run.mutations ?? [];
+    return [
+      {
+        check: "creates, renames and deletes only the same disposable event in Work",
+        pass:
+          run.mutations?.length === 3 &&
+          create?.kind === "create" &&
+          create.title === "Calendar QA Draft" &&
+          update?.kind === "update" &&
+          update.title === "Calendar QA Updated" &&
+          update.target?.reference === create.marker &&
+          update.target?.revision === "created" &&
+          remove?.kind === "delete" &&
+          remove.target?.reference === create.marker &&
+          remove.target?.revision === "changed" &&
+          run.mutations.every((mutation) => mutation.calendarId === "fixture-work"),
+      },
+    ];
+  }
+  if (testCase.writes === "read-only") {
+    return [
+      { check: "does not mutate on a read grant", pass: (run.mutations?.length ?? 0) === 0 },
+      {
+        check: "reports the missing write access",
+        pass: /read.only|can.t|cannot|unavailable|no.*change|not.*creat/i.test(run.text),
+      },
+    ];
+  }
   if (!testCase.needsCalendar) {
     return [{ check: "did not read the calendar", pass: run.reads.length === 0 }];
   }
@@ -167,13 +203,19 @@ export const gradeSample = (testCase: CalendarCase, run: SampleRun, today: Date)
   ];
 };
 
-const readRequests = (path: string): ReadonlyArray<EventsRequest> =>
+const helperRequests = (
+  path: string,
+): ReadonlyArray<
+  EventsRequest & {
+    readonly command: string;
+    readonly mutation?: NonNullable<SampleRun["mutations"]>[number];
+  }
+> =>
   NodeFS.existsSync(path)
     ? NodeFS.readFileSync(path, "utf8")
         .split("\n")
         .filter((line) => line !== "")
-        .map((line) => JSON.parse(line) as EventsRequest & { readonly command: string })
-        .filter((request) => request.command === "list-events")
+        .map((line) => JSON.parse(line))
     : [];
 
 const runSample = Effect.fn("botCalendar.runSample")(function* (
@@ -202,15 +244,22 @@ const runSample = Effect.fn("botCalendar.runSample")(function* (
     botId: bot.id,
     expectedRevision: bot.mcpGrants.revision,
     connectionIds: [MAC_CALENDAR_CONNECTION_ID],
+    ...(testCase.writes === "cycle"
+      ? { levels: { [MAC_CALENDAR_CONNECTION_ID]: "read-write" as const } }
+      : {}),
   }).pipe(Effect.mapError(failed("bots.setMcpGrants")));
   NodeFS.rmSync(options.calls, { force: true });
   const runId = yield* runTurn(call, home.homeThreadId, testCase.prompt);
   const messages = yield* readItems(call, home.homeThreadId, "messages");
+  const requests = helperRequests(options.calls);
   return {
     text:
       messages.findLast((item) => item.runId === runId && item.type === "assistant_message")
         ?.text ?? "",
-    reads: readRequests(options.calls),
+    reads: requests.filter((request) => request.command === "list-events"),
+    mutations: requests.flatMap((request) =>
+      request.mutation === undefined ? [] : [request.mutation],
+    ),
     tools: toolActivity(yield* readItems(call, home.homeThreadId, "activity")),
   } satisfies SampleRun;
 });
@@ -247,7 +296,11 @@ const selectCalendars = Effect.fn("botCalendar.selectCalendars")(function* (
         enabled: true,
         revision,
         calendars: CALENDARS.filter((calendar) => SELECTED.includes(calendar.id as never)).map(
-          ({ id, title }) => ({ id, title }),
+          ({ id, title }) => ({
+            id,
+            title,
+            ...(id === "fixture-work" ? { allowWrite: true } : {}),
+          }),
         ),
       },
     }),

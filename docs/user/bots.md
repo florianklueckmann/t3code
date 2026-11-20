@@ -412,9 +412,11 @@ synced into it. Elsewhere it explains why it is missing.
    setup has to happen on the Mac. A denied request is changed in System
    Settings > Privacy & Security > Calendars.
 2. Select the calendars Bots may read and choose **Save selection**. One
-   selection applies to every Bot.
-3. Grant **Calendar (this Mac)** in a Bot's **MCP connections**. The grant reads
-   only, shown as **Read**.
+   selection applies to every Bot. To make a selected calendar eligible for
+   writing, check **Allow changes** beside that calendar.
+3. Grant **Calendar (this Mac)** in a Bot's **MCP connections**. The Bot starts
+   with **Read** access. Turn on **Allow calendar changes** to grant
+   **Read and write**.
 
 The Bot can then list events from the selected calendars, at most 14 days and
 100 events per request: in its conversation, tasks, routines and No changes
@@ -422,6 +424,17 @@ routines, but not in the Daily Home check. It sees each event's title,
 calendar, start, end and whether it lasts all day, never notes, attendees,
 locations or links. Without a selection, or while disabled, the Bot runs
 without it.
+
+With **Read and write**, a Bot can create, rename, move in time, or delete
+individual events in the calendars you enabled for writing. Events with guests
+and recurring events are excluded. In a Home turn you start, the Bot can also
+change events you created. A routine set to **Changes allowed** can change or
+delete events that Bot created. No changes routines and Home checks cannot
+write to calendars. A Bot can make up to three calendar changes per turn.
+
+To revoke writing, turn off **Allow calendar changes** for that Bot or clear
+**Allow changes** for the calendar. If a write times out, check the calendar
+before asking the Bot to try again.
 
 ## Current limits
 
@@ -435,8 +448,8 @@ without it.
   load, in No changes routines and Home checks too. Own MCP servers and
   maintenance are not available yet.
 - Bots turn off Claude's automatic memory.
-- Built-in email connections are not available. Calendar (this Mac) reads only,
-  and only on the Mac that runs the environment.
+- Built-in email connections are not available. Calendar (this Mac) uses Apple
+  Calendar on the Mac that runs the environment.
 
 ## Detach and archive
 

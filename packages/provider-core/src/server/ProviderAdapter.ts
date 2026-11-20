@@ -79,6 +79,7 @@ export const ProviderAdapterV2RuntimePolicy = Schema.Struct({
    * means none. Ids only, never credentials. An adapter that cannot enforce it refuses the run.
    */
   mcpConnections: Schema.optional(Schema.Array(McpConnectionId)),
+  macCalendarWrite: Schema.optional(Schema.Literal(true)),
   /** With `mcpConnections`: the user's own MCP servers load too. Apps and plugins stay off. */
   userMcpServers: Schema.optional(Schema.Literal("enabled")),
 });

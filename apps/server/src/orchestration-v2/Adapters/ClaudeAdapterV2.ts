@@ -13169,6 +13169,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         const resolveGrants = Effect.fn("ClaudeAdapterV2.resolveGrants")(function* (
           ids: ReadonlyArray<McpConnectionId>,
           mcpSession: McpProviderSession.McpProviderSessionConfig | undefined,
+          macCalendarWrite: boolean,
         ) {
           if (mcpConnectionDelivery === undefined)
             return yield* new ProviderAdapter.ProviderAdapterMcpConnectionsRefusedError({
@@ -13176,7 +13177,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               reason: "unavailable",
             });
           const load = yield* mcpConnectionDelivery
-            .resolve(ids)
+            .resolve(ids, macCalendarWrite)
             .pipe(
               Effect.mapError((error) =>
                 McpConnectionDelivery.deliveryRefusal(CLAUDE_PROVIDER, error),
@@ -13278,7 +13279,13 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           const grantIds =
             seal === "t3BotOnly" ? [] : (turnInput.runtimePolicy.mcpConnections ?? []);
           const grants =
-            grantIds.length === 0 ? undefined : yield* resolveGrants(grantIds, mcpSession);
+            grantIds.length === 0
+              ? undefined
+              : yield* resolveGrants(
+                  grantIds,
+                  mcpSession,
+                  turnInput.runtimePolicy.macCalendarWrite === true,
+                );
           const botThread = turnInput.applicationInstructions !== undefined;
           const botInstructions = claudeBotInstructionsOf(turnInput);
           if (

@@ -151,6 +151,7 @@ export class McpConnectionDelivery extends Context.Service<
      */
     readonly resolve: (
       ids: ReadonlyArray<McpConnectionId>,
+      macCalendarWrite?: boolean,
     ) => Effect.Effect<McpConnectionLoad, McpConnectionDeliveryError>;
     /** The provider saw this connection refuse its credential; an OAuth one refreshes next load. */
     readonly markRefused: (id: McpConnectionId, source: "startup" | "call") => Effect.Effect<void>;
@@ -167,6 +168,7 @@ const make = Effect.gen(function* () {
 
   const resolve = Effect.fn("McpConnectionDelivery.resolve")(function* (
     ids: ReadonlyArray<McpConnectionId>,
+    macCalendarWrite = false,
   ) {
     const current = yield* settings.getSettings.pipe(
       Effect.mapError((cause) => new McpConnectionDeliveryError({ reason: "unavailable", cause })),
@@ -186,7 +188,9 @@ const make = Effect.gen(function* () {
           revision: calendar.revision,
           transport: { type: "t3", toolset: "calendar" },
         });
-        canonical.push([id, MAC_CALENDAR_LABEL, ["t3", "calendar"], []]);
+        const writable =
+          macCalendarWrite && calendar.calendars.some((entry) => entry.allowWrite === true);
+        canonical.push([id, MAC_CALENDAR_LABEL, ["t3", "calendar"], [], writable]);
         continue;
       }
       const definition = current.mcpConnections[id];

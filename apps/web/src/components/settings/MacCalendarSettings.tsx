@@ -96,7 +96,11 @@ export function MacCalendarRow({
         title={
           <span className="flex min-w-0 flex-wrap items-center gap-2">
             <span className="min-w-0 wrap-anywhere">{calendar.label}</span>
-            <Badge variant="outline">Read only</Badge>
+            <Badge variant="outline">
+              {calendar.calendars.some((entry) => entry.allowWrite === true)
+                ? "Writing enabled"
+                : "Read only"}
+            </Badge>
             {calendar.enabled ? null : <Badge variant="outline">Disabled</Badge>}
           </span>
         }
@@ -137,7 +141,7 @@ export function MacCalendarRow({
   );
 }
 
-/** Connects the helper on the host Mac and chooses the calendars Bots may read. */
+/** Connects the helper on the host Mac and chooses the calendars Bots may use. */
 function MacCalendarDialog({
   environmentId,
   calendar,
@@ -161,6 +165,11 @@ function MacCalendarDialog({
   const [busy, setBusy] = useState<"inspect" | "setup" | "save" | null>(null);
   const [selected, setSelected] = useState<ReadonlySet<string>>(
     () => new Set(calendar.calendars.map((entry) => entry.id)),
+  );
+
+  const [writable, setWritable] = useState<ReadonlySet<string>>(
+    () =>
+      new Set(calendar.calendars.filter((entry) => entry.allowWrite === true).map(({ id }) => id)),
   );
 
   const check = async () => {
@@ -187,6 +196,16 @@ function MacCalendarDialog({
         calendarIds: (inspected?.calendars ?? [])
           .map((entry) => entry.id)
           .filter((id) => selected.has(id)),
+        ...(inspected?.calendars.some((entry) => entry.writable !== undefined)
+          ? {
+              writableCalendarIds: inspected.calendars
+                .filter(
+                  (entry) =>
+                    entry.writable === true && selected.has(entry.id) && writable.has(entry.id),
+                )
+                .map(({ id }) => id),
+            }
+          : {}),
       },
     });
     setBusy(null);
@@ -198,7 +217,8 @@ function MacCalendarDialog({
   const authorization =
     inspected === null ? null : macCalendarAuthorizationText(inspected.authorization);
   const fullAccess = inspected?.authorization === "fullAccess";
-  const needsPrompt = inspected?.authorization === "notDetermined";
+  const needsPrompt =
+    inspected?.authorization === "notDetermined" || inspected?.authorization === "writeOnly";
   return (
     <Dialog
       open
@@ -210,7 +230,8 @@ function MacCalendarDialog({
         <DialogHeader>
           <DialogTitle>{calendar.label}</DialogTitle>
           <DialogDescription>
-            Bots you grant it read events from the calendars you select here, and nothing else.
+            Bots can read selected calendars. Writing also needs a per-calendar selection and a Bot
+            grant.
           </DialogDescription>
         </DialogHeader>
         <DialogPanel>
@@ -250,7 +271,13 @@ function MacCalendarDialog({
                           onCheckedChange={(checked) => {
                             const next = new Set(selected);
                             if (checked === true) next.add(entry.id);
-                            else next.delete(entry.id);
+                            else {
+                              next.delete(entry.id);
+                              setWritable(
+                                (previous) =>
+                                  new Set([...previous].filter((id) => id !== entry.id)),
+                              );
+                            }
                             setSelected(next);
                           }}
                         />
@@ -261,6 +288,21 @@ function MacCalendarDialog({
                           </span>
                         </span>
                       </label>
+                      {entry.writable === true && selected.has(entry.id) ? (
+                        <label className="mt-1 flex items-center gap-3 pl-7">
+                          <Checkbox
+                            aria-label={`Allow changes to ${entry.title}`}
+                            checked={writable.has(entry.id)}
+                            onCheckedChange={(checked) => {
+                              const next = new Set(writable);
+                              if (checked === true) next.add(entry.id);
+                              else next.delete(entry.id);
+                              setWritable(next);
+                            }}
+                          />
+                          Allow changes
+                        </label>
+                      ) : null}
                     </li>
                   ))}
                 </ul>

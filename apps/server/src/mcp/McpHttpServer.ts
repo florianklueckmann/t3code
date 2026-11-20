@@ -44,6 +44,7 @@ import {
   toolOutcome,
 } from "../telemetry/ProviderDimensions.ts";
 import { advertisedJsonSchema } from "./advertisedJsonSchema.ts";
+import * as MacCalendar from "../calendar/MacCalendar.ts";
 import * as McpCallerChanges from "./McpCallerChanges.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpToolAccess from "./McpToolAccess.ts";
@@ -58,7 +59,11 @@ import { ThemeToolkit } from "./toolkits/theme/tools.ts";
 import * as ThemeHandlers from "./toolkits/theme/handlers.ts";
 import { BotToolkit } from "./toolkits/bot/tools.ts";
 import * as CalendarHandlers from "./toolkits/calendar/handlers.ts";
-import { CALENDAR_LIST_EVENTS_TOOL, CalendarToolkit } from "./toolkits/calendar/tools.ts";
+import {
+  CALENDAR_LIST_EVENTS_TOOL,
+  CALENDAR_TOOL_NAMES,
+  CalendarToolkit,
+} from "./toolkits/calendar/tools.ts";
 import * as BotHandlers from "./toolkits/bot/handlers.ts";
 import { ProjectToolkit } from "./toolkits/project/tools.ts";
 import * as ProjectHandlers from "./toolkits/project/handlers.ts";
@@ -1382,7 +1387,7 @@ const layerToolExposure = Layer.effect(
       // Only a granted calendar's own server lists its tool, so search never offers it.
       () =>
         server.tools.flatMap(({ tool }) =>
-          tool.name === CALENDAR_LIST_EVENTS_TOOL
+          CALENDAR_TOOL_NAMES.has(tool.name)
             ? []
             : [{ name: tool.name, description: tool.description ?? "" }],
         ),
@@ -1424,14 +1429,23 @@ export const layerToolSearch = Layer.mergeAll(
  * `TOOLSET_HEADER` reaches only the calendar tool, and no other session reaches it.
  */
 const layerToolsets = McpServer.visibility(
-  Effect.fnUntraced(function* ({ target, headers }: McpServer.MiddlewareOptions) {
-    const calendar = target === CALENDAR_LIST_EVENTS_TOOL;
-    if (headers[McpInvocationContext.TOOLSET_HEADER] !== McpInvocationContext.CALENDAR_TOOLSET) {
-      return !calendar;
-    }
-    // Only a thread's own credential is a Bot's calendar server; an outside client gets nothing.
-    const scope = yield* Effect.serviceOption(McpInvocationContext.McpInvocationContext);
-    return calendar && Option.getOrUndefined(scope)?.thread !== undefined;
+  Effect.gen(function* () {
+    const service = yield* MacCalendar.MacCalendar;
+    return Effect.fnUntraced(function* ({ target, headers }: McpServer.MiddlewareOptions) {
+      const calendar = CALENDAR_TOOL_NAMES.has(target);
+      if (headers[McpInvocationContext.TOOLSET_HEADER] !== McpInvocationContext.CALENDAR_TOOLSET) {
+        return !calendar;
+      }
+      const scope = yield* Effect.serviceOption(McpInvocationContext.McpInvocationContext);
+      const thread = Option.getOrUndefined(scope)?.thread;
+      if (!calendar || thread === undefined) return false;
+      if (target === CALENDAR_LIST_EVENTS_TOOL) return true;
+      return yield* service.canWrite({
+        threadId: thread.threadId,
+        sealedLoad: thread.sealedLoad === true,
+        subagent: thread.subagent === true,
+      });
+    });
   }),
   { global: true },
 );

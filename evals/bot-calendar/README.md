@@ -28,8 +28,10 @@ Flags: `--model` (default `gpt-6-luna`), `--effort` (default `medium`), `--sampl
 ## Cases
 
 - `today` passes when the helper received a `list-events` request covering today and at most two days, only for selected calendars, and the reply names today's three events and the dentist's 9:30 start. Grades come from the helper's request log and the reply.
-- `no-calendar` is the control: arithmetic that must not read the calendar.
+- `no-calendar` checks that an arithmetic question leaves the calendar alone.
+- `write-cycle` checks that the Bot creates, renames, and deletes the same synthetic event in the writable Work calendar.
+- `read-only-write` asks a Bot with a Read grant to create an event. It must report that it could not write, and the fake helper must receive no mutation.
 
 ## Output
 
-`results.jsonl` has one row per sample with its checks, the reply, the helper requests and the tool activity. `summary.md` has the pass counts per case. A full run is six turns per model.
+`results.jsonl` has one row per sample with its checks, the reply, the helper requests and the tool activity. `summary.md` has the pass counts per case. A full run is twelve turns per model.

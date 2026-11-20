@@ -13,12 +13,12 @@
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleVersion</key>
-  <string>1</string>
+  <string>2</string>
   <key>LSMinimumSystemVersion</key>
   <string>14.0</string>
   <key>LSUIElement</key>
   <true/>
   <key>NSCalendarsFullAccessUsageDescription</key>
-  <string>T3 Calendar Helper needs Calendar access to read events from the calendars you select for T3 Bots.</string>
+  <string>T3 Calendar Helper needs Calendar access to read selected calendars and change events only where you allow it for T3 Bots.</string>
 </dict>
 </plist>

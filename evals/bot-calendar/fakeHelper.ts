@@ -16,9 +16,15 @@ interface FixtureEvent {
   readonly end: string;
   readonly allDay: boolean;
   readonly timeZone: string;
+  readonly reference?: string;
+  readonly revision?: string;
 }
 interface Fixture {
-  readonly calendars: ReadonlyArray<{ readonly id: string; readonly title: string }>;
+  readonly calendars: ReadonlyArray<{
+    readonly id: string;
+    readonly title: string;
+    readonly writable: boolean;
+  }>;
   readonly events: ReadonlyArray<FixtureEvent>;
 }
 
@@ -62,10 +68,67 @@ const respond = (): unknown => {
       );
       return {
         events: {
-          items: items.slice(0, limit).map((event) => ({ ...event, reference: "fixture" })),
+          items: items.slice(0, limit),
           ...(items.length > limit ? { truncated: true } : {}),
         },
       };
+    }
+    case "mutate-event": {
+      const mutation = request.mutation as {
+        readonly kind: "create" | "update" | "delete";
+        readonly calendarId: string;
+        readonly marker?: string;
+        readonly title?: string;
+        readonly range?: Pick<FixtureEvent, "start" | "end" | "allDay" | "timeZone">;
+        readonly target?: { readonly reference: string; readonly revision: string };
+      };
+      const calendar = fixture.calendars.find(
+        (entry) =>
+          entry.id === mutation.calendarId && entry.id === "fixture-work" && entry.writable,
+      );
+      if (calendar === undefined) return { error: { code: "readOnlyCalendar" } };
+      const events = [...fixture.events];
+      if (mutation.kind === "create") {
+        if (
+          mutation.range === undefined ||
+          mutation.marker === undefined ||
+          mutation.title === undefined
+        ) {
+          return { error: { code: "invalidRequest" } };
+        }
+        const event = {
+          ...mutation.range,
+          title: mutation.title,
+          calendar: { id: calendar.id, title: calendar.title },
+          reference: mutation.marker,
+          revision: "created",
+        };
+        events.push(event);
+        NodeFS.writeFileSync(fixturePath, JSON.stringify({ ...fixture, events }));
+        return { mutation: { event } };
+      }
+      const index = events.findIndex(
+        (event) =>
+          event.calendar.id === calendar.id &&
+          event.reference === mutation.target?.reference &&
+          event.revision === mutation.target?.revision,
+      );
+      const event = events[index];
+      if (event === undefined) return { error: { code: "eventChanged" } };
+      if (mutation.kind === "delete") {
+        events.splice(index, 1);
+        NodeFS.writeFileSync(fixturePath, JSON.stringify({ ...fixture, events }));
+        return { mutation: {} };
+      }
+      const updated = {
+        ...event,
+        ...mutation.range,
+        title: mutation.title ?? event.title,
+        revision: "changed",
+      };
+      events[index] = updated;
+      NodeFS.writeFileSync(fixturePath, JSON.stringify({ ...fixture, events }));
+      return { mutation: { event: updated } };
     }
     default:
       return { error: { code: "invalidRequest" } };

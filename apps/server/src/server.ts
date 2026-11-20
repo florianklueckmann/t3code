@@ -89,6 +89,7 @@ import * as ProjectSettingsOverrideSweep from "./provider/ProjectSettingsOverrid
 import * as TerminalManager from "./terminal/Manager.ts";
 import * as BotExecutionConstraint from "./bots/BotExecutionConstraint.ts";
 import * as BotTurnContext from "./bots/BotTurnContext.ts";
+import * as CalendarWriteStore from "./calendar/CalendarWriteStore.ts";
 import * as MacCalendar from "./calendar/MacCalendar.ts";
 import * as MacCalendarHelper from "./calendar/MacCalendarHelper.ts";
 import * as McpHttpServer from "./mcp/McpHttpServer.ts";
@@ -734,6 +735,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
       Layer.provide(
         Layer.mergeAll(
           MacCalendarHelper.layer,
+          CalendarWriteStore.layer,
           BotTurnContext.layer,
           BotExecutionConstraint.layerMcpCallerChanges,
         ),

@@ -1,4 +1,4 @@
-import type { ProviderInstanceId } from "@t3tools/contracts";
+import { MAC_CALENDAR_CONNECTION_ID, type ProviderInstanceId } from "@t3tools/contracts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
@@ -178,6 +178,13 @@ export const layer: Layer.Layer<
           nativeMemory: "disabled",
           ...(noChanges ? { nativeTools: "readOnly" as const } : {}),
           ...(grantsPlatform ? { mcpConnections, ...userMcpServers } : {}),
+          ...(grantsPlatform &&
+          !noChanges &&
+          access._tag === "bot" &&
+          access.direct !== undefined &&
+          access.levels?.[MAC_CALENDAR_CONNECTION_ID] === "read-write"
+            ? { macCalendarWrite: true as const }
+            : {}),
         });
       }),
     });

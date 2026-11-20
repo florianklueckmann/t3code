@@ -14,6 +14,7 @@ private final class FakeStore: CalendarStore {
     var promptCount = 0
     var reads = 0
     var eventReads = 0
+    var mutations = 0
     var selectedIDs: [String] = []
     var occurrences: [CalendarEvent] = []
 
@@ -35,6 +36,12 @@ private final class FakeStore: CalendarStore {
         if fails { throw Failure.offline }
         selectedIDs = query.calendarIDs.sorted()
         return occurrences
+    }
+
+    func mutate(_ mutation: CalendarMutation) throws -> CalendarEvent? {
+        mutations += 1
+        if fails { throw Failure.offline }
+        return occurrences.first
     }
 }
 
@@ -66,6 +73,35 @@ final class CalendarServiceTests: XCTestCase {
             }
         }
         XCTAssertEqual(store.reads, 0)
+    }
+
+    @MainActor
+    func testMutationNeedsFullAccessAndValidBoundsBeforeCallingStore() async throws {
+        let store = FakeStore()
+        let range: [String: Any] = [
+            "start": "2026-03-08T14:00:00Z", "end": "2026-03-08T15:00:00Z",
+            "timeZone": "Etc/UTC", "allDay": false
+        ]
+        let create: [String: Any] = [
+            "kind": "create", "calendarId": selected.id, "title": "Fixture",
+            "marker": UUID().uuidString, "range": range
+        ]
+        store.authorization = .denied
+        var result = try await reply(store, ["command": "mutate-event", "mutation": create])
+        XCTAssertEqual(code(result), "notAuthorized")
+        XCTAssertEqual(store.mutations, 0)
+        XCTAssertEqual(store.promptCount, 0)
+
+        store.authorization = .fullAccess
+        var invalid = create
+        invalid["range"] = range.merging(["allDay": true]) { _, replacement in replacement }
+        result = try await reply(store, ["command": "mutate-event", "mutation": invalid])
+        XCTAssertEqual(code(result), "invalidRequest")
+        XCTAssertEqual(store.mutations, 0)
+
+        result = try await reply(store, ["command": "mutate-event", "mutation": create])
+        XCTAssertNotNil(result["mutation"])
+        XCTAssertEqual(store.mutations, 1)
     }
 
     @MainActor
@@ -165,7 +201,7 @@ final class CalendarServiceTests: XCTestCase {
         store.occurrences = [event("Fixture", start, start.addingTimeInterval(3600))]
         let result = try await reply(store, eventsRequest())
         let item = try XCTUnwrap(try items(result, "events").first)
-        XCTAssertEqual(Set(item.keys), ["title", "calendar", "start", "end", "allDay", "timeZone", "reference"])
+        XCTAssertEqual(Set(item.keys), ["title", "calendar", "start", "end", "allDay", "timeZone", "reference", "revision"])
         XCTAssertEqual(item["calendar"] as? [String: String], ["id": selected.id, "title": selected.title])
         let reference = try XCTUnwrap(item["reference"] as? String)
         XCTAssertEqual(Data(base64Encoded: reference)?.count, 32)

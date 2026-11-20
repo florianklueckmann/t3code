@@ -2199,6 +2199,7 @@ it.effect("serves the calendar tool only on a thread's Calendar (this Mac) sessi
   Effect.scoped(
     Effect.gen(function* () {
       const reads: Array<string> = [];
+      let writable = false;
       const scopes = new Map<string, McpInvocationContext.McpThreadInvocationScope>([
         [
           "threadToken",
@@ -2237,6 +2238,7 @@ it.effect("serves the calendar tool only on a thread's Calendar (this Mac) sessi
       ).pipe(
         Layer.provide(
           Layer.mock(MacCalendar.MacCalendar)({
+            canWrite: (caller) => Effect.succeed(writable && !caller.sealedLoad),
             listEvents: (caller) =>
               Effect.sync(() => {
                 reads.push(caller.threadId);
@@ -2347,6 +2349,21 @@ it.effect("serves the calendar tool only on a thread's Calendar (this Mac) sessi
       );
       expect((yield* calendar.call("list_events")).result?.isError).toBe(false);
       expect(reads).toEqual(["thread-calendar"]);
+      expect((yield* calendar.call("create_event")).error?.message).toBe(
+        "Tool 'create_event' not found",
+      );
+      writable = true;
+      expect((yield* calendar.listed).toSorted()).toEqual([
+        "create_event",
+        "delete_event",
+        "list_events",
+        "update_event",
+      ]);
+      expect(yield* t3.listed).toEqual(["t3_thread_read"]);
+      expect(
+        (yield* calendar.tools).find(({ name }) => name === "create_event")?.annotations
+          ?.readOnlyHint,
+      ).toBe(false);
       // An outside client never reaches it, whatever it sends.
       const outside = yield* session("clientToken", "calendar");
       expect(yield* outside.listed).toEqual([]);

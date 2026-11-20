@@ -582,7 +582,8 @@ export function botMcpGrantsChange(
   catalog: ReadonlyArray<Pick<McpConnectionSummary, "id">>,
   change:
     | { readonly connectionId: McpConnectionId; readonly granted: boolean }
-    | { readonly ownCodexMcpServers: boolean },
+    | { readonly ownCodexMcpServers: boolean }
+    | { readonly calendarWrite: boolean },
 ): BotSetMcpGrantsInput {
   const next = new Set(grants.connectionIds);
   if ("connectionId" in change) {
@@ -603,9 +604,18 @@ export function botMcpGrantsChange(
       ...added,
     ],
     ...("ownCodexMcpServers" in change ? { ownCodexMcpServers: change.ownCodexMcpServers } : {}),
-    // Read is the only level so far; the next one is chosen here.
     ...(next.has(MAC_CALENDAR_CONNECTION_ID)
-      ? { levels: { [MAC_CALENDAR_CONNECTION_ID]: "read" as const } }
+      ? {
+          levels: {
+            [MAC_CALENDAR_CONNECTION_ID]: (
+              "calendarWrite" in change
+                ? change.calendarWrite
+                : grants.levels?.[MAC_CALENDAR_CONNECTION_ID] === "read-write"
+            )
+              ? "read-write"
+              : "read",
+          },
+        }
       : {}),
   };
 }
@@ -624,7 +634,7 @@ export function botMcpGrantRowBadge(
       return "stdio";
     case "calendar": {
       const level = levels?.[MAC_CALENDAR_CONNECTION_ID] ?? "read";
-      return level === "read" ? "Read" : level;
+      return level === "read-write" ? "Read and write" : level === "read" ? "Read" : level;
     }
   }
 }

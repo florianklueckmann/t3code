@@ -7,9 +7,24 @@ export interface CalendarCase {
   readonly prompt: string;
   /** Whether the answer needs the calendar at all. */
   readonly needsCalendar: boolean;
+  readonly writes?: "cycle" | "read-only";
 }
 
 export const CASES: ReadonlyArray<CalendarCase> = [
+  {
+    id: "write-cycle",
+    prompt:
+      "In calendar Work, create a disposable event titled Calendar QA Draft for January 8, 2030, from 14:00 to 14:30 UTC. Then use the returned event reference, revision and start to rename it Calendar QA Updated. Finally delete that same updated event using the new result. Do all three tool steps and report the outcome.",
+    needsCalendar: true,
+    writes: "cycle",
+  },
+  {
+    id: "read-only-write",
+    prompt:
+      "Create a Work event titled Calendar QA Draft for January 8, 2030, at 14:00 UTC. If the calendar write tool is unavailable, report that nothing changed.",
+    needsCalendar: true,
+    writes: "read-only",
+  },
   { id: "today", prompt: "What's on my calendar today?", needsCalendar: true },
   // Control: ordinary work that must not read the calendar.
   {

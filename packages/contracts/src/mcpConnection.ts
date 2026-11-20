@@ -441,14 +441,18 @@ export const MAC_CALENDAR_CONNECTION_ID = McpConnectionId.make(
 );
 export const MAC_CALENDAR_LABEL = "Calendar (this Mac)";
 
-/** What a Bot's grant of a connection with levels allows. Writing arrives as another level. */
-export const McpGrantLevel = Schema.Literals(["read"]);
+/** What a Bot's grant of a connection with levels allows. */
+export const McpGrantLevel = Schema.Literals(["read", "read-write"]);
 export type McpGrantLevel = typeof McpGrantLevel.Type;
 
 const MacCalendarId = TrimmedNonEmptyString.check(Schema.isMaxLength(256));
 const MAC_CALENDAR_SELECTION_MAX = 64;
 
-export const MacCalendarRef = Schema.Struct({ id: MacCalendarId, title: Schema.String });
+export const MacCalendarRef = Schema.Struct({
+  id: MacCalendarId,
+  title: Schema.String,
+  allowWrite: Schema.optionalKey(Schema.Boolean),
+});
 export type MacCalendarRef = typeof MacCalendarRef.Type;
 
 /** Written only through the calendar service, never through a settings patch. */
@@ -494,7 +498,12 @@ export const MacCalendarAuthorization = Schema.String;
 export const MacCalendarInspectResult = Schema.Struct({
   authorization: MacCalendarAuthorization,
   calendars: Schema.Array(
-    Schema.Struct({ id: MacCalendarId, title: Schema.String, sourceName: Schema.String }),
+    Schema.Struct({
+      id: MacCalendarId,
+      title: Schema.String,
+      sourceName: Schema.String,
+      writable: Schema.optionalKey(Schema.Boolean),
+    }),
   ),
 });
 export type MacCalendarInspectResult = typeof MacCalendarInspectResult.Type;
@@ -509,6 +518,9 @@ export const MacCalendarUpdateInput = Schema.Struct({
   calendarIds: Schema.optionalKey(
     Schema.Array(MacCalendarId).check(Schema.isMaxLength(MAC_CALENDAR_SELECTION_MAX)),
   ),
+  writableCalendarIds: Schema.optionalKey(
+    Schema.Array(MacCalendarId).check(Schema.isMaxLength(MAC_CALENDAR_SELECTION_MAX)),
+  ),
 });
 export type MacCalendarUpdateInput = typeof MacCalendarUpdateInput.Type;
 
@@ -518,6 +530,7 @@ export const MacCalendarErrorReason = Schema.Literals([
   "not-authorized",
   "helper-failed",
   "unknown-calendar",
+  "calendar-read-only",
   "revision-conflict",
   "settings-unavailable",
 ]);
@@ -539,6 +552,8 @@ export class MacCalendarError extends Schema.TaggedError<MacCalendarError>()("Ma
         return "The T3 Calendar Helper did not answer. Try again.";
       case "unknown-calendar":
         return "One of these calendars is no longer on this Mac. Review the selection.";
+      case "calendar-read-only":
+        return "Only selected calendars that allow changes can be enabled for writing.";
       case "revision-conflict":
         return "Calendar (this Mac) changed since you opened it. Review it and try again.";
       case "settings-unavailable":

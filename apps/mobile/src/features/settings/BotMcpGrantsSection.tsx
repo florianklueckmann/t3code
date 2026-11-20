@@ -117,6 +117,11 @@ export function BotMcpGrantsSection(props: {
       {view.rows.map((row, index) => {
         const oauth = oauthSupported ? row.oauth : null;
         const badge = botMcpGrantRowBadge(row, grants.levels);
+        const calendarWrite = grants.levels?.[row.id] === "read-write";
+        const canWrite =
+          row.transport === "calendar" &&
+          row.granted &&
+          (calendarWrite || list.calendar?.calendars.some((entry) => entry.allowWrite === true));
         return (
           <View key={row.id} className={index === 0 ? "" : "border-t border-border-subtle"}>
             <View className="min-h-14 flex-row items-center gap-3 px-4 py-3">
@@ -142,6 +147,19 @@ export function BotMcpGrantsSection(props: {
                 onValueChange={(granted) => void change({ connectionId: row.id, granted })}
               />
             </View>
+            {canWrite ? (
+              <View className="flex-row items-center justify-between gap-3 px-4 py-2">
+                <Text textRole="body" className="text-foreground">
+                  Allow calendar changes
+                </Text>
+                <ThemedSwitch
+                  accessibilityLabel="Allow calendar changes"
+                  value={calendarWrite}
+                  disabled={disabled || (!calendarWrite && !view.canGrant)}
+                  onValueChange={(next) => void change({ calendarWrite: next })}
+                />
+              </View>
+            ) : null}
             {oauth === null ? null : (
               <BotMcpGrantSignIn
                 environmentId={environmentId}

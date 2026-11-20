@@ -232,14 +232,14 @@ reads, and three minutes for setup. It returns `error.code: "timeout"` if it can
 before exiting.
 
 Any process running as this macOS user can run `setup`. Once the user grants Full Access, any
-process running as that user can request events from any calendar. T3's per-Bot grant constrains
-the calendar IDs T3 passes to the helper. The helper's transport isolates macOS user accounts.
+process running as that user can call the helper with that access. T3 checks Bot grants and the
+selected calendars before passing requests to the helper. The transport isolates macOS user
+accounts.
 
 Bots reach the helper as the built-in connection Calendar (this Mac). A grant loads it as another
-server entry on T3's own `/mcp` endpoint, with the thread's credential and `T3-Toolset: calendar`,
-which lists only `list_events`. The header selects tools only:
+server entry on T3's own `/mcp` endpoint with the thread's credential and `T3-Toolset: calendar`.
 [MacCalendar.ts](../../apps/server/src/calendar/MacCalendar.ts) checks the calling Bot's grant,
-the run and the selected calendars on every call. Only Settings runs `setup` and
+the run, and the selected calendars before listing or calling write tools. Only Settings runs `setup` and
 `list-calendars`. Tests and evals use a fake helper; never point them at real calendars.
 
 - `status` returns `{"status":{"authorization":"notDetermined"}}` before an access decision. The other
@@ -256,11 +256,16 @@ the run and the selected calendars on every call. Only Settings runs `setup` and
   defaults to 50 and accepts 1 through 100. The response contains `events.items` in start-time
   order and includes `events.truncated: true` when the limit leaves out matching events. Each item
   has `title`, `calendar` (`id` and `title`), `start`, `end`, `allDay`, the host's IANA
-  `timeZone`, and an opaque `reference`. Timed events use RFC 3339 timestamps with the host's
+  `timeZone`, an opaque `reference`, and a `revision`. Timed events use RFC 3339 timestamps with the host's
   offset at each boundary. All-day events use local dates with an exclusive end. For an event on
   November 18, those dates are `2026-11-18` and `2026-11-19`. Treat the reference as temporary.
-  Its format will change when the helper supports writes, and it can change when an event
-  moves or the calendar syncs.
+  It can change when an event moves or the calendar syncs. For a write, use
+  the latest reference, revision, and returned start.
+- `mutate-event` applies one create, update, or delete to an explicit calendar.
+  The helper resolves update and delete targets within that calendar and checks
+  the revision and writability before committing. T3 records the attempt before
+  launching the helper. If the helper exits before reporting the outcome, T3
+  leaves the attempt reserved and does not repeat it automatically.
 - Errors return `error.code` with `notAuthorized`, `invalidRequest`, `unknownCalendar`,
   `storeUnavailable`, or `timeout`. The helper validates the request before checking authorization.
   Reads require Full Access. An unknown calendar ID fails the entire request.

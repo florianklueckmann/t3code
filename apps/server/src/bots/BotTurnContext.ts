@@ -2,6 +2,7 @@ import * as BotContinuation from "./BotContinuation.ts";
 import type { ApplicationInstructionParts } from "@t3tools/provider-core/server/ProviderAdapter";
 import {
   type BotId,
+  type BotMcpGrants,
   BotSourcePreference,
   BotTaskId,
   type McpConnectionId,
@@ -61,6 +62,8 @@ export type BotMcpAccess =
       readonly botId: BotId;
       readonly botName: string;
       readonly connectionIds: ReadonlyArray<McpConnectionId>;
+      readonly levels?: BotMcpGrants["levels"];
+      readonly direct?: "home" | "work";
       readonly ownCodexMcpServers: boolean;
     };
 
@@ -351,6 +354,10 @@ export const layer = Layer.effect(
             botId: owner.bot.bot_id as BotId,
             botName: owner.bot.name,
             connectionIds: grants?.connectionIds ?? [],
+            levels: grants?.levels,
+            ...(threadId === start
+              ? { direct: owner.task === null ? ("home" as const) : ("work" as const) }
+              : {}),
             ownCodexMcpServers: grants?.ownCodexMcpServers === true,
           } as const;
         }

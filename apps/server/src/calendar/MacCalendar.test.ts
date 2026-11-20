@@ -3,6 +3,7 @@ import {
   MAC_CALENDAR_CONNECTION_ID,
   type MacCalendarAvailability,
   McpConnectionId,
+  RunId,
   ThreadId,
 } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
@@ -11,11 +12,17 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as TestClock from "effect/testing/TestClock";
+import * as SqlClient from "effect/sql/SqlClient";
 
 import type * as BotTurnContextModule from "../bots/BotTurnContext.ts";
 import * as BotTurnContext from "../bots/BotTurnContext.ts";
+import * as ServerConfig from "../config.ts";
+import * as Sqlite from "../persistence/Sqlite.ts";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as McpCallerChanges from "../mcp/McpCallerChanges.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as CalendarWriteStore from "./CalendarWriteStore.ts";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as MacCalendar from "./MacCalendar.ts";
 import * as MacCalendarHelper from "./MacCalendarHelper.ts";
 
@@ -69,7 +76,12 @@ const harness = Effect.fn("MacCalendarTest.harness")(function* (options: {
   readonly access?: ReadonlyArray<BotTurnContextModule.BotMcpAccess>;
   readonly changes?: McpCallerChanges.McpCallerChangesValue;
   readonly enabled?: boolean;
-  readonly calendars?: ReadonlyArray<{ readonly id: string; readonly title: string }>;
+  readonly calendars?: ReadonlyArray<{
+    readonly id: string;
+    readonly title: string;
+    readonly allowWrite?: boolean;
+  }>;
+  readonly writes?: Partial<CalendarWriteStore.CalendarWriteStore["Service"]>;
 }) {
   const requests = yield* Ref.make<ReadonlyArray<Record<string, unknown>>>([]);
   const accessQueue = yield* Ref.make(options.access ?? [granted]);
@@ -104,7 +116,15 @@ const harness = Effect.fn("MacCalendarTest.harness")(function* (options: {
   const calendar = yield* MacCalendar.MacCalendar.pipe(
     Effect.provide(
       MacCalendar.layer.pipe(
-        Layer.provide(Layer.mergeAll(helper, turns, changes)),
+        Layer.provide(
+          Layer.mergeAll(
+            helper,
+            turns,
+            changes,
+            Layer.mock(CalendarWriteStore.CalendarWriteStore)(options.writes ?? {}),
+            NodeCrypto.layer,
+          ),
+        ),
         Layer.provide(
           ServerSettings.layerTest({
             macCalendar: {
@@ -291,15 +311,16 @@ it.effect("inspects the permission and lists calendars only with Full Access", (
     answers.status = JSON.stringify({ status: { authorization: "fullAccess" } });
     assert.deepEqual(yield* calendar.inspect, {
       authorization: "fullAccess",
-      calendars: [{ ...work, sourceName: "me@example.test" }],
+      calendars: [{ ...work, sourceName: "me@example.test", writable: true }],
     });
   }),
 );
 
-it.effect("saves a selection with the Mac's titles and refuses unknown or stale ones", () =>
+it.effect("saves the Mac's selection and allows writing only to selected writable calendars", () =>
   Effect.gen(function* () {
     const items = [
       { id: work.id, title: "Work (renamed)", sourceName: "me@example.test", writable: true },
+      { ...family, sourceName: "Fixtures", writable: false },
     ];
     const { calendar } = yield* harness({
       answer: () => JSON.stringify({ calendars: { items } }),
@@ -311,6 +332,21 @@ it.effect("saves a selection with the Mac's titles and refuses unknown or stale 
     const saved = yield* calendar.update({ expectedRevision: 3, calendarIds: [work.id] });
     assert.deepEqual(saved.calendars, [{ id: work.id, title: "Work (renamed)" }]);
     assert.equal(saved.revision, 4);
+    for (const calendarIds of [[work.id], [work.id, family.id]]) {
+      const invalid = yield* Effect.flip(
+        calendar.update({ expectedRevision: 4, calendarIds, writableCalendarIds: [family.id] }),
+      );
+      assert.equal(invalid.reason, "calendar-read-only");
+    }
+    const writable = yield* calendar.update({
+      expectedRevision: 4,
+      writableCalendarIds: [work.id],
+    });
+    assert.deepEqual(writable.calendars, [
+      { id: work.id, title: "Work (renamed)", allowWrite: true },
+    ]);
+    const deselected = yield* calendar.update({ expectedRevision: 5, calendarIds: [] });
+    assert.deepEqual(deselected.calendars, []);
     const stale = yield* Effect.flip(calendar.update({ expectedRevision: 3, enabled: false }));
     assert.equal(stale.reason, "revision-conflict");
   }),
@@ -326,4 +362,208 @@ it.effect("reports a Mac without the helper and never launches it for setup", ()
     assert.equal((yield* Effect.flip(calendar.setup)).reason, "helper-missing");
     assert.deepEqual(yield* requests, []);
   }),
+);
+
+const writableGrant: BotTurnContextModule.BotMcpAccess = {
+  ...granted,
+  direct: "home",
+  levels: { [MAC_CALENDAR_CONNECTION_ID]: "read-write" },
+};
+const writableWork = { ...work, allowWrite: true };
+const sampleEvent = {
+  title: "Created in fixture",
+  calendar: work,
+  start: "2026-11-18T09:00:00+01:00",
+  end: "2026-11-18T09:15:00+01:00",
+  allDay: false,
+  timeZone: "Europe/Berlin",
+  reference: "created-ref",
+  revision: "created-revision",
+};
+const create = {
+  kind: "create",
+  input: {
+    calendar_id: work.id,
+    title: sampleEvent.title,
+    range: { start: sampleEvent.start, end: sampleEvent.end, time_zone: sampleEvent.timeZone },
+  },
+} as const;
+const deleteOwned = {
+  kind: "delete",
+  input: {
+    target: {
+      calendar_id: work.id,
+      reference: sampleEvent.reference,
+      revision: sampleEvent.revision,
+      event_start: sampleEvent.start,
+    },
+  },
+} as const;
+const turn = { budgetRunId: RunId.make("calendar-write-run"), startedByUser: false };
+const database = Sqlite.layerMemory.pipe(
+  Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "calendar-writes-test-" })),
+  Layer.provideMerge(NodeServices.layer),
+  Layer.provideMerge(NodeCrypto.layer),
+);
+const ledger = CalendarWriteStore.layer.pipe(Layer.provideMerge(database));
+
+it.effect(
+  "replays confirmed results, proves routine ownership, and never retries an uncertain write",
+  () =>
+    Effect.gen(function* () {
+      const writes = yield* CalendarWriteStore.CalendarWriteStore;
+      const { calendar, requests } = yield* harness({
+        access: [writableGrant],
+        calendars: [writableWork, family],
+        writes: { ...writes, currentTurn: () => Effect.succeed(turn) },
+        answer: (request) => {
+          const mutation = request.mutation as { readonly kind: string; readonly title: string };
+          if (mutation.kind === "delete") return JSON.stringify({ mutation: {} });
+          if (mutation.title === "Uncertain fixture") return undefined;
+          return JSON.stringify({ mutation: { event: sampleEvent } });
+        },
+      });
+      const unowned = {
+        ...deleteOwned,
+        input: { target: { ...deleteOwned.input.target, reference: "owner-event" } },
+      };
+      assert.equal((yield* refusal(calendar.mutate(caller, unowned))).code, "capability_denied");
+      assert.deepEqual(yield* requests, []);
+      const created = yield* calendar.mutate(caller, create);
+      assert.deepEqual(yield* calendar.mutate(caller, create), created);
+      const uncertain = { ...create, input: { ...create.input, title: "Uncertain fixture" } };
+      for (let attempt = 0; attempt < 2; attempt++) {
+        assert.include(
+          (yield* refusal(calendar.mutate(caller, uncertain))).message,
+          "outcome is unknown",
+        );
+      }
+      assert.isTrue((yield* calendar.mutate(caller, deleteOwned)).deleted);
+      const capped = yield* refusal(
+        calendar.mutate(caller, {
+          ...create,
+          input: { ...create.input, title: "Fourth mutation" },
+        }),
+      );
+      assert.include(capped.message, "at most three");
+      const calls = (yield* requests).map((entry) => entry.mutation);
+      assert.lengthOf(calls, 3);
+      assert.nestedPropertyVal(
+        calls[2],
+        "target.requiredMarker",
+        (calls[0] as { marker: string }).marker,
+      );
+    }).pipe(Effect.provide(ledger)),
+);
+
+it.effect.each([
+  ["a read grant", { access: [granted] }],
+  ["No changes", { changes: "none" as const }],
+  ["a Home check", { changes: "botWaiting" as const }],
+  ["an unselected calendar", { calendars: [work, { ...family, allowWrite: true }] }],
+] as const)("refuses a calendar mutation with %s", ([, options]) =>
+  Effect.gen(function* () {
+    const { calendar, requests } = yield* harness({
+      access: [writableGrant],
+      calendars: [writableWork],
+      writes: { currentTurn: () => Effect.succeed(turn) },
+      answer: () => undefined,
+      ...options,
+    });
+    assert.equal((yield* refusal(calendar.mutate(caller, create))).code, "capability_denied");
+    assert.deepEqual(yield* requests, []);
+  }),
+);
+
+it.effect(
+  "uses the current persisted run and denies owner-event authority to automation and continuations",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const store = yield* CalendarWriteStore.CalendarWriteStore;
+      const home = ThreadId.make("write-home");
+      const runId = RunId.make("first-run");
+      const at = "2026-11-18T09:00:00.000Z";
+      const payload = {
+        id: runId,
+        threadId: home,
+        ordinal: 1,
+        providerInstanceId: "codex",
+        modelSelection: { instanceId: "codex", model: "gpt-6-luna" },
+        providerThreadId: null,
+        userMessageId: "typed",
+        rootNodeId: null,
+        activeAttemptId: null,
+        status: "running",
+        requestedAt: at,
+        startedAt: at,
+        completedAt: null,
+        checkpointId: null,
+        contextHandoffId: null,
+      };
+      yield* sql`
+      INSERT INTO orchestration_v2_projection_threads
+        (thread_id, project_id, title, default_provider, runtime_mode, interaction_mode, created_at, updated_at, payload_json)
+      VALUES (${home}, 'project', 'Fixture', 'codex', 'full-access', 'default', ${at}, ${at}, '{}')
+    `;
+      yield* sql`
+      INSERT INTO orchestration_v2_projection_runs
+        (run_id, thread_id, ordinal, provider, status, requested_at, payload_json)
+      VALUES (${runId}, ${home}, 1, 'codex', 'running', ${at}, ${JSON.stringify(payload)})
+    `;
+      const message = {
+        id: "typed",
+        threadId: home,
+        runId,
+        nodeId: null,
+        role: "user",
+        text: "Rename the fixture",
+        attachments: [],
+        streaming: false,
+        createdAt: at,
+        updatedAt: at,
+        createdBy: "user",
+        creationSource: "web",
+      };
+      yield* sql`
+      INSERT INTO orchestration_v2_projection_messages
+        (message_id, thread_id, run_id, role, streaming, created_at, updated_at, payload_json)
+      VALUES ('typed', ${home}, ${runId}, 'user', 0, ${at}, ${at}, ${JSON.stringify(message)})
+    `;
+      assert.deepEqual(yield* store.currentTurn(home), { budgetRunId: runId, startedByUser: true });
+
+      for (const provenance of [
+        {
+          context: {
+            version: 1,
+            records: [],
+            guest: { guestMessageId: "guest-fixture", name: "Guest", text: message.text },
+          },
+        },
+        { scheduledTaskId: "routine" },
+      ]) {
+        yield* sql`
+          UPDATE orchestration_v2_projection_messages
+          SET payload_json = ${JSON.stringify({ ...message, ...provenance })}
+          WHERE message_id = 'typed'
+        `;
+        assert.deepEqual(yield* store.currentTurn(home), {
+          budgetRunId: runId,
+          startedByUser: false,
+        });
+      }
+      yield* sql`UPDATE orchestration_v2_projection_runs SET status = 'interrupted' WHERE run_id = ${runId}`;
+      assert.isUndefined(yield* store.currentTurn(home));
+
+      yield* sql`
+      INSERT INTO orchestration_v2_projection_runs
+        (run_id, thread_id, ordinal, provider, status, requested_at, payload_json)
+      VALUES ('resume', ${home}, 2, 'codex', 'running', ${at},
+        ${JSON.stringify({ ...payload, id: "resume", ordinal: 2, restartContinuationOfRunId: runId })})
+    `;
+      assert.deepEqual(yield* store.currentTurn(home), {
+        budgetRunId: runId,
+        startedByUser: false,
+      });
+    }).pipe(Effect.provide(ledger)),
 );

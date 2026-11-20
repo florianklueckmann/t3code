@@ -293,7 +293,7 @@ function MacCalendarRow({
     : macCalendarStatusText(calendar).text;
   const count = calendar.calendars.length;
   const details = [
-    "Read only",
+    calendar.calendars.some((entry) => entry.allowWrite === true) ? "Writing enabled" : "Read only",
     calendar.enabled ? null : "Disabled",
     status,
     `${count} ${count === 1 ? "calendar" : "calendars"} selected`,

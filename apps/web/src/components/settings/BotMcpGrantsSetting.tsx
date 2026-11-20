@@ -149,6 +149,12 @@ export function BotMcpGrantsSetting({
         <ul className="space-y-2">
           {view.rows.map((row) => {
             const badge = botMcpGrantRowBadge(row, grants.levels);
+            const calendarWrite = grants.levels?.[row.id] === "read-write";
+            const canWrite =
+              row.transport === "calendar" &&
+              row.granted &&
+              (calendarWrite ||
+                list.calendar?.calendars.some((entry) => entry.allowWrite === true));
             return (
               <li key={row.id} className="space-y-1">
                 <label className="flex items-start gap-3 text-sm">
@@ -169,6 +175,18 @@ export function BotMcpGrantsSetting({
                     )}
                   </span>
                 </label>
+                {canWrite ? (
+                  <label className="flex items-center gap-3 pl-7 text-sm">
+                    <Checkbox
+                      checked={calendarWrite}
+                      disabled={disabled || (!calendarWrite && !view.canGrant)}
+                      onCheckedChange={(checked) =>
+                        void change({ calendarWrite: checked === true })
+                      }
+                    />
+                    Allow calendar changes
+                  </label>
+                ) : null}
                 {oauthSupported && row.oauth !== null ? (
                   <BotMcpGrantSignIn
                     environmentId={environmentId}

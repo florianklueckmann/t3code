@@ -7,6 +7,7 @@ enum CalendarAuthorization: String, Encodable {
 
 enum CalendarError: String, Error, Encodable {
     case invalidRequest, notAuthorized, unknownCalendar, storeUnavailable, timeout
+    case readOnlyCalendar, eventNotFound, eventChanged, unsupportedEvent, eventNotOwned
 }
 
 struct CalendarSummary: Encodable {
@@ -28,11 +29,12 @@ struct CalendarEvent: Encodable {
     let end: Date
     let allDay: Bool
     let reference: String
+    let revision: String
     let timeZone: TimeZone
 
     init(
         title: String, calendar: CalendarSummary, start: Date, end: Date, allDay: Bool,
-        itemID: String, occurrenceDate: Date?, timeZone: TimeZone
+        itemID: String, occurrenceDate: Date?, timeZone: TimeZone, lastModifiedAt: Date? = nil
     ) {
         self.title = title
         self.calendar = calendar
@@ -49,10 +51,16 @@ struct CalendarEvent: Encodable {
         let occurrence = occurrenceDate.map { String($0.timeIntervalSinceReferenceDate) } ?? ""
         let identity = "\(calendar.id.utf8.count):\(calendar.id)\(itemID.utf8.count):\(itemID)\(occurrence)"
         self.reference = Data(SHA256.hash(data: Data(identity.utf8))).base64EncodedString()
+        let revisionInput = [
+            identity, title, String(start.timeIntervalSinceReferenceDate),
+            String(self.end.timeIntervalSinceReferenceDate), String(allDay),
+            String(describing: lastModifiedAt?.timeIntervalSinceReferenceDate)
+        ].map { "\($0.utf8.count):\($0)" }.joined()
+        self.revision = Data(SHA256.hash(data: Data(revisionInput.utf8))).base64EncodedString()
     }
 
     private enum CodingKeys: String, CodingKey {
-        case title, calendar, start, end, allDay, reference, timeZone
+        case title, calendar, start, end, allDay, reference, revision, timeZone
     }
 
     func encode(to encoder: Encoder) throws {
@@ -68,6 +76,7 @@ struct CalendarEvent: Encodable {
         try container.encode(formatter.string(from: end), forKey: .end)
         try container.encode(allDay, forKey: .allDay)
         try container.encode(reference, forKey: .reference)
+        try container.encode(revision, forKey: .revision)
         try container.encode(timeZone.identifier, forKey: .timeZone)
     }
 }
@@ -98,7 +107,7 @@ struct EventQuery {
             && event.end >= event.start && (event.start >= start || event.end > start)
     }
 
-    private static func parseBound(_ value: String) -> Date? {
+    static func parseBound(_ value: String) -> Date? {
         let timestamp = value.uppercased()
         let pattern = #"\A[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\.[0-9]+)?(Z|[+-]([01][0-9]|2[0-3]):[0-5][0-9])\z"#
         guard timestamp.range(of: pattern, options: .regularExpression) != nil else { return nil }
@@ -123,12 +132,14 @@ protocol CalendarStore {
     func requestFullAccess() async throws
     func calendars() throws -> [CalendarDetails]
     func events(in query: EventQuery) throws -> [CalendarEvent]
+    func mutate(_ mutation: CalendarMutation) throws -> CalendarEvent?
 }
 
 enum CalendarResponse: Encodable {
     case status(authorization: CalendarAuthorization)
     case calendars(items: [CalendarDetails])
     case events(items: [CalendarEvent], truncated: Bool?)
+    case mutation(event: CalendarEvent?)
     case error(code: CalendarError)
 
     func json() throws -> Data {
@@ -139,12 +150,14 @@ enum CalendarResponse: Encodable {
 enum CalendarRequest: Decodable {
     case status, setup, listCalendars
     case listEvents(EventQuery)
+    case mutateEvent(CalendarMutation)
 
     private struct Payload: Decodable {
         enum Command: String, Decodable {
             case status, setup
             case listCalendars = "list-calendars"
             case listEvents = "list-events"
+            case mutateEvent = "mutate-event"
         }
 
         let command: Command
@@ -152,6 +165,7 @@ enum CalendarRequest: Decodable {
         let end: String?
         let calendarIds: [String]?
         let limit: Int?
+        let mutation: CalendarMutation?
     }
 
     init(from decoder: Decoder) throws {
@@ -160,6 +174,9 @@ enum CalendarRequest: Decodable {
         case .status: self = .status
         case .setup: self = .setup
         case .listCalendars: self = .listCalendars
+        case .mutateEvent:
+            guard let mutation = payload.mutation else { throw CalendarError.invalidRequest }
+            self = .mutateEvent(mutation)
         case .listEvents:
             self = .listEvents(try EventQuery(
                 start: payload.start, end: payload.end, calendarIDs: payload.calendarIds,
@@ -192,6 +209,9 @@ struct CalendarService {
             case .listCalendars:
                 guard store.authorization == .fullAccess else { return .error(code: .notAuthorized) }
                 return .calendars(items: try store.calendars())
+            case .mutateEvent(let mutation):
+                guard store.authorization == .fullAccess else { return .error(code: .notAuthorized) }
+                return .mutation(event: try store.mutate(mutation))
             case .listEvents(let query):
                 guard store.authorization == .fullAccess else { return .error(code: .notAuthorized) }
                 let available = Set(try store.calendars().map(\.id))

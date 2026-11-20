@@ -2590,7 +2590,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           if (!codexSealVersionSupported(yield* Ref.get(codexVersion)))
             return yield* refuseMcp("version");
           const delivered = yield* mcpConnectionDelivery
-            .resolve(ids)
+            .resolve(ids, policy?.macCalendarWrite === true)
             .pipe(
               Effect.mapError((error) =>
                 McpConnectionDelivery.deliveryRefusal(CODEX_PROVIDER, error),
