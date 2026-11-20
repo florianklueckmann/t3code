@@ -205,6 +205,68 @@ function makeFakeClock() {
   };
 }
 
+it("waits for deleted build outputs before relaunching Electron", async () => {
+  const clock = makeFakeClock();
+  const apps = [];
+  const buildWatchers = [];
+  let waits = 0;
+  const serverBuilt = Promise.withResolvers();
+  await runDevElectronStartup({
+    ...clock,
+    NodeFS: {
+      watch: (_directory, _options, notify) => {
+        buildWatchers.push(notify);
+        return { close: () => undefined };
+      },
+    },
+    waitForResources: () => {
+      waits += 1;
+      return waits === 1 ? Promise.resolve() : serverBuilt.promise;
+    },
+    spawn: () => {
+      const app = new NodeEvents.EventEmitter();
+      app.kill = (signal) => app.emit("exit", null, signal);
+      apps.push(app);
+      return app;
+    },
+  });
+
+  assert.isNotEmpty(buildWatchers);
+  for (const notify of buildWatchers) notify("rename", "bin.mjs");
+  await clock.advance(1_000);
+  assert.lengthOf(apps, 1);
+
+  serverBuilt.resolve();
+  await clock.advance(0);
+  assert.lengthOf(apps, 2);
+});
+
+it("bounds crash retries while still honoring a requested relaunch", async () => {
+  const clock = makeFakeClock();
+  const apps = [];
+  await runDevElectronStartup({
+    ...clock,
+    spawn: () => {
+      const app = new NodeEvents.EventEmitter();
+      apps.push(app);
+      return app;
+    },
+  });
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    apps.at(-1).emit("exit", 130, null);
+    await clock.advance(1_000);
+  }
+  assert.lengthOf(apps, 4);
+
+  apps.at(-1).emit("exit", 75, null);
+  await clock.advance(1_000);
+  assert.lengthOf(apps, 5);
+  apps.at(-1).emit("exit", 130, null);
+  await clock.advance(1_000);
+  assert.lengthOf(apps, 5);
+});
+
 it("dev supervisor stops Electron and exits once its parent process goes away", async () => {
   const clock = makeFakeClock();
   let ppid = 4242;

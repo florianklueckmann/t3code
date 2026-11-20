@@ -84,6 +84,10 @@ const layerDesktopClerk = (
     quit: Effect.sync(() => {
       events.push("quit");
     }),
+    exit: (code: number) =>
+      Effect.sync(() => {
+        events.push(`exit:${code}`);
+      }),
     on: (name: string, listener: (...args: unknown[]) => void) =>
       Effect.acquireRelease(
         Effect.sync(() => {
@@ -265,7 +269,7 @@ describe("DesktopClerk", () => {
   });
 
   it.effect.each(["darwin", "win32", "linux"] as const)(
-    "quits a second launch before initializing Clerk or the application runtime on %s",
+    "exits a second launch successfully before initializing the application runtime on %s",
     (platform) =>
       Effect.gen(function* () {
         requestSingleInstanceLockMock.mockReturnValueOnce(false);
@@ -286,7 +290,7 @@ describe("DesktopClerk", () => {
         assert.deepEqual(events, [
           "setPath:userData:/tmp/app-data/t3code-v2",
           "requestSingleInstanceLock",
-          "quit",
+          "exit:0",
         ]);
         assert.equal(createClerkBridgeMock.mock.calls.length, 0);
         assert.equal(storageMock.mock.calls.length, 0);
