@@ -58,7 +58,7 @@ export class McpConnections extends Context.Service<
     readonly refresh: (
       input: McpConnectionRefreshInput,
     ) => Effect.Effect<McpConnectionListResult, McpConnectionError>;
-    /** Saves the Calendar (this Mac) selection and drops deselected calendars from every Bot. */
+    /** Saves the Calendar (this Mac) selection; calendars it adds start outside every Bot's choice. */
     readonly updateCalendar: (
       input: MacCalendarUpdateInput,
     ) => Effect.Effect<MacCalendarSummary, MacCalendarError>;
@@ -376,19 +376,21 @@ const make = Effect.gen(function* () {
   const updateCalendar = Effect.fn("McpConnections.updateCalendar")(function* (
     input: MacCalendarUpdateInput,
   ) {
-    // Choices are pruned before the selection is saved, so a failure in between can only narrow a
-    // Bot, never leave it a calendar that comes back when selected again.
+    // A calendar entering the selection leaves every Bot's choice first, so one that was removed
+    // does not come back to Bots limited to it. Outside the selection no Bot can read it, so a
+    // failure or a race before the save changes nothing a Bot sees.
     if (input.calendarIds !== undefined) {
-      if ((yield* macCalendar.summary).revision !== input.expectedRevision) {
-        return yield* new MacCalendarError({ reason: "revision-conflict" });
+      const selected = (yield* macCalendar.summary).calendars.map(({ id }) => id);
+      const added = input.calendarIds.filter((id) => !selected.includes(id));
+      if (added.length > 0) {
+        yield* bots
+          .forgetMacCalendars(added)
+          .pipe(
+            Effect.mapError(
+              (cause) => new MacCalendarError({ reason: "settings-unavailable", cause }),
+            ),
+          );
       }
-      yield* bots
-        .keepMacCalendars(input.calendarIds)
-        .pipe(
-          Effect.mapError(
-            (cause) => new MacCalendarError({ reason: "settings-unavailable", cause }),
-          ),
-        );
     }
     return yield* macCalendar.update(input);
   });

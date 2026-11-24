@@ -163,12 +163,9 @@ export class BotStore extends Context.Service<
     readonly forgetMcpConnection: (
       connectionId: McpConnectionId,
     ) => Effect.Effect<ReadonlyArray<string>, BotStoreError>;
-    /**
-     * Drops calendars that left the Calendar (this Mac) selection from every Bot's choice, so
-     * selecting one again does not bring it back to them. Returns the Bots it changed.
-     */
-    readonly keepMacCalendars: (
-      selectedIds: ReadonlyArray<string>,
+    /** Removes these calendars from every Bot's choice and returns the Bots it changed. */
+    readonly forgetMacCalendars: (
+      calendarIds: ReadonlyArray<string>,
     ) => Effect.Effect<ReadonlyArray<string>, BotStoreError>;
   }
 >()("t3/bots/BotStore") {}
@@ -590,8 +587,8 @@ export const layer = Layer.effect(
       Effect.mapError(fail("forget-mcp-connection")),
     );
 
-    const keepMacCalendars = Effect.fn("BotStore.keepMacCalendars")(
-      function* (selectedIds: ReadonlyArray<string>) {
+    const forgetMacCalendars = Effect.fn("BotStore.forgetMacCalendars")(
+      function* (calendarIds: ReadonlyArray<string>) {
         return yield* sql.withTransaction(
           Effect.gen(function* () {
             const rows = yield* sql<{ readonly bot_id: string; readonly calendar_ids: string }>`
@@ -601,7 +598,7 @@ export const layer = Layer.effect(
             const changed: Array<string> = [];
             for (const row of rows) {
               const choice = decodeCalendarChoice(row.calendar_ids);
-              const kept = choice.filter((id) => selectedIds.includes(id));
+              const kept = choice.filter((id) => !calendarIds.includes(id));
               if (kept.length === choice.length) continue;
               yield* sql`
                 UPDATE bot_mcp_grants SET calendar_ids = ${encodeCalendarChoice(kept)}
@@ -617,7 +614,7 @@ export const layer = Layer.effect(
           }),
         );
       },
-      Effect.mapError(fail("keep-mac-calendars")),
+      Effect.mapError(fail("forget-mac-calendars")),
     );
 
     return BotStore.of({
@@ -650,7 +647,7 @@ export const layer = Layer.effect(
       listMcpGrants,
       replaceMcpGrants,
       forgetMcpConnection,
-      keepMacCalendars,
+      forgetMacCalendars,
     });
   }),
 );

@@ -79,9 +79,9 @@ export class BotService extends Context.Service<
     readonly setMcpGrants: (input: BotSetMcpGrantsInput) => Effect.Effect<BotDetail, BotError>;
     /** Drops a removed catalog connection from every Bot's grants, advancing their revisions. */
     readonly forgetMcpConnection: (connectionId: McpConnectionId) => Effect.Effect<void, BotError>;
-    /** Drops calendars that left the Calendar (this Mac) selection from every Bot's choice. */
-    readonly keepMacCalendars: (
-      selectedIds: ReadonlyArray<string>,
+    /** Removes these Calendar (this Mac) calendars from every Bot's choice. */
+    readonly forgetMacCalendars: (
+      calendarIds: ReadonlyArray<string>,
     ) => Effect.Effect<void, BotError>;
     readonly attachProject: (input: BotAttachProjectInput) => Effect.Effect<BotDetail, BotError>;
     readonly updateProjectContext: (
@@ -609,10 +609,12 @@ const make = Effect.gen(function* () {
     if (affected.length > 0) yield* notifyChanged;
   });
 
-  const keepMacCalendars: BotService["Service"]["keepMacCalendars"] = Effect.fn(
-    "BotService.keepMacCalendars",
-  )(function* (selectedIds) {
-    const affected = yield* store.keepMacCalendars(selectedIds).pipe(Effect.mapError(storeError()));
+  const forgetMacCalendars: BotService["Service"]["forgetMacCalendars"] = Effect.fn(
+    "BotService.forgetMacCalendars",
+  )(function* (calendarIds) {
+    const affected = yield* store
+      .forgetMacCalendars(calendarIds)
+      .pipe(Effect.mapError(storeError()));
     if (affected.length > 0) yield* notifyChanged;
   });
 
@@ -1013,7 +1015,7 @@ const make = Effect.gen(function* () {
     setArchived,
     setMcpGrants,
     forgetMcpConnection,
-    keepMacCalendars,
+    forgetMacCalendars,
     attachProject,
     updateProjectContext,
     detachProject,

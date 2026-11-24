@@ -694,11 +694,10 @@ it.effect("grants Calendar (this Mac) on a Mac only, with the read level", () =>
           levels: { [MAC_CALENDAR_CONNECTION_ID]: "read-write" },
         });
         assert.deepEqual(releveled.mcpGrants?.calendarIds, ["cal-work", "cal-family"]);
-        // A calendar leaving the selection leaves every choice, so selecting it again does not
-        // bring it back.
+        // A calendar selected again leaves every choice first, so it does not come back.
         const pull = yield* Stream.toPull(bots.subscribeList());
         yield* pull;
-        yield* bots.keepMacCalendars(["cal-family"]);
+        yield* bots.forgetMacCalendars(["cal-work"]);
         const [listed] = yield* pull;
         assert.deepEqual(listed?.bots[0]?.mcpGrants, {
           revision: 4,
