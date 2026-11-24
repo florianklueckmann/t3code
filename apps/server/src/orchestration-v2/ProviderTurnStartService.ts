@@ -374,23 +374,20 @@ export const layer: Layer.Layer<
           "ProviderTurnStartService.settleStoppedProviderThread",
         )(
           function* (status: OrchestrationV2ProviderThread["status"]) {
-            const { runs, providerThreads, providerTurns } =
-              yield* projectionStore.getThreadRecords(
-                input.threadId,
-                ["runs", "providerThreads", "providerTurns"],
-                {
-                  runIds: [input.runId],
-                  providerThreadIds: [input.providerThreadId],
-                  providerTurnThreadIds: [input.providerThreadId],
-                },
-              );
-            const run = runs.find((candidate) => candidate.id === input.runId);
+            const run = yield* projectionStore.getRun(input.threadId, input.runId);
+            if (run === undefined || !NON_COMPLETING_TERMINAL_RUN_STATUSES.has(run.status)) return;
+            const { providerThreads, providerTurns } = yield* projectionStore.getThreadRecords(
+              input.threadId,
+              ["providerThreads", "providerTurns"],
+              {
+                providerThreadIds: [input.providerThreadId],
+                providerTurnThreadIds: [input.providerThreadId],
+              },
+            );
             const providerThread = providerThreads.find(
               (candidate) => candidate.id === input.providerThreadId,
             );
             if (
-              run === undefined ||
-              !NON_COMPLETING_TERMINAL_RUN_STATUSES.has(run.status) ||
               providerThread?.status !== "active" ||
               providerThread.lastRunOrdinal !== input.runOrdinal ||
               providerTurns.some(
