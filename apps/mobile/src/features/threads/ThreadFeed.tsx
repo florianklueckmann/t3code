@@ -41,6 +41,7 @@ import { useViewabilityAmount, type LegendListRef } from "@legendapp/list/react-
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { HandoffEndpoints } from "@t3tools/client-runtime/handoff";
 import {
+  automaticCompactionOf,
   IDLE_COMPACTING_LABELS,
   resolveUserMessageFileCards,
   resolveUserMessagePresentation,
@@ -51,7 +52,6 @@ import { formatDiffCount } from "@t3tools/client-runtime/diff-count";
 import type { WorkflowOpening } from "@t3tools/client-runtime/state/subagentRuntime";
 import {
   AuthFilesystemReadScope,
-  idleCompactionOf,
   type OrchestrationMessageContext,
   ThreadId,
   type ChatAttachment,
@@ -2023,7 +2023,7 @@ function renderFeedEntry(
     if (isCompactionCommandFeedEntry(entry)) {
       // Stands in for the compaction item until the provider reports it.
       const active = props.unsettledTurnId !== null && message.runId === props.unsettledTurnId;
-      const reason = idleCompactionOf(message);
+      const reason = automaticCompactionOf(message);
       return (
         <ThreadContextDivider
           label={

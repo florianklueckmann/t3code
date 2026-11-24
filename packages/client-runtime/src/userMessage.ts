@@ -2,6 +2,8 @@ import {
   type ChatAttachment,
   type ChatFileAttachment,
   type GuestMessageAttribution,
+  idleCompactionOf,
+  isBotMaintenanceCompaction,
   type OrchestrationMessageContext,
   type OrchestrationV2Actor,
   type OrchestrationV2CreationSource,
@@ -17,17 +19,31 @@ import { filePreviewKind } from "@t3tools/shared/filePreview";
 import { imageMimeType } from "@t3tools/shared/image";
 import { videoMimeType } from "@t3tools/shared/video";
 
+/** Why T3 Code sent a `/compact` on its own. */
+export type AutomaticCompaction = OrchestrationV2IdleCompaction | "botMaintenance";
+
+export function automaticCompactionOf(
+  message: NonNullable<Parameters<typeof isBotMaintenanceCompaction>[0]>,
+): AutomaticCompaction | undefined {
+  return (
+    idleCompactionOf(message) ??
+    (isBotMaintenanceCompaction(message) ? "botMaintenance" : undefined)
+  );
+}
+
 /** The working row while T3 Code's own compaction runs. */
 export const IDLE_COMPACTING_LABELS = {
   beforeCacheExpires: "Compacting before the cache expires…",
   onReturn: "Compacting…",
-} satisfies Record<OrchestrationV2IdleCompaction, string>;
+  botMaintenance: "Compacting for Bot maintenance…",
+} satisfies Record<AutomaticCompaction, string>;
 
 /** Leads the finished compaction's token counts, in place of "Context compacted". */
 export const IDLE_COMPACTION_TITLES = {
   beforeCacheExpires: "Context automatically compacted before cache expiry",
   onReturn: "Context compacted before sending",
-} satisfies Record<OrchestrationV2IdleCompaction, string>;
+  botMaintenance: "Context compacted by Bot maintenance",
+} satisfies Record<AutomaticCompaction, string>;
 
 const LEGACY_AUTOMATION_PREFIX = /^\[Triggered by schedule task: [^\r\n]+\]\r?\n\r?\n/;
 const LEGACY_AUTOMATION_MESSAGE_ID = /^scheduled-task-message:(.+):\d+:(?:scheduled|manual)$/;

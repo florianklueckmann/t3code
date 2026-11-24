@@ -26,6 +26,7 @@ import {
   type ChatAttachment,
   CommandId,
   type GuestMessageId,
+  isBotMaintenanceCompaction,
   isCompactionCommandMessage,
   isOrchestrationV2WorkActive,
   isProviderNativeSubagentThread,
@@ -215,9 +216,9 @@ import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAda
 import * as ServerSettings from "../serverSettings.ts";
 
 import {
-  isBotMaintenanceCompaction,
   isDirectHomeInput,
   latestDirectHomeInput,
+  MAINTENANCE_COMPACTION_SKIPPED,
 } from "../bots/homeReturn.ts";
 
 const isMessageQuestionAnswer = Schema.is(
@@ -7264,7 +7265,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     if (yieldingCompaction !== undefined) {
       queuedRunStop = {
         runId: yieldingCompaction.id,
-        reason: "Skipped Bot maintenance compaction to send a new message",
+        reason: MAINTENANCE_COMPACTION_SKIPPED,
       };
       dispatchMode = { type: "queue_after_active" };
     }
@@ -13508,7 +13509,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         completedAt: now,
         updatedAt: now,
         type: "run_interrupt_result",
-        message: "Run interrupted before provider start",
+        message: command.reason ?? "Run interrupted before provider start",
       };
       yield* emitEvent({
         type: "turn-item.updated",

@@ -1,5 +1,7 @@
 import {
   BOT_TASK_TERMINAL_STATUSES,
+  botMaintenanceCompactionId,
+  isBotMaintenanceCompaction,
   isCompactionCommandMessage,
   type BotConfigureMaintenanceInput,
   type BotConfigureMaintenanceResult,
@@ -44,6 +46,7 @@ import * as EffectOutbox from "../orchestration-v2/EffectOutbox.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as EventStore from "../orchestration-v2/EventStore.ts";
 import * as ProviderSessionManager from "../orchestration-v2/ProviderSessionManager.ts";
+import { USER_STOP_REASON } from "../orchestration-v2/RunExecutionService.ts";
 import * as ThreadCommandExecutor from "../orchestration-v2/ThreadCommandExecutor.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
@@ -52,12 +55,12 @@ import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as BotDatabase from "./persistence/BotDatabase.ts";
 import * as BotContinuation from "./BotContinuation.ts";
 import * as Evidence from "./BotMaintenanceEvidence.ts";
+import { MAINTENANCE_COMPACTION_SKIPPED } from "./homeReturn.ts";
 import * as BotProviderSupport from "./BotProviderSupport.ts";
 import * as BotRuntimePolicy from "./BotRuntimePolicy.ts";
 import * as BotService from "./BotService.ts";
 import * as BotStore from "./BotStore.ts";
 import * as BotTaskService from "./BotTaskService.ts";
-import { botMaintenanceCompactionId, isBotMaintenanceCompaction } from "./homeReturn.ts";
 
 /** Turns one bounded packet into an unverified proposal. Never sees Home history or tools. */
 type Generator = (packet: Evidence.Packet) => Effect.Effect<unknown, SealedGenerationFailure>;
@@ -130,6 +133,8 @@ export type CompactDeferReason =
   | "retry_exhausted"
   | "settings_changed";
 
+type SkipReason = "user_stopped" | "new_message";
+
 export type HomeCompaction =
   /** Nothing to compact; no turn and no run row. */
   | {
@@ -142,6 +147,13 @@ export type HomeCompaction =
       readonly runId: string;
       /** `run_<status>` when the compaction run ended without compacting. */
       readonly reason: "start_refused" | "run_missing" | `run_${string}`;
+    }
+  /** The user stopped the compaction, or a new message came before it started. */
+  | {
+      readonly status: "skipped";
+      readonly runId: string;
+      readonly reason: SkipReason;
+      readonly homeRunId: string;
     }
   | { readonly status: "deferred"; readonly runId: string; readonly reason: CompactDeferReason };
 
@@ -957,6 +969,18 @@ export const make = Effect.gen(function* () {
     return stop?.message;
   });
 
+  /** Why the run gave way: the user's Stop, or a new message sent before it started. */
+  const skipReason = Effect.fn("BotMaintenance.skipReason")(function* (runId: string) {
+    const [stop] = yield* main<{
+      readonly message: string;
+    }>`SELECT json_extract(payload_json, '$.message') AS message FROM orchestration_v2_projection_turn_items
+      WHERE run_id = ${runId} AND type = 'run_interrupt_request'
+        AND json_extract(payload_json, '$.message') IN (${USER_STOP_REASON}, ${MAINTENANCE_COMPACTION_SKIPPED})
+      LIMIT 1`;
+    if (stop === undefined) return undefined;
+    return stop.message === USER_STOP_REASON ? "user_stopped" : "new_message";
+  });
+
   /**
    * Coverage is derived from the note and the Home, never stored here, so a refresh that fails
    * consumes nothing and the next one sees the same evidence. One outcome row per attempt.
@@ -1236,8 +1260,16 @@ export const make = Effect.gen(function* () {
     const run = yield* homeRunEnding(home, messageId, sequence);
     if (run === undefined) return yield* failed("run_missing", null);
     const hookStop = yield* postCompactStop(run);
-    if (run.status !== "completed" && hookStop === undefined)
+    if (run.status !== "completed" && hookStop === undefined) {
+      const skipped = run.status === "interrupted" ? yield* skipReason(run.runId) : undefined;
+      if (skipped !== undefined)
+        return yield* settle<HomeCompaction>(
+          "skipped",
+          { compact: "skipped", reason: skipped, homeRunId: run.runId },
+          { status: "skipped", runId, reason: skipped, homeRunId: run.runId },
+        );
       return yield* failed(`run_${run.status}`, run.runId);
+    }
     return yield* settle<HomeCompaction>(
       "applied",
       {

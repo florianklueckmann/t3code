@@ -9,6 +9,8 @@ import * as Equal from "effect/Equal";
 import { shallow } from "zustand/vanilla/shallow";
 import { claudeResumeCompactionAge } from "@t3tools/shared/claudeCompaction";
 import {
+  type AutomaticCompaction,
+  automaticCompactionOf,
   IDLE_COMPACTING_LABELS,
   IDLE_COMPACTION_TITLES,
 } from "@t3tools/client-runtime/user-message";
@@ -51,10 +53,8 @@ import {
   type TurnDiffSummary,
 } from "../../types";
 import {
-  idleCompactionOf,
   isCompactionCommandMessage,
   type MessageId,
-  type OrchestrationV2IdleCompaction,
   type WorktreeSetupSnapshot,
   type OrchestrationV2ProjectedTurnItem,
   type RunAttemptId,
@@ -1757,7 +1757,7 @@ export function deriveMessagesTimelineRows(input: {
   // A bare `/compact` turn is the compaction itself: one compaction row stands in for its prompt
   // and working indicator, from the moment the turn starts. Likewise an answered "compact before
   // continuing?" question folds into the compaction it asked for.
-  const compactionRuns = new Map<RunId, OrchestrationV2IdleCompaction | undefined>();
+  const compactionRuns = new Map<RunId, AutomaticCompaction | undefined>();
   const compactedRunIds = new Set<RunId>();
   const pendingResumeCompactionAgeByRunId = new Map<RunId, string>();
   const resumeCompactionAgeByEntryId = new Map<string, string>();
@@ -1767,7 +1767,7 @@ export function deriveMessagesTimelineRows(input: {
       entry.message.runId !== null &&
       isCompactionCommandMessage(entry.message)
     ) {
-      compactionRuns.set(entry.message.runId, idleCompactionOf(entry.message));
+      compactionRuns.set(entry.message.runId, automaticCompactionOf(entry.message));
     } else if (entry.kind === "work" && entry.entry.runId) {
       if (timelineEntryIsCompaction(entry)) {
         compactedRunIds.add(entry.entry.runId);

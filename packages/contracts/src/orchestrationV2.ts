@@ -638,6 +638,21 @@ export function idleCompactionOf(
     : undefined;
 }
 
+export const botMaintenanceCompactionId = (home: string, sequence: number) =>
+  `bot-maintenance:compact:${home}:${sequence}`;
+
+/** Only the server authors `system` messages, so no client can send one of these. */
+export function isBotMaintenanceCompaction(
+  message: (CompactionMessageFields & { readonly id: string }) | undefined,
+) {
+  return (
+    message !== undefined &&
+    message.createdBy === "system" &&
+    message.id.startsWith("bot-maintenance:compact:") &&
+    isCompactionCommandMessage(message)
+  );
+}
+
 export const OrchestrationV2RunStatus = Schema.Literals([
   "preparing",
   "queued",
