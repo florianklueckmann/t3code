@@ -16,6 +16,8 @@ import {
   type SealedRefusalReason,
 } from "@t3tools/provider-core/server/sealedGeneration";
 import { toJsonSchemaObject } from "@t3tools/provider-core/server/textGenerationUtils";
+import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
+import { parseCliArgs } from "@t3tools/shared/cliArgs";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { compareSemverVersions, parseSemver } from "@t3tools/shared/semver";
 import * as Duration from "effect/Duration";
@@ -47,6 +49,7 @@ const DEFAULT_DEADLINE = Duration.minutes(10);
 const MAX_OUTPUT_BYTES = 64 * 1024;
 // Claude Code re-prompts when the answer misses the schema; Haiku needs that in about a third of
 // calls (measured), so one response only would fail them. Each response passes the same checks.
+// Claude has no option that caps model requests, so a fourth is discarded when it arrives.
 const MAX_MODEL_RESPONSES = 3;
 
 /** Claude Code answers a JSON schema through this tool; it is the only one a sealed call has. */
@@ -262,6 +265,20 @@ export const makeClaudeSealedGeneration = Effect.fn("makeClaudeSealedGeneration"
   const platform = yield* HostProcess.Platform;
   const startQuery = options.query ?? startClaudeSealedQuery;
 
+  const home = yield* HostProcess.HomeDirectory;
+  const launchSettings = parseCliArgs(options.settings.launchArgs, {
+    valueFlags: ["append-system-prompt"],
+  }).flags.settings?.trim();
+  const relativeLaunchSettings =
+    typeof launchSettings === "string" &&
+    !launchSettings.startsWith("{") &&
+    !path.isAbsolute(expandHomePath(launchSettings, home));
+  const inheritedConfigDir = options.environment.CLAUDE_CONFIG_DIR?.trim();
+  const relativeConfigDir =
+    inheritedConfigDir !== undefined &&
+    inheritedConfigDir.length > 0 &&
+    !path.isAbsolute(inheritedConfigDir);
+
   const routesElsewhere = (settings: unknown) =>
     !isRecord(settings) ||
     settings.apiKeyHelper !== undefined ||
@@ -275,6 +292,8 @@ export const makeClaudeSealedGeneration = Effect.fn("makeClaudeSealedGeneration"
    */
   const settingsRefusal = Effect.gen(function* () {
     if (yield* hasClaudeManagedMcpConfig()) return true;
+    // Home turns resolve relative paths from their project, so no one file could be checked.
+    if (relativeConfigDir || relativeLaunchSettings) return true;
     const launch = yield* readClaudeLaunchArgSettings({
       settings: options.settings,
       cwd: null,
@@ -331,12 +350,7 @@ export const makeClaudeSealedGeneration = Effect.fn("makeClaudeSealedGeneration"
     );
     const queryOptions: ClaudeQueryOptions = {
       cwd,
-      // A relative config directory would resolve from the temporary folder, not where
-      // admission read the settings.
-      env:
-        options.environment.CLAUDE_CONFIG_DIR === undefined
-          ? options.environment
-          : { ...options.environment, CLAUDE_CONFIG_DIR: options.configDir },
+      env: options.environment,
       pathToClaudeCodeExecutable: executable,
       model: plan.apiModelId,
       ...(plan.effort === undefined

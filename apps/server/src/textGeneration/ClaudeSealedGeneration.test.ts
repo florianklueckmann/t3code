@@ -121,6 +121,8 @@ const withGeneration = <A, E>(
     readonly fail?: boolean;
     readonly settingsFile?: string;
     readonly launchArgs?: string;
+    /** `CLAUDE_CONFIG_DIR` as the instance's environment carries it. */
+    readonly configDirVariable?: string;
     readonly platform?: NodeJS.Platform;
     /** Calls the seal's own tool guard for this tool before the frames. */
     readonly attempt?: string;
@@ -145,7 +147,7 @@ const withGeneration = <A, E>(
     const generation = yield* makeClaudeSealedGeneration({
       getSnapshot: Effect.succeed(input.snapshot ?? baseSnapshot),
       settings: decodeClaudeSettings({ launchArgs: input.launchArgs ?? "" }),
-      environment: { CLAUDE_CONFIG_DIR: configDir },
+      environment: { CLAUDE_CONFIG_DIR: input.configDirVariable ?? configDir },
       configDir,
       modelCatalog: () => Effect.succeed(BUNDLED_CLAUDE_MODEL_CATALOG),
       deadline: Duration.seconds(30),
@@ -246,6 +248,7 @@ it.effect.each<{
   readonly platform?: NodeJS.Platform;
   readonly settingsFile?: string;
   readonly launchArgs?: string;
+  readonly configDirVariable?: string;
   readonly reason: SealedRefusalReason;
 }>([
   { name: "a disabled instance", snapshot: { enabled: false }, reason: "instance_unavailable" },
@@ -320,12 +323,31 @@ it.effect.each<{
     launchArgs: `--settings '{"env":{"ANTHROPIC_BASE_URL":"https://gateway.example"}}'`,
     reason: "claude_settings_unsupported",
   },
+  {
+    name: "a relative settings launch argument, which each project resolves for itself",
+    launchArgs: "--settings ./claude-settings.json",
+    reason: "claude_settings_unsupported",
+  },
+  {
+    name: "a relative config directory, which each project resolves for itself",
+    configDirVariable: "./claude-home",
+    reason: "claude_settings_unsupported",
+  },
 ])(
   "refuses $name before any process starts",
-  ({ snapshot, selection: selected, platform, settingsFile, launchArgs, reason }) =>
+  ({
+    snapshot,
+    selection: selected,
+    platform,
+    settingsFile,
+    launchArgs,
+    configDirVariable,
+    reason,
+  }) =>
     withGeneration(
       {
         ...(launchArgs === undefined ? {} : { launchArgs }),
+        ...(configDirVariable === undefined ? {} : { configDirVariable }),
         snapshot: { ...baseSnapshot, ...snapshot },
         ...(settingsFile === undefined ? {} : { settingsFile }),
         ...(platform === undefined ? {} : { platform }),
@@ -352,8 +374,12 @@ it.effect("accepts the answer of a re-prompt after the first one missed the sche
       frames: [
         init(),
         answer({ summary: 1 }),
-        assistant([{ type: "tool_use", id: "tool-3", name: "StructuredOutput", input: ANSWER }], {
-          message: { id: "response-2", model: MODEL, content: [] },
+        assistant([], {
+          message: {
+            id: "response-2",
+            model: MODEL,
+            content: [{ type: "tool_use", id: "tool-3", name: "StructuredOutput", input: ANSWER }],
+          },
         }),
         result(),
       ],

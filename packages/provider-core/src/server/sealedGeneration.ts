@@ -61,7 +61,10 @@ export interface SealedGenerationInput<S extends Schema.Top> {
   readonly schema: S;
 }
 
-/** One bounded, tool-free, ephemeral model call on exactly the selected instance and model. */
+/**
+ * One bounded, tool-free, ephemeral model call on exactly the selected instance and model. On
+ * Claude, an answer that misses the schema is asked for again, up to three responses in all.
+ */
 export interface SealedGeneration {
   /** Reads the instance snapshot and settings; starts no process and runs no model. */
   readonly availability: (selection: ModelSelection) => Effect.Effect<SealedRefusalReason | null>;
