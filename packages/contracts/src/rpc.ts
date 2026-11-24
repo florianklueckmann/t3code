@@ -422,6 +422,7 @@ import {
   BotDetachProjectInput,
   BotDetail,
   BotError,
+  BotDecideLearningSuggestionInput,
   BotGetInput,
   BotListInput,
   BotListResult,
@@ -672,6 +673,7 @@ export const WS_METHODS = {
   botsDecideLearning: "bots.decideLearning",
   botsRetireLearning: "bots.retireLearning",
   botsRestoreLearning: "bots.restoreLearning",
+  botsDecideLearningSuggestion: "bots.decideLearningSuggestion",
   botsSubscribeLearningNotices: "bots.subscribeLearningNotices",
 
   mcpConnectionsList: "mcpConnections.list",
@@ -2383,6 +2385,12 @@ const WsBotsRestoreLearningRpc = Rpc.make(WS_METHODS.botsRestoreLearning, {
   error: BotRpcError,
 });
 
+const WsBotsDecideLearningSuggestionRpc = Rpc.make(WS_METHODS.botsDecideLearningSuggestion, {
+  payload: BotDecideLearningSuggestionInput,
+  success: BotDetail,
+  error: BotRpcError,
+});
+
 const WsBotsSubscribeLearningNoticesRpc = Rpc.make(WS_METHODS.botsSubscribeLearningNotices, {
   payload: BotLearningNoticesInput,
   success: BotLearningNoticesResult,
@@ -2584,6 +2592,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsBotsDecideLearningRpc,
   WsBotsRetireLearningRpc,
   WsBotsRestoreLearningRpc,
+  WsBotsDecideLearningSuggestionRpc,
   WsBotsSubscribeLearningNoticesRpc,
   WsMcpConnectionsListRpc,
   WsMcpConnectionsCreateRpc,

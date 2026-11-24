@@ -82,6 +82,7 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.botsDecideLearning]: AuthOrchestrationOperateScope,
   [WS_METHODS.botsRetireLearning]: AuthOrchestrationOperateScope,
   [WS_METHODS.botsRestoreLearning]: AuthOrchestrationOperateScope,
+  [WS_METHODS.botsDecideLearningSuggestion]: AuthOrchestrationOperateScope,
   [WS_METHODS.botsSaveContinuation]: AuthOrchestrationOperateScope,
   // MCP connection definitions hold credential bindings, like other settings secrets.
   [WS_METHODS.mcpConnectionsCreate]: AuthSettingsWriteScope,

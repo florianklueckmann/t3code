@@ -71,6 +71,8 @@ export interface Outcome {
   readonly pending: number;
   readonly stale: number;
   readonly duplicate: number;
+  /** Lessons offered to the user for all projects; a pair settled before is not counted again. */
+  readonly suggested: number;
 }
 
 export type DeferReason =
@@ -767,6 +769,7 @@ export const make = Effect.gen(function* () {
       authority: { policy: bot.learning_policy, bot, context },
       sources: eligible,
       learning: yield* store.listLearning(scope.botId),
+      suggestions: yield* store.listLearningSuggestions(scope.botId),
     });
     if (built._tag === "blocked") {
       yield* recordRun("deferred", { reason: built.reason });
@@ -829,8 +832,39 @@ export const make = Effect.gen(function* () {
               pending: 0,
               stale: 0,
               duplicate: 0,
+              suggested: 0,
             };
+            // The basis pins this project's entries; the other project's may have changed.
+            const suggest = Effect.fn("BotMaintenance.suggest")(function* (
+              entry: { readonly entryId: string; readonly revision: number },
+              matched: Evidence.OtherLesson,
+            ) {
+              const current = learning.rows.some(
+                (row) =>
+                  row.entry_id === matched.entryId &&
+                  row.revision === matched.revision &&
+                  row.status === "active" &&
+                  row.project_id !== null,
+              );
+              if (!current) return;
+              yield* learning.suggest({
+                botId: scope.botId,
+                entry: {
+                  entryId: BotLearningEntryId.make(entry.entryId),
+                  revision: entry.revision,
+                },
+                matched: {
+                  entryId: BotLearningEntryId.make(matched.entryId),
+                  revision: matched.revision,
+                },
+              });
+              outcome.suggested += 1;
+            });
             for (const operation of verified.proposal.operations) {
+              if (operation.op === "match") {
+                yield* suggest(operation.target, operation.matched);
+                continue;
+              }
               const kind = operation.op === "add" ? operation.kind : operation.target.kind;
               // Stricter than ordinary learning: a standing instruction of this kind may
               // govern the lesson, so it waits for the user instead of applying itself.
@@ -864,6 +898,9 @@ export const make = Effect.gen(function* () {
               else if (result.status === "active") outcome.active += 1;
               else if (result.status === "pending") outcome.pending += 1;
               else outcome.stale += 1;
+              // A waiting lesson's suggestion shows once the user adopts it.
+              if (operation.op === "add" && operation.matched !== null && !result.duplicate)
+                yield* suggest(result, operation.matched);
             }
             const receipts = selected.map((source) => ({
               kind: source.kind,

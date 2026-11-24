@@ -235,6 +235,21 @@ export const BotLearningEntry = Schema.Struct({
 export type BotLearningEntry = typeof BotLearningEntry.Type;
 
 /**
+ * A project's lesson the Bot also keeps in another project, offered to the user for all
+ * projects. Never applied on its own, and listed only while both lessons are in use.
+ */
+export const BotLearningSuggestion = Schema.Struct({
+  entryId: BotLearningEntryId,
+  revision: PositiveInt,
+  /** The other project's lesson; accepting retires it. */
+  matchedEntryId: BotLearningEntryId,
+  matchedRevision: PositiveInt,
+  /** A dismissed suggestion stays dismissed for its lesson until the user shows it again. */
+  dismissedAt: Schema.NullOr(IsoDateTime),
+});
+export type BotLearningSuggestion = typeof BotLearningSuggestion.Type;
+
+/**
  * The environment's MCP connections a Bot's threads may use. Only these load, with their
  * credentials resolved at each load; the user's own Codex MCP servers load only when switched on.
  */
@@ -297,6 +312,8 @@ export const BotDetail = Schema.Struct({
   instructions: BotInstructions,
   projects: Schema.Array(BotProjectContext),
   learning: Schema.Array(BotLearningEntry),
+  /** Absent on servers without suggestions. */
+  learningSuggestions: Schema.optionalKey(Schema.Array(BotLearningSuggestion)),
 });
 export type BotDetail = typeof BotDetail.Type;
 
@@ -421,6 +438,21 @@ export const BotRestoreLearningInput = Schema.Struct({
 export type BotRestoreLearningInput = typeof BotRestoreLearningInput.Type;
 
 /**
+ * accept: moves the lesson to all projects as "Apply to all projects" does and retires the
+ * matched lesson. undismiss: shows a dismissed suggestion again.
+ */
+export const BotDecideLearningSuggestionInput = Schema.Struct({
+  botId: BotId,
+  /** The pair the user was shown; a suggestion that changed since is refused. */
+  entryId: BotLearningEntryId,
+  revision: PositiveInt,
+  matchedEntryId: BotLearningEntryId,
+  matchedRevision: PositiveInt,
+  decision: Schema.Literals(["accept", "dismiss", "undismiss"]),
+});
+export type BotDecideLearningSuggestionInput = typeof BotDecideLearningSuggestionInput.Type;
+
+/**
  * added: an entry's first revision. adopted: a waiting revision came into use later. retired: the
  * entry stopped being in use.
  */
@@ -464,6 +496,8 @@ export const BotLearningNotice = Schema.Struct({
   restoredFrom: Schema.optionalKey(PositiveInt),
   /** The entry's revision in use now; null when nothing is, such as after retirement. */
   currentRevision: Schema.NullOr(PositiveInt),
+  /** The revision in use has an open suggestion to apply it to all projects. */
+  suggestedForAllProjects: Schema.optionalKey(Schema.Boolean),
 });
 export type BotLearningNotice = typeof BotLearningNotice.Type;
 

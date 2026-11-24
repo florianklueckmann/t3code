@@ -189,8 +189,167 @@ const fixture = Effect.gen(function* () {
     newEntryId: Ref.updateAndGet(nextId, (id) => id + 1).pipe(Effect.map((id) => `lesson-${id}`)),
     taskStatus: () => Ref.get(taskStatus),
   });
-  return { learning, rows: store.listLearning(botId), taskStatus };
+  for (const projectId of [projectA, projectB, projectC]) {
+    yield* store.upsertContext({
+      home_thread_id: `home-${projectId}`,
+      bot_id: botId,
+      project_id: projectId,
+      guidance: "",
+      sources_json: "[]",
+      revision: 1,
+      thread_sync: null,
+      attached_at: createdAt,
+      detached_at: null,
+      updated_at: createdAt,
+    });
+  }
+  const rows = store.listLearning(botId);
+  const suggestions = Effect.gen(function* () {
+    return BotLearning.currentSuggestions(
+      yield* rows,
+      yield* store.listLearningSuggestions(botId),
+      yield* store.listContexts(botId),
+    );
+  });
+  return { learning, rows, taskStatus, suggestions, store };
 });
+
+const projectC = "project-c";
+const elsewhere = { ...correction, projectId: ProjectId.make(projectB) } as const;
+const pair = (
+  entry: BotLearning.RecordLearningResult,
+  matched: BotLearning.RecordLearningResult,
+) => ({
+  entryId: entry.entryId,
+  revision: entry.revision,
+  matchedEntryId: matched.entryId,
+  matchedRevision: matched.revision,
+});
+
+it.effect("suggests a lesson for all projects once a second project learns the same", () =>
+  Effect.gen(function* () {
+    const { learning, suggestions } = yield* fixture;
+    const first = yield* learning.record(policy, correction);
+    yield* learning.record(policy, { ...correction, text: "Use ISO dates." });
+    yield* learning.syncSuggestions(botId);
+    expect(yield* suggestions).toEqual([]);
+
+    yield* TestClock.adjust("1 minute");
+    const repeat = yield* learning.record(policy, { ...elsewhere, text: "use  METRIC units." });
+    yield* learning.record(policy, { ...elsewhere, text: "Deploys run on Fridays." });
+    yield* learning.syncSuggestions(botId);
+    expect(yield* suggestions).toEqual([{ ...pair(repeat, first), dismissedAt: null }]);
+
+    // An edit ends the match; the suggestion goes with it.
+    yield* learning.record(policy, {
+      ...correction,
+      ...user,
+      text: "Use metric units, except for screens.",
+      replaces: first,
+    });
+    yield* learning.syncSuggestions(botId);
+    expect(yield* suggestions).toEqual([]);
+  }).pipe(Effect.provide(storeLayer)),
+);
+
+it.effect("keeps a dismissed suggestion dismissed until the user shows it again", () =>
+  Effect.gen(function* () {
+    const { learning, suggestions } = yield* fixture;
+    const first = yield* learning.record(policy, correction);
+    yield* TestClock.adjust("1 minute");
+    const repeat = yield* learning.record(policy, elsewhere);
+    yield* learning.syncSuggestions(botId);
+    const decide = (
+      decision: "accept" | "dismiss" | "undismiss",
+      entry = repeat,
+      matched = first,
+    ) => learning.decideSuggestion(policy, { botId, ...pair(entry, matched), decision });
+
+    yield* TestClock.adjust("1 minute");
+    yield* decide("dismiss");
+    const dismissed = { ...pair(repeat, first), dismissedAt: "1970-01-01T00:02:00.000Z" };
+    // Neither a later sync nor the same pair found from the other lesson brings it back.
+    yield* learning.syncSuggestions(botId);
+    yield* learning.suggest({ botId, entry: first, matched: repeat });
+    expect(yield* suggestions).toEqual([dismissed]);
+    expect((yield* Effect.flip(decide("accept"))).message).toContain("dismissed");
+
+    yield* decide("undismiss");
+    expect(yield* suggestions).toEqual([{ ...dismissed, dismissedAt: null }]);
+    expect((yield* Effect.flip(decide("dismiss", first, repeat))).message).toContain(
+      "no suggestion",
+    );
+  }).pipe(Effect.provide(storeLayer)),
+);
+
+it.effect("keeps a lesson's dismissal when the copy it matched goes with its project", () =>
+  Effect.gen(function* () {
+    const { learning, suggestions, store } = yield* fixture;
+    const first = yield* learning.record(policy, correction);
+    const third = yield* learning.record(policy, {
+      ...correction,
+      projectId: ProjectId.make(projectC),
+    });
+    yield* TestClock.adjust("1 minute");
+    const repeat = yield* learning.record(policy, elsewhere);
+    yield* learning.syncSuggestions(botId);
+    yield* learning.decideSuggestion(policy, {
+      botId,
+      ...pair(repeat, first),
+      decision: "dismiss",
+    });
+
+    yield* store.deleteContextsForProject(ProjectId.make(projectA));
+    yield* learning.syncSuggestions(botId);
+    expect(yield* suggestions).toEqual([
+      { ...pair(repeat, third), dismissedAt: "1970-01-01T00:01:00.000Z" },
+    ]);
+  }).pipe(Effect.provide(storeLayer)),
+);
+
+it.effect("accepts a suggestion as Apply to all projects does, and retires the other copy", () =>
+  Effect.gen(function* () {
+    const { learning, rows, suggestions } = yield* fixture;
+    const first = yield* learning.record(policy, correction);
+    const control = yield* learning.record(policy, { ...elsewhere, text: "Use ISO dates." });
+    yield* TestClock.adjust("1 minute");
+    const repeat = yield* learning.record(policy, elsewhere);
+    yield* learning.syncSuggestions(botId);
+
+    const accept = (matched: BotLearning.RecordLearningResult) =>
+      learning.decideSuggestion(policy, { botId, ...pair(repeat, matched), decision: "accept" });
+    // Accepting names the two revisions the user saw, so it never moves or retires another.
+    expect((yield* Effect.flip(accept(control))).message).toContain("no suggestion");
+    expect((yield* Effect.flip(accept({ ...first, revision: 2 }))).message).toContain(
+      "no suggestion",
+    );
+    yield* accept(first);
+    yield* learning.record(policy, {
+      ...elsewhere,
+      ...user,
+      text: "Use ISO dates.",
+      scope: "bot",
+      replaces: control,
+    });
+
+    const revisions = yield* rows;
+    const moved = (entryId: string) => {
+      const {
+        entry_id: _,
+        text: __,
+        normalized_text: ___,
+        ...row
+      } = revisions.find((each) => each.entry_id === entryId && each.status === "active")!;
+      return row;
+    };
+    expect(moved(repeat.entryId)).toEqual(moved(control.entryId));
+    expect(moved(repeat.entryId)).toMatchObject({ project_id: null, origin: "correction" });
+    expect(revisions.filter((row) => row.entry_id === first.entryId).at(-1)?.status).toBe(
+      "retired",
+    );
+    expect(yield* suggestions).toEqual([]);
+  }).pipe(Effect.provide(storeLayer)),
+);
 
 it.effect("restores the origin of the earlier revision after a user edit", () =>
   Effect.gen(function* () {

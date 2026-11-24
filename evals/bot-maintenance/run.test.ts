@@ -34,7 +34,9 @@ it("credits a replace of the outdated entry and fails an add beside it", () => {
   expect(
     grade("conflict-replaces-not-adds", [{ op: "replace", target: replaceKey(), ...lesson }]).pass,
   ).toBe(true);
-  const added = grade("conflict-replaces-not-adds", [{ op: "add", kind: "fact", ...lesson }]);
+  const added = grade("conflict-replaces-not-adds", [
+    { op: "add", kind: "fact", sameAs: null, ...lesson },
+  ]);
   expect(added.checks.map((check) => check.pass)).toEqual([false, false]);
 });
 
@@ -45,6 +47,7 @@ it("matches cited sources by id and kinds by the operation", () => {
         op: "add",
         kind: "procedure",
         text: "Shard tests four ways in CI.",
+        sameAs: null,
         rationale: "",
         evidence: [{ source: key, quote: quoteText }],
       },
@@ -56,12 +59,32 @@ it("matches cited sources by id and kinds by the operation", () => {
         op: "add",
         kind: "preference",
         text: "Summaries of yesterday's PRs each morning.",
+        sameAs: null,
         rationale: "",
         evidence: [{ source: "i1", quote: "summarize what changed" }],
       },
     ]).pass,
   ).toBe(false);
   expect(grade("ordinary-conversation-empty", []).pass).toBe(true);
+});
+
+it("credits a match only with the other project's copy, and none once the pair is settled", () => {
+  const repeat = "repeat-in-second-project-matched";
+  const batch = batchFor(caseOf(repeat));
+  const keyOf = (entries: ReadonlyMap<string, { readonly entryId: string }>, entryId: string) =>
+    [...entries].find(([, entry]) => entry.entryId === entryId)![0];
+  const match = (other: string) => ({
+    op: "match",
+    target: keyOf(batch.targets, "entry-subject-line"),
+    sameAs: keyOf(batch.others, other),
+  });
+  expect(grade(repeat, [match("docs-subject-line")]).pass).toBe(true);
+  expect(grade(repeat, [match("docs-british")]).pass).toBe(false);
+  expect(grade(repeat, []).pass).toBe(false);
+  // The settled pair's other lesson is not in the packet, so the same answer is rejected.
+  expect(grade("settled-pair-not-matched-again", [match("docs-subject-line")]).verifier).toBe(
+    "unknown_match",
+  );
 });
 
 it("fails a case when half or more of its samples fail", () => {

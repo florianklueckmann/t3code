@@ -20,7 +20,7 @@ The run stops before any model call when the sealed generator refuses the select
 
 ## Cases
 
-`cases.ts` holds one synthetic Bot in one project. A case lists its sources (Home input and task results), the learning the Bot already keeps, and checks. A check says that some operation, or none, matches a text pattern, kind, op, replaced entry or cited source, or that the proposal is empty. A case fails when half or more of its samples fail.
+`cases.ts` holds one synthetic Bot in one project. A case lists its sources (Home input and task results), the learning the Bot already keeps (a `project` puts a lesson in another of the Bot's projects), the suggestions it already stored, and checks. A check says that some operation, or none, matches a text pattern, kind, op, replaced or matched entry or cited source, or that the proposal is empty. A case fails when half or more of its samples fail.
 
 To add a case, name the ticket or design row it comes from and make it fail on the policy text it guards against.
 

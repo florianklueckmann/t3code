@@ -5,6 +5,7 @@ import {
   type BotContinuationScope,
   type BotCreateInput,
   type BotDecideLearningInput,
+  type BotDecideLearningSuggestionInput,
   type BotDetachProjectInput,
   type BotDetail,
   BotError,
@@ -12,6 +13,7 @@ import {
   BotId,
   type BotLearningNoticesInput,
   type BotLearningNoticesResult,
+  type BotLearningRevisionRef,
   BotLearningPolicy,
   type BotLearningSource,
   type BotListResult,
@@ -111,6 +113,9 @@ export class BotService extends Context.Service<
     >;
     readonly decideLearning: (input: BotDecideLearningInput) => Effect.Effect<BotDetail, BotError>;
     readonly retireLearning: (input: BotRetireLearningInput) => Effect.Effect<BotDetail, BotError>;
+    readonly decideLearningSuggestion: (
+      input: BotDecideLearningSuggestionInput,
+    ) => Effect.Effect<BotDetail, BotError>;
     readonly restoreLearning: (
       input: BotRestoreLearningInput & { readonly source: BotLearningSource },
     ) => Effect.Effect<BotDetail, BotError>;
@@ -131,6 +136,12 @@ export class BotService extends Context.Service<
           policy: BotLearningPolicy,
           input: BotLearning.RecordLearningInput,
         ) => Effect.Effect<BotLearning.RecordLearningResult, BotError | BotStore.BotStoreError>;
+        /** Suggests `entry` for all projects because another project keeps `matched`. */
+        readonly suggest: (input: {
+          readonly botId: string;
+          readonly entry: BotLearningRevisionRef;
+          readonly matched: BotLearningRevisionRef;
+        }) => Effect.Effect<void, BotStore.BotStoreError>;
       }) => Effect.Effect<A, BotError | BotStore.BotStoreError | SqlError.SqlError>,
     ) => Effect.Effect<A, BotError>;
     /**
@@ -197,6 +208,9 @@ const make = Effect.gen(function* () {
     const contexts = yield* store.listContexts(botId).pipe(Effect.mapError(storeError(botId)));
     const learning = yield* store.listLearning(botId).pipe(Effect.mapError(storeError(botId)));
     const grants = yield* store.listMcpGrants(botId).pipe(Effect.mapError(storeError(botId)));
+    const suggestions = yield* store
+      .listLearningSuggestions(botId)
+      .pipe(Effect.mapError(storeError(botId)));
     const detail = yield* BotStore.toDetail(bot, contexts, learning, grants.get(botId)).pipe(
       Effect.mapError(storeError(botId)),
     );
@@ -204,6 +218,7 @@ const make = Effect.gen(function* () {
     return {
       ...detail,
       capabilities: BotProviderSupport.botCapabilities(instance?.driverKind),
+      learningSuggestions: BotLearning.currentSuggestions(learning, suggestions, contexts),
       projects: detail.projects.map((project) => ({
         ...project,
         turnLearning: BotLearning.turnLearning(learning, project.projectId).summary,
@@ -348,7 +363,21 @@ const make = Effect.gen(function* () {
       ),
     ].sort();
     const fallback = yield* mostActiveHomesAt(attachedContexts, cutoffs);
-    return yield* BotLearningNotices.forHome(rows, input.projectId, { attached, fallback });
+    const suggested = new Set<string>(
+      BotLearning.currentSuggestions(
+        rows,
+        yield* store.listLearningSuggestions(input.botId),
+        attachedContexts,
+      )
+        .filter((suggestion) => suggestion.dismissedAt === null)
+        .map((suggestion) => suggestion.entryId),
+    );
+    return yield* BotLearningNotices.forHome(
+      rows,
+      input.projectId,
+      { attached, fallback },
+      suggested,
+    );
   }, Effect.mapError(storeError()));
 
   /**
@@ -876,7 +905,9 @@ const make = Effect.gen(function* () {
         botId,
         Effect.gen(function* () {
           const bot = yield* requireActiveBot(botId);
-          return yield* sql.withTransaction(change(bot));
+          return yield* sql.withTransaction(
+            change(bot).pipe(Effect.tap(() => learning.syncSuggestions(botId))),
+          );
         }),
       )
       .pipe(
@@ -923,6 +954,7 @@ const make = Effect.gen(function* () {
           context,
           rows,
           record: learning.record,
+          suggest: learning.suggest,
         });
       }),
     ).pipe(Effect.withSpan("BotService.maintainLearning"));
@@ -938,6 +970,17 @@ const make = Effect.gen(function* () {
     "BotService.retireLearning",
   )(function* (input) {
     yield* changeLearning(input.botId, () => learning.retire(input));
+    return yield* readDetail(input.botId);
+  });
+
+  const decideLearningSuggestion: BotService["Service"]["decideLearningSuggestion"] = Effect.fn(
+    "BotService.decideLearningSuggestion",
+  )(function* (input) {
+    yield* changeLearning(input.botId, (bot) =>
+      isLearningPolicy(bot.learning_policy)
+        ? learning.decideSuggestion(bot.learning_policy, input)
+        : botError("The Bot's learning policy is unreadable.", input.botId)(),
+    );
     return yield* readDetail(input.botId);
   });
 
@@ -1043,6 +1086,7 @@ const make = Effect.gen(function* () {
     decideLearning,
     retireLearning,
     restoreLearning,
+    decideLearningSuggestion,
     reconcileTaskLearning,
     maintainLearning,
   });

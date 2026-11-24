@@ -2366,6 +2366,7 @@ export const layerWsRpc = (
         [WS_METHODS.botsRetireLearning]: (input) => bots.retireLearning(input),
         [WS_METHODS.botsRestoreLearning]: (input) =>
           bots.restoreLearning({ ...input, source: { kind: "user" } }),
+        [WS_METHODS.botsDecideLearningSuggestion]: (input) => bots.decideLearningSuggestion(input),
         [WS_METHODS.botsSubscribeLearningNotices]: (input) => bots.subscribeLearningNotices(input),
         [WS_METHODS.mcpConnectionsList]: (_input) => mcpConnections.list,
         [WS_METHODS.mcpConnectionsCreate]: (input) => mcpConnections.create(input),

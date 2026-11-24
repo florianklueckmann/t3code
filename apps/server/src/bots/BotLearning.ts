@@ -2,20 +2,25 @@ import {
   BOT_TURN_LEARNING_LIMITS,
   BotError,
   type BotDecideLearningInput,
+  type BotDecideLearningSuggestionInput,
   BotLearningEntryId,
-  type BotLearningKind,
+  BotLearningKind,
   type BotLearningOrigin,
   type BotLearningPolicy,
+  type BotLearningRevisionRef,
   type BotLearningSource,
   type BotLearningStatus,
+  type BotLearningSuggestion,
   type BotRecordLearningInput,
   type BotRestoreLearningInput,
   type BotRetireLearningInput,
   type BotTaskId,
   type BotTaskStatus,
   type BotTurnLearning,
+  ProjectId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 
 import * as BotStore from "./BotStore.ts";
 
@@ -36,6 +41,7 @@ const normalizeLearningText = (text: string): string =>
   text.normalize("NFKC").toLowerCase().replace(/\s+/g, " ").trim();
 
 const fail = (message: string) => new BotError({ message });
+const isLearningKind = Schema.is(BotLearningKind);
 
 const revisionsOf = (rows: ReadonlyArray<BotStore.BotLearningRow>, entryId: string) =>
   rows.filter((row) => row.entry_id === entryId).toSorted((a, b) => a.revision - b.revision);
@@ -459,8 +465,173 @@ export const make = (deps: {
     yield* insertRevision(rows, row);
   });
 
-  return { record, decide, retire, restore, settleTask };
+  const suggest = Effect.fn("BotLearning.suggest")(function* (input: {
+    readonly botId: string;
+    readonly entry: BotLearningRevisionRef;
+    readonly matched: BotLearningRevisionRef;
+  }) {
+    // A pair stays with the lesson that first carried it, so its dismissal covers both lessons.
+    const reversed = (yield* store.listLearningSuggestions(input.botId)).some(
+      (stored) =>
+        stored.entry_id === input.matched.entryId &&
+        stored.matched_entry_id === input.entry.entryId,
+    );
+    const [entry, matched] = reversed ? [input.matched, input.entry] : [input.entry, input.matched];
+    yield* store.upsertLearningSuggestion({
+      entry_id: entry.entryId,
+      bot_id: input.botId,
+      entry_revision: entry.revision,
+      matched_entry_id: matched.entryId,
+      matched_revision: matched.revision,
+      created_at: yield* deps.now,
+    });
+  });
+
+  /** Suggests each lesson that a second project now keeps word for word. */
+  const syncSuggestions = Effect.fn("BotLearning.syncSuggestions")(function* (botId: string) {
+    const lessons = projectLessons(
+      yield* store.listLearning(botId),
+      yield* store.listContexts(botId),
+    );
+    for (const { entry, matched } of repeatedLessons(lessons)) {
+      yield* suggest({ botId, entry: refOf(entry), matched: refOf(matched) });
+    }
+  });
+
+  const decideSuggestion = Effect.fn("BotLearning.decideSuggestion")(function* (
+    policy: BotLearningPolicy,
+    input: BotDecideLearningSuggestionInput,
+  ) {
+    const rows = yield* store.listLearning(input.botId);
+    const suggestion = currentSuggestions(
+      rows,
+      yield* store.listLearningSuggestions(input.botId),
+      yield* store.listContexts(input.botId),
+    ).find((each) => each.entryId === input.entryId);
+    const head = activeOf(revisionsOf(rows, input.entryId));
+    // The user decides on the pair they were shown, not on whatever the lesson matches by now.
+    if (
+      suggestion === undefined ||
+      suggestion.revision !== input.revision ||
+      suggestion.matchedEntryId !== input.matchedEntryId ||
+      suggestion.matchedRevision !== input.matchedRevision ||
+      head === undefined ||
+      head.project_id === null
+    ) {
+      return yield* fail("This lesson has no suggestion like that any more. Reload and try again.");
+    }
+    if (input.decision !== "accept") {
+      yield* store.setLearningSuggestionDismissed({
+        entryId: input.entryId,
+        dismissedAt: input.decision === "dismiss" ? yield* deps.now : null,
+      });
+      return;
+    }
+    if (suggestion.dismissedAt !== null) {
+      return yield* fail("This suggestion was dismissed. Show it again first.");
+    }
+    const projectId = ProjectId.make(head.project_id);
+    if (!isLearningKind(head.kind)) return yield* fail("This lesson's kind is unreadable.");
+    // The same input the clients send for "Apply to all projects".
+    yield* record(policy, {
+      botId: input.botId,
+      projectId,
+      scope: "bot",
+      kind: head.kind,
+      text: head.text,
+      rationale: head.rationale,
+      evidence: head.evidence,
+      replaces: { entryId: input.entryId, revision: head.revision },
+      origin: "instruction",
+      source: { kind: "user" },
+    });
+    yield* retire({ botId: input.botId, entryId: suggestion.matchedEntryId });
+  });
+
+  return {
+    record,
+    decide,
+    retire,
+    restore,
+    settleTask,
+    suggest,
+    syncSuggestions,
+    decideSuggestion,
+  };
 };
+
+const refOf = (row: BotStore.BotLearningRow): BotLearningRevisionRef => ({
+  entryId: BotLearningEntryId.make(row.entry_id),
+  revision: row.revision,
+});
+
+/**
+ * Each lesson in use in one attached project only, in the order the entries were first learned.
+ * A detached project's lesson is neither matched, suggested nor retired.
+ */
+const projectLessons = (
+  rows: ReadonlyArray<BotStore.BotLearningRow>,
+  contexts: ReadonlyArray<BotStore.BotContextRow>,
+) => {
+  const attached = new Set(
+    contexts.filter((context) => context.detached_at === null).map((context) => context.project_id),
+  );
+  const learned = new Map<string, number>();
+  for (const [index, row] of rows.entries()) {
+    if (!learned.has(row.entry_id)) learned.set(row.entry_id, index);
+  }
+  return rows
+    .filter(
+      (row) => row.status === "active" && row.project_id !== null && attached.has(row.project_id),
+    )
+    .toSorted((a, b) => (learned.get(a.entry_id) ?? 0) - (learned.get(b.entry_id) ?? 0));
+};
+
+/**
+ * The same lesson in use in two projects: each later-learned copy with the earliest one from
+ * another project. The later copy carries the suggestion, so one pair is suggested once.
+ */
+function repeatedLessons(lessons: ReadonlyArray<BotStore.BotLearningRow>) {
+  const copies = Map.groupBy(lessons, (row) => `${row.kind}\u0000${row.normalized_text}`);
+  return [...copies.values()].flatMap((group) =>
+    group.flatMap((entry, index) => {
+      const matched = group
+        .slice(0, index)
+        .find((earlier) => earlier.project_id !== entry.project_id);
+      return matched === undefined ? [] : [{ entry, matched }];
+    }),
+  );
+}
+
+/**
+ * The stored suggestions that still hold: both lessons are in use at the revisions that matched,
+ * each in its own attached project. An edit, a move, a retirement or a restore of either ends it.
+ */
+export function currentSuggestions(
+  rows: ReadonlyArray<BotStore.BotLearningRow>,
+  stored: ReadonlyArray<BotStore.BotLearningSuggestionRow>,
+  contexts: ReadonlyArray<BotStore.BotContextRow>,
+): ReadonlyArray<BotLearningSuggestion> {
+  const lessons = new Map(projectLessons(rows, contexts).map((row) => [row.entry_id, row]));
+  return stored.flatMap((suggestion) => {
+    const entry = lessons.get(suggestion.entry_id);
+    const matched = lessons.get(suggestion.matched_entry_id);
+    return entry?.revision === suggestion.entry_revision &&
+      matched?.revision === suggestion.matched_revision &&
+      entry.kind === matched.kind &&
+      entry.project_id !== matched.project_id
+      ? [
+          {
+            entryId: BotLearningEntryId.make(suggestion.entry_id),
+            revision: entry.revision,
+            matchedEntryId: BotLearningEntryId.make(suggestion.matched_entry_id),
+            matchedRevision: matched.revision,
+            dismissedAt: suggestion.dismissed_at,
+          },
+        ]
+      : [];
+  });
+}
 
 const resultOf = (row: BotStore.BotLearningRow): RecordLearningResult => ({
   entryId: BotLearningEntryId.make(row.entry_id),
