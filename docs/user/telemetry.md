@@ -33,6 +33,9 @@ on.
 
 The desktop app reads `T3CODE_TELEMETRY_ENABLED` from your shell profile (for example `~/.zshrc`) on macOS and
 Linux, so export it there and restart the app. On Windows, set it as a user environment variable.
+A shell profile alone turns on product events only: the desktop app's relay connection traces need
+the variable in the environment the app starts with, such as a Windows user variable,
+`launchctl setenv` on macOS, or starting the app from a terminal.
 
 The web app in a browser, including one the `t3` CLI opens, does not read these environment
 variables and sends no relay connection traces. app.t3.codes is upstream's build, not this fork's:
