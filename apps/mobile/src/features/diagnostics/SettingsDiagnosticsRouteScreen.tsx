@@ -4,6 +4,7 @@ import * as Application from "expo-application";
 import Constants from "expo-constants";
 import * as Updates from "expo-updates";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
+import { TELEMETRY_ENABLED_BY_DEFAULT } from "@t3tools/shared/telemetryDefault";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
@@ -155,8 +156,8 @@ function CrashReportsSetting() {
   const [saving, setSaving] = useState(false);
   const ready = AsyncResult.isSuccess(preferences) && !preferences.waiting;
   const enabled = AsyncResult.isSuccess(preferences)
-    ? preferences.value.crashReportsEnabled !== false
-    : true;
+    ? (preferences.value.crashReportsEnabled ?? TELEMETRY_ENABLED_BY_DEFAULT)
+    : TELEMETRY_ENABLED_BY_DEFAULT;
 
   const change = (value: boolean) => {
     setSaving(true);

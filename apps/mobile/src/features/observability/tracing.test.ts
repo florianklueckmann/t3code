@@ -12,10 +12,20 @@ import * as Tracing from "./tracing";
 vi.mock("expo-constants", () => ({
   default: {
     expoConfig: {
-      extra: {},
+      extra: {
+        observability: {
+          tracesUrl: "https://api.axiom.test/v1/traces",
+          tracesDataset: "mobile-traces",
+          tracesToken: "public-ingest-token",
+        },
+      },
     },
   },
 }));
+
+it("sends no relay traces by default, even from a build with tracing credentials", () => {
+  expect(Tracing.resolveTracingConfig()).toBeNull();
+});
 
 it.effect("does not let OTLP serialization failures alter application effects", () => {
   const fetchFn = vi.fn<typeof fetch>(async () => new Response(null, { status: 202 }));

@@ -2,6 +2,7 @@ import {
   clerkFrontendApiHostnameFromPublishableKey,
   relayClerkTokenOptions,
 } from "@t3tools/shared/relayAuth";
+import { TELEMETRY_ENABLED_BY_DEFAULT } from "@t3tools/shared/telemetryDefault";
 import { normalizeSecureRelayUrl } from "@t3tools/shared/relayUrl";
 import * as Schema from "effect/Schema";
 
@@ -63,7 +64,9 @@ export function resolveCloudPublicConfig(): CloudPublicConfig {
 
 export function resolveRelayTracingConfig() {
   // The relay exporter is created during module initialization, so this must be synchronous.
-  if (typeof window !== "undefined" && window.desktopBridge?.getRelayTelemetryEnabled() === false) {
+  const desktopEnabled =
+    typeof window === "undefined" ? undefined : window.desktopBridge?.getRelayTelemetryEnabled();
+  if (!(desktopEnabled ?? TELEMETRY_ENABLED_BY_DEFAULT)) {
     return null;
   }
   const { relayTracing } = resolveCloudPublicConfig();

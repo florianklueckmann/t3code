@@ -1,5 +1,6 @@
 // T3 ingest retains events and forwards to PostHog; UUIDs deduplicate retries there.
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { TELEMETRY_ENABLED_BY_DEFAULT } from "@t3tools/shared/telemetryDefault";
 import type { ClientOs } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Config from "effect/Config";
@@ -71,7 +72,9 @@ const TelemetryEnvConfig = Config.all({
   posthogHost: Config.String("T3CODE_POSTHOG_HOST").pipe(
     Config.withDefault("https://ingest.t3.codes"),
   ),
-  enabled: Config.Boolean("T3CODE_TELEMETRY_ENABLED").pipe(Config.withDefault(true)),
+  enabled: Config.Boolean("T3CODE_TELEMETRY_ENABLED").pipe(
+    Config.withDefault(TELEMETRY_ENABLED_BY_DEFAULT),
+  ),
   flushBatchSize: Config.Number("T3CODE_TELEMETRY_FLUSH_BATCH_SIZE").pipe(Config.withDefault(20)),
   maxBufferedEvents: Config.Number("T3CODE_TELEMETRY_MAX_BUFFERED_EVENTS").pipe(
     Config.withDefault(1_000),
@@ -133,7 +136,7 @@ export const make = Effect.gen(function* () {
       return Effect.succeed(false);
     const preference = hostEnvironment.T3CODE_TELEMETRY_ENABLED;
     return Config.Boolean("T3CODE_TELEMETRY_ENABLED").pipe(
-      Config.withDefault(true),
+      Config.withDefault(TELEMETRY_ENABLED_BY_DEFAULT),
       Effect.provideService(
         ConfigProvider.ConfigProvider,
         ConfigProvider.fromEnv({

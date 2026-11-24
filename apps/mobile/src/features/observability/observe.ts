@@ -1,5 +1,6 @@
 import Constants from "expo-constants";
 import { Observe } from "expo-observe";
+import { TELEMETRY_ENABLED_BY_DEFAULT } from "@t3tools/shared/telemetryDefault";
 
 // Importing expo-observe installs its global JS error handler; reports leave only through the relay.
 const relayUrl: unknown = Constants.expoConfig?.extra?.relay?.url;
@@ -53,7 +54,7 @@ if (!crashReportingAvailable) {
       (preferences) =>
         changedSinceLoad()
           ? undefined
-          : setCrashReportsEnabled(preferences.crashReportsEnabled !== false),
+          : setCrashReportsEnabled(preferences.crashReportsEnabled ?? TELEMETRY_ENABLED_BY_DEFAULT),
       // Observe keeps the last choice it was given, which stands in for the unreadable one.
       (error: unknown) => console.warn("[observe] could not read the crash report setting", error),
     )
