@@ -969,8 +969,8 @@ function makeLocalCommandHarness(input: {
                 fromProviderThreadIds: [oldProviderThreadId],
                 toProviderThreadId: providerThreadId,
                 coveredRunOrdinals: { from: 1, to: 1 },
-                strategy: "delta_since_target_last_seen" as const,
-                status: "ready" as const,
+                strategy: "delta_since_target_last_seen",
+                status: "ready",
                 summaryMessageId: null,
                 summaryText: "",
                 history: {
@@ -998,7 +998,7 @@ function makeLocalCommandHarness(input: {
                 createdByProviderInstanceId: oldInstanceId,
                 createdAt: now,
                 updatedAt: now,
-              },
+              } satisfies OrchestrationV2ThreadProjection["contextHandoffs"][number],
             ]
           : []),
         ...(input.previousSummary === undefined
@@ -1025,7 +1025,7 @@ function makeLocalCommandHarness(input: {
                 createdByProviderInstanceId: null,
                 createdAt: now,
                 updatedAt: now,
-              },
+              } satisfies OrchestrationV2ThreadProjection["contextHandoffs"][number],
             ]),
       ],
       providerThreads: projection.providerThreads.map((candidate) =>
