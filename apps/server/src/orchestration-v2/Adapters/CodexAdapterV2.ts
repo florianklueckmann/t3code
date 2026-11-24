@@ -8337,6 +8337,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               const userMcpServers = yield* readExclusiveLoadUserMcpServers(wanted, cwd);
               failedGrantedServers.delete(nativeThreadId);
               rememberGrantedServers(nativeThreadId, granted);
+              // Unchecked until confirmed, so an interrupted load never passes for a verified one.
+              if (!isOrdinaryLoad(wanted)) threadLoads.set(nativeThreadId, "unknown");
               const resumed = yield* resumeNativeThread(nativeThreadId, {
                 excludeTurns: true,
                 ...codexThreadRuntimeParams({
@@ -8352,8 +8354,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     : { runtimePolicy: load.runtimePolicy }),
                 }),
               });
-              threadLoads.set(nativeThreadId, wanted);
               yield* confirmLoad(wanted, nativeThreadId, cwd, resolved, userMcpServers);
+              threadLoads.set(nativeThreadId, wanted);
               return resumed;
             }),
           );

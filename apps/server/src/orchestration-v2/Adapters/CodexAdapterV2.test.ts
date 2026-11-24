@@ -10996,13 +10996,39 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                 ...step(20, "thread/resume", grantResume, resumed),
                 ...listed(21, nativeThreadId, { ...botLoadStatuses, ...grantedStatuses }),
                 ...read(22, resourceResult),
+                // A request stopped while its reload resumes the thread leaves it unchecked.
+                ...unloaded(23),
+                ...step(24, "config/read", { includeLayers: false, cwd: "/workspace" }, configRead),
+                ...step(25, "thread/resume", grantResume, resumed),
+                ...step(
+                  26,
+                  "thread/unsubscribe",
+                  { threadId: nativeThreadId },
+                  { status: "unsubscribed" },
+                ),
+                ...step(27, "config/read", { includeLayers: false, cwd: "/workspace" }, configRead),
+                ...step(28, "thread/resume", grantResume, resumed),
+                ...listed(29, nativeThreadId, { ...botLoadStatuses, ...grantedStatuses }),
+                ...read(30, resourceResult),
               ],
             });
+            const interruptedResume = yield* Deferred.make<void>();
+            const releaseResume = yield* Deferred.make<void>();
             const resumeParams: Array<{ config: { mcp_servers?: Record<string, unknown> } }> = [];
-            const harness = yield* makeCodexReplayHarness(transcript, undefined, (method, params) =>
-              Effect.sync(() => {
-                if (method === "thread/resume") resumeParams.push(params as never);
-              }),
+            const harness = yield* makeCodexReplayHarness(
+              transcript,
+              undefined,
+              (method, params) =>
+                Effect.sync(() => {
+                  if (method === "thread/resume") resumeParams.push(params as never);
+                }),
+              undefined,
+              (entry) =>
+                entry.label === "thread/resume 25"
+                  ? Deferred.succeed(interruptedResume, undefined).pipe(
+                      Effect.andThen(Deferred.await(releaseResume)),
+                    )
+                  : Effect.void,
             );
             const mcpApps = harness.runtime.mcpApps;
             assert.ok(mcpApps, "Codex runtime should expose MCP apps");
@@ -11038,6 +11064,11 @@ describe("CodexAdapterV2 post-settle continuation", () => {
               (yield* readResource.pipe(Effect.flip))._tag,
               "ProviderAdapterMcpConnectionsRefusedError",
             );
+            assert.deepEqual(yield* readResource, resourceResult);
+            const stopped = yield* readResource.pipe(Effect.forkChild);
+            yield* Deferred.await(interruptedResume);
+            yield* Fiber.interrupt(stopped);
+            yield* Deferred.succeed(releaseResume, undefined);
             assert.deepEqual(yield* readResource, resourceResult);
           }).pipe(
             Effect.provideService(HostProcess.Platform, "darwin"),
