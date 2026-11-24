@@ -3149,7 +3149,7 @@ it.effect.each(["codex", "claudeAgent"] as const)(
             // Learning asked the Bot's own instance, never another provider's.
             assert.deepEqual(
               (yield* Ref.get(sealedCalls)).map((call) => call.selection),
-              [{ instanceId: driver, model: "selected-model" }],
+              [{ instanceId: ProviderInstanceId.make(driver), model: "selected-model" }],
             );
 
             // Nothing happened since, so the next night leaves the compacted Home alone.

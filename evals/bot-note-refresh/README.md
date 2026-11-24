@@ -22,10 +22,10 @@ Then the full set: `pnpm bot-note-refresh --base-dir /synthetic/home --out runs/
 
 Flags: `--instance` (default `codex`; a Codex or Claude instance of that server), `--model` (default `gpt-6.1-terra`), `--effort` (default `high`), `--samples` (default 3), `--case <id>` (repeatable), `--work <dir>` for the synthetic project folders, `--baseline <results.jsonl>` to keep an earlier run beside this one. It never falls back to another model.
 
-| Model              | Effort | Run                   | Passed    |
-| ------------------ | ------ | --------------------- | --------- |
-| `gpt-6-luna`       | high   | 2026-11-18, 3 samples | 12/12     |
-| `claude-haiku-5-5` | medium | 2026-11-24, 3 samples | CLAUDE_NR |
+| Model              | Effort | Run                   | Passed |
+| ------------------ | ------ | --------------------- | ------ |
+| `gpt-6-luna`       | high   | 2026-11-18, 3 samples | 12/12  |
+| `claude-haiku-5-5` | medium | 2026-11-24, 3 samples | 11/12  |
 
 ## Cases
 

@@ -7,6 +7,7 @@ import * as NodeUtil from "node:util";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
+  ClaudeSettings,
   CodexSettings,
   type ModelSelection,
   ProviderDriverKind,
@@ -114,6 +115,7 @@ interface Row {
 const BaselineRow = Schema.Struct({ id: Schema.String, pass: Schema.Boolean });
 const decodeBaselineRow = Schema.decodeUnknownSync(Schema.fromJsonString(BaselineRow));
 const decodeCodexSettings = Schema.decodeEffect(CodexSettings);
+const decodeClaudeSettings = Schema.decodeEffect(ClaudeSettings);
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const decodeToolShape = Schema.decodeUnknownOption(
   Schema.Struct({ type: Schema.optional(Schema.String), name: Schema.optional(Schema.String) }),
@@ -364,6 +366,7 @@ const observeClaude = (
  */
 const claudeBackend = Effect.gen(function* () {
   const config = { homePath: values["claude-home"] ?? "" };
+  const settings = yield* decodeClaudeSettings(config);
   const claudeEnvironment = Effect.suspend(() =>
     mergeClaudeProcessEnvironment(config, undefined, environment),
   ).pipe(Effect.flatMap((merged) => makeClaudeEnvironment(config, merged)));
@@ -396,7 +399,7 @@ const claudeBackend = Effect.gen(function* () {
         Effect.flatMap((sampleEnvironment) =>
           makeClaudeSealedGeneration({
             getSnapshot: Effect.succeed(snapshot),
-            settings: { binaryPath: "claude" },
+            settings,
             // Read per sample: each one has its own TMPDIR.
             environment: sampleEnvironment,
             configDir,

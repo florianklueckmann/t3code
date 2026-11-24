@@ -2,6 +2,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import type { Options as ClaudeQueryOptions, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import {
+  ClaudeSettings,
   ProviderDriverKind,
   ProviderInstanceId,
   type ModelSelection,
@@ -69,6 +70,7 @@ const baseSnapshot: ServerProvider = {
   skills: [],
 };
 
+const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 const frame = (value: unknown) => value as SDKMessage;
 const init = (overrides: Record<string, unknown> = {}) =>
   frame({
@@ -83,7 +85,7 @@ const assistant = (content: ReadonlyArray<unknown>, overrides: Record<string, un
   frame({
     type: "assistant",
     parent_tool_use_id: null,
-    message: { model: MODEL, content },
+    message: { id: "response-1", model: MODEL, content },
     ...overrides,
   });
 const answer = (input: unknown = ANSWER) =>
@@ -118,6 +120,7 @@ const withGeneration = <A, E>(
     readonly hang?: boolean;
     readonly fail?: boolean;
     readonly settingsFile?: string;
+    readonly launchArgs?: string;
     readonly platform?: NodeJS.Platform;
     /** Calls the seal's own tool guard for this tool before the frames. */
     readonly attempt?: string;
@@ -141,7 +144,7 @@ const withGeneration = <A, E>(
     };
     const generation = yield* makeClaudeSealedGeneration({
       getSnapshot: Effect.succeed(input.snapshot ?? baseSnapshot),
-      settings: { binaryPath: "claude" },
+      settings: decodeClaudeSettings({ launchArgs: input.launchArgs ?? "" }),
       environment: { CLAUDE_CONFIG_DIR: configDir },
       configDir,
       modelCatalog: () => Effect.succeed(BUNDLED_CLAUDE_MODEL_CATALOG),
@@ -214,6 +217,7 @@ it.effect("answers from exactly the selected model with no tool, server, setting
       plugins: [],
       skills: [],
       persistSession: false,
+      verbatimPrompts: true,
       permissionMode: "dontAsk",
       settings: {
         fastMode: false,
@@ -227,7 +231,7 @@ it.effect("answers from exactly the selected model with no tool, server, setting
     });
     assert.deepEqual(Object.keys(hooks ?? {}), ["PreToolUse"]);
     assert.isTrue(abortController?.signal.aborted);
-    assert.isString(env?.CLAUDE_CONFIG_DIR);
+    assert.isTrue(env?.CLAUDE_CONFIG_DIR?.startsWith("/"));
     // The call ran in its own empty folder, which is gone afterwards.
     const fileSystem = yield* FileSystem.FileSystem;
     assert.match(cwd ?? "", /t3code-sealed-/);
@@ -241,6 +245,7 @@ it.effect.each<{
   readonly selection?: ModelSelection;
   readonly platform?: NodeJS.Platform;
   readonly settingsFile?: string;
+  readonly launchArgs?: string;
   readonly reason: SealedRefusalReason;
 }>([
   { name: "a disabled instance", snapshot: { enabled: false }, reason: "instance_unavailable" },
@@ -305,11 +310,22 @@ it.effect.each<{
     settingsFile: JSON.stringify({ apiKeyHelper: "/home/user/key.sh" }),
     reason: "claude_settings_unsupported",
   },
+  {
+    name: "settings it cannot read as JSON",
+    settingsFile: '{ "env": { "ANTHROPIC_BASE_URL": "https://gateway.example" }, }',
+    reason: "claude_settings_unsupported",
+  },
+  {
+    name: "a launch argument that sends Claude to another backend",
+    launchArgs: `--settings '{"env":{"ANTHROPIC_BASE_URL":"https://gateway.example"}}'`,
+    reason: "claude_settings_unsupported",
+  },
 ])(
   "refuses $name before any process starts",
-  ({ snapshot, selection: selected, platform, settingsFile, reason }) =>
+  ({ snapshot, selection: selected, platform, settingsFile, launchArgs, reason }) =>
     withGeneration(
       {
+        ...(launchArgs === undefined ? {} : { launchArgs }),
         snapshot: { ...baseSnapshot, ...snapshot },
         ...(settingsFile === undefined ? {} : { settingsFile }),
         ...(platform === undefined ? {} : { platform }),
@@ -328,6 +344,25 @@ it.effect.each<{
           assert.lengthOf(harness.calls, 0);
         }),
     ),
+);
+
+it.effect("accepts the answer of a re-prompt after the first one missed the schema", () =>
+  Effect.gen(function* () {
+    const { outcome } = yield* generateWith({
+      frames: [
+        init(),
+        answer({ summary: 1 }),
+        assistant([{ type: "tool_use", id: "tool-3", name: "StructuredOutput", input: ANSWER }], {
+          message: { id: "response-2", model: MODEL, content: [] },
+        }),
+        result(),
+      ],
+    });
+    assert.deepEqual(outcome._tag === "Success" && outcome.success, {
+      value: ANSWER,
+      model: MODEL,
+    });
+  }),
 );
 
 it.effect("is available with ordinary user settings, hooks included", () =>
@@ -407,11 +442,44 @@ it.effect.each<{
     name: "another model answering",
     frames: [
       init(),
-      assistant([{ type: "text", text: "hi" }], { message: { model: OTHER_MODEL, content: [] } }),
+      assistant([{ type: "text", text: "hi" }], {
+        message: { id: "response-1", model: OTHER_MODEL, content: [] },
+      }),
       result(),
     ],
     reason: "model_mismatch",
     read: 2,
+  },
+  {
+    name: "a fourth model response after re-prompts",
+    frames: [
+      init(),
+      answer({ summary: 1 }),
+      ...["response-2", "response-3", "response-4"].map((id) =>
+        assistant([], { message: { id, model: MODEL, content: [] } }),
+      ),
+      result(),
+    ],
+    reason: "invalid_output",
+    read: 5,
+  },
+  {
+    name: "a message Claude Code wrote in the model's place",
+    frames: [
+      init(),
+      assistant([{ type: "text", text: "hi" }], {
+        message: { id: "response-1", model: "<synthetic>", content: [] },
+      }),
+      answer(),
+      result(),
+    ],
+    reason: "turn_failed",
+    read: 2,
+  },
+  {
+    name: "structured output the model never called for",
+    frames: [init(), assistant([{ type: "text", text: "hi" }]), result()],
+    reason: "invalid_output",
   },
   {
     name: "a fallback after a refusal",

@@ -34,6 +34,7 @@ import {
 } from "../provider/ClaudeModelCatalog.ts";
 import { resolveClaudeSdkExecutablePath } from "../provider/Drivers/ClaudeExecutable.ts";
 import { hasClaudeManagedMcpConfig } from "../provider/Drivers/ClaudeHome.ts";
+import { readClaudeLaunchArgSettings } from "../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 
 // Not `ClaudeTextGeneration`: `claude -p --output-format json` reports only the result, so a
 // model swap, a tool call or a loaded MCP server would go unseen. The SDK stream shows the init
@@ -44,6 +45,9 @@ const SEALED_GENERATION_MIN_CLAUDE_VERSION = "2.1.331";
 // Starting limits to tune, not measurements; the same as the Codex seal.
 const DEFAULT_DEADLINE = Duration.minutes(10);
 const MAX_OUTPUT_BYTES = 64 * 1024;
+// Claude Code re-prompts when the answer misses the schema; Haiku needs that in about a third of
+// calls (measured), so one response only would fail them. Each response passes the same checks.
+const MAX_MODEL_RESPONSES = 3;
 
 /** Claude Code answers a JSON schema through this tool; it is the only one a sealed call has. */
 const STRUCTURED_OUTPUT_TOOL = "StructuredOutput";
@@ -159,6 +163,7 @@ function makeSealedStreamReader(plan: SealedPlan, catalog: ClaudeModelCatalog) {
     resolveClaudeReportedModelSlug(catalog, reported.replace(/\[[^\]]*\]$/, "").trim()) ===
     plan.slug;
   let sealVerified = false;
+  const responseIds = new Set<string>();
   let answeredBy: string | null = null;
   let blockedToolCall = false;
 
@@ -200,14 +205,17 @@ function makeSealedStreamReader(plan: SealedPlan, catalog: ClaudeModelCatalog) {
       if (message.error === "rate_limit" || message.error === "billing_error")
         return failed("usage_limited");
       if (message.error !== undefined) return failed("turn_failed");
-      if (message.message.model === SYNTHETIC_MODEL) return CONTINUE;
+      // Claude Code writes these in the model's place; without an error they are unknown.
+      if (message.message.model === SYNTHETIC_MODEL) return failed("turn_failed");
       if (!isSelectedModel(message.message.model)) return failed("model_mismatch");
+      responseIds.add(message.message.id);
+      if (responseIds.size > MAX_MODEL_RESPONSES) return failed("invalid_output");
       for (const block of message.message.content) {
         if (PLAIN_BLOCKS.has(block.type)) continue;
         if (block.type !== "tool_use" || block.name !== STRUCTURED_OUTPUT_TOOL)
           return failed("tool_attempt");
+        answeredBy = message.message.model;
       }
-      answeredBy = message.message.model;
       return CONTINUE;
     }
     if (message.type !== "result") return CONTINUE;
@@ -235,7 +243,7 @@ export const startClaudeSealedQuery: ClaudeSealedQuery = claudeQuery;
 
 export interface ClaudeSealedGenerationOptions {
   readonly getSnapshot: Effect.Effect<ServerProvider>;
-  readonly settings: Pick<ClaudeSettings, "binaryPath">;
+  readonly settings: ClaudeSettings;
   /** The instance's process environment, with its config directory. */
   readonly environment: NodeJS.ProcessEnv;
   /** Where the instance keeps its user settings. */
@@ -254,23 +262,37 @@ export const makeClaudeSealedGeneration = Effect.fn("makeClaudeSealedGeneration"
   const platform = yield* HostProcess.Platform;
   const startQuery = options.query ?? startClaudeSealedQuery;
 
+  const routesElsewhere = (settings: unknown) =>
+    !isRecord(settings) ||
+    settings.apiKeyHelper !== undefined ||
+    claudeSettingsRouteModels(settings as ClaudeSdkSettings);
+
   /**
-   * The call loads no settings file, so settings that pick the backend, the credential or the
-   * model a slug means would send it somewhere other than the Bot's turns go. A managed MCP
-   * configuration makes Claude Code refuse the strict MCP flag the seal needs.
+   * The call loads no settings and no launch argument, so user settings or `--settings` that
+   * pick the backend, credential or model mapping would send it elsewhere than the Bot's turns;
+   * unreadable ones refuse too. Managed MCP makes Claude Code refuse the strict MCP flag.
+   * A project's own settings are not read: the call belongs to the instance.
    */
   const settingsRefusal = Effect.gen(function* () {
     if (yield* hasClaudeManagedMcpConfig()) return true;
+    const launch = yield* readClaudeLaunchArgSettings({
+      settings: options.settings,
+      cwd: null,
+      fileSystem,
+      path,
+    }).pipe(Effect.result);
+    if (launch._tag === "Failure") return true;
+    if (launch.success !== undefined && routesElsewhere(launch.success)) return true;
     const text = yield* fileSystem
       .readFileString(path.join(options.configDir, "settings.json"))
-      .pipe(Effect.orElseSucceed(() => undefined));
-    const settings =
-      text === undefined ? undefined : Option.getOrUndefined(decodeSettingsFile(text));
-    if (!isRecord(settings)) return false;
-    return (
-      settings.apiKeyHelper !== undefined ||
-      claudeSettingsRouteModels(settings as ClaudeSdkSettings)
-    );
+      .pipe(
+        Effect.catchReason("PlatformError", "NotFound", () => Effect.undefined),
+        Effect.result,
+      );
+    if (text._tag === "Failure") return true;
+    if (text.success === undefined) return false;
+    const settings = decodeSettingsFile(text.success);
+    return Option.isNone(settings) || routesElsewhere(settings.value);
   }).pipe(Effect.provideService(FileSystem.FileSystem, fileSystem));
 
   const admit = Effect.fn("ClaudeSealedGeneration.admit")(function* (
@@ -309,7 +331,12 @@ export const makeClaudeSealedGeneration = Effect.fn("makeClaudeSealedGeneration"
     );
     const queryOptions: ClaudeQueryOptions = {
       cwd,
-      env: options.environment,
+      // A relative config directory would resolve from the temporary folder, not where
+      // admission read the settings.
+      env:
+        options.environment.CLAUDE_CONFIG_DIR === undefined
+          ? options.environment
+          : { ...options.environment, CLAUDE_CONFIG_DIR: options.configDir },
       pathToClaudeCodeExecutable: executable,
       model: plan.apiModelId,
       ...(plan.effort === undefined
@@ -328,6 +355,8 @@ export const makeClaudeSealedGeneration = Effect.fn("makeClaudeSealedGeneration"
       plugins: [],
       skills: [],
       persistSession: false,
+      // The packet quotes Home messages: an `@path` in one must not attach that file.
+      verbatimPrompts: true,
       permissionMode: "dontAsk",
       settings: { ...plan.settings, ...SEAL_SETTINGS } as ClaudeSdkSettings,
       // A failed or timed-out guard blocks the call.

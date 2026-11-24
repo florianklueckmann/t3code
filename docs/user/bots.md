@@ -335,10 +335,13 @@ outside that seal:
   every Claude process.
 
 Because your Claude settings stay out, maintenance is unavailable on a Claude
-Bot whose `settings.json` chooses its own API backend, model mapping or key
-helper, or where your organization manages Claude's MCP servers. Otherwise the
-call could reach a different service than the Bot's own turns. Set the backend
-in the provider's environment in **Settings → Providers** instead.
+Bot whose `settings.json` or `--settings` launch argument chooses its own API
+backend, model mapping or key helper, or where your organization manages
+Claude's MCP servers. Otherwise the call could reach a different service than
+the Bot's own turns. Set the backend in the provider's environment in
+**Settings → Providers** instead. A project's own Claude settings are not read
+for this call, so a backend set only there applies to the Bot's turns in that
+project and not to the learning step.
 
 **Daily Home check**, next to Maintenance, has the Bot look over that
 project's conversation once a day at the time you choose (08:00 server time by

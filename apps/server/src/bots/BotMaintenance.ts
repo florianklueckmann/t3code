@@ -233,7 +233,7 @@ const failure = (cause: unknown) =>
     : new BotError({ message: "Could not read or change Bot maintenance.", cause });
 const unavailable = () =>
   invalid(
-    "Bot maintenance is not available for this Bot's model right now. It needs a supported, signed-in Codex model, so it stays off.",
+    "Bot maintenance is not available for this Bot's model right now. It needs a supported, signed-in Codex or Claude model, so it stays off.",
   );
 const keyOf = (source: { readonly kind: string; readonly id: string }) =>
   `${source.kind}\u0000${source.id}`;
