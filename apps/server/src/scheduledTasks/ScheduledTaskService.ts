@@ -63,7 +63,11 @@ import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as DueHint from "../scheduling/DueHint.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import { latestRootProviderFailure } from "@t3tools/shared/orchestrationV2ThreadError";
-import { BOT_ROUTINE_RUNTIME_MODE, BotRoutineTarget } from "./BotRoutineTarget.ts";
+import {
+  BOT_ROUTINE_RUNTIME_MODE,
+  type BotRoutineOccurrence,
+  BotRoutineTarget,
+} from "./BotRoutineTarget.ts";
 import {
   isMissedFixedTimeRun,
   isSameSchedule,
@@ -291,9 +295,13 @@ export class ScheduledTaskService extends Context.Service<
       readonly threadIds: ReadonlyArray<ThreadId>;
       readonly projectId: ProjectId;
     }) => Effect.Effect<void, ScheduledTaskError>;
-    /** The dispatched thread, or null if dispatch failed; leaves the task's binding unchanged. */
+    /**
+     * The dispatched thread, or null if dispatch failed; leaves the task's binding unchanged.
+     * Without options the user's own client asked; `requestedIn` is the thread whose turn asked.
+     */
     readonly runNow: (
       input: ScheduledTaskRunNowInput,
+      options?: { readonly requestedIn: ThreadId | null },
     ) => Effect.Effect<
       ScheduledTaskRunNowResult & { readonly threadId: ThreadId | null },
       ScheduledTaskError
@@ -981,6 +989,7 @@ export const layer = Layer.effect(
         readonly trigger: "scheduled" | "manual" | "webhook";
         readonly startedAt: DateTime.DateTime;
         readonly dueAt: DateTime.DateTime;
+        readonly requestedBy: BotRoutineOccurrence["requestedBy"];
       },
     ) {
       const revision = yield* routines
@@ -1005,6 +1014,7 @@ export const layer = Layer.effect(
           projectId: task.projectId,
           title: task.title,
           prompt: task.prompt,
+          ...(occurrence.requestedBy === undefined ? {} : { requestedBy: occurrence.requestedBy }),
         })
         .pipe(Effect.mapError((message) => taskError(message, { taskId: task.id })));
       if (admission._tag === "inactive") {
@@ -1106,8 +1116,11 @@ export const layer = Layer.effect(
         readonly prompt: string;
         readonly dispatched: Ref.Ref<boolean>;
       },
-      /** The occurrence a Bot routine runs for, when missed ones were coalesced into it. */
-      occurrenceDueAt?: DateTime.DateTime,
+      botOccurrence?: {
+        /** The occurrence a Bot routine runs for, when missed ones were coalesced into it. */
+        readonly dueAt?: DateTime.DateTime;
+        readonly requestedBy?: BotRoutineOccurrence["requestedBy"];
+      },
     ) {
       // Read before reserving: nothing between the reservation and its release may fail.
       const startedAt = yield* localNow;
@@ -1247,8 +1260,9 @@ export const layer = Layer.effect(
                 dispatchRoutine(active, active.bot, {
                   trigger,
                   startedAt,
+                  requestedBy: botOccurrence?.requestedBy,
                   dueAt:
-                    occurrenceDueAt ??
+                    botOccurrence?.dueAt ??
                     (trigger === "scheduled" && Option.isSome(parsedNextRunAt)
                       ? parsedNextRunAt.value
                       : startedAt),
@@ -1484,12 +1498,9 @@ export const layer = Layer.effect(
             // A routine still prepares after a downtime: it runs the latest missed occurrence
             // once, and the Bot task admission skips it if its session already started.
             task.bot !== undefined
-              ? runTask(
-                  task,
-                  "scheduled",
-                  undefined,
-                  latestOccurrenceAtOrBefore(task.schedule, dueAt, now),
-                )
+              ? runTask(task, "scheduled", undefined, {
+                  dueAt: latestOccurrenceAtOrBefore(task.schedule, dueAt, now),
+                })
               : isMissedFixedTimeRun(task.schedule, dueAt, now)
                 ? rescheduleMissedRun(
                     task,
@@ -1968,14 +1979,19 @@ export const layer = Layer.effect(
 
     const runNow: ScheduledTaskService["Service"]["runNow"] = Effect.fn(
       "ScheduledTaskService.runNow",
-    )(function* (input: ScheduledTaskRunNowInput) {
+    )(function* (
+      input: ScheduledTaskRunNowInput,
+      options?: { readonly requestedIn: ThreadId | null },
+    ) {
       const task = yield* loadTask(input.id);
       if (task.schedule.type === "webhook") {
         return yield* taskError("Webhook tasks run when their URL receives a request.", {
           taskId: input.id,
         });
       }
-      return yield* runTask(task, "manual").pipe(
+      return yield* runTask(task, "manual", undefined, {
+        requestedBy: options === undefined ? "client" : { requestedIn: options.requestedIn },
+      }).pipe(
         Effect.mapError((cause) =>
           isScheduledTaskError(cause)
             ? cause

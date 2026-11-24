@@ -23,6 +23,11 @@ export interface BotRoutineOccurrence {
   readonly projectId: ProjectId;
   readonly title: string;
   readonly prompt: string;
+  /**
+   * Who asked for a run now: the user's own client, or the thread whose turn asked (null for an
+   * agent outside T3 Code's threads). Absent when the schedule or a webhook started it.
+   */
+  readonly requestedBy?: "client" | { readonly requestedIn: ThreadId | null };
 }
 
 export type BotRoutineAdmission =

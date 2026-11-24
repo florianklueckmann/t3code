@@ -105,9 +105,9 @@ settings. Tapping a result notification opens its saved result in the task's wor
 thread. Result alerts use a generic title and do not include the prompt or answer text.
 If the Bot continues in its conversation after a result, that follow-up may notify separately.
 
-Results of work you didn't start yourself, such as routines and diagnoses, count against the
-Bot's alert budget (see [Alerts and remit](#alerts-and-remit)); results of tasks you asked for
-always alert at once. Cancelled and skipped tasks do not alert. Work-thread failures follow the existing failure
+Results of work you didn't start yourself, such as scheduled routines and diagnoses, count against
+the Bot's alert budget (see [Alerts and remit](#alerts-and-remit)); results of tasks you asked for
+and routines you ran with **Run now** always alert at once. Cancelled and skipped tasks do not alert. Work-thread failures follow the existing failure
 notification preference. If delivery is unavailable, the result card and unread
 conversation remain; reconnecting can deliver a recent result, but results older
 than two minutes do not trigger a delayed alert. Each registered device follows
@@ -198,9 +198,10 @@ cancel a running one from its card.
 ### Alerts and remit
 
 **Alerts**, in a Bot's settings, limits how often its own work may notify your
-phone. It counts results of work you didn't start yourself: routines, diagnoses,
-and tasks the Bot started without a message from you. A task you asked for in
-the conversation always alerts at once and never counts.
+phone. It counts results of work you didn't start yourself: scheduled routines,
+diagnoses, and tasks or routine runs the Bot started without a message from you.
+A task you asked for in the conversation and a routine you ran with **Run now**
+always alert at once and never count.
 
 - **Alerts per day** (3 by default, 0 to 10) counts per day in the server's
   time zone.

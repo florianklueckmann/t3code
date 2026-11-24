@@ -1154,8 +1154,10 @@ it.effect.each([
   ),
 );
 
-it.effect("run_scheduled_task_now reports why a started run failed to dispatch", () =>
-  Effect.gen(function* () {
+it.effect("run_scheduled_task_now reports why a started run failed to dispatch", () => {
+  // The run counts as the user's own only when the caller's thread says so.
+  const requests: Array<{ readonly requestedIn: unknown } | undefined> = [];
+  return Effect.gen(function* () {
     const server = yield* McpServer.McpServer;
     const result = yield* server
       .callTool({ name: "run_scheduled_task_now", arguments: { taskId: "task-full-access" } })
@@ -1172,6 +1174,7 @@ it.effect("run_scheduled_task_now reports why a started run failed to dispatch",
       lastRunStatus: "failed",
       lastRunError: "the provider is disabled",
     });
+    expect(requests).toEqual([{ requestedIn: null }]);
   }).pipe(
     Effect.provide(
       McpHttpServer.layerThreadToolkit.pipe(
@@ -1187,21 +1190,23 @@ it.effect("run_scheduled_task_now reports why a started run failed to dispatch",
           Layer.mock(ScheduledTaskService.ScheduledTaskService)({
             list: () =>
               Effect.succeed({ tasks: [scheduledTask("task-full-access", "full-access")] }),
-            runNow: () =>
-              Effect.succeed({
+            runNow: (_input, options) => {
+              requests.push(options);
+              return Effect.succeed({
                 threadId: null,
                 task: {
                   ...(scheduledTask("task-full-access", "full-access") as object),
                   lastRunStatus: "failed" as const,
                   lastRunError: "the provider is disabled",
                 },
-              } as never),
+              } as never);
+            },
           }),
         ),
       ),
     ),
-  ),
-);
+  );
+});
 
 function scheduledTask(id: string, runtimeMode: "auto" | "full-access"): never {
   return {
