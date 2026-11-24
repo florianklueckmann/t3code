@@ -11,6 +11,7 @@ import {
   type BotId,
   type EnvironmentId,
   type BotSummary,
+  type BotTaskSummary,
   type BotTaskResult,
   type BotTaskResultInput,
   type McpConnectionListResult,
@@ -88,6 +89,12 @@ export type { ServerConfigProjection } from "./serverConfigProjection.ts";
  * its task loads, which must not be shown as unrestricted.
  */
 export type WorkThreadChanges = "none" | "unknown" | null;
+
+/**
+ * A Bot work thread's standing-watch outcome as its task reports it, "unknown" until the task
+ * loads, and null for a thread that is no unattended watch run.
+ */
+export type WorkThreadWatch = NonNullable<BotTaskSummary["watch"]> | "unknown" | null;
 
 export type ServerUpdateStage = "downloading" | "installing" | "resuming";
 
@@ -1681,8 +1688,25 @@ export function createServerEnvironmentAtoms<R, E>(
     }).pipe(Atom.withLabel(`environment-data:server:bots:work-thread-changes:${key}`));
   });
 
+  const workThreadWatchFamily = Atom.family((key: string) => {
+    const [environmentId, threadId] = JSON.parse(key) as [EnvironmentId, string];
+    return Atom.make((get): WorkThreadWatch => {
+      if (!mayBeBotWorkThreadId(threadId)) return null;
+      if (get(configValueAtom(environmentId))?.environment.capabilities.bots !== true) return null;
+      const result = get(
+        botTasksLive({ environmentId, input: { workThreadId: ThreadId.make(threadId) } }),
+      );
+      const tasks = AsyncResult.value(result);
+      if (Option.isNone(tasks)) return AsyncResult.isFailure(result) ? null : "unknown";
+      return tasks.value.tasks[0]?.watch ?? null;
+    }).pipe(Atom.withLabel(`environment-data:server:bots:work-thread-watch:${key}`));
+  });
+
   return {
     configValueAtom,
+    /** Whether a Bot work thread's finished run may be announced yet. */
+    workThreadWatch: (thread: { readonly environmentId: EnvironmentId; readonly id: string }) =>
+      workThreadWatchFamily(JSON.stringify([thread.environmentId, thread.id])),
     workThreadBot: (thread: { readonly environmentId: EnvironmentId; readonly id: string }) =>
       workThreadBotFamily(JSON.stringify([thread.environmentId, thread.id])),
     /** "none" while the thread runs a No changes routine task; its mode cannot lift that. */

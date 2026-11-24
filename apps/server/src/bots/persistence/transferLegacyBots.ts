@@ -144,6 +144,8 @@ export const transferLegacyBots = Effect.fn("BotDatabase.transferLegacyBots")(fu
                     "diagnoses_task_id",
                     "diagnoses_run_id",
                     "by_hand",
+                    "watch",
+                    "quiet",
                   ].includes(row.name)
                 ) &&
                 !(
@@ -191,6 +193,8 @@ export const transferLegacyBots = Effect.fn("BotDatabase.transferLegacyBots")(fu
                 row.diagnoses_task_id = null;
                 row.diagnoses_run_id = null;
                 row.by_hand = 0;
+                row.watch = 0;
+                row.quiet = 0;
               }
               // As migration 019 fills them for revisions that were already stored.
               if (table === "bot_learning_revisions") {

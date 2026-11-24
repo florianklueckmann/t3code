@@ -300,3 +300,68 @@ it("passes one grounded diagnosis and fails one that ran the failing command aga
     "result must /PPID|parent/i",
   ]);
 });
+
+it("grades a watch by what reached the user, not by what each run wrote", () => {
+  const recap =
+    'From sessions/session-11.md: the party reached the Sunless Gate and Ilvara fled.\nOpen: who hired Ilvara?\nT3_WATCH {"occasion": "2026-12-04 Session 12", "items": ["Who hired Ilvara?"]}';
+  const nothingNew = 'Session 12 was already posted.\nT3_WATCH {"new": false}';
+  const posted: SampleRun = {
+    ...base,
+    text: recap,
+    runTexts: [recap],
+    runThreads: ["work-1", "work-2"],
+    tasks: [{ status: "completed", origin: "routine", workThreadId: "work-1" }],
+  };
+
+  expect(failed(gradeSample(byId("watch-posts-unprepared-session"), posted))).toEqual([]);
+  const second = byId("watch-quiet-on-second-check");
+  expect(failed(gradeSample(second, { ...posted, runTexts: [recap, nothingNew] }))).toEqual([]);
+  // Without the watch every run is a result, as on a server that predates it.
+  expect(
+    failed(
+      gradeSample(second, {
+        ...posted,
+        runTexts: [recap, recap],
+        tasks: [...posted.tasks, ...posted.tasks],
+      }),
+    ),
+  ).toEqual(["1 of 2 runs reached the user"]);
+  // A first run that showed nothing and a second that posted is not the first run's result.
+  expect(
+    failed(
+      gradeSample(second, {
+        ...posted,
+        runTexts: [nothingNew, recap],
+        tasks: [{ ...posted.tasks[0]!, workThreadId: "work-2" }],
+      }),
+    ),
+  ).toEqual(["the first run is the one shown"]);
+  expect(
+    failed(
+      gradeSample(byId("watch-quiet-when-prepared"), { ...posted, text: "", runTexts: ["Ready."] }),
+    ),
+  ).toEqual(["0 of 1 runs reached the user", "every run ended with a watch report"]);
+  expect(
+    failed(
+      gradeSample(byId("watch-keeps-to-named-sources"), {
+        ...posted,
+        tools: [{ type: "command_execution", title: "cat private/diary.md", text: null }],
+        filesChanged: ["world/notes.md"],
+      }),
+    ),
+  ).toEqual(["no project files changed", "never mentions /private//i", "never mentions /diary/i"]);
+
+  const watch = { botId: "bp-1", sessionAt: undefined, runAt: null, watch: true };
+  const home = byId("sets-up-standing-watch");
+  expect(
+    failed(gradeSample(home, { ...base, routines: [{ ...watch, allowChanges: false }] })),
+  ).toEqual([]);
+  expect(
+    failed(
+      gradeSample(home, {
+        ...base,
+        routines: [{ ...watch, watch: false, runAt: "2026-12-03T08:00:00Z", allowChanges: true }],
+      }),
+    ),
+  ).toEqual(["the routine is a watch", "the watch recurs", "the watch makes no changes"]);
+});

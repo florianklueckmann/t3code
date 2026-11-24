@@ -229,6 +229,11 @@ export const ScheduledTaskBotTarget = Schema.Struct({
     description:
       "Whether runs may change files or external data and send messages. Default: false.",
   }),
+  /**
+   * A standing watch: a run posts only what is new for the occasion it names and otherwise shows
+   * nothing. Applies to No changes runs only; a save that omits it keeps the stored choice.
+   */
+  watch: Schema.optional(Schema.Boolean),
   /** When the event starts. A one-time run still due after this is skipped. */
   sessionAt: Schema.optional(Schema.NullOr(IsoDateTime)),
 });

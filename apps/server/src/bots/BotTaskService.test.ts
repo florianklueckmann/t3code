@@ -654,6 +654,7 @@ it.effect(
               projectId: campaign,
               homeThreadId: task.homeThreadId,
               byHand: true,
+              quiet: false,
               workThreadId,
               status: "completed",
               resultRunId: runId,
@@ -1334,6 +1335,179 @@ it.effect("keeps each routine run's change permission after edits and a restart"
           ],
           [[null], ["none"], [null]],
         );
+      }),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
+/** Ends a work thread's run with `text` as its saved final answer. */
+const finishRun = (world: ThreadWorld, workThreadId: ThreadId, text: string) =>
+  Effect.gen(function* () {
+    const runId = RunId.make(`run:${workThreadId}`);
+    const artifacts = makeSubagentConversationArtifacts({
+      messageId: MessageId.make(`final:${workThreadId}`),
+      turnItemId: TurnItemId.make(`final:${workThreadId}`),
+      threadId: workThreadId,
+      rootNodeId: NodeId.make("root"),
+      providerThreadId: null,
+      providerTurnId: null,
+      nativeItemRef: null,
+      role: "assistant",
+      text,
+      ordinal: 1,
+      now: DateTime.makeUnsafe(START),
+    });
+    yield* Ref.update(world.records, (all) =>
+      new Map(all).set(workThreadId, {
+        thread: {
+          id: workThreadId,
+          projectId: campaign,
+          deletedAt: null,
+        } as OrchestrationV2ThreadProjection["thread"],
+        runs: [
+          {
+            id: runId,
+            threadId: workThreadId,
+            status: "completed",
+            completedAt: DateTime.makeUnsafe(START + HOUR),
+          } as OrchestrationV2Run,
+        ],
+        messages: [{ ...artifacts.message, runId }],
+        turnItems: [{ ...artifacts.turnItem, runId }],
+      }),
+    );
+    yield* world.update(workThreadId, { status: "completed" });
+  });
+
+it.effect("a standing watch posts once per occasion and shows nothing when nothing is new", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(START);
+    yield* seedProject;
+    const world = yield* makeThreadWorld;
+    const sql = yield* BotDatabase.BotDatabase;
+    const SESSION = "2026-11-06 Session 12";
+    const post = (items: ReadonlyArray<string>, occasion = SESSION) =>
+      `Recap (sessions/session-11.md): Ilvara fled.\nT3_WATCH ${JSON.stringify({ occasion, items })}`;
+    yield* withServices(world, (services) =>
+      Effect.gen(function* () {
+        const home = yield* attachBot(services);
+        // Early checks on, so a result that posts asks for one and a quiet one must not.
+        yield* sql`INSERT INTO bot_home_checks
+          (home_thread_id, settings_revision, enabled, time_of_day, done_through, early_since, updated_at)
+          VALUES (${home}, 1, 1, '08:00', ${iso(START)}, ${iso(START)}, ${iso(START)})`;
+        const input = routineInput({ type: "fixed_time", timeOfDay: "18:00" });
+        const { task: routine } = yield* services.routines.upsert({
+          ...input,
+          bot: { botId, watch: true },
+        });
+        assert.isTrue(routine.bot?.watch);
+
+        /** One unattended run that ends with `text`; what the user can see of it afterwards. */
+        const run = Effect.fnUntraced(function* (text: string, byHand = false) {
+          yield* TestClock.adjust("1 second");
+          const { threadId } = yield* services.routines.runNow(
+            { id: routine.id },
+            ...(byHand ? [] : [{ requestedIn: null }]),
+          );
+          const workThreadId = threadId ?? assert.fail("no work thread");
+          const context = yield* services.turnContext.forThread(workThreadId);
+          yield* finishRun(world, workThreadId, text);
+          yield* services.tasks.reconcile;
+          const [awareness] = yield* services.tasks.getAwarenessTasks(workThreadId);
+          return {
+            workThreadId,
+            instructions: context._tag === "active" ? context.instructions : "",
+            quiet: awareness?.quiet,
+            constraint: yield* services.constraint.forThread(workThreadId),
+            cards: (yield* services.tasks.list({ botId })).tasks.map((task) => task.workThreadId),
+            unread: (yield* world.commandsMatching("thread.mark-unread")).length,
+            archived: (yield* world.commandsMatching(`thread.archive ${workThreadId}`)).length,
+            earlyCheckOutcomes: (yield* sql`SELECT task_id FROM bot_home_check_outcomes`).length,
+            ownTask: (yield* services.tasks.list({ workThreadId })).tasks[0],
+          };
+        });
+
+        const first = yield* run(post(["Who hired Ilvara?"]));
+        assert.include(first.instructions, "standing watch");
+        assert.include(first.instructions, "Already posted by this watch: nothing yet.");
+        assert.deepInclude(first, {
+          // Sealed like every No changes run: what it may read and never write is that seal's.
+          constraint: "no-changes",
+          quiet: false,
+          cards: [first.workThreadId],
+          unread: 1,
+          archived: 0,
+          earlyCheckOutcomes: 1,
+        });
+        const shown = yield* services.tasks.getResult({
+          taskId: first.ownTask?.id ?? assert.fail(),
+        });
+        assert.deepInclude(shown.result, { text: "Recap (sessions/session-11.md): Ilvara fled." });
+
+        // The same session again, reworded only in case and punctuation: nothing reaches the user.
+        const repeat = yield* run(post(["who hired ilvara"]));
+        assert.include(repeat.instructions, SESSION);
+        assert.include(repeat.instructions, "Who hired Ilvara?");
+        const nothingShown = {
+          quiet: true,
+          cards: [first.workThreadId],
+          unread: 1,
+          archived: 1,
+          earlyCheckOutcomes: 1,
+        };
+        assert.deepInclude(repeat, nothingShown);
+        // A client holding a completion notice for this thread reads the outcome from its task.
+        assert.deepEqual(
+          [first.ownTask?.watch, repeat.ownTask?.watch, repeat.ownTask?.status],
+          [
+            { state: "shown", runId: RunId.make(`run:${first.workThreadId}`) },
+            { state: "quiet", runId: RunId.make(`run:${repeat.workThreadId}`) },
+            "completed",
+          ],
+        );
+
+        const prepared = yield* run('Session 12 is prepared.\nT3_WATCH {"new": false}');
+        assert.deepInclude(prepared, nothingShown);
+
+        // One post per occasion: other questions and another spelling of the session change nothing.
+        const reworded = yield* run(post(["Is Toma fit to travel?"], "Session 12 (2026-11-06)"));
+        assert.deepInclude(reworded, { ...nothingShown, archived: 1 });
+
+        const next = yield* run(post(["Who hired Ilvara?"], "2026-11-13 Session 13"));
+        assert.deepInclude(next, {
+          quiet: false,
+          cards: [next.workThreadId, first.workThreadId],
+          unread: 2,
+          archived: 0,
+          earlyCheckOutcomes: 2,
+        });
+        assert.deepEqual(
+          yield* sql`SELECT occasion, items_json FROM bot_watch_posts ORDER BY posted_at`,
+          [
+            { occasion: SESSION, items_json: '["Who hired Ilvara?"]' },
+            { occasion: "2026-11-13 Session 13", items_json: '["Who hired Ilvara?"]' },
+          ],
+        );
+
+        // A run the user starts by hand always shows, also with nothing new.
+        const byHand = yield* run('Nothing new.\nT3_WATCH {"new": false}', true);
+        assert.deepInclude(byHand, { quiet: false, unread: 3, archived: 0 });
+        assert.isUndefined(byHand.ownTask?.watch);
+
+        // An editor that predates the watch saves the routine without it and keeps it. With
+        // changes allowed the run is no watch: only a sealed run may stay quiet unattended.
+        const edited = yield* services.routines.upsert({
+          ...input,
+          id: routine.id,
+          bot: { botId, allowChanges: true },
+        });
+        assert.isTrue(edited.task.bot?.watch);
+        const changing = yield* run(post(["Who hired Ilvara?"]));
+        assert.notInclude(changing.instructions, "standing watch");
+        assert.deepInclude(changing, { constraint: "standard", quiet: false, unread: 4 });
+
+        yield* services.routines.delete({ id: routine.id });
+        assert.lengthOf(yield* sql`SELECT task_id FROM bot_watch_posts`, 0);
       }),
     );
   }).pipe(Effect.provide(layerDatabase)),

@@ -69,6 +69,8 @@ it.effect.each([78, 79, 80, 81, 82, 83])(
                     diagnoses_task_id: null,
                     diagnoses_run_id: null,
                     by_hand: 0,
+                    watch: 0,
+                    quiet: 0,
                   }
                 : {}),
               ...(table === "bot_learning_revisions"
@@ -92,6 +94,7 @@ it.effect.each([78, 79, 80, 81, 82, 83])(
               schedule_revision: 12,
               bot_allow_changes: 0,
               created_by_thread_id: null,
+              bot_watch: 0,
             },
             {
               task_id: "routine",
@@ -100,6 +103,7 @@ it.effect.each([78, 79, 80, 81, 82, 83])(
               schedule_revision: 9,
               bot_allow_changes: head >= 83 ? 1 : 0,
               created_by_thread_id: null,
+              bot_watch: 0,
             },
           ]);
           const [routine] = yield* main`SELECT * FROM scheduled_tasks WHERE task_id = 'routine'`;

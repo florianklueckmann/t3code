@@ -895,6 +895,17 @@ it.effect(
       yield* sql`DELETE FROM orchestration_v2_projection_nodes WHERE node_id = 'obsolete-task'`;
       yield* sql`DELETE FROM orchestration_v2_projection_provider_threads
         WHERE provider_thread_id = 'obsolete-task-thread'`;
+      // An archive meant for an earlier run leaves a thread with a newer run alone.
+      const stale = yield* orchestrator
+        .dispatch({
+          type: "thread.archive",
+          commandId: CommandId.make("archive-for-an-earlier-run"),
+          threadId,
+          ifLatestRunId: RunId.make("an-earlier-run"),
+        })
+        .pipe(Effect.flip);
+      assert.include(String(stale.cause), "has a newer run");
+      assert.isNull((yield* projections.getThread(threadId)).archivedAt);
       yield* orchestrator.dispatch({
         type: "thread.archive",
         commandId: CommandId.make("archive-with-old-history"),

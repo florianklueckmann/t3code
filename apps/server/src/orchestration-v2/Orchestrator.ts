@@ -4299,8 +4299,24 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
     if (command.type === "thread.archive") {
       const records = yield* projectionStore
-        .getThreadRecords(command.threadId, ["subagents"])
+        .getThreadRecords(
+          command.threadId,
+          command.ifLatestRunId === undefined ? ["subagents"] : ["subagents", "runs"],
+        )
         .pipe(mapDispatchError(command));
+      if (
+        command.ifLatestRunId !== undefined &&
+        records.runs.reduce<OrchestrationV2Run | undefined>(
+          (latest, run) => (latest === undefined || run.ordinal > latest.ordinal ? run : latest),
+          undefined,
+        )?.id !== command.ifLatestRunId
+      ) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: `Thread ${command.threadId} has a newer run than ${command.ifLatestRunId}.`,
+        });
+      }
       if (
         records.subagents.some(
           (task) =>

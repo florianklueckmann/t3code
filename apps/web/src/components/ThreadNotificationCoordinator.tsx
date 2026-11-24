@@ -6,7 +6,12 @@ import {
 import { isShownUnderParent } from "@t3tools/client-runtime/state/threads";
 import type { AnyRouter } from "@tanstack/react-router";
 import { parseThreadKey, threadKey } from "@t3tools/client-runtime/state/entities";
-import type { EnvironmentId, OrchestrationV2ThreadShell, ThreadId } from "@t3tools/contracts";
+import {
+  type EnvironmentId,
+  mayBeBotWorkThreadId,
+  type OrchestrationV2ThreadShell,
+  type ThreadId,
+} from "@t3tools/contracts";
 import { monitorHoldsWakeCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import type { ClientSettings } from "@t3tools/contracts/settings";
 import * as Option from "effect/Option";
@@ -21,6 +26,7 @@ import {
 import { getClientSettings, subscribeClientSettings } from "../hooks/useSettings";
 import { isWindowsPlatform } from "../lib/utils";
 import { environmentSummaries } from "../state/presentation";
+import { serverEnvironment } from "../state/server";
 import { environmentShell } from "../state/shell";
 import { environmentThreadShells } from "../state/threads";
 import {
@@ -43,6 +49,8 @@ import { toastManager } from "./ui/toast";
 
 interface NotificationState extends ThreadNotificationObservation {
   readonly raw: OrchestrationV2ThreadShell;
+  /** "held" while a watch run's outcome is open, "quiet" once it had nothing new. */
+  readonly watch: "held" | "quiet" | null;
   readonly subagentRequest: PendingSubagentRequest | null;
   readonly thread: EnvironmentThreadShell;
   readonly status: SidebarThreadStatus;
@@ -55,6 +63,9 @@ interface WatchedEnvironment {
   previous: Map<ThreadId, NotificationState>;
   reconnecting: boolean;
   readonly gate: ReturnType<typeof createThreadNotificationGate<ThreadId>>;
+  /** Bot work threads seen working, by that run, with the stop of their task subscription. */
+  readonly watchRuns: Map<ThreadId, { readonly runId: string; readonly stop: () => void }>;
+  reobserve: () => void;
 }
 
 /**
@@ -230,6 +241,41 @@ export function startThreadNotifications(
     }
   };
 
+  /**
+   * A watch run with nothing new must not be announced, and the server decides that only after
+   * the run ends. So a Bot work thread seen working keeps its task subscribed until that is known.
+   */
+  const watchOutcome = (
+    environmentId: EnvironmentId,
+    entry: WatchedEnvironment,
+    rawThread: OrchestrationV2ThreadShell,
+  ): NotificationState["watch"] => {
+    if (!mayBeBotWorkThreadId(rawThread.id)) return null;
+    const runId = rawThread.latestRunId;
+    const working = runId !== null && rawThread.latestRunCompletedAt == null;
+    let held = entry.watchRuns.get(rawThread.id);
+    if (held !== undefined && (held.runId !== runId || rawThread.archivedAt !== null)) {
+      held.stop();
+      entry.watchRuns.delete(rawThread.id);
+      held = undefined;
+    }
+    const atom = serverEnvironment.workThreadWatch({ environmentId, id: rawThread.id });
+    if (held === undefined) {
+      if (!working || runId === null || rawThread.archivedAt !== null) return null;
+      held = { runId, stop: registry.subscribe(atom, () => entry.reobserve()) };
+      entry.watchRuns.set(rawThread.id, held);
+    }
+    const watch = registry.get(atom);
+    if (watch === "unknown" || watch?.state === "pending") return "held";
+    // A settled outcome is about one run; a follow-up in the same thread announces as usual.
+    if (watch?.state === "quiet" && watch.runId === runId) return "quiet";
+    if (!working) {
+      held.stop();
+      entry.watchRuns.delete(rawThread.id);
+    }
+    return null;
+  };
+
   const observeThreads = (
     environmentId: EnvironmentId,
     entry: WatchedEnvironment,
@@ -255,10 +301,12 @@ export function startThreadNotifications(
       }
       const prior = previous.get(rawThread.id);
       const subagentRequest = subagentRequests.get(rawThread.id) ?? null;
+      const watch = watchOutcome(environmentId, entry, rawThread);
       if (
         !entry.reconnecting &&
         prior?.raw === rawThread &&
-        prior.subagentRequest === subagentRequest
+        prior.subagentRequest === subagentRequest &&
+        prior.watch === watch
       ) {
         next.set(rawThread.id, prior);
         continue;
@@ -281,11 +329,12 @@ export function startThreadNotifications(
           ? `${status}:${requestId}`
           : `${thread.latestRun?.runId ?? ""}:${status}`;
       const completed = status === "ready" && thread.latestRun?.status === "completed";
-      const settled = completed && !monitorHoldsWakeCompletion(rawThread);
+      const settled = completed && !monitorHoldsWakeCompletion(rawThread) && watch !== "held";
       const parsedCompletedAt = Date.parse(thread.latestRun?.completedAt ?? "");
       const completedAt = Number.isFinite(parsedCompletedAt) ? parsedCompletedAt : null;
       const state = {
         raw: rawThread,
+        watch,
         subagentRequest,
         thread,
         status,
@@ -298,6 +347,11 @@ export function startThreadNotifications(
       next.set(thread.id, state);
       changed.push([prior, state]);
     }
+    for (const [threadId, held] of entry.watchRuns) {
+      if (next.has(threadId)) continue;
+      held.stop();
+      entry.watchRuns.delete(threadId);
+    }
     entry.reconnecting = false;
     entry.previous = next;
     entry.gate.retain(new Set(next.keys()));
@@ -305,7 +359,7 @@ export function startThreadNotifications(
     for (const [prior, state] of changed) {
       entry.gate.observe(state.thread.id, prior, state, {
         archived: state.thread.archivedAt !== null,
-        quiet: state.raw.latestRunStopRequested === true,
+        quiet: state.raw.latestRunStopRequested === true || state.watch === "quiet",
         snoozed: isSnoozedForNotification(state.thread, state.completedAt, now),
       });
     }
@@ -316,6 +370,8 @@ export function startThreadNotifications(
       previous: new Map(),
       reconnecting: false,
       unsubscribe: () => {},
+      watchRuns: new Map(),
+      reobserve: () => {},
       gate: createThreadNotificationGate<ThreadId>((threadId, kind) => {
         const state = entry.previous.get(threadId);
         if (state) present(environmentId, state, kind);
@@ -341,6 +397,7 @@ export function startThreadNotifications(
     const reobserve = () => {
       if (threads !== null) observeThreads(environmentId, entry, threads);
     };
+    entry.reobserve = reobserve;
     const unsubscribeRequests = registry.subscribe(
       environmentThreadShells.pendingSubagentRequestsAtom(environmentId),
       reobserve,
@@ -353,6 +410,8 @@ export function startThreadNotifications(
       unsubscribeShell();
       unsubscribeRequests();
       unsubscribeDelegated();
+      for (const held of entry.watchRuns.values()) held.stop();
+      entry.watchRuns.clear();
       entry.gate.clear();
     };
     return entry;

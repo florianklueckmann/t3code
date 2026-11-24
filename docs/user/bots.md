@@ -182,6 +182,32 @@ the card shows it as skipped. A routine also skips a run while its previous one
 is still working. You can pause, resume, run, edit or delete a routine in
 **Settings → Bots**, and cancel a running task from its card.
 
+### Standing assignments
+
+Ask a Bot once to keep an eye on something that recurs, for example "watch for
+upcoming sessions and tell me what preparation is still missing". The Bot sets
+up one recurring **No changes** routine as a **watch**, instead of one routine
+per occasion. Each run checks the sources its brief names.
+
+- When an occasion needs you, the run's result appears as a card in the
+  conversation, which turns unread, with one alert under the Bot's
+  [alert budget](#alerts-and-remit).
+- When nothing is new, you notice nothing: no card, no unread conversation, no
+  alert. The run's thread is archived.
+
+T3 Code records what a watch posted for each occasion, and a watch posts once
+per occasion: later runs on the same occasion stay quiet. To hear more about
+it, ask the Bot. **Run now** always shows its result, also when nothing is new.
+
+A watch only reads. It is a No changes routine with the limits above: the
+project's files, web search, and the read-only tools of the MCP connections you
+granted the Bot. It works where No changes routines do, so not on a Pi Bot.
+
+To end a watch, pause or delete its routine in **Settings → Bots**, or ask the
+Bot. Switching the routine to **Changes allowed** turns it into an ordinary
+routine that reports every run. Only the Bot can set a watch up for now; the
+routine form does not show the setting.
+
 ### Diagnose failed routines
 
 **Diagnose failed routines**, next to the Home check in **Settings → Bots**, has

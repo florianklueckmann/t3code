@@ -1,5 +1,6 @@
 import type { AnyRouter } from "@tanstack/react-router";
-import { EnvironmentId } from "@t3tools/contracts";
+import type { WorkThreadWatch } from "@t3tools/client-runtime/state/server";
+import { EnvironmentId, RunId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 import { Atom, AtomRegistry } from "effect/reactivity";
@@ -66,6 +67,16 @@ vi.mock(import("../state/threads"), async (original) => {
     },
   };
 });
+vi.mock(import("../state/server"), async (original) => {
+  const actual = await original();
+  return {
+    ...actual,
+    serverEnvironment: {
+      ...actual.serverEnvironment,
+      workThreadWatch: ((thread: { readonly id: string }) => watchAtom(thread.id)) as never,
+    },
+  };
+});
 vi.mock(import("../hooks/useSettings"), async (original) => ({
   ...(await original()),
   subscribeClientSettings: ((listener: () => void) => {
@@ -89,6 +100,7 @@ import { startThreadNotifications } from "./ThreadNotificationCoordinator";
 let registry: AtomRegistry.AtomRegistry;
 const shellAtom = Atom.family((_id: string) => Atom.make<unknown>(null));
 const environmentIdsAtom = Atom.make<ReadonlyArray<string>>([]);
+const watchAtom = Atom.family((_id: string) => Atom.make<WorkThreadWatch>("unknown"));
 const noRequestsAtom = Atom.make(new Map());
 const noDelegatedAtom = Atom.make<ReadonlySet<string>>(new Set<string>());
 state.shells = { set: (id, value) => registry.set(shellAtom(id), value) };
@@ -292,6 +304,43 @@ it("presents completion notifications and sound as soon as the shell completes",
   expect(TestNotification.sent.map((sent) => sent.title)).toEqual(["Thread completed"]);
   expect(state.sound).toHaveBeenCalledWith("completion", expect.any(Function));
 });
+
+it.each<{
+  readonly state: "shown" | "quiet";
+  /** Whether the task was read as pending before its outcome, or loaded already settled. */
+  readonly sawPending: boolean;
+  readonly announced: number;
+}>([
+  { state: "shown", sawPending: true, announced: 1 },
+  { state: "quiet", sawPending: true, announced: 0 },
+  { state: "quiet", sawPending: false, announced: 0 },
+])(
+  "announces a Bot watch run only once the server settled that it shows ($state, pending seen: $sawPending)",
+  async ({ state: outcome, sawPending, announced }) => {
+    await using app = setup();
+    const work = { id: "bot-work:bot-task:watch" };
+    const ended = (turnId: string, completedAt: string) => ({
+      ...work,
+      latestTurn: { turnId, state: "completed", completedAt },
+    });
+    const watch = (value: WorkThreadWatch) => registry.set(watchAtom(work.id), value);
+    state.shells.set("one", shell(work));
+    app.start();
+    if (sawPending) watch({ state: "pending", runId: null });
+    state.shells.set("one", shell(ended("turn", "2026-09-13T07:00:01.000Z")));
+    expect(TestNotification.sent).toHaveLength(0);
+    watch({ state: outcome, runId: RunId.make("turn") });
+    expect(TestNotification.sent).toHaveLength(announced);
+
+    // Only the watch run waited: a follow-up the user sends in that thread is announced at once.
+    state.shells.set(
+      "one",
+      shell({ ...work, latestTurn: { turnId: "follow-up", state: "running", completedAt: null } }),
+    );
+    state.shells.set("one", shell(ended("follow-up", "2026-09-13T07:05:00.000Z")));
+    expect(TestNotification.sent).toHaveLength(announced + 1);
+  },
+);
 
 it.each([false, true])(
   "presents one completion when a monitor ends with a final wake (disconnected: %s)",

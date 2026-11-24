@@ -395,7 +395,7 @@ export const make = Effect.gen(function* () {
       WHERE o.check_message_id = ${messageId} ORDER BY t.completed_at DESC, t.task_id DESC`;
     if (early && outcomes.length === 0) return;
     const recent = yield* sql<{ readonly task_id: string }>`SELECT task_id FROM bot_tasks
-      WHERE home_thread_id = ${home} AND status = 'completed'
+      WHERE home_thread_id = ${home} AND status = 'completed' AND quiet = 0
       ORDER BY updated_at DESC, task_id DESC LIMIT 10`;
     const excerptIds = [
       ...new Set([

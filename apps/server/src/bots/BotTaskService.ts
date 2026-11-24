@@ -56,9 +56,12 @@ import { isNoChangesTask } from "./BotExecutionConstraint.ts";
 import * as FailureDiagnosis from "./BotFailureDiagnosis.ts";
 import * as BotProviderSupport from "./BotProviderSupport.ts";
 import * as BotStore from "./BotStore.ts";
+import * as BotWatch from "./BotWatch.ts";
 import { isDirectHomeInput, isUserHomeInput, latestDirectHomeInput } from "./homeReturn.ts";
 
 const LIST_LIMIT = 50;
+/** Posts kept per watch; occasions older than these are long past. */
+const WATCH_POSTS_KEPT = 50;
 export const BOT_TASK_NOTIFY_COMMAND_PREFIX = "bot-task-notify:";
 
 interface BotTaskRow {
@@ -93,6 +96,10 @@ interface BotTaskRow {
   readonly diagnoses_run_id: string | null;
   /** 1 when the user started it: from their client, or a Home turn their own message began. */
   readonly by_hand: number;
+  /** 1 when admitted as a run of a standing watch, which posts only what is new. */
+  readonly watch: number;
+  /** 1 once a watch run ended with nothing new: no card, no unread mark, no alert. */
+  readonly quiet: number;
   readonly created_at: string;
   readonly updated_at: string;
 }
@@ -162,6 +169,8 @@ export interface BotTaskAwareness {
   readonly homeThreadId: ThreadId;
   /** Results of work the user started push at once; the rest go through the alert budget. */
   readonly byHand: boolean;
+  /** A watch run that ended with nothing new; it never alerts. */
+  readonly quiet: boolean;
   readonly workThreadId: ThreadId;
   readonly status: BotTaskStatus;
   readonly resultRunId: RunId | null;
@@ -375,6 +384,14 @@ const make = Effect.gen(function* () {
       returnToHome: row.return_home_run_id !== null,
       ...(row.model_selection_json === null ? {} : { modelSelection: row.model_selection_json }),
       changes: isNoChangesTask(row) ? "none" : null,
+      ...(row.watch !== 1 || row.by_hand === 1
+        ? {}
+        : {
+            watch: {
+              state: row.completed_at === null ? "pending" : row.quiet === 1 ? "quiet" : "shown",
+              runId: row.result_run_id,
+            },
+          }),
       ...(row.diagnoses_task_id === null ||
       row.diagnoses_run_id === null ||
       row.diagnoses_title == null ||
@@ -536,7 +553,7 @@ const make = Effect.gen(function* () {
         scheduled_task_id, occurrence_key, occurrence_due_at, session_at, allow_changes, runtime_mode, status,
         detail, dispatched_at, cancel_requested_at, result_run_id, completed_at, notified_at,
         created_at, updated_at, return_home_run_id, return_home_message_id, return_finished_at,
-        model_selection_json, diagnoses_task_id, diagnoses_run_id, by_hand
+        model_selection_json, diagnoses_task_id, diagnoses_run_id, by_hand, watch
       ) VALUES (
         ${row.task_id}, ${row.bot_id}, ${row.project_id}, ${row.home_thread_id},
         ${row.work_thread_id}, ${row.origin}, ${row.title}, ${row.prompt},
@@ -546,7 +563,7 @@ const make = Effect.gen(function* () {
         ${row.completed_at}, ${row.notified_at}, ${row.created_at}, ${row.updated_at},
         ${row.return_home_run_id}, ${row.return_home_message_id}, ${row.return_finished_at},
         ${row.model_selection_json}, ${row.diagnoses_task_id}, ${row.diagnoses_run_id},
-        ${row.by_hand}
+        ${row.by_hand}, ${row.watch}
       )
       ON CONFLICT DO NOTHING
     `;
@@ -593,6 +610,8 @@ const make = Effect.gen(function* () {
     diagnoses_task_id: null,
     diagnoses_run_id: null,
     by_hand: 0,
+    watch: input.occurrence?.watch === true ? 1 : 0,
+    quiet: 0,
     created_at: input.now,
     updated_at: input.now,
   });
@@ -881,12 +900,13 @@ const make = Effect.gen(function* () {
         | "home_thread_id"
         | "work_thread_id"
         | "by_hand"
+        | "quiet"
         | "status"
         | "result_run_id"
         | "completed_at"
       >
     >`
-      SELECT task_id, bot_id, project_id, home_thread_id, work_thread_id, by_hand, status,
+      SELECT task_id, bot_id, project_id, home_thread_id, work_thread_id, by_hand, quiet, status,
         result_run_id, completed_at
       FROM bot_tasks WHERE work_thread_id IS NOT NULL
         AND ${
@@ -905,6 +925,7 @@ const make = Effect.gen(function* () {
               projectId: ProjectId.make(row.project_id),
               homeThreadId: ThreadId.make(row.home_thread_id),
               byHand: row.by_hand === 1,
+              quiet: row.quiet === 1,
               workThreadId: ThreadId.make(row.work_thread_id),
               status: row.status as BotTaskStatus,
               resultRunId: row.result_run_id === null ? null : RunId.make(row.result_run_id),
@@ -914,83 +935,100 @@ const make = Effect.gen(function* () {
     );
   });
 
+  /** The final answer of one run of a work thread, as saved. */
+  const readSavedResult = Effect.fn("BotTaskService.readSavedResult")(function* (
+    task: { readonly projectId: ProjectId; readonly workThreadId: ThreadId },
+    runId: RunId,
+  ) {
+    const unavailable = { state: "unavailable" } as const;
+    const shell = yield* threads
+      .getThreadShell(task.workThreadId)
+      .pipe(Effect.mapError(botError("Failed to read the Bot task's work thread.")));
+    if (shell === null || shell.deletedAt !== null) return unavailable;
+    const records = yield* threads
+      .getProjectThreadRecords(
+        { projectId: task.projectId, threadId: task.workThreadId },
+        ["runs", "messages", "turnItems"],
+        {
+          runIds: [runId],
+          messageRoles: ["assistant"],
+          messageRunIds: [runId],
+          turnItemRunIds: [runId],
+          turnItemTypes: ["assistant_message"],
+        },
+      )
+      .pipe(
+        Effect.catchTags({ ThreadManagementThreadNotFoundError: () => Effect.succeed(null) }),
+        Effect.mapError(botError("Failed to read the Bot task's saved result.")),
+      );
+    if (
+      records === null ||
+      records.thread.id !== task.workThreadId ||
+      records.thread.projectId !== task.projectId ||
+      records.thread.deletedAt !== null
+    )
+      return unavailable;
+    const run = records.runs.find(
+      (candidate) => candidate.id === runId && candidate.threadId === task.workThreadId,
+    );
+    if (run === undefined || run.status !== "completed") return unavailable;
+    const assistantItems = records.turnItems.filter(
+      (item): item is Extract<OrchestrationV2TurnItem, { type: "assistant_message" }> =>
+        item.threadId === task.workThreadId &&
+        item.runId === runId &&
+        item.type === "assistant_message",
+    );
+    // Older adapters did not distinguish final answers from intermediate messages.
+    const classified = assistantItems.some((item) => item.responseKind !== undefined);
+    const finalItem = assistantItems
+      .filter((item) => !classified || item.responseKind === "final")
+      .toSorted((left, right) => right.ordinal - left.ordinal)[0];
+    const messages = records.messages.filter(
+      (message) =>
+        message.threadId === task.workThreadId &&
+        message.runId === runId &&
+        message.role === "assistant",
+    );
+    // Turn item order survives providers finalizing several messages at the same timestamp.
+    const message =
+      finalItem === undefined && assistantItems.length === 0
+        ? messages.toSorted(
+            (left, right) =>
+              DateTime.toEpochMillis(right.updatedAt) - DateTime.toEpochMillis(left.updatedAt) ||
+              DateTime.toEpochMillis(right.createdAt) - DateTime.toEpochMillis(left.createdAt),
+          )[0]
+        : messages.find((candidate) => candidate.id === finalItem?.messageId);
+    if (
+      message?.streaming ||
+      (finalItem !== undefined && (finalItem.streaming || finalItem.status !== "completed"))
+    )
+      return unavailable;
+    if (message === undefined && finalItem?.textOmitted === true) return unavailable;
+    const text = message?.text ?? finalItem?.text ?? "";
+    return text.trim() === ""
+      ? ({ state: "empty", runId } as const)
+      : ({ state: "available", runId, text } as const);
+  });
+
   const getResult: BotTaskService["Service"]["getResult"] = Effect.fn("BotTaskService.getResult")(
     function* (input) {
       const row = yield* readRow(input.taskId);
       if (row === undefined) return yield* botError("Bot task not found.")();
       const task = yield* toSummary(row);
       if (task.status !== "completed") return { task, result: { state: "not_completed" } };
-      const unavailable = { task, result: { state: "unavailable" } } as const;
-      if (row.result_run_id === null || task.workThreadId === null) return unavailable;
-      const shell = yield* threads
-        .getThreadShell(task.workThreadId)
-        .pipe(Effect.mapError(botError("Failed to read the Bot task's work thread.")));
-      if (shell === null || shell.deletedAt !== null) return unavailable;
+      if (row.result_run_id === null || task.workThreadId === null)
+        return { task, result: { state: "unavailable" } };
       const runId = RunId.make(row.result_run_id);
-      const records = yield* threads
-        .getProjectThreadRecords(
-          { projectId: task.projectId, threadId: task.workThreadId },
-          ["runs", "messages", "turnItems"],
-          {
-            runIds: [runId],
-            messageRoles: ["assistant"],
-            messageRunIds: [runId],
-            turnItemRunIds: [runId],
-            turnItemTypes: ["assistant_message"],
-          },
-        )
-        .pipe(
-          Effect.catchTags({ ThreadManagementThreadNotFoundError: () => Effect.succeed(null) }),
-          Effect.mapError(botError("Failed to read the Bot task's saved result.")),
-        );
-      if (
-        records === null ||
-        records.thread.id !== task.workThreadId ||
-        records.thread.projectId !== task.projectId ||
-        records.thread.deletedAt !== null
-      )
-        return unavailable;
-      const run = records.runs.find(
-        (candidate) => candidate.id === runId && candidate.threadId === task.workThreadId,
+      const result = yield* readSavedResult(
+        { projectId: task.projectId, workThreadId: task.workThreadId },
+        runId,
       );
-      if (run === undefined || run.status !== "completed") return unavailable;
-      const assistantItems = records.turnItems.filter(
-        (item): item is Extract<OrchestrationV2TurnItem, { type: "assistant_message" }> =>
-          item.threadId === task.workThreadId &&
-          item.runId === runId &&
-          item.type === "assistant_message",
-      );
-      // Older adapters did not distinguish final answers from intermediate messages.
-      const classified = assistantItems.some((item) => item.responseKind !== undefined);
-      const finalItem = assistantItems
-        .filter((item) => !classified || item.responseKind === "final")
-        .toSorted((left, right) => right.ordinal - left.ordinal)[0];
-      const messages = records.messages.filter(
-        (message) =>
-          message.threadId === task.workThreadId &&
-          message.runId === runId &&
-          message.role === "assistant",
-      );
-      // Turn item order survives providers finalizing several messages at the same timestamp.
-      const message =
-        finalItem === undefined && assistantItems.length === 0
-          ? messages.toSorted(
-              (left, right) =>
-                DateTime.toEpochMillis(right.updatedAt) - DateTime.toEpochMillis(left.updatedAt) ||
-                DateTime.toEpochMillis(right.createdAt) - DateTime.toEpochMillis(left.createdAt),
-            )[0]
-          : messages.find((candidate) => candidate.id === finalItem?.messageId);
-      if (
-        message?.streaming ||
-        (finalItem !== undefined && (finalItem.streaming || finalItem.status !== "completed"))
-      )
-        return unavailable;
-      if (message === undefined && finalItem?.textOmitted === true) return unavailable;
-      const text = message?.text ?? finalItem?.text ?? "";
+      if (row.watch !== 1 || result.state !== "available") return { task, result };
+      // The report line is for the server, not part of what the user reads.
+      const { text } = BotWatch.readWatchReport(result.text);
       return {
         task,
-        result:
-          text.trim() === "" ? { state: "empty", runId } : { state: "available", runId, text },
+        result: text === "" ? { state: "empty", runId } : { state: "available", runId, text },
       };
     },
   );
@@ -1001,7 +1039,12 @@ const make = Effect.gen(function* () {
         ${summaryRows}
         WHERE (${input.botId ?? null} IS NULL OR t.bot_id = ${input.botId ?? null})
           AND (${input.projectId ?? null} IS NULL OR t.project_id = ${input.projectId ?? null})
-          AND ${input.workThreadId === undefined ? sql`1 = 1` : sql`t.work_thread_id = ${input.workThreadId}`}
+          AND ${
+            // A quiet watch run is no card anywhere; its own thread still resolves to its task.
+            input.workThreadId === undefined
+              ? sql`t.quiet = 0`
+              : sql`t.work_thread_id = ${input.workThreadId}`
+          }
         ORDER BY t.created_at DESC, t.task_id DESC
         LIMIT ${LIST_LIMIT}
       `.pipe(Effect.mapError(storageError));
@@ -1353,6 +1396,28 @@ const make = Effect.gen(function* () {
     return diagnosed.length === 0;
   });
 
+  /** Whether a finished watch run posts, from its saved result and its routine's earlier posts. */
+  const decideWatch = Effect.fn("BotTaskService.decideWatch")(function* (
+    row: BotTaskRow,
+    runId: RunId,
+  ) {
+    if (row.work_thread_id === null || row.scheduled_task_id === null) return null;
+    const result = yield* readSavedResult(
+      {
+        projectId: ProjectId.make(row.project_id),
+        workThreadId: ThreadId.make(row.work_thread_id),
+      },
+      runId,
+    );
+    const posts = yield* sql<{ readonly occasion_key: string }>`
+      SELECT occasion_key FROM bot_watch_posts WHERE scheduled_task_id = ${row.scheduled_task_id}
+    `.pipe(Effect.mapError(storageError));
+    return BotWatch.decideWatch(
+      result.state === "available" ? BotWatch.readWatchReport(result.text).report : null,
+      posts.map((post) => post.occasion_key),
+    );
+  });
+
   /** One step of the reconcile loop for one task; failures stay with that task. */
   const reconcileTask = Effect.fn("BotTaskService.reconcileTask")(function* (row: BotTaskRow) {
     if (row.completed_at === null) {
@@ -1381,14 +1446,41 @@ const make = Effect.gen(function* () {
       if (status === row.status) return;
       const now = yield* nowIso;
       const terminal = isTerminal(status);
-      yield* sql`
-        UPDATE bot_tasks
-        SET status = ${status},
-            result_run_id = ${terminal ? (shell?.latestRunId ?? null) : row.result_run_id},
-            completed_at = ${terminal ? now : null},
-            updated_at = ${now}
-        WHERE task_id = ${row.task_id} AND completed_at IS NULL
-      `.pipe(Effect.mapError(storageError));
+      const watch =
+        status === "completed" && row.watch === 1 && shell?.latestRunId != null
+          ? yield* decideWatch(row, shell.latestRunId)
+          : null;
+      // Saved with the completion, so no reader sees a finished watch run before its decision.
+      yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const ended = yield* sql`
+              UPDATE bot_tasks
+              SET status = ${status},
+                  result_run_id = ${terminal ? (shell?.latestRunId ?? null) : row.result_run_id},
+                  completed_at = ${terminal ? now : null},
+                  quiet = ${watch?._tag === "quiet" && row.by_hand === 0 ? 1 : 0},
+                  updated_at = ${now}
+              WHERE task_id = ${row.task_id} AND completed_at IS NULL
+              RETURNING task_id
+            `;
+            if (ended.length === 0 || watch?._tag !== "post" || row.scheduled_task_id === null)
+              return;
+            yield* sql`
+              INSERT OR IGNORE INTO bot_watch_posts
+                (task_id, scheduled_task_id, occasion_key, occasion, items_json, posted_at)
+              VALUES (${row.task_id}, ${row.scheduled_task_id}, ${watch.occasionKey},
+                ${watch.occasion}, ${BotWatch.encodeItems(watch.items)}, ${now})
+            `;
+            yield* sql`
+              DELETE FROM bot_watch_posts WHERE scheduled_task_id = ${row.scheduled_task_id}
+                AND task_id NOT IN (
+                  SELECT task_id FROM bot_watch_posts WHERE scheduled_task_id = ${row.scheduled_task_id}
+                  ORDER BY posted_at DESC, task_id DESC LIMIT ${WATCH_POSTS_KEPT})
+            `;
+          }),
+        )
+        .pipe(Effect.mapError(storageError));
       yield* publish(row);
       if (!terminal) return;
     }
@@ -1398,8 +1490,41 @@ const make = Effect.gen(function* () {
     }
     // Before the notification, which is retried until it lands, so a crash cannot skip it.
     yield* admitDiagnosis(current);
-    // The result stays in the work thread; the home conversation shows its card and turns unread.
-    if (current.status !== "cancelled") {
+    if (current.quiet === 1) {
+      // Nothing new means nothing to notice: the run's thread leaves the thread list too. Not
+      // one the user has since written in: archiving would end their follow-up.
+      const work =
+        current.work_thread_id === null
+          ? null
+          : yield* threads
+              .getThreadShell(ThreadId.make(current.work_thread_id))
+              .pipe(Effect.mapError(botError("Failed to read the Bot task's work thread.")));
+      if (
+        work != null &&
+        work.archivedAt === null &&
+        current.result_run_id !== null &&
+        work.latestRunId === current.result_run_id
+      )
+        yield* threads
+          .dispatch({
+            type: "thread.archive",
+            commandId: CommandId.make(`bot-watch-quiet:${current.task_id}`),
+            threadId: work.id,
+            ifLatestRunId: RunId.make(current.result_run_id),
+          })
+          .pipe(
+            // Any other failure leaves the task unsettled: the next pass archives, or finds above
+            // that the thread moved on. Only a refusal stored on the command id is final.
+            Effect.catchTags({
+              OrchestratorCommandPreviouslyRejectedError: (error) =>
+                Effect.logWarning("Quiet watch run's thread was not archived", {
+                  taskId: current.task_id,
+                  detail: error.detail,
+                }),
+            }),
+          );
+    } else if (current.status !== "cancelled") {
+      // The result stays in the work thread; the home conversation shows its card and turns unread.
       const home = yield* threads
         .getThreadShell(ThreadId.make(current.home_thread_id))
         .pipe(Effect.mapError(botError("Failed to read the Bot task's Home thread.")));
@@ -1424,6 +1549,7 @@ const make = Effect.gen(function* () {
     }
     // When the result run ended: work that ended before early checks were on is not owed one.
     const asks =
+      current.quiet !== 1 &&
       (yield* earlyCheckEnabled(current.home_thread_id)) &&
       (yield* requestsHomeCheck(current).pipe(Effect.mapError(storageError)));
     const endedAt = asks ? yield* resultEndedAt(current) : null;

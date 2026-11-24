@@ -463,6 +463,7 @@ const decodeRow = Effect.fnUntraced(
               botId: routine.bot_id,
               sessionAt: routine.bot_session_at,
               allowChanges: routine.bot_allow_changes === 1,
+              ...(routine.bot_watch === 1 ? { watch: true } : {}),
             },
           }),
     });
@@ -1010,6 +1011,8 @@ export const layer = Layer.effect(
           dueAt: iso(occurrence.dueAt),
           sessionAt: bot.sessionAt ?? null,
           allowChanges: bot.allowChanges ?? false,
+          // A watch stays quiet unattended, which only a sealed No changes run may.
+          watch: bot.watch === true && bot.allowChanges !== true,
           botId: bot.botId,
           projectId: task.projectId,
           title: task.title,
@@ -1680,6 +1683,7 @@ export const layer = Layer.effect(
           : {
               botId: requestedBot.botId,
               allowChanges: requestedBot.allowChanges ?? existingTask?.bot?.allowChanges ?? false,
+              watch: requestedBot.watch ?? existingTask?.bot?.watch ?? false,
               sessionAt:
                 requestedBot.sessionAt == null
                   ? null
