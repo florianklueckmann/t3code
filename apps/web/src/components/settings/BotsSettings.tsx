@@ -277,10 +277,15 @@ function EnvironmentBots({
   const closeEditor = () => {
     const closing = editor?.botId;
     setEditor(null);
-    if (link.bot === undefined || link.bot !== closing) return;
+    if (link.bot === undefined) return;
     void navigate({
       to: "/settings/bots",
-      search: ({ bot: _bot, section: _section, ...rest }) => rest,
+      // Reads the current link: one chosen for another Bot during a save stays to open next.
+      search: (current) => {
+        if (current.bot !== closing) return current;
+        const { bot: _bot, section: _section, ...rest } = current;
+        return rest;
+      },
       replace: true,
     });
   };
