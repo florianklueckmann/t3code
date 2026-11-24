@@ -60,6 +60,20 @@ export const CASES: readonly HomeCheckCase[] = [
     early: true,
   },
   {
+    id: "completed-task-noop",
+    source: "T3B-79 quiet control: finished work triggers a check with no decision left to make",
+    seed: [`Hello. ${acknowledge}`],
+    task: {
+      title: "Offsite checklist",
+      prompt:
+        "Use no tools and change no files. Reply with exactly this sentence: The Acme offsite checklist is complete and booked; nothing needs a decision.",
+    },
+    between: null,
+    waitingBefore: null,
+    expect: null,
+    early: true,
+  },
+  {
     id: "upcoming-event-preparation",
     source: "T3B-24 scenario: an upcoming event the user must prepare for",
     seed: [`Heads-up: tomorrow at 10:00 I have ${appointment}. ${noteThisTurnOnly}`],
