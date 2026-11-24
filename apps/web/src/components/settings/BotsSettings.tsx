@@ -53,7 +53,7 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
-import { useNavigate } from "@tanstack/react-router";
+import { useNavigate, useRouter } from "@tanstack/react-router";
 import {
   ArchiveIcon,
   ArchiveRestoreIcon,
@@ -274,10 +274,12 @@ function EnvironmentBots({
     setEditor({ botId: link.bot, section: link.section });
   }
   const navigate = useNavigate({ from: "/settings/bots" });
+  const router = useRouter();
   const closeEditor = () => {
     const closing = editor?.botId;
     setEditor(null);
-    if (link.bot === undefined) return;
+    // A save can finish after the user has left Bots settings; leave their new page alone.
+    if (link.bot === undefined || router.state.location.pathname !== "/settings/bots") return;
     void navigate({
       to: "/settings/bots",
       // Reads the current link: one chosen for another Bot during a save stays to open next.
