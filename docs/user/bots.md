@@ -365,7 +365,9 @@ as well; the switch lists them by name. A change applies from the Bot's next
 turn. Connections work on Codex and Claude Bots; the switch needs a Codex model,
 and a Claude Bot can only turn it off. A disabled connection stays granted but does not load until you enable it
 again. A granted connection that can't start leaves its tools out, the turn runs
-on, and the conversation says which connection it was.
+on, and the conversation says which connection it was. On Codex, T3 Code also
+asks Codex which MCP servers the Bot's conversation loaded. If it loaded one the
+Bot may not use, nothing runs and the conversation names that server.
 
 On Claude, a changed connection or a renewed sign-in restarts Claude at the
 Bot's next turn. While the conversation still runs background agents or

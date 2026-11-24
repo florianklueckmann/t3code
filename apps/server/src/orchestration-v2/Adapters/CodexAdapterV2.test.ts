@@ -4638,6 +4638,36 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         },
         origins: {},
       },
+      /** What `mcpServerStatus/list` reports for a thread, by server name and runtime status. */
+      listed: (
+        id: number,
+        threadId: string,
+        statuses: Readonly<Record<string, string | null>>,
+      ): Array<CodexReplay.CodexAppServerReplayEntry> =>
+        step(
+          id,
+          "mcpServerStatus/list",
+          { threadId, detail: "toolsAndAuthOnly" },
+          {
+            data: Object.entries(statuses).map(([name, runtimeStatus]) => ({
+              name,
+              runtimeStatus,
+              authStatus: "unsupported",
+              tools: {},
+              resources: [],
+              resourceTemplates: [],
+            })),
+            nextCursor: null,
+          },
+        ),
+      // A Bot load as Codex reports it: the user's servers off, T3 Code's own connected.
+      botLoadStatuses: {
+        probe: "disabled",
+        launch: "disabled",
+        remote: "disabled",
+        "t3-code": "connected",
+        "t3-code-direct": "connected",
+      },
       // Codex refuses the whole load for an entry with no transport, which a launch-argument
       // server's entry would be without its own, or for a reported null it reads back as "".
       disabledUserServers: {
@@ -4969,7 +4999,13 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             const scenario = "codex-grant-load";
             const nativeThreadId = `native-${scenario}-thread`;
             const seal = codexHomeSealReplay(scenario, nativeThreadId);
-            const { step, resumed, configRead, readOnlyLoad } = seal;
+            const { step, resumed, configRead, readOnlyLoad, listed, botLoadStatuses } = seal;
+            const grantedStatuses = Object.fromEntries(
+              [privateMail, workMail, MAC_CALENDAR_CONNECTION_ID].map((id) => [
+                `t3c-${id}`,
+                "connected",
+              ]),
+            );
             yield* seal.setMcpSession;
             const preamble = seal.onMeasuredVersion(
               codexReplayPreamble({
@@ -4992,7 +5028,12 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                 "features.skill_mcp_dependency_install": false,
               },
             };
-            const load = (first: number, release: boolean, params: unknown) => [
+            const load = (
+              first: number,
+              release: boolean,
+              params: unknown,
+              userStatuses: Readonly<Record<string, string>> = {},
+            ) => [
               ...(release
                 ? step(
                     first,
@@ -5008,12 +5049,11 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                 configRead,
               ),
               ...step(release ? first + 2 : first + 1, "thread/resume", params, resumed),
-              ...step(
-                release ? first + 3 : first + 2,
-                "config/read",
-                { includeLayers: false, cwd: "/workspace" },
-                configRead,
-              ),
+              ...listed(release ? first + 3 : first + 2, nativeThreadId, {
+                ...botLoadStatuses,
+                ...grantedStatuses,
+                ...userStatuses,
+              }),
               ...step(
                 release ? first + 4 : first + 3,
                 "thread/memoryMode/set",
@@ -5025,7 +5065,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
               scenario,
               entries: [
                 ...preamble,
-                // Ordinary to granted: release, read the user's servers, load, read again.
+                // Ordinary to granted: release, read the user's servers, load, list what loaded.
                 ...load(3, true, grantResume),
                 // The same connections resolving to the same values: no release.
                 ...load(8, false, grantResume),
@@ -5037,22 +5077,15 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                   excludeTurns: true,
                   ...readOnlyLoad,
                 }),
-                // The Bot's own-servers switch releases and loads without turning the user's off.
-                ...step(
-                  22,
-                  "thread/unsubscribe",
-                  { threadId: nativeThreadId },
-                  { status: "unsubscribed" },
-                ),
-                ...step(23, "thread/resume", grantResume, resumed),
-                ...step(
-                  24,
-                  "thread/memoryMode/set",
-                  { threadId: nativeThreadId, mode: "disabled" },
-                  {},
-                ),
+                // The Bot's own-servers switch releases and loads without turning the user's off,
+                // and expects them loaded.
+                ...load(22, true, grantResume, {
+                  probe: "connected",
+                  launch: "connected",
+                  remote: "notStarted",
+                }),
                 // Switching it off again releases and turns them off.
-                ...load(25, true, grantResume),
+                ...load(27, true, grantResume),
               ],
             });
             const resumeParams: Array<{ config: { mcp_servers: Record<string, unknown> } }> = [];
@@ -5217,7 +5250,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         const nativeThreadId = `native-${scenario}-thread`;
         const nativeTurnId = `native-${scenario}-turn`;
         const seal = codexHomeSealReplay(scenario, nativeThreadId);
-        const { step, resumed, configRead } = seal;
+        const { step, resumed, configRead, listed, botLoadStatuses } = seal;
         // Granted but not delivered, as a signed-out OAuth account is: the model is not told of it.
         const lapsedMail = McpConnectionId.make("2e2e2e2e-0000-4000-8000-00000000002e");
         const preamble = seal.onMeasuredVersion(
@@ -5326,7 +5359,12 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             ),
             // Codex starts the thread's servers as it loads, before any turn can show a notice.
             failed(privateMail),
-            ...step(6, "config/read", { includeLayers: false, cwd: "/workspace" }, configRead),
+            // Granted servers that failed or are still starting don't refuse the turn.
+            ...listed(6, nativeThreadId, {
+              ...botLoadStatuses,
+              [`t3c-${privateMail}`]: "failed",
+              [`t3c-${workMail}`]: "starting",
+            }),
             ...step(7, "thread/memoryMode/set", { threadId: nativeThreadId, mode: "disabled" }, {}),
             withReplayRequestId(preamble[5]!, 8),
             withReplayRequestId(preamble[6]!, 8),
@@ -5434,15 +5472,10 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             const scenario = "codex-grant-start";
             const nativeThreadId = `native-${scenario}-thread`;
             const seal = codexHomeSealReplay(scenario, nativeThreadId);
-            const { step, configRead } = seal;
-            const joined = {
-              ...configRead,
-              config: {
-                mcp_servers: {
-                  ...configRead.config.mcp_servers,
-                  newly_added: { command: "added" },
-                },
-              },
+            const { step, configRead, listed, botLoadStatuses, resumed } = seal;
+            const granted = {
+              [`t3c-${privateMail}`]: "connected",
+              [`t3c-${workMail}`]: "connected",
             };
             const measured = seal.onMeasuredVersion(
               codexReplayPreamble({
@@ -5470,24 +5503,53 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             };
             const read = (id: number, result: unknown) =>
               step(id, "config/read", { includeLayers: false, cwd: "/workspace" }, result);
+            const unsubscribe = (id: number, threadId: string) =>
+              step(id, "thread/unsubscribe", { threadId }, { status: "unsubscribed" });
+            const grantResume = { threadId: nativeThreadId, excludeTurns: true, ...grantConfig };
             const transcript = makeCodexReplayTranscript({
               scenario,
               entries: [
                 ...measured,
-                // A user server joins while a fresh Bot thread loads: released and refused.
+                // Codex has a server the Bot was not granted: released and refused.
                 ...read(3, configRead),
                 ...step(4, "thread/start", grantConfig, started(`${nativeThreadId}-fresh`)),
-                ...read(5, joined),
+                ...listed(5, `${nativeThreadId}-fresh`, {
+                  ...botLoadStatuses,
+                  ...granted,
+                  newly_added: "starting",
+                }),
+                ...unsubscribe(6, `${nativeThreadId}-fresh`),
+                // Also one Codex would only start once the model calls it.
+                ...unsubscribe(7, nativeThreadId),
+                ...read(8, configRead),
+                ...step(9, "thread/resume", grantResume, resumed),
+                ...listed(10, nativeThreadId, {
+                  ...botLoadStatuses,
+                  ...granted,
+                  lazy: "notStarted",
+                }),
+                ...unsubscribe(11, nativeThreadId),
+                // The same thread with granted servers still starting, and a server added to the
+                // config after the load, which the thread does not have.
+                ...unsubscribe(12, nativeThreadId),
+                ...read(13, configRead),
+                ...step(14, "thread/resume", grantResume, resumed),
+                ...listed(15, nativeThreadId, {
+                  ...botLoadStatuses,
+                  [`t3c-${privateMail}`]: "starting",
+                  [`t3c-${workMail}`]: "failed",
+                  added_later: null,
+                }),
                 ...step(
-                  6,
-                  "thread/unsubscribe",
-                  { threadId: `${nativeThreadId}-fresh` },
-                  { status: "unsubscribed" },
+                  16,
+                  "thread/memoryMode/set",
+                  { threadId: nativeThreadId, mode: "disabled" },
+                  {},
                 ),
                 // A fork of a Bot thread starts with the Bot's grants and nothing of the user's.
-                ...read(7, configRead),
+                ...read(17, configRead),
                 ...step(
-                  8,
+                  18,
                   "thread/fork",
                   {
                     threadId: nativeThreadId,
@@ -5513,7 +5575,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                   },
                   started(`${nativeThreadId}-fork`),
                 ),
-                ...read(9, configRead),
+                ...listed(19, `${nativeThreadId}-fork`, { ...botLoadStatuses, ...granted }),
               ],
             });
             const startParams: Array<{ config: { mcp_servers: Record<string, unknown> } }> = [];
@@ -5535,7 +5597,21 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                 runtimePolicy: grantPolicy,
               })
               .pipe(Effect.flip);
-            assert.equal(fresh._tag, "ProviderAdapterMcpConnectionsRefusedError");
+            assert.equal(
+              fresh.message,
+              "Codex loaded the MCP server \"newly_added\" into this Bot's conversation, but it isn't one of the Bot's granted connections, so nothing ran. Remove it from Codex's configuration, plugins or apps, then send again.",
+            );
+            const resume = harness.runtime.resumeThread({
+              providerThread: harness.providerThread,
+              modelSelection: CODEX_TEST_MODEL_SELECTION,
+              runtimePolicy: grantPolicy,
+            });
+            const lazy = yield* resume.pipe(Effect.flip);
+            assert.equal(
+              lazy._tag === "ProviderAdapterMcpConnectionsRefusedError" && lazy.serverName,
+              "lazy",
+            );
+            yield* resume;
             const fork = yield* harness.runtime.forkThread({
               sourceProviderThread: harness.providerThread,
               sourceProviderTurns: [],
@@ -11471,12 +11547,17 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                         change === "seal" ? seal.sealedResume : grantResume,
                         seal.resumed,
                       ),
-                      ...step(
-                        9,
-                        "config/read",
-                        { includeLayers: false, cwd: "/workspace" },
-                        seal.configRead,
-                      ),
+                      ...(change === "seal"
+                        ? step(
+                            9,
+                            "config/read",
+                            { includeLayers: false, cwd: "/workspace" },
+                            seal.configRead,
+                          )
+                        : seal.listed(9, RESUME_NATIVE_THREAD, {
+                            ...seal.botLoadStatuses,
+                            [`t3c-${privateMail}`]: "connected",
+                          })),
                       ...step(
                         10,
                         "thread/memoryMode/set",

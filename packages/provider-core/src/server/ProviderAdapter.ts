@@ -314,15 +314,20 @@ export class ProviderAdapterMcpConnectionsRefusedError extends Schema.TaggedErro
       "unavailable",
       "connection",
       "missing",
+      "unexpected",
     ]),
     connectionId: Schema.optional(McpConnectionId),
     connectionLabel: Schema.optional(Schema.String),
     problem: Schema.optional(McpConnectionProblem),
+    /** With `unexpected`: the server the provider loaded that is neither granted nor T3 Code's. */
+    serverName: Schema.optional(Schema.String),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {
   override get message(): string {
     switch (this.reason) {
+      case "unexpected":
+        return `Codex loaded the MCP server "${this.serverName}" into this Bot's conversation, but it isn't one of the Bot's granted connections, so nothing ran. Remove it from Codex's configuration, plugins or apps, then send again.`;
       case "connection":
         return `"${this.connectionLabel}" can't be used: ${this.problem === undefined ? "it is not valid." : mcpConnectionProblemMessage(this.problem)} Fix it in Settings → MCP connections, or remove it from this Bot. Nothing ran.`;
       case "missing":
