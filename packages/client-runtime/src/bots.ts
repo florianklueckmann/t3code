@@ -977,6 +977,8 @@ const BOT_MAINTENANCE_REASON_LABELS: ReadonlyMap<string, string> = new Map([
   ["unsupported", "not supported for this conversation"],
   ["retry_exhausted", "earlier attempts failed"],
   ["generation_failed", "the model call failed"],
+  ["user_stopped", "you stopped it"],
+  ["new_message", "a new message came first"],
 ]);
 function maintenanceReason(step: BotMaintenanceRunStep): string {
   if (step.status === "error" || step.reason === null) return step.reason ?? "";

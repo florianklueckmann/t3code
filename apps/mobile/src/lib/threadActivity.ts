@@ -60,7 +60,7 @@ import type {
   ScheduledTaskId,
   TurnItemId,
 } from "@t3tools/contracts";
-import { idleCompactionOf, isCompactionCommandMessage, RunId, ThreadId } from "@t3tools/contracts";
+import { isCompactionCommandMessage, RunId, ThreadId } from "@t3tools/contracts";
 import {
   classifyToolActivity,
   collectToolFilePaths,
@@ -82,6 +82,7 @@ import {
 } from "@t3tools/shared/toolOutput";
 import * as DateTime from "effect/DateTime";
 import {
+  automaticCompactionOf,
   IDLE_COMPACTION_TITLES,
   IDLE_COMPACTING_LABELS,
 } from "@t3tools/client-runtime/user-message";
@@ -367,7 +368,7 @@ export function threadFeedCompactionLabels(feed: ReadonlyArray<ThreadFeedEntry>)
   const labelsByEntryId = new Map<string, { title: string; compacting: string }>();
   const pendingResumeAgeByRunId = new Map<RunId, string>();
   for (const entry of feed) {
-    const reason = entry.type === "message" ? idleCompactionOf(entry.message) : undefined;
+    const reason = entry.type === "message" ? automaticCompactionOf(entry.message) : undefined;
     if (entry.type === "message" && entry.message.runId !== null && reason !== undefined) {
       labelsByRunId.set(entry.message.runId, {
         title: IDLE_COMPACTION_TITLES[reason],

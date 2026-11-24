@@ -3125,15 +3125,26 @@ it.effect.each([
   }).pipe(Effect.provide(storeOnly)),
 );
 
-/** What the Codex adapter projects for a compaction item and the reason a turn was stopped. */
+/**
+ * What the Codex adapter projects for a compaction item and the reason a turn was stopped, and
+ * the reason a T3 Stop or a skipping message asked for.
+ */
 const compactionTrace = Effect.fn("fixture.compactionTrace")(function* (
   runId: string,
-  trace: { readonly compaction: "completed" | null; readonly stop: string | null },
+  trace: {
+    readonly compaction: "completed" | null;
+    readonly stop: string | null;
+    readonly request?: string;
+  },
 ) {
   const main = yield* SqlClient.SqlClient;
   if (trace.compaction !== null)
     yield* main`INSERT INTO orchestration_v2_projection_turn_items (turn_item_id, thread_id, run_id, ordinal, type, status, updated_at, payload_json)
       VALUES (${`${runId}:compaction`}, ${home}, ${runId}, 1, 'compaction', ${trace.compaction}, ${now}, '{}')`;
+  if (trace.request !== undefined)
+    yield* main`INSERT INTO orchestration_v2_projection_turn_items (turn_item_id, thread_id, run_id, ordinal, type, status, updated_at, payload_json)
+      VALUES (${`${runId}:interrupt-request`}, ${home}, ${runId}, 97, 'run_interrupt_request', 'completed', ${now},
+        ${JSON.stringify({ message: trace.request })})`;
   if (trace.stop !== null)
     yield* main`INSERT INTO orchestration_v2_projection_turn_items (turn_item_id, thread_id, run_id, ordinal, type, status, updated_at, payload_json)
       VALUES (${`${runId}:interrupt-result`}, ${home}, ${runId}, 98, 'run_interrupt_result', 'interrupted', ${now},
@@ -3156,14 +3167,15 @@ it.effect.each([
     stop: "preCompact hook (user): Save a checkpoint.",
   },
   {
-    name: "a user stop after the compaction",
+    name: "an agent's stop after the compaction",
     status: "interrupted",
     compaction: "completed",
-    stop: "Stopped by the user",
+    stop: "Stopped by the lead agent",
+    request: "Stopped by the lead agent",
   },
 ] as const)(
   "retries a compaction that ended with $name under a new identity, at most twice in a row",
-  ({ status, compaction, stop }) =>
+  ({ status, compaction, stop, ...trace }) =>
     Effect.gen(function* () {
       yield* compactableHome(large);
       const { generate } = yield* recordingGenerator(() => Effect.succeed({ operations: [] }));
@@ -3179,7 +3191,7 @@ it.effect.each([
               .compactHome(scope)
               .pipe(Effect.forkChild({ startImmediately: true }));
             const runId = yield* Queue.take(turns.started);
-            yield* compactionTrace(runId, { compaction, stop });
+            yield* compactionTrace(runId, { compaction, stop, ...trace });
             yield* endScopedRun(runId, status, homeSequence, homeEvents);
             const result = yield* Fiber.join(attempt);
             assert.deepEqual(result.status === "failed" && result.reason, `run_${status}`);
@@ -3216,6 +3228,50 @@ it.effect.each([
         }),
       );
     }).pipe(Effect.provide(storeOnly)),
+);
+
+it.effect.each([
+  {
+    name: "the user's Stop after the compaction",
+    compaction: "completed",
+    request: "Stopped by user",
+    stop: "Stopped by user",
+    reason: "user_stopped",
+  },
+  {
+    name: "a message sent before it started",
+    compaction: null,
+    request: "Bot maintenance skipped compaction because a new message arrived",
+    stop: "Bot maintenance skipped compaction because a new message arrived",
+    reason: "new_message",
+  },
+] as const)("records a compaction that gave way to $name as skipped", ({ reason, ...trace }) =>
+  Effect.gen(function* () {
+    yield* compactableHome(large);
+    const { generate } = yield* recordingGenerator(() => Effect.succeed({ operations: [] }));
+    yield* withEngine(generate, ({ maintenance, homeSequence, homeTurns, homeEvents }) =>
+      Effect.gen(function* () {
+        yield* enable(maintenance);
+        const turns = yield* scopedTurns(homeSequence);
+        yield* Ref.set(homeTurns, turns.dispatch);
+        const attempt = yield* maintenance
+          .compactHome(scope)
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        const runId = yield* Queue.take(turns.started);
+        yield* compactionTrace(runId, trace);
+        yield* endScopedRun(runId, "interrupted", homeSequence, homeEvents);
+        const result = yield* Fiber.join(attempt);
+        assert.deepEqual(result.status === "skipped" && [result.reason, result.homeRunId], [
+          reason,
+          runId,
+        ]);
+        assert.deepEqual(
+          (yield* compactOutcomes).map((row) => [row.status, row.outcome]),
+          [["skipped", { compact: "skipped", reason, homeRunId: runId }]],
+        );
+      }),
+    );
+  }).pipe(Effect.provide(storeOnly)),
 );
 
 it.effect("counts a compaction a postCompact hook stopped afterwards as compacted", () =>

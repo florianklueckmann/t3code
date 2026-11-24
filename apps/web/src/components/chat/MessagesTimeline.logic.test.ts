@@ -1,4 +1,8 @@
-import { ThreadId, type WorktreeSetupSnapshot } from "@t3tools/contracts";
+import {
+  botMaintenanceCompactionId,
+  ThreadId,
+  type WorktreeSetupSnapshot,
+} from "@t3tools/contracts";
 import {
   CheckpointRef,
   NodeId,
@@ -644,9 +648,19 @@ describe("deriveMessagesTimelineRows", () => {
     const [history0, history1, history2, liveUser, , liveAssistant] = fixture.visibleTurnItems;
     if (liveUser?.item.type !== "user_message" || liveAssistant?.item.type !== "assistant_message")
       throw new Error("Expected live fixture items");
-    const compactPrompt = (idleCompaction: "beforeCacheExpires" | "onReturn" | undefined) => ({
+    const compactPrompt = (
+      reason: "beforeCacheExpires" | "onReturn" | "botMaintenance" | undefined,
+    ) => ({
       ...liveUser,
-      item: { ...liveUser.item, text: "/compact", idleCompaction },
+      item:
+        reason === "botMaintenance"
+          ? {
+              ...liveUser.item,
+              text: "/compact",
+              messageId: MessageId.make(botMaintenanceCompactionId("home", 1)),
+              createdBy: "system" as const,
+            }
+          : { ...liveUser.item, text: "/compact", idleCompaction: reason },
     });
     const compaction = {
       ...liveAssistant,
@@ -689,6 +703,11 @@ describe("deriveMessagesTimelineRows", () => {
         "Context automatically compacted before cache expiry",
       ],
       ["onReturn", { kind: "working", compacting: true }, "Context compacted before sending"],
+      [
+        "botMaintenance",
+        { kind: "context-compaction", active: true, label: "Compacting for Bot maintenance…" },
+        "Context compacted by Bot maintenance",
+      ],
       [undefined, { kind: "context-compaction", active: true }, undefined],
     ] as const) {
       const prompt = compactPrompt(reason);

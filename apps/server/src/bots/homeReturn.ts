@@ -1,23 +1,11 @@
-import {
-  isCompactionCommandMessage,
-  type OrchestrationV2ConversationMessage,
-  type OrchestrationV2ThreadProjection,
+import type {
+  OrchestrationV2ConversationMessage,
+  OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
 
-export const botMaintenanceCompactionId = (home: string, sequence: number) =>
-  `bot-maintenance:compact:${home}:${sequence}`;
-
-/** Only the server authors `system` messages, so no client can send one of these. */
-export function isBotMaintenanceCompaction(
-  message: (Parameters<typeof isCompactionCommandMessage>[0] & { readonly id: string }) | undefined,
-) {
-  return (
-    message !== undefined &&
-    message.createdBy === "system" &&
-    message.id.startsWith("bot-maintenance:compact:") &&
-    isCompactionCommandMessage(message)
-  );
-}
+/** The stop reason, shown in the Home, when any new message skips a maintenance compaction. */
+export const MAINTENANCE_COMPACTION_SKIPPED =
+  "Bot maintenance skipped compaction because a new message arrived";
 
 export function isDirectHomeInput(message: OrchestrationV2ConversationMessage | undefined) {
   return (

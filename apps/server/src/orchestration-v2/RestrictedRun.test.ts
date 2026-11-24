@@ -550,6 +550,15 @@ it.layer(layerTest)("restricted Bot Home runs", (it) => {
         const projection = yield* orchestrator.getThreadProjection(home.threadId);
         const skipped = projection.runs.find((run) => run.id === compaction.id)!;
         assert.notInclude(["preparing", "starting", "running"], skipped.status);
+        // The Home shows why the compaction stopped.
+        assert.deepEqual(
+          projection.turnItems.flatMap((item) =>
+            item.runId === compaction.id && item.type === "run_interrupt_result"
+              ? [item.message]
+              : [],
+          ),
+          ["Bot maintenance skipped compaction because a new message arrived"],
+        );
         const userRun = projection.runs.find((run) => run.userMessageId === messageId)!;
         assert.strictEqual(userRun.status, "queued");
         assert.strictEqual(userRun.queuePosition, 1);

@@ -1,4 +1,3 @@
-import { isBotMaintenanceCompaction } from "../bots/homeReturn.ts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import {
@@ -12,6 +11,7 @@ import {
   type OrchestrationV2Run,
   type OrchestrationV2RunAttempt,
   type OrchestrationV2TurnItem,
+  isBotMaintenanceCompaction,
   isCompactionCommandMessage,
   parseGoalCommand,
   type ProjectId,
