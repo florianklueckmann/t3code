@@ -1,5 +1,5 @@
 import { sameBotAppearance, savedBotAppearance } from "@t3tools/client-runtime/bot-appearance";
-import { botProviderDrivers } from "@t3tools/client-runtime/bots";
+import { botModelCapabilities, botProviderDrivers } from "@t3tools/client-runtime/bots";
 import type {
   BotAppearance,
   BotAttachProjectInput,
@@ -66,7 +66,12 @@ export function botModelOptions(
   config: ServerConfig | null,
   selected: ModelSelection | null,
 ): ReadonlyArray<ModelOption> {
-  return buildModelOptions(config, selected, undefined, null).filter(botModelOptionFilter(config));
+  return buildModelOptions(config, selected, undefined, null)
+    .filter(botModelOptionFilter(config))
+    .map((option) => ({
+      ...option,
+      capabilities: botModelCapabilities(option.providerDriver, option.capabilities),
+    }));
 }
 
 export function defaultBotModelSelection(config: ServerConfig | null): ModelSelection | null {

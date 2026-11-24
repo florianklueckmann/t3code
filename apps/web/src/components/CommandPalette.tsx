@@ -1670,7 +1670,7 @@ function OpenCommandPaletteDialog(props: {
     });
   }
 
-  actionItems.push(...botItems);
+  actionItems.push(...botItems.actions);
 
   actionItems.push({
     kind: "action",
@@ -1816,6 +1816,7 @@ function OpenCommandPaletteDialog(props: {
       });
     },
   }));
+  settingsSearchItems.push(...botItems.settings);
   const sourceSelectionViewValue =
     addProjectEnvironmentId === null ? null : `sources:${addProjectEnvironmentId}`;
   const activeGroups =

@@ -21,7 +21,7 @@ import {
   type McpConnectionOAuthState,
 } from "@t3tools/contracts";
 import { PlusIcon } from "lucide-react";
-import { useId, useState } from "react";
+import { type Ref, useId, useState } from "react";
 
 import { useNowAfter } from "../../hooks/useDeadline";
 import { randomUUID } from "../../lib/utils";
@@ -55,11 +55,13 @@ export function BotMcpGrantsSetting({
   botId,
   capabilities,
   formLocked,
+  ref,
 }: {
   readonly environment: EnvironmentPresentation;
   readonly botId: BotId;
   readonly capabilities: BotCapabilities | undefined;
   readonly formLocked: boolean;
+  readonly ref?: Ref<HTMLDivElement> | undefined;
 }) {
   const environmentId = environment.environmentId;
   const descriptor = environment.serverConfig?.environment;
@@ -133,7 +135,7 @@ export function BotMcpGrantsSetting({
   };
 
   return (
-    <div className="space-y-2">
+    <div ref={ref} className="space-y-2">
       <div className="flex items-center justify-between gap-2">
         <Label>MCP connections</Label>
         <Button

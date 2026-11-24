@@ -32,6 +32,7 @@ import type {
   BotTaskStatus,
   BotTaskSummary,
   CommandId,
+  ModelCapabilities,
   ModelSelection,
   ProjectId,
   ScheduledTask,
@@ -59,6 +60,49 @@ export function botNoProviderLabel(drivers: ReadonlyArray<string>): string {
   const list =
     names.length <= 1 ? (names[0] ?? "") : `${names.slice(0, -1).join(", ")} or ${names.at(-1)}`;
   return `Bots run on ${list}. Add a ${list} provider in Providers to pick a model.`;
+}
+
+// Codex Maintenance runs through sealed generation, which refuses every other option.
+const CODEX_BOT_MODEL_OPTIONS: ReadonlySet<string> = new Set(["reasoningEffort", "serviceTier"]);
+
+/**
+ * The model's capabilities with only the options every Bot run honors. Ultracode needs Claude's
+ * Workflow tool, which sealed Bot runs block.
+ */
+export function botModelCapabilities(
+  driver: string,
+  capabilities: ModelCapabilities | null,
+): ModelCapabilities | null {
+  if (capabilities?.optionDescriptors === undefined) return capabilities;
+  return {
+    ...capabilities,
+    optionDescriptors: capabilities.optionDescriptors.filter((descriptor) =>
+      driver === "codex"
+        ? CODEX_BOT_MODEL_OPTIONS.has(descriptor.id)
+        : descriptor.id !== "ultracode",
+    ),
+  };
+}
+
+/** The Bot editor's sections, which search finds by name and links open at. */
+export const BOT_EDITOR_SECTIONS = [
+  { id: "mcp", title: "MCP connections", searchTerms: ["tools", "calendars", "grants"] },
+  {
+    id: "projects",
+    title: "Projects",
+    searchTerms: ["routines", "working notes", "preferred sources", "attach"],
+  },
+  { id: "alerts", title: "Alerts", searchTerms: ["quiet hours", "alerts per day", "remit"] },
+  {
+    id: "maintenance",
+    title: "Maintenance",
+    searchTerms: ["daily home check", "diagnose failed routines"],
+  },
+] as const;
+export type BotEditorSectionId = (typeof BOT_EDITOR_SECTIONS)[number]["id"];
+
+export function isBotEditorSectionId(value: unknown): value is BotEditorSectionId {
+  return BOT_EDITOR_SECTIONS.some((section) => section.id === value);
 }
 
 type BotCapabilityFeature = "mcpGrants" | "ownMcpServers" | "noChangesRoutines";

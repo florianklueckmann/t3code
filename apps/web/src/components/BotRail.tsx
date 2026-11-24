@@ -197,7 +197,7 @@ function BotRailItem({
 
   const openSettings = () => {
     closeMobileSidebar();
-    void navigate({ to: "/settings/bots", search: { machine: environmentId } });
+    void navigate({ to: "/settings/bots", search: { machine: environmentId, bot: bot.id } });
   };
   const openConversation = (homeThreadId: (typeof contexts)[number]["homeThreadId"]) => {
     closeMobileSidebar();

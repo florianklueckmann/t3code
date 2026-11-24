@@ -19,6 +19,8 @@ import {
   describeBotRoutineTiming,
   emptyBotRoutineDraft,
   emptyBotSourceDraft,
+  botModelCapabilities,
+  type BotEditorSectionId,
   type BotProjectContextDraft,
   type BotSourceDraft,
 } from "@t3tools/client-runtime/bots";
@@ -50,6 +52,7 @@ import {
   type ScheduledTaskId,
   type ThreadId,
 } from "@t3tools/contracts";
+import { createModelSelection } from "@t3tools/shared/model";
 import { useNavigate } from "@tanstack/react-router";
 import {
   ArchiveIcon,
@@ -62,7 +65,7 @@ import {
   PlusIcon,
   Trash2Icon,
 } from "lucide-react";
-import { Fragment, type ReactNode, useContext, useState } from "react";
+import { Fragment, type ReactNode, type Ref, useContext, useEffect, useState } from "react";
 
 import { useEnvironmentSettings } from "../../hooks/useSettings";
 import { cn, randomUUID } from "../../lib/utils";
@@ -77,6 +80,7 @@ import { buildThreadRouteParams } from "../../threadRoutes";
 import { BotAvatar } from "../BotAvatar";
 import { BotTaskRow, useUpcomingInstantFormatter } from "../chat/BotTaskCards";
 import { ProviderModelPicker } from "../chat/ProviderModelPicker";
+import { TraitsPicker } from "../chat/TraitsPicker";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Checkbox } from "../ui/checkbox";
@@ -207,7 +211,13 @@ function defaultModelSelection(
   return entry && model ? { instanceId: entry.instanceId, model: model.slug } : null;
 }
 
-export function BotsSettingsPanel() {
+/** A link to one Bot's editor, optionally opened at one of its sections. */
+interface BotEditorLink {
+  readonly bot?: BotId;
+  readonly section?: BotEditorSectionId;
+}
+
+export function BotsSettingsPanel(link: BotEditorLink) {
   const { environment } = useSettingsScope();
   return (
     <SettingsPageContainer>
@@ -223,23 +233,54 @@ export function BotsSettingsPanel() {
           />
         </SettingsSection>
       ) : (
-        <EnvironmentBots key={environment.environmentId} environment={environment} />
+        <EnvironmentBots key={environment.environmentId} environment={environment} link={link} />
       )}
     </SettingsPageContainer>
   );
 }
 
-function EnvironmentBots({ environment }: { readonly environment: EnvironmentPresentation }) {
+function EnvironmentBots({
+  environment,
+  link,
+}: {
+  readonly environment: EnvironmentPresentation;
+  readonly link: BotEditorLink;
+}) {
   const environmentId = environment.environmentId;
   const botsQuery = useEnvironmentQuery(serverEnvironment.botsLive({ environmentId, input: {} }));
   const canCreate = useAtomValue(serverEnvironment.createBot.permissionAtom(environmentId));
-  const [editor, setEditor] = useState<{ readonly botId: BotId | null } | null>(null);
-  const registry = useContext(RegistryContext);
+  const [editor, setEditor] = useState<{
+    readonly botId: BotId | null;
+    readonly section?: BotEditorSectionId | undefined;
+  } | null>(null);
   const bots = botsQuery.data?.bots.toSorted(
     (left, right) =>
       Number(left.archivedAt !== null) - Number(right.archivedAt !== null) ||
       left.name.localeCompare(right.name),
   );
+  // A link opens its Bot's editor once that Bot is listed. An editor already open keeps its draft.
+  const linkKey = link.bot === undefined ? undefined : `${link.bot}#${link.section ?? ""}`;
+  const [openedLink, setOpenedLink] = useState<string | undefined>();
+  if (linkKey === undefined && openedLink !== undefined) setOpenedLink(undefined);
+  if (
+    linkKey !== undefined &&
+    linkKey !== openedLink &&
+    link.bot !== undefined &&
+    bots?.some((bot) => bot.id === link.bot)
+  ) {
+    setOpenedLink(linkKey);
+    if (editor === null) setEditor({ botId: link.bot, section: link.section });
+  }
+  const navigate = useNavigate({ from: "/settings/bots" });
+  const closeEditor = () => {
+    setEditor(null);
+    if (link.bot === undefined) return;
+    void navigate({
+      to: "/settings/bots",
+      search: ({ bot: _bot, section: _section, ...rest }) => rest,
+      replace: true,
+    });
+  };
   return (
     <>
       <SettingsSection
@@ -271,13 +312,7 @@ function EnvironmentBots({ environment }: { readonly environment: EnvironmentPre
               key={bot.id}
               environmentId={environmentId}
               bot={bot}
-              onEdit={() => {
-                // A cached detail may predate the last save or an MCP edit.
-                registry.refresh(
-                  serverEnvironment.botDetail({ environmentId, input: { botId: bot.id } }),
-                );
-                setEditor({ botId: bot.id });
-              }}
+              onEdit={() => setEditor({ botId: bot.id })}
             />
           ))
         )}
@@ -287,8 +322,9 @@ function EnvironmentBots({ environment }: { readonly environment: EnvironmentPre
           key={editor.botId ?? "new"}
           environment={environment}
           botId={editor.botId}
+          section={editor.section}
           onCreated={(botId) => setEditor({ botId })}
-          onClose={() => setEditor(null)}
+          onClose={closeEditor}
         />
       ) : null}
     </>
@@ -405,22 +441,29 @@ function BotRow({
 function BotEditorDialog({
   environment,
   botId,
+  section,
   onCreated,
   onClose,
 }: {
   readonly environment: EnvironmentPresentation;
   readonly botId: BotId | null;
+  readonly section: BotEditorSectionId | undefined;
   readonly onCreated: (botId: BotId) => void;
   readonly onClose: () => void;
 }) {
   const environmentId = environment.environmentId;
   const [saving, setSaving] = useState(false);
-  const detailQuery = useEnvironmentQuery(
-    botId === null ? null : serverEnvironment.botDetail({ environmentId, input: { botId } }),
-  );
-  // The form starts from the answer Edit asked for, not a cached one a save or an MCP edit has
+  const registry = useContext(RegistryContext);
+  const detailAtom =
+    botId === null ? null : serverEnvironment.botDetail({ environmentId, input: { botId } });
+  const detailQuery = useEnvironmentQuery(detailAtom);
+  // The form starts from an answer asked for on open, not a cached one a save or an MCP edit has
   // outdated, and keeps its draft through later refreshes.
   const [openedAt] = useState(() => Date.now());
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- asks the server for the Bot's current detail once per opened editor
+  useEffect(() => {
+    if (detailAtom !== null) registry.refresh(detailAtom);
+  }, [detailAtom, registry]);
   const [initialDetail, setInitialDetail] = useState<BotDetail | null>(null);
   if (
     initialDetail === null &&
@@ -455,6 +498,7 @@ function BotEditorDialog({
             saved={initialDetail}
             current={detailQuery.data}
             refreshDetail={detailQuery.refresh}
+            section={section}
             saving={saving}
             onSavingChange={setSaving}
             onCreated={onCreated}
@@ -498,6 +542,7 @@ function BotEditorForm({
   saved,
   current,
   refreshDetail,
+  section,
   saving,
   onSavingChange: setSaving,
   onCreated,
@@ -508,12 +553,19 @@ function BotEditorForm({
   readonly saved: BotDetail | null;
   readonly current: BotDetail | null;
   readonly refreshDetail: () => void;
+  /** Brought into view when it first shows. */
+  readonly section: BotEditorSectionId | undefined;
   readonly saving: boolean;
   readonly onSavingChange: (saving: boolean) => void;
   readonly onCreated: (botId: BotId) => void;
   readonly onClose: () => void;
 }) {
   const environmentId = environment.environmentId;
+  // Stable, so the ref runs only when the section's element mounts.
+  const [scrollIntoView] = useState(
+    () => (node: HTMLDivElement | null) => node?.scrollIntoView({ block: "start" }),
+  );
+  const sectionRef = (id: BotEditorSectionId) => (id === section ? scrollIntoView : undefined);
   const appearanceSupported =
     environment.serverConfig?.environment.capabilities.botAppearance === true;
   const maintenanceSupported =
@@ -549,6 +601,7 @@ function BotEditorForm({
   const modelSelection =
     draft.modelSelection ?? saved?.modelSelection ?? defaultModelSelection(entries);
   const activeInstanceId = modelSelection?.instanceId ?? entries[0]?.instanceId;
+  const activeEntry = entries.find((entry) => entry.instanceId === activeInstanceId);
   const modelOptionsByInstance = getCustomModelOptionsByInstance(
     settings,
     providers,
@@ -704,21 +757,52 @@ function BotEditorForm({
               <p className="text-sm text-muted-foreground">{botNoProviderLabel(drivers)}</p>
             ) : (
               <div className="space-y-1.5">
-                <ProviderModelPicker
-                  environmentId={environmentId}
-                  disabled={saving || archived}
-                  activeInstanceId={activeInstanceId}
-                  model={modelSelection?.model ?? ""}
-                  lockedProvider={null}
-                  instanceEntries={entries}
-                  modelOptionsByInstance={modelOptionsByInstance}
-                  isComposerOwned={false}
-                  triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
-                  onInstanceModelChange={(instanceId, model) => {
-                    setModelError(null);
-                    setDraft((prev) => ({ ...prev, modelSelection: { instanceId, model } }));
-                  }}
-                />
+                <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                  <ProviderModelPicker
+                    environmentId={environmentId}
+                    disabled={saving || archived}
+                    activeInstanceId={activeInstanceId}
+                    model={modelSelection?.model ?? ""}
+                    lockedProvider={null}
+                    instanceEntries={entries}
+                    modelOptionsByInstance={modelOptionsByInstance}
+                    isComposerOwned={false}
+                    triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
+                    onInstanceModelChange={(instanceId, model) => {
+                      setModelError(null);
+                      setDraft((prev) => ({ ...prev, modelSelection: { instanceId, model } }));
+                    }}
+                  />
+                  {modelSelection !== null && activeEntry !== undefined ? (
+                    <TraitsPicker
+                      provider={activeEntry.driverKind}
+                      instanceId={modelSelection.instanceId}
+                      models={activeEntry.models.map((model) => ({
+                        ...model,
+                        capabilities: botModelCapabilities(
+                          activeEntry.driverKind,
+                          model.capabilities,
+                        ),
+                      }))}
+                      model={modelSelection.model}
+                      modelOptions={modelSelection.options ?? []}
+                      allowPromptInjectedEffort={false}
+                      disabled={saving || archived}
+                      triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
+                      onModelOptionsChange={(options) => {
+                        setModelError(null);
+                        setDraft((prev) => ({
+                          ...prev,
+                          modelSelection: createModelSelection(
+                            modelSelection.instanceId,
+                            modelSelection.model,
+                            options,
+                          ),
+                        }));
+                      }}
+                    />
+                  ) : null}
+                </div>
                 {modelError === null ? null : (
                   <p role="alert" className="text-sm text-destructive">
                     {modelError}
@@ -755,6 +839,7 @@ function BotEditorForm({
           </div>
           {current !== null ? (
             <BotMcpGrantsSetting
+              ref={sectionRef("mcp")}
               environment={environment}
               botId={current.id}
               capabilities={current.capabilities}
@@ -763,6 +848,7 @@ function BotEditorForm({
           ) : null}
           {current !== null ? (
             <BotProjectContexts
+              ref={sectionRef("projects")}
               environmentId={environmentId}
               bot={current}
               disabled={saving || archived}
@@ -773,7 +859,7 @@ function BotEditorForm({
           ) : null}
         </fieldset>
         {current !== null ? (
-          <div className="mt-5">
+          <div ref={sectionRef("alerts")} className="mt-5">
             <BotAttentionSetting
               environmentId={environmentId}
               botId={current.id}
@@ -783,7 +869,7 @@ function BotEditorForm({
         ) : null}
         {/* Outside the fieldset so pausing stays reachable for an archived Bot or a detached project. */}
         {current !== null && maintenanceSupported ? (
-          <div className="mt-5 space-y-3">
+          <div ref={sectionRef("maintenance")} className="mt-5 space-y-3">
             {current.projects.map((context) => (
               <Fragment key={context.projectId}>
                 <BotMaintenanceSetting
@@ -836,6 +922,7 @@ function BotProjectContexts({
   draftOf,
   onDraftChange,
   onChanged,
+  ref,
 }: {
   readonly environmentId: EnvironmentId;
   readonly bot: BotDetail;
@@ -843,6 +930,7 @@ function BotProjectContexts({
   readonly draftOf: (context: BotProjectContext) => BotProjectContextDraft;
   readonly onDraftChange: (context: BotProjectContext, draft: BotProjectContextDraft) => void;
   readonly onChanged: () => void;
+  readonly ref?: Ref<HTMLDivElement> | undefined;
 }) {
   const { projects, titleOf } = useEnvironmentProjectTitles(environmentId);
   const attachProject = useAtomCommand(serverEnvironment.attachBotProject, {
@@ -886,7 +974,7 @@ function BotProjectContexts({
     );
 
   return (
-    <div className="space-y-3">
+    <div ref={ref} className="space-y-3">
       <div className="space-y-1">
         <Label>Projects</Label>
         <p className="text-sm text-muted-foreground">
