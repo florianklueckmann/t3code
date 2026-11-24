@@ -17,6 +17,7 @@ interface Routine {
   readonly bot_id: string | null;
   readonly bot_session_at: string | null;
   readonly bot_allow_changes: number;
+  readonly bot_watch: number;
   readonly schedule_revision: number;
 }
 interface Intent {
@@ -27,6 +28,7 @@ interface Intent {
   readonly bot_id: string | null;
   readonly bot_session_at: string | null;
   readonly bot_allow_changes: number;
+  readonly bot_watch: number;
   readonly schedule_revision: number;
   readonly removing: number;
 }
@@ -51,6 +53,7 @@ export class BotRoutineStore extends Context.Service<
               readonly botId: string;
               readonly sessionAt?: string | null | undefined;
               readonly allowChanges?: boolean | undefined;
+              readonly watch?: boolean | undefined;
             }
           | undefined;
         readonly bump: boolean;
@@ -126,12 +129,14 @@ export const layer = Layer.effect(
         Effect.gen(function* () {
           if (intent.removing === 1) {
             yield* bots`DELETE FROM bot_routines WHERE task_id = ${intent.task_id}`;
+            yield* bots`DELETE FROM bot_watch_posts WHERE scheduled_task_id = ${intent.task_id}`;
           } else if (rows.length > 0) {
-            yield* bots`INSERT INTO bot_routines (task_id, bot_id, bot_session_at, schedule_revision, bot_allow_changes, created_by_thread_id)
-          VALUES (${intent.task_id}, ${intent.bot_id}, ${intent.bot_session_at}, ${intent.schedule_revision}, ${intent.bot_allow_changes}, ${intent.created_by_thread_id})
+            yield* bots`INSERT INTO bot_routines (task_id, bot_id, bot_session_at, schedule_revision, bot_allow_changes, bot_watch, created_by_thread_id)
+          VALUES (${intent.task_id}, ${intent.bot_id}, ${intent.bot_session_at}, ${intent.schedule_revision}, ${intent.bot_allow_changes}, ${intent.bot_watch}, ${intent.created_by_thread_id})
           ON CONFLICT(task_id) DO UPDATE SET bot_id = excluded.bot_id,
             bot_session_at = excluded.bot_session_at, schedule_revision = excluded.schedule_revision,
-            bot_allow_changes = excluded.bot_allow_changes, created_by_thread_id = excluded.created_by_thread_id`;
+            bot_allow_changes = excluded.bot_allow_changes, bot_watch = excluded.bot_watch,
+            created_by_thread_id = excluded.created_by_thread_id`;
           }
           yield* clearIntent;
         }),
@@ -184,6 +189,7 @@ export const layer = Layer.effect(
             bot_id: input.target?.botId ?? null,
             bot_session_at: input.target?.sessionAt ?? null,
             bot_allow_changes: input.target?.allowChanges ? 1 : 0,
+            bot_watch: input.target?.watch ? 1 : 0,
             schedule_revision: (current?.schedule_revision ?? 0) + (current && input.bump ? 1 : 0),
             removing: input.removing ? 1 : 0,
           };

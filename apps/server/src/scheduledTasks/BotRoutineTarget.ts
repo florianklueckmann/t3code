@@ -19,6 +19,8 @@ export interface BotRoutineOccurrence {
   readonly dueAt: string;
   readonly sessionAt: string | null;
   readonly allowChanges: boolean;
+  /** A standing watch: this run posts only what is new, and otherwise shows nothing. */
+  readonly watch?: boolean;
   readonly botId: BotId;
   readonly projectId: ProjectId;
   readonly title: string;

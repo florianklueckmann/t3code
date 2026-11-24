@@ -206,6 +206,7 @@ it.effect.each(
             [23, "BotCalendarWrites"],
             [24, "BotMcpCalendarChoice"],
             [25, "BotLearningSuggestions"],
+            [26, "BotWatch"],
           ],
         );
         return { ...current, botHistory };

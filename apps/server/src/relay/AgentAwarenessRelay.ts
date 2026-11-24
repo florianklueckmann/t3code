@@ -665,7 +665,7 @@ export const make = Effect.gen(function* () {
       )
         return state;
       if (
-        (task.status === "cancelled" || task.status === "skipped") &&
+        (task.status === "cancelled" || task.status === "skipped" || task.quiet) &&
         task.resultRunId === thread.value.latestRunId
       )
         return null;

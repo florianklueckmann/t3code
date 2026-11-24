@@ -58,6 +58,17 @@ that exactly one routine is about it afterwards, and that there is no other rout
 routine" check covers T3B-71: a deadline the user only mentions goes into the working
 notes with an offered reminder, not into a routine.
 
+The `watch-*` cases and `sets-up-standing-watch` cover T3B-112, a standing assignment instead
+of a routine per session. A watch case writes a session schedule dated from the sample's start,
+creates one recurring routine with `watch: true` and runs it unattended once or twice. It
+grades what reaches the user: `list_tasks` leaves out a run that showed nothing. An unprepared
+near session must post a recap that names its file and the open question; a prepared or distant
+session and a second check on the same session must post nothing; and no run may read the
+folder the brief excludes or change a file. The quiet cases fail on a server without the watch,
+where every run is a result; such a server refuses `watch`, so pass `--plain-routines` to run
+the same brief there as an ordinary routine. `sets-up-standing-watch` grades the Home: one recurring watch
+without changes, not a routine per session.
+
 `reminder-after-agreement` is its control: the same first turn, then "Yes, please remind me."
 It grades that no routine exists before the agreement and that one reminder about the decision
 runs in the week before the Tuesday deadline.

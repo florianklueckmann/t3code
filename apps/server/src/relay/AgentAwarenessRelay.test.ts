@@ -190,8 +190,12 @@ const seedBot = Effect.gen(function* () {
 });
 
 /** A task the user started unless `byHand` says otherwise, so the alert budget stays out. */
-type TestTask = Omit<BotTaskService.BotTaskAwareness, "botId" | "homeThreadId" | "byHand"> & {
+type TestTask = Omit<
+  BotTaskService.BotTaskAwareness,
+  "botId" | "homeThreadId" | "byHand" | "quiet"
+> & {
   byHand?: boolean;
+  quiet?: boolean;
 };
 const HOME_THREAD_ID = ThreadId.make("bot-home:bot:relay-project");
 
@@ -387,6 +391,7 @@ const makeTestRelay = Effect.fnUntraced(function* (
               botId: BotId.make("bot"),
               homeThreadId: HOME_THREAD_ID,
               byHand: task.byHand ?? true,
+              quiet: task.quiet ?? false,
             })),
         ),
     }),
@@ -1503,11 +1508,13 @@ describe("AgentAwarenessRelay", () => {
   );
 
   it.effect.each([
-    { byHand: false, alerts: 0 },
-    { byHand: true, alerts: 1 },
+    { byHand: false, quiet: false, alerts: 0, held: 1 },
+    { byHand: true, quiet: false, alerts: 1, held: 0 },
+    // A watch run with nothing new is no alert at all: not sent, not held, not in a digest.
+    { byHand: false, quiet: true, alerts: 0, held: 0 },
   ])(
-    "holds a proactive Bot result in quiet hours and over the limit and sends one digest as they end (by hand: $byHand)",
-    ({ byHand, alerts }) =>
+    "holds a proactive Bot result in quiet hours and over the limit and sends one digest as they end (by hand: $byHand, quiet: $quiet)",
+    ({ byHand, quiet, alerts, held }) =>
       Effect.gen(function* () {
         yield* seedBot;
         yield* TestClock.setTime(DateTime.toEpochMillis(DateTime.makeUnsafe(QUIET_NIGHT)));
@@ -1551,6 +1558,7 @@ describe("AgentAwarenessRelay", () => {
           status: "completed",
           resultRunId: RunId.make("saved"),
           completedAt: QUIET_NIGHT,
+          quiet,
         });
         yield* relay.publishThread(THREAD_ID);
         yield* TestClock.adjust("5 seconds");
@@ -1575,7 +1583,7 @@ describe("AgentAwarenessRelay", () => {
         assert.lengthOf(completed(restarted.publications), alerts);
         assert.deepInclude(yield* attention.get(BotId.make("bot")), {
           sentToday: 0,
-          held: byHand ? 0 : 1,
+          held,
         });
 
         yield* TestClock.setTime(DateTime.toEpochMillis(DateTime.makeUnsafe(QUIET_END)));
@@ -1584,8 +1592,8 @@ describe("AgentAwarenessRelay", () => {
         yield* restarted.digestTick;
         yield* restarted.relay.drain;
         const digests = completed(restarted.publications).slice(alerts);
-        assert.lengthOf(digests, byHand ? 0 : 1);
-        if (!byHand) {
+        assert.lengthOf(digests, held);
+        if (held === 1) {
           const digest = digests[0]!.state!;
           assert.deepInclude(digest, {
             threadId: ThreadId.make(`bot-alert-digest:bot:${QUIET_END}`),

@@ -3917,6 +3917,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           botId: routine.botId,
           sessionAt: "2026-11-13T18:00:00.000Z",
           allowChanges: true,
+          watch: false,
         });
         assert.isNull(input?.threadId);
         assert.equal(input?.threadMode, "new_thread");
@@ -3954,6 +3955,23 @@ describe("OrchestratorMcpService provider resolution", () => {
           allowChanges: false,
         });
         assert.isFalse((yield* Ref.get(saved)).at(-1)?.bot?.allowChanges);
+        // A watch stays quiet unattended, so it is never also allowed to change things.
+        const changingWatch = [
+          mcp.scheduleTask(fullScope, { ...routine, watch: true }),
+          mcp.updateScheduledTask(fullScope, { scheduledTaskId: storedRoutine.id, watch: true }),
+        ];
+        for (const attempt of changingWatch) {
+          assert.include((yield* attempt.pipe(Effect.flip)).message, "cannot have allowChanges");
+        }
+        yield* mcp.updateScheduledTask(fullScope, {
+          scheduledTaskId: storedRoutine.id,
+          allowChanges: false,
+          watch: true,
+        });
+        assert.deepInclude((yield* Ref.get(saved)).at(-1)?.bot, {
+          allowChanges: false,
+          watch: true,
+        });
       }),
     );
 

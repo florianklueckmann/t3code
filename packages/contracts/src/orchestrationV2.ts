@@ -3213,6 +3213,8 @@ export const OrchestrationV2Command = Schema.Union([
     type: Schema.Literal("thread.archive"),
     commandId: CommandId,
     threadId: ThreadId,
+    /** Refuses when the thread has a newer run, so the server never archives over a follow-up. */
+    ifLatestRunId: Schema.optional(RunId),
   }),
   Schema.Struct({
     type: Schema.Literal("thread.guest-share.close"),

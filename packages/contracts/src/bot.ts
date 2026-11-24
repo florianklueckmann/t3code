@@ -585,6 +585,17 @@ export const BotTaskSummary = Schema.Struct({
    */
   changes: Schema.optional(Schema.NullOr(Schema.Literal("none"))),
   /**
+   * Set on an unattended run of a standing watch: "pending" until the server settled the finished
+   * run, then "shown" when its result shows or "quiet" when it had nothing new, with the run that
+   * outcome is about. Absent on other tasks and on watch runs the user started, which always show.
+   */
+  watch: Schema.optional(
+    Schema.Struct({
+      state: Schema.Literals(["pending", "shown", "quiet"]),
+      runId: Schema.NullOr(RunId),
+    }),
+  ),
+  /**
    * Set on a task that diagnoses a failed routine run: the run it was started for. Such a task
    * reads as origin "routine" so clients that predate diagnoses still decode it.
    */

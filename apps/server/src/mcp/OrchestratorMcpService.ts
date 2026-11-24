@@ -302,6 +302,9 @@ function sameInstant(a: string | null, b: string | null): boolean {
   );
 }
 
+const WATCH_NEEDS_NO_CHANGES =
+  "A watch reads and reports only, so it cannot have allowChanges. Leave allowChanges off, or drop watch.";
+
 function scheduledTaskSummary(task: ScheduledTask, mayRun: boolean): OrchestratorMcpScheduledTask {
   return {
     scheduledTaskId: task.id,
@@ -313,7 +316,11 @@ function scheduledTaskSummary(task: ScheduledTask, mayRun: boolean): Orchestrato
     freshSession: scheduledTaskThreadMode(task) === "fresh_session",
     ...(task.bot === undefined
       ? {}
-      : { botId: task.bot.botId, allowChanges: task.bot.allowChanges ?? false }),
+      : {
+          botId: task.bot.botId,
+          allowChanges: task.bot.allowChanges ?? false,
+          ...(task.bot.watch === true ? { watch: true } : {}),
+        }),
     ...(task.bot?.sessionAt == null ? {} : { sessionAt: task.bot.sessionAt }),
     schedule: task.schedule,
     nextRunAt: task.nextRunAt,
@@ -2225,6 +2232,7 @@ const make = Effect.gen(function* () {
       readonly schedule: OrchestratorMcpScheduleTaskInput["schedule"];
       readonly sessionAt: string | null;
       readonly allowChanges: boolean;
+      readonly watch: boolean;
     }) {
       const { schedule } = routine;
       if (schedule.type === "webhook") return undefined;
@@ -2243,6 +2251,7 @@ const make = Effect.gen(function* () {
           task.projectId === routine.projectId &&
           task.bot?.botId === routine.botId &&
           (task.bot.allowChanges ?? false) === routine.allowChanges &&
+          (task.bot.watch ?? false) === routine.watch &&
           sameInstant(task.bot.sessionAt ?? null, routine.sessionAt) &&
           (schedule.type === "once"
             ? task.schedule.type === "once" && sameInstant(task.schedule.runAt, schedule.runAt)
@@ -2263,6 +2272,12 @@ const make = Effect.gen(function* () {
       }
       if (input.allowChanges !== undefined && input.botId === undefined) {
         return yield* failure("invalid_request", "allowChanges needs botId.");
+      }
+      if (input.watch !== undefined && input.botId === undefined) {
+        return yield* failure("invalid_request", "watch needs botId.");
+      }
+      if (input.watch === true && input.allowChanges === true) {
+        return yield* failure("invalid_request", WATCH_NEEDS_NO_CHANGES);
       }
       if (
         input.botId !== undefined &&
@@ -2312,6 +2327,7 @@ const make = Effect.gen(function* () {
           schedule: input.schedule,
           sessionAt: input.sessionAt ?? null,
           allowChanges: input.allowChanges ?? false,
+          watch: input.watch ?? false,
         });
         if (scheduled !== undefined) {
           const summary = yield* summarizeScheduledTask(scope, { parent, limits }, scheduled);
@@ -2344,6 +2360,7 @@ const make = Effect.gen(function* () {
                 botId: input.botId,
                 sessionAt: input.sessionAt ?? null,
                 allowChanges: input.allowChanges ?? false,
+                watch: input.watch ?? false,
               },
             }),
         // Scope the idempotency key by provider session so two callers
@@ -2405,6 +2422,15 @@ const make = Effect.gen(function* () {
         }
         if (input.allowChanges !== undefined && existing.bot === undefined) {
           return yield* failure("invalid_request", "allowChanges needs a Bot routine.");
+        }
+        if (input.watch !== undefined && existing.bot === undefined) {
+          return yield* failure("invalid_request", "watch needs a Bot routine.");
+        }
+        if (
+          input.watch === true &&
+          (input.allowChanges ?? existing.bot?.allowChanges ?? false) === true
+        ) {
+          return yield* failure("invalid_request", WATCH_NEEDS_NO_CHANGES);
         }
         if (
           input.bindToCurrentThread === true &&
@@ -2472,6 +2498,7 @@ const make = Effect.gen(function* () {
                 bot: {
                   ...existing.bot,
                   allowChanges: input.allowChanges ?? existing.bot.allowChanges ?? false,
+                  watch: input.watch ?? existing.bot.watch ?? false,
                 },
               }),
         };

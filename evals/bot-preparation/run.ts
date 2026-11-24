@@ -52,6 +52,7 @@ import {
   type PreparationCase,
   PROJECT_TITLE,
   SOURCES,
+  WATCH_BRIEF,
   WORLDS,
 } from "./cases.ts";
 
@@ -62,6 +63,7 @@ interface Routine {
   readonly sessionAt: string | undefined;
   readonly runAt: string | null;
   readonly allowChanges?: boolean;
+  readonly watch?: boolean;
   readonly title?: string;
   readonly prompt?: string;
 }
@@ -69,9 +71,15 @@ interface Routine {
 export interface SampleRun {
   /** The routine's result in its work thread, or the home conversation's answer. */
   readonly text: string;
+  /** A watch case: each run's final message in order, as the work thread holds it. */
+  readonly runTexts?: ReadonlyArray<string>;
+  /** A watch case: each run's work thread, in the same order. */
+  readonly runThreads?: ReadonlyArray<string>;
   readonly tools: ReadonlyArray<ToolActivity>;
   readonly tasks: ReadonlyArray<
-    Pick<BotTaskSummary, "status" | "origin" | "returnToHome" | "modelSelection" | "diagnosis">
+    Pick<BotTaskSummary, "status" | "origin" | "returnToHome" | "modelSelection" | "diagnosis"> & {
+      readonly workThreadId?: string | null;
+    }
   >;
   /** The Bot's selection when the sample created it, and after the turn. */
   readonly botSelection?: {
@@ -147,6 +155,28 @@ export const gradeSample = (testCase: PreparationCase, run: SampleRun) => {
       add(`result must /${p}/i`, new RegExp(p, "i").test(run.text));
     return checks;
   }
+  if (testCase.trigger === "watch") {
+    const runTexts = run.runTexts ?? [];
+    // `list_tasks` leaves out a run that showed the user nothing.
+    add(
+      `${testCase.posts} of ${testCase.runs} runs reached the user`,
+      run.tasks.length === testCase.posts && run.tasks.every((task) => task.status === "completed"),
+    );
+    // The result graded below is the first run's, so that run must be the one that shows.
+    if (testCase.posts === 1)
+      add("the first run is the one shown", run.tasks[0]?.workThreadId === run.runThreads?.[0]);
+    add(
+      "every run ended with a watch report",
+      runTexts.length === testCase.runs && runTexts.every((text) => /\bT3_WATCH \{/.test(text)),
+    );
+    add("no turn in the home conversation", run.homeRuns === 0);
+    for (const p of testCase.resultMust)
+      add(`result must /${p}/i`, new RegExp(p, "i").test(run.text));
+    const seen = [...runTexts, ...run.tools.map((tool) => `${tool.title} ${tool.text}`)];
+    for (const p of testCase.neverMentions ?? [])
+      add(`never mentions /${p}/i`, !seen.some((text) => new RegExp(p, "i").test(text)));
+    return checks;
+  }
   if (testCase.trigger === "routine") {
     add(
       "one completed routine task",
@@ -199,6 +229,12 @@ export const gradeSample = (testCase: PreparationCase, run: SampleRun) => {
   }
   const [routine, ...others] = run.routines;
   add("one routine for this Bot", routine?.botId === run.botId && others.length === 0);
+  if ("watch" in testCase.routine) {
+    add("the routine is a watch", routine?.watch === true);
+    add("the watch recurs", routine !== undefined && routine.runAt === null);
+    add("the watch makes no changes", routine?.allowChanges === false);
+    return checks;
+  }
   if ("runOn" in testCase.routine) {
     const { runOn, about, askedInLastTurn } = testCase.routine;
     const [from, to] = typeof runOn === "string" ? [runOn, runOn] : runOn;
@@ -270,6 +306,7 @@ const listRoutines = (call: Call, projectId: string) =>
         sessionAt: task.sessionAt,
         runAt: task.schedule.type === "once" ? task.schedule.runAt : null,
         allowChanges: task.allowChanges ?? false,
+        watch: task.watch ?? false,
         title: task.title,
         prompt: task.prompt,
       })),
@@ -332,13 +369,20 @@ const runSample = Effect.fn("botPreparation.runSample")(function* (
     readonly work: string;
     readonly modelSelection: BotModelSelection;
     readonly baseDir: string;
+    /** Runs watch cases as ordinary routines, for a baseline on a server without watches. */
+    readonly plainRoutines: boolean;
   },
 ) {
   const tag = `${testCase.id}-${NodeCrypto.randomBytes(3).toString("hex")}`;
   const root = NodePath.join(options.work, tag);
+  const sampleStart = yield* DateTime.now;
+  const dayIn = (days: number) => DateTime.formatIsoDateUtc(DateTime.add(sampleStart, { days }));
   for (const [file, text] of Object.entries(WORLDS[testCase.world])) {
     NodeFS.mkdirSync(NodePath.dirname(NodePath.join(root, file)), { recursive: true });
-    NodeFS.writeFileSync(NodePath.join(root, file), text);
+    NodeFS.writeFileSync(
+      NodePath.join(root, file),
+      text.replaceAll("{{NEAR}}", dayIn(2)).replaceAll("{{FAR}}", dayIn(30)),
+    );
   }
   const before = snapshot(root);
   const project = yield* call(
@@ -370,7 +414,50 @@ const runSample = Effect.fn("botPreparation.runSample")(function* (
   let text: string;
   let tools: ReadonlyArray<ToolActivity>;
   let routinesBeforeLastTurn: ReadonlyArray<Routine> | undefined;
-  if (testCase.trigger === "routine" || testCase.trigger === "diagnosis") {
+  let runTexts: ReadonlyArray<string> | undefined;
+  let runThreads: ReadonlyArray<string> | undefined;
+  if (testCase.trigger === "watch") {
+    const routine = yield* call(
+      "schedule_task",
+      {
+        projectId: project.id,
+        title: "Session watch",
+        prompt: WATCH_BRIEF,
+        schedule: { type: "fixed_time", timeOfDay: "08:00" },
+        botId,
+        ...(options.plainRoutines ? {} : { watch: true }),
+      },
+      OrchestratorMcpScheduleTaskResult,
+    );
+    const texts: Array<string> = [];
+    const threads: Array<string> = [];
+    const activity: Array<ToolActivity> = [];
+    for (let index = 0; index < testCase.runs; index += 1) {
+      const run = yield* call(
+        "run_scheduled_task_now",
+        { taskId: routine.scheduledTaskId },
+        Schema.Struct({ threadId: Schema.NullOr(Schema.String) }),
+      );
+      if (run.threadId === null) {
+        return yield* new SampleError({ message: "the watch did not start a work thread" });
+      }
+      threads.push(run.threadId);
+      const runId = yield* waitForRun(call, run.threadId);
+      const messages = yield* readItems(call, run.threadId, "messages");
+      texts.push(
+        messages.findLast((item) => item.runId === runId && item.type === "assistant_message")
+          ?.text ?? "",
+      );
+      activity.push(...toolActivity(yield* readItems(call, run.threadId, "activity")));
+      // The next run starts only once the server recorded this one's end.
+      yield* settledTasks(call, botId);
+    }
+    runTexts = texts;
+    runThreads = threads;
+    // The first run is the one that may post; a later one has nothing new.
+    text = texts[0] ?? "";
+    tools = activity;
+  } else if (testCase.trigger === "routine" || testCase.trigger === "diagnosis") {
     const now = yield* DateTime.now;
     if (testCase.trigger === "diagnosis")
       enableDiagnosis(options.baseDir, home, DateTime.formatIso(now));
@@ -477,14 +564,19 @@ const runSample = Effect.fn("botPreparation.runSample")(function* (
   );
   const run: SampleRun = {
     text,
+    ...(runTexts === undefined ? {} : { runTexts }),
+    ...(runThreads === undefined ? {} : { runThreads }),
     tools,
-    tasks: tasks.map(({ status, origin, returnToHome, modelSelection, diagnosis }) => ({
-      status,
-      origin,
-      returnToHome,
-      modelSelection,
-      diagnosis,
-    })),
+    tasks: tasks.map(
+      ({ status, origin, returnToHome, modelSelection, diagnosis, workThreadId }) => ({
+        workThreadId,
+        status,
+        origin,
+        returnToHome,
+        modelSelection,
+        diagnosis,
+      }),
+    ),
     botSelection: {
       created: created.bot.modelSelection,
       after: botAfter.bot.modelSelection,
@@ -511,6 +603,7 @@ const main = Effect.gen(function* () {
       samples: { type: "string", default: "3" },
       concurrency: { type: "string", default: "2" },
       case: { type: "string", multiple: true },
+      "plain-routines": { type: "boolean", default: false },
     },
   });
   const out = values.out;
@@ -538,7 +631,12 @@ const main = Effect.gen(function* () {
       return yield* Effect.forEach(
         jobs,
         ({ testCase, sample }) =>
-          runSample(call, testCase, { work, modelSelection, baseDir }).pipe(
+          runSample(call, testCase, {
+            work,
+            modelSelection,
+            baseDir,
+            plainRoutines: values["plain-routines"],
+          }).pipe(
             Effect.map((run) => {
               const checks = gradeSample(testCase, run);
               return {

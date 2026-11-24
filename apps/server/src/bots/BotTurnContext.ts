@@ -21,6 +21,7 @@ import * as BotDatabase from "./persistence/BotDatabase.ts";
 
 import * as BotLearning from "./BotLearning.ts";
 import * as BotStore from "./BotStore.ts";
+import * as BotWatch from "./BotWatch.ts";
 
 /** Which Bot, project and conversation a thread belongs to, for home and work threads alike. */
 export interface BotTurnScope {
@@ -50,6 +51,8 @@ interface WorkTask {
   readonly dueAt: string | null;
   readonly sessionAt: string | null;
   readonly allowChanges: boolean;
+  /** Set on a run of a standing watch: what the watch posted before, newest occasion first. */
+  readonly watch: Parameters<typeof BotWatch.watchInstructions>[0] | null;
 }
 
 /** Which Bot's MCP grants a thread's loads get, following forks and subagents to their Bot. */
@@ -204,6 +207,7 @@ function homeTaskSection(input: { readonly botId: string; readonly projectId: st
     "Tasks and routines:",
     `- When the user asks you to do something as a separate task, call t3_bot with action "start_task", botId "${input.botId}", projectId "${input.projectId}" and the request as \`task\`. It runs in its own work thread; its result appears here as a card.`,
     `- When the user asks for work on a schedule, or agrees to one you offered, call schedule_task with botId "${input.botId}" and projectId "${input.projectId}". A date or deadline the user only mentions is not such a request: record it as open business in the working notes and offer a reminder in one sentence. Give a one-time \`schedule\`, optionally with \`sessionAt\` when preparing before an event, or a fixed time for recurring work. For a new routine, honor the user's explicit choice of mode. If no mode is specified, set \`allowChanges: true\` when the requested work involves editing files or data or sending messages; otherwise use false. When updating a routine, omit \`allowChanges\` unless the user asks to change its mode; omission keeps the saved choice.`,
+    `- When the user gives you a standing assignment to keep an eye on something that recurs, such as upcoming sessions, meetings or deadlines, and to speak up only when one needs them, set up one recurring routine with \`watch: true\` and without \`allowChanges\`, not one routine per occasion. Its brief is all a run gets, so write into it what to watch, where the dates and the records are, how near an occasion must be, what counts as already prepared, and what a post contains. A watch run that finds nothing new shows the user nothing. Tell the user how to end it: pause or delete the routine in Settings → Bots, or ask you.`,
   ].join("\n");
 }
 
@@ -243,6 +247,7 @@ function workTaskSection(task: WorkTask): string {
     task.allowChanges
       ? "- Changes allowed: carry out the changes requested in the brief, including editing files or external data and sending messages. Stay within that request and the user's other instructions. Report what you changed and anything you could not complete."
       : "- No changes: read and research, then report results or propose changes. Do not edit files or external data, or send messages. If the brief asks for changes, describe the proposal and explain that this routine is configured without changes.",
+    ...(task.watch === null ? [] : BotWatch.watchInstructions(task.watch)),
   ]
     .filter((line) => line !== null)
     .join("\n");
@@ -269,14 +274,35 @@ export const layer = Layer.effect(
         readonly occurrence_due_at: string | null;
         readonly session_at: string | null;
         readonly allow_changes: number;
+        readonly watch: number;
+        readonly scheduled_task_id: string | null;
       }>`
-        SELECT task_id, origin, home_thread_id, occurrence_due_at, session_at, allow_changes
+        SELECT task_id, origin, home_thread_id, occurrence_due_at, session_at, allow_changes,
+          watch, scheduled_task_id
         FROM bot_tasks WHERE work_thread_id = ${threadId}
       `.pipe(
         Effect.mapError((cause) => new BotStore.BotStoreError({ operation: "read-task", cause })),
       );
       const row = rows[0];
       if (row === undefined) return null;
+      // This run's own post is left out, so a follow-up in its thread is not told it repeats itself.
+      const posts =
+        row.watch !== 1 || row.scheduled_task_id === null
+          ? null
+          : yield* sql<{
+              readonly occasion_key: string;
+              readonly occasion: string;
+              readonly items_json: string;
+              readonly posted_at: string;
+            }>`
+              SELECT occasion_key, occasion, items_json, posted_at FROM bot_watch_posts
+              WHERE scheduled_task_id = ${row.scheduled_task_id} AND task_id <> ${row.task_id}
+              ORDER BY posted_at DESC, task_id DESC
+            `.pipe(
+              Effect.mapError(
+                (cause) => new BotStore.BotStoreError({ operation: "read-watch-posts", cause }),
+              ),
+            );
       return {
         taskId: row.task_id,
         origin: row.origin,
@@ -284,6 +310,7 @@ export const layer = Layer.effect(
         dueAt: row.occurrence_due_at,
         sessionAt: row.session_at,
         allowChanges: row.allow_changes === 1,
+        watch: posts === null ? null : BotWatch.postedOccasions(posts),
       } satisfies WorkTask;
     });
 
