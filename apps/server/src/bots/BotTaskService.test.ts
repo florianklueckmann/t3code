@@ -116,7 +116,7 @@ const CATALOG = [
   catalogProvider("codex-blocked", "codex"),
   catalogProvider("codex-off", "codex", false),
   catalogProvider("claude", "claudeAgent"),
-  catalogProvider("pi", "pi"),
+  catalogProvider("cursor", "cursor"),
   { ...catalogProvider("codex-no-catalog", "codex"), models: [] },
   {
     ...catalogProvider("codex-no-options", "codex"),
@@ -1604,8 +1604,8 @@ it.effect.each<{
   },
   {
     name: "a provider Bots do not support",
-    modelSelection: { instanceId: ProviderInstanceId.make("pi"), model: "gpt-5" },
-    error: "Bots run on Codex and Claude providers only.",
+    modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "gpt-5" },
+    error: "Bots run on Codex, Claude and Pi providers only.",
   },
   {
     name: "a disabled provider",

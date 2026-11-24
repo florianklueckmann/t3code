@@ -8,8 +8,8 @@ its own conversation, guidance and preferred sources.
 ## Set up a Bot
 
 Open **Settings → Bots** and choose **New Bot**. Give it a name, instructions
-for how it should work and answer, a Codex or Claude model (see
-[Codex or Claude](#codex-or-claude)), and a **Learning** option (see
+for how it should work and answer, a Codex, Claude or Pi model (see
+[Codex, Claude or Pi](#codex-claude-or-pi)), and a **Learning** option (see
 [Learning](#learning)). Then attach it to a project
 under **Projects**. T3 Code starts the Bot's conversation in that project,
 titled with the Bot's name and using the project's default permission mode.
@@ -32,11 +32,11 @@ Changes to a Bot's instructions, guidance or sources apply from its next turn,
 including in conversations that are already running. Changing its model
 switches all of its attached conversations to that model.
 
-### Codex or Claude
+### Codex, Claude or Pi
 
-A Bot runs on a Codex or a Claude model. Its conversations, tasks and routines,
-and the threads it starts, stay on those two providers: a Bot conversation or
-task thread you switch to another provider refuses new messages until you
+A Bot runs on a Codex, Claude or Pi model. Its conversations, tasks and
+routines, and the threads it starts, stay on those providers: a Bot conversation
+or task thread you switch to another provider refuses new messages until you
 switch it back.
 
 A Bot on Claude works with the same instructions, guidance, sources, learning,
@@ -51,9 +51,18 @@ shows them as unavailable and says why:
 - **Use my own Codex MCP servers**
 - Maintenance
 
-To switch a Bot from Codex to Claude, first turn off what Claude can't do yet.
-Otherwise the switch is refused, the message lists what to change, and the Bot
-keeps its model.
+A Bot on Pi works with the same instructions, guidance, sources, learning,
+working notes, tasks and routines. Its threads load T3 Code's own tools and the
+MCP connections you grant it, and nothing else: Pi's own MCP servers from
+`mcp.json` and every Pi extension and package stay off, including Pi's built-in
+codemode and tool search, so its tools are declared to the model directly.
+Skills, prompt templates and `AGENTS.md` files still apply. On a Pi Bot, the
+features above that need Codex, and also No changes routines, the Daily Home
+check and Diagnose failed routines, show as unavailable.
+
+To switch a Bot to Claude or Pi, first turn off what that provider can't do
+yet. Otherwise the switch is refused, the message lists what to change, and the
+Bot keeps its model.
 
 Each Bot gets its own little figure. To change its color, face or topper, open
 the Bot and select the figure next to its name (on mobile, **Change look**).
@@ -123,7 +132,7 @@ Detach, archive, and cancelling the task revoke a pending return. Routines and
 older tasks do not gain automatic returns.
 
 A direct task starts with the Bot's model by default. The Bot can choose a
-different Codex or Claude model for a task or subagent and can use a specific
+different Codex, Claude or Pi model for a task or subagent and can use a specific
 model or reasoning level you request. It might use Luna or Haiku to pull facts
 from many threads, or Sol or Opus to design and test a complex script. The choice
 applies only to that work. If a requested model or option is unavailable, or the
@@ -362,12 +371,16 @@ load exactly those connections. So do threads the Bot starts with T3 Code's
 tools, such as a new thread or a delegated task on this environment. Turn on
 **Use my own Codex MCP servers** to load the MCP servers in your Codex config
 as well; the switch lists them by name. A change applies from the Bot's next
-turn. Connections work on Codex and Claude Bots; the switch needs a Codex model,
-and a Claude Bot can only turn it off. A disabled connection stays granted but does not load until you enable it
+turn. Connections work on Codex, Claude and Pi Bots; the switch needs a Codex
+model, and a Claude or Pi Bot can only turn it off. A disabled connection stays granted but does not load until you enable it
 again. A granted connection that can't start leaves its tools out, the turn runs
 on, and the conversation says which connection it was. On Codex, T3 Code also
 asks Codex which MCP servers the Bot's conversation loaded. If it loaded one the
 Bot may not use, nothing runs and the conversation names that server.
+
+On Pi, a changed connection or a renewed sign-in reconnects that connection at
+the Bot's next turn, without restarting Pi. OAuth connections work on Pi:
+T3 Code signs in and hands Pi the current token.
 
 On Claude, a changed connection or a renewed sign-in restarts Claude at the
 Bot's next turn. While the conversation still runs background agents or
@@ -454,7 +467,7 @@ before asking the Bot to try again.
 
 ## Current limits
 
-- Bots run on Codex and Claude only.
+- Bots run on Codex, Claude and Pi only.
 - On Codex, MCP connections apply only to Codex 0.166.0 or later on a macOS or
   Linux server. With other Codex setups, a Bot without connections uses Codex's
   own MCP setup, and a Bot with connections does not run.
@@ -463,6 +476,13 @@ before asking the Bot to try again.
 - On a Claude Bot, plugins and hooks your organization manages for Claude still
   load, in No changes routines and Home checks too. Own MCP servers and
   maintenance are not available yet.
+- On Pi, MCP connections apply only on a macOS server. Elsewhere a Pi Bot with
+  connections does not run; one without loads only T3 Code's own tools. A Pi Bot
+  runs without your Pi extensions and packages, so a model or tool that comes
+  from one is not available to it. No changes routines, the Daily Home check,
+  Diagnose failed routines, maintenance and own MCP servers are not available.
+  A granted connection that can't start on Pi leaves its tools out without the
+  conversation naming it.
 - Bots turn off Claude's automatic memory.
 - Built-in email connections are not available. Calendar (this Mac) uses Apple
   Calendar on the Mac that runs the environment.

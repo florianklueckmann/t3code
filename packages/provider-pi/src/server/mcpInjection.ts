@@ -11,6 +11,7 @@ import {
   T3_PI_RUNTIME_MODE_ENV,
   T3_PI_MCP_EXTENSION_PATH_ENV,
 } from "./mcpExtensionSource.ts";
+import { PI_T3_BOT_EXTENSION_FILENAME, PI_T3_BOT_EXTENSION_SOURCE } from "./botExtensionSource.ts";
 
 const RESERVED_PI_LAUNCH_ARGUMENTS = new Set([
   "--continue",
@@ -220,25 +221,23 @@ function withoutToolSelectionArgs(args: ReadonlyArray<string>): ReadonlyArray<st
   return filtered;
 }
 
-function piT3McpExtensionDestPath(cacheDir: string): string {
-  return `${cacheDir.replace(/\\/g, "/")}/${PI_T3_MCP_EXTENSION_FILENAME}`;
-}
-
-export const materializePiT3McpExtension = Effect.fn("materializePiT3McpExtension")(function* (
+const materializePiExtension = Effect.fn("materializePiExtension")(function* (
   cacheDir: string,
+  filename: string,
+  source: string,
 ) {
   const fs = yield* FileSystem.FileSystem;
   yield* fs.makeDirectory(cacheDir, { recursive: true });
-  const dest = piT3McpExtensionDestPath(cacheDir);
+  const dest = `${cacheDir.replace(/\\/g, "/")}/${filename}`;
   const existing = yield* fs.readFileString(dest).pipe(Effect.orElseSucceed(() => ""));
-  if (existing !== PI_T3_MCP_EXTENSION_SOURCE) {
+  if (existing !== source) {
     // Concurrent pi launches read this file: stage it in a per-call directory
     // and rename so readers and other writers never see a partial file.
     yield* Effect.scoped(
       Effect.gen(function* () {
         const stagingDir = yield* fs.makeTempDirectoryScoped({ directory: cacheDir });
-        const staging = `${stagingDir.replace(/\\/g, "/")}/${PI_T3_MCP_EXTENSION_FILENAME}`;
-        yield* fs.writeFileString(staging, PI_T3_MCP_EXTENSION_SOURCE);
+        const staging = `${stagingDir.replace(/\\/g, "/")}/${filename}`;
+        yield* fs.writeFileString(staging, source);
         yield* fs.rename(staging, dest).pipe(Effect.retry({ times: 3 }));
       }),
     );
@@ -246,11 +245,22 @@ export const materializePiT3McpExtension = Effect.fn("materializePiT3McpExtensio
   return dest;
 });
 
+export const materializePiT3McpExtension = (cacheDir: string) =>
+  materializePiExtension(cacheDir, PI_T3_MCP_EXTENSION_FILENAME, PI_T3_MCP_EXTENSION_SOURCE);
+
+export const materializePiT3BotExtension = (cacheDir: string) =>
+  materializePiExtension(cacheDir, PI_T3_BOT_EXTENSION_FILENAME, PI_T3_BOT_EXTENSION_SOURCE);
+
 export function buildPiRpcLaunch(input: {
   readonly launchArgs: ReadonlyArray<string>;
   readonly environment: NodeJS.ProcessEnv;
   readonly mcpSession: McpProviderSessionConfig | undefined;
   readonly extensionPath: string | undefined;
+  /**
+   * A Bot's session: no extension but T3 Code's own and this one, which connects only the Bot's
+   * granted MCP connections. Pi's built-in MCP, user, project and package extensions stay off.
+   */
+  readonly botExtensionPath?: string | undefined;
   readonly sessionPath?: string | undefined;
   readonly ephemeral?: boolean;
   // T3 stops these processes as soon as they answer. They run --offline because Pi's startup
@@ -265,8 +275,9 @@ export function buildPiRpcLaunch(input: {
 } {
   const hasT3Extension = input.disableExtensions !== true && input.extensionPath !== undefined;
   const hasT3Mcp = hasT3Extension && input.mcpSession !== undefined;
+  const botSession = hasT3Extension && input.botExtensionPath !== undefined;
   const extensionSafeArgs =
-    input.disableExtensions === true
+    input.disableExtensions === true || botSession
       ? withoutExplicitExtensions(input.launchArgs)
       : input.launchArgs;
   const launchArgs =
@@ -279,10 +290,12 @@ export function buildPiRpcLaunch(input: {
       : input.sessionPath !== undefined
         ? ["--session", input.sessionPath]
         : []),
+    // Before launch args too: a trailing option that takes a value cannot swallow the Bot's seal.
+    ...(botSession ? ["--no-extensions"] : []),
     ...launchArgs,
     ...(input.shortLived === true && !launchArgs.includes("--offline") ? ["--offline"] : []),
     // Restrictions must follow launch args so user flags cannot re-enable unattended tools/extensions.
-    ...(input.disableExtensions === true ? ["--no-extensions"] : []),
+    ...(input.disableExtensions === true || botSession ? ["--no-extensions"] : []),
     ...(input.disableTools === true ? ["--no-tools"] : []),
   ];
   if (
@@ -291,6 +304,9 @@ export function buildPiRpcLaunch(input: {
     !hasExplicitExtension(args, input.extensionPath)
   ) {
     args.push("--extension", input.extensionPath);
+  }
+  if (botSession && input.botExtensionPath !== undefined) {
+    args.push("--extension", input.botExtensionPath);
   }
   const environment = { ...input.environment };
   // MCP credentials belong to this T3 session; discard inherited server/parent credentials.

@@ -212,8 +212,12 @@ export const layer: Layer.Layer<
       // Codex reads it at each grant load; the same resolver keeps a catalog refresh effective.
       // The catalog's OAuth instance, by layer memoization: one lock orders refresh and disconnect.
       Layer.provide(
-        McpConnectionDelivery.layer.pipe(
-          Layer.provide(Layer.merge(McpConnectionOAuth.layer, MacCalendarHelper.layer)),
+        McpConnectionDelivery.grantsLayer.pipe(
+          Layer.provideMerge(
+            McpConnectionDelivery.layer.pipe(
+              Layer.provide(Layer.merge(McpConnectionOAuth.layer, MacCalendarHelper.layer)),
+            ),
+          ),
         ),
       ),
       Layer.provide(SecretResolver.layer),

@@ -279,8 +279,8 @@ export const make = Effect.gen(function* () {
     if (sealed === undefined)
       return {
         unavailableReason:
-          instance.driverKind === "claudeAgent"
-            ? BotProviderSupport.CLAUDE_UNSUPPORTED
+          instance.driverKind === "claudeAgent" || instance.driverKind === "pi"
+            ? BotProviderSupport.unsupportedReason(instance.driverKind)
             : "codex_required",
       } as const;
     const reason = yield* sealed.availability(selection);

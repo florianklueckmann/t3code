@@ -1,34 +1,36 @@
 import type { BotCapabilities } from "@t3tools/contracts";
 
-export const BOT_DRIVERS_MESSAGE = "Bots run on Codex and Claude providers only.";
+export const BOT_DRIVERS_MESSAGE = "Bots run on Codex, Claude and Pi providers only.";
 
 /** The drivers a Bot, its tasks and every thread of its lineage may run on. */
-export const BOT_DRIVERS: ReadonlyArray<string> = ["codex", "claudeAgent"];
+export const BOT_DRIVERS: ReadonlyArray<string> = ["codex", "claudeAgent", "pi"];
 
 export const isBotDriver = (driver: string | undefined): boolean =>
   botDriverSupport(driver).mcpIsolation;
 
-/** Why a feature is unavailable on a Claude Bot; clients name Claude from it. "provider" otherwise. */
+/** Why a feature is unavailable on a Claude or Pi Bot; clients name the provider from it. */
 export const CLAUDE_UNSUPPORTED = "claude_unsupported";
+export const PI_UNSUPPORTED = "pi_unsupported";
 
 export const unsupportedReason = (driver: string | undefined) =>
-  driver === "claudeAgent" ? CLAUDE_UNSUPPORTED : "provider";
+  driver === "claudeAgent" ? CLAUDE_UNSUPPORTED : driver === "pi" ? PI_UNSUPPORTED : "provider";
 
 /**
- * What a driver can enforce for a Bot, before any platform or sign-in check. Claude keeps a Bot's
- * threads to T3 Code's own MCP server and its grants and seals No changes runs and the Home's
- * scoped turns, but has no sealed generation yet, and the user's own servers are Codex's.
+ * What a driver can enforce for a Bot, before any platform or sign-in check. Every Bot driver keeps
+ * a Bot's threads to T3 Code's own MCP server and its grants. Claude also seals No changes runs and
+ * the Home's scoped turns; Pi seals neither. Sealed generation and the user's own servers are Codex's.
  */
 export function botDriverSupport(driver: string | undefined) {
   const codex = driver === "codex";
   const mcpIsolation = driver !== undefined && BOT_DRIVERS.includes(driver);
+  const seals = codex || driver === "claudeAgent";
   return {
     mcpGrants: mcpIsolation,
     ownMcpServers: codex,
     /** No changes ("readOnly"): routines and failure diagnosis. */
-    readOnlySeal: mcpIsolation,
+    readOnlySeal: seals,
     /** The Home's scoped turns ("t3BotOnly"): the Home check and maintenance's note refresh. */
-    homeSeal: mcpIsolation,
+    homeSeal: seals,
     sealedGeneration: codex,
     /** Loads no MCP server but T3 Code's own and the Bot's grants. */
     mcpIsolation,

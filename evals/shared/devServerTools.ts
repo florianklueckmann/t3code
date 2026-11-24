@@ -118,8 +118,8 @@ export interface BotModelSelection {
   readonly options: ReadonlyArray<{ readonly id: string; readonly value: string }>;
 }
 
-/** Codex names its effort option `reasoningEffort`, Claude `effort`. */
-const EFFORT_OPTION_IDS = ["reasoningEffort", "effort"];
+/** Codex names its effort option `reasoningEffort`, Claude `effort`, Pi `thinking`. */
+const EFFORT_OPTION_IDS = ["reasoningEffort", "effort", "thinking"];
 
 /**
  * The Bot model a run creates its Bots with, from `--instance`, `--model` and `--effort`. No

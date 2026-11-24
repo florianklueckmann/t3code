@@ -148,8 +148,8 @@ const usePolicy = <A, E>(
                     ? ({ driverKind: ProviderDriverKind.make("codex") } as ProviderInstance)
                     : id === "codex"
                       ? ({ driverKind: ProviderDriverKind.make("claudeAgent") } as ProviderInstance)
-                      : id === "pi"
-                        ? ({ driverKind: ProviderDriverKind.make("pi") } as ProviderInstance)
+                      : id === "pi" || id === "cursor"
+                        ? ({ driverKind: ProviderDriverKind.make(id) } as ProviderInstance)
                         : undefined,
                 ),
             }),
@@ -268,29 +268,37 @@ it.effect(
     }),
 );
 
+// In this suite the instance id "codex" runs the Claude driver.
 it.effect.each([
-  ["Claude Bot", botThread, ungrantedBotThread],
-  ["Claude fork", botForkThread, ungrantedBotForkThread],
-  ["Codex Bot delegating to Claude", botSubagentThread, ungrantedBotSubagentThread],
+  ["Claude Bot", botThread, ungrantedBotThread, "codex", "Claude"],
+  ["Claude fork", botForkThread, ungrantedBotForkThread, "codex", "Claude"],
+  [
+    "Codex Bot delegating to Claude",
+    botSubagentThread,
+    ungrantedBotSubagentThread,
+    "codex",
+    "Claude",
+  ],
+  ["Pi Bot", botThread, ungrantedBotThread, "pi", "Pi"],
+  ["Codex Bot delegating to Pi", botSubagentThread, ungrantedBotSubagentThread, "pi", "Pi"],
 ] as const)(
   "keeps a %s to T3 Code's server and its grants, which load only on macOS",
-  ([_, grantedThreadId, ungrantedThreadId]) =>
+  ([_, grantedThreadId, ungrantedThreadId, instanceId, provider]) =>
     Effect.gen(function* () {
-      // In this suite the instance id "codex" runs the Claude driver.
-      const granted = yield* resolveFor(grantedThreadId, { instanceId: "codex" });
+      const granted = yield* resolveFor(grantedThreadId, { instanceId });
       assert.deepEqual(granted.mcpConnections, [privateMail]);
       assert.isUndefined(granted.userMcpServers);
       assert.equal(granted.nativeMemory, "disabled");
       for (const platform of ["linux", "win32"] as const) {
-        const refused = yield* resolveFor(grantedThreadId, { instanceId: "codex", platform }).pipe(
+        const refused = yield* resolveFor(grantedThreadId, { instanceId, platform }).pipe(
           Effect.flip,
         );
         assert.equal(refused._tag, "RuntimePolicyMcpUnsupportedError");
-        assert.include(refused.message, "on Claude is only verified on macOS", platform);
+        assert.include(refused.message, `on ${provider} is only verified on macOS`, platform);
       }
 
       for (const platform of ["darwin", "linux", "win32"] as const) {
-        const policy = yield* resolveFor(ungrantedThreadId, { instanceId: "codex", platform });
+        const policy = yield* resolveFor(ungrantedThreadId, { instanceId, platform });
         assert.deepEqual(policy.mcpConnections, [], platform);
         assert.isUndefined(policy.userMcpServers);
         assert.equal(policy.nativeMemory, "disabled");
@@ -329,13 +337,13 @@ it.effect("never gives a Claude thread the user's own Codex MCP servers", () =>
 );
 
 it.effect.each([
-  ["Pi Bot", botThread, ungrantedBotThread, { instanceId: "pi" }],
+  ["Cursor Bot", botThread, ungrantedBotThread, { instanceId: "cursor" }],
   ["missing instance", botForkThread, ungrantedBotForkThread, { instanceId: "missing" }],
   [
-    "Codex Bot delegating to Pi",
+    "Codex Bot delegating to Cursor",
     botSubagentThread,
     ungrantedBotSubagentThread,
-    { instanceId: "pi" },
+    { instanceId: "cursor" },
   ],
 ] as const)(
   "refuses a %s, with or without grants, where Bot isolation cannot be enforced",
@@ -344,7 +352,7 @@ it.effect.each([
       for (const threadId of [grantedThreadId, ungrantedThreadId]) {
         const refused = yield* resolveFor(threadId, options).pipe(Effect.flip);
         assert.equal(refused._tag, "RuntimePolicyMcpUnsupportedError");
-        assert.include(refused.message, "Mail Bot's threads run only on Codex or Claude");
+        assert.include(refused.message, "Mail Bot's threads run only on Codex, Claude or Pi");
       }
     }),
 );

@@ -320,7 +320,7 @@ const make = Effect.gen(function* () {
   });
 
   /**
-   * One rule for every way a Bot gets a model, its own or one task's: Codex or Claude only, and
+   * One rule for every way a Bot gets a model, its own or one task's: a Bot driver only, and
    * only where the provider can honor the settings that model serves. The message lists what to change.
    */
   const requireModelFor = Effect.fn("BotTaskService.requireSupportedModel")(function* (
@@ -339,7 +339,12 @@ const make = Effect.gen(function* () {
       use,
     ).pipe(Effect.mapError(storageError));
     if (changes.length > 0) {
-      const provider = instance.driverKind === "claudeAgent" ? "Claude" : instance.driverKind;
+      const provider =
+        instance.driverKind === "claudeAgent"
+          ? "Claude"
+          : instance.driverKind === "pi"
+            ? "Pi"
+            : instance.driverKind;
       return yield* botError(
         `${provider} can't enforce some of this Bot's settings yet. First ${changes.join(", ")}, then try again.`,
         input.botId,
