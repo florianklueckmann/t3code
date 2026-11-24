@@ -481,6 +481,8 @@ before asking the Bot to try again.
   runs without your Pi extensions and packages, so a model or tool that comes
   from one is not available to it. No changes routines, the Daily Home check,
   Diagnose failed routines, maintenance and own MCP servers are not available.
+  A granted connection that can't start on Pi leaves its tools out without the
+  conversation naming it.
 - Bots turn off Claude's automatic memory.
 - Built-in email connections are not available. Calendar (this Mac) uses Apple
   Calendar on the Mac that runs the environment.
