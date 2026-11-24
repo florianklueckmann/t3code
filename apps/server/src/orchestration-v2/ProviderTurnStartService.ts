@@ -84,6 +84,7 @@ import {
 } from "@t3tools/provider-core/server/failure";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
+import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
 import {
   isRestartNoteContinuation,
@@ -213,6 +214,7 @@ export const layer: Layer.Layer<
   | ProviderSessionManager.ProviderSessionManagerV2
   | RunExecutionService.RunExecutionServiceV2
   | RuntimePolicy.RuntimePolicyV2
+  | ThreadCommandExecutor.ThreadCommandExecutor
   | TurnItemPositionStore.TurnItemPositionStoreV2
   | TextGeneration.TextGeneration
 > = Layer.effect(
@@ -232,6 +234,7 @@ export const layer: Layer.Layer<
     const runtimePolicy = yield* RuntimePolicy.RuntimePolicyV2;
     const restoreMissingWorktree = yield* makeRestoreMissingWorktree;
     const turnItemPositions = yield* TurnItemPositionStore.TurnItemPositionStoreV2;
+    const threadCommands = yield* ThreadCommandExecutor.ThreadCommandExecutor;
     const textGeneration = yield* TextGeneration.TextGeneration;
     const serverSettings = yield* ServerSettings.ServerSettingsService;
     const serverConfig = yield* ServerConfig.ServerConfig;
@@ -2069,13 +2072,18 @@ export const layer: Layer.Layer<
           payload: runningRootNode,
         },
       ];
-      const runningWrite = yield* eventSink.writeIfRunCurrent({
-        threadId: projection.thread.id,
-        runId: run.id,
-        activeAttemptId: attempt.id,
-        expectedStatus: "starting",
-        events,
-      });
+      // Stop plans under this lock. Without it, a Stop that read the starting run commits after
+      // this write and leaves the provider thread active on an interrupted run.
+      const runningWrite = yield* threadCommands.withLock(
+        projection.thread.id,
+        eventSink.writeIfRunCurrent({
+          threadId: projection.thread.id,
+          runId: run.id,
+          activeAttemptId: attempt.id,
+          expectedStatus: "starting",
+          events,
+        }),
+      );
       if (!runningWrite.committed) {
         return;
       }

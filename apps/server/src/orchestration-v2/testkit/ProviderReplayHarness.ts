@@ -454,6 +454,7 @@ export function layerWithRegistry<Error>(
         layerRuntime,
         layerServerConfig,
         layerServerSettings,
+        ThreadCommandExecutor.layer,
         // Replays never request a fresh conversation, so nothing is summarized.
         Layer.mock(TextGeneration.TextGeneration)({}),
       ),
