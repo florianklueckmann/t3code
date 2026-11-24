@@ -338,11 +338,12 @@ outside that seal:
 
 Because your Claude settings stay out, maintenance is unavailable on a Claude
 Bot whose `settings.json` or `--settings` launch argument chooses its own API
-backend, model mapping or key helper, where that argument or `CLAUDE_CONFIG_DIR`
-is a relative path, or where your organization manages Claude's MCP servers.
-Otherwise the call could reach a different service than
-the Bot's own turns. Set the backend in the provider's environment in
-**Settings → Providers** instead. A project's own Claude settings are not read
+backend, model mapping or key helper, where those settings can't be read, where
+that argument or `CLAUDE_CONFIG_DIR` is a relative path, or where your
+organization manages Claude's MCP servers. Otherwise the call could reach a
+different service than the Bot's own turns. Set the backend in the provider's
+environment in **Settings → Providers** instead, and give settings files and the
+Claude config directory as absolute paths. A project's own Claude settings are not read
 for this call, so a backend set only there applies to the Bot's turns in that
 project and not to the learning step.
 

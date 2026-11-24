@@ -19,7 +19,9 @@ Flags: `--instance` (`codex`, the default, or `claude`), `--model` (default `gpt
 | Model              | Effort  | Run                   | Passed |
 | ------------------ | ------- | --------------------- | ------ |
 | `gpt-6.1-terra`    | high    | 2026-11-24, 1 sample  | 7/7    |
-| `claude-haiku-5-5` | default | 2026-11-24, 3 samples | 21/21  |
+| `claude-haiku-5-5` | default | 2026-11-24, 3 samples | 33/33  |
+
+The Codex row predates the four `match` cases; the Claude row includes them.
 
 The run stops before any model call when the sealed generator refuses the selection, for example because the model or effort is missing from the account's catalog or the account is signed out. It never falls back to another model.
 

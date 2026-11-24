@@ -25,7 +25,9 @@ Flags: `--instance` (default `codex`; a Codex or Claude instance of that server)
 | Model              | Effort | Run                   | Passed |
 | ------------------ | ------ | --------------------- | ------ |
 | `gpt-6-luna`       | high   | 2026-11-18, 3 samples | 12/12  |
-| `claude-haiku-5-5` | medium | 2026-11-24, 3 samples | 11/12  |
+| `claude-haiku-5-5` | medium | 2026-11-24, 3 samples | 10/12  |
+
+Both Claude misses are the `only read and saved the note` check on a `t3_bot` call whose action the eval could not read; the refresh itself succeeded in all 12.
 
 ## Cases
 

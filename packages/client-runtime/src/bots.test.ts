@@ -594,7 +594,7 @@ it("shows a persisted enabled maintenance setting as stopped when the server can
     ["codex_version_unsupported", "Update Codex"],
     ["claude_version_unsupported", "Update Claude Code"],
     ["platform_unsupported", "only when this server is a Mac"],
-    ["claude_settings_unsupported", "Claude settings choose their own API backend"],
+    ["claude_settings_unsupported", "can't use this Bot's Claude settings"],
     ["selected_model_unavailable", "model isn't available on its account"],
     ["option_unsupported", "model options isn't supported"],
     ["reason_from_a_newer_server", "Not available on this server."],

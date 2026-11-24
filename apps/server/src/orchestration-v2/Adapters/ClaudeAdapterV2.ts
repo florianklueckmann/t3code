@@ -2215,8 +2215,9 @@ const CLAUDE_SEALED_KEPT_FLAGS: ReadonlySet<string> = new Set([
 // Claude Code moves hook context over 10,000 characters to a file and shows a preview (measured
 // on 2.1.326), so instructions travel in smaller parts, one hook callback each, kept in order.
 const CLAUDE_BOT_INSTRUCTION_CHUNK_CHARS = 9_000;
-// Above the largest block a Bot can build (instructions, guidance, 50 sources, learning, notes).
-const CLAUDE_BOT_INSTRUCTION_HOOKS = 24;
+// Above the largest block a Bot can build (instructions, guidance, 50 sources, learning, notes),
+// plus one for the Home seal's turn note.
+const CLAUDE_BOT_INSTRUCTION_HOOKS = 25;
 
 /** Splits at line ends where it can, so no part ends mid-line unless one line is too long. */
 function chunkClaudeBotInstructions(text: string): ReadonlyArray<string> {

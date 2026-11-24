@@ -1029,7 +1029,7 @@ const BOT_MAINTENANCE_UNAVAILABLE_LABELS: ReadonlyMap<string, string> = new Map(
   ["platform_unsupported", "On Claude, maintenance runs only when this server is a Mac."],
   [
     "claude_settings_unsupported",
-    "This Bot's Claude settings choose their own API backend, key helper or managed MCP servers, which maintenance can't use.",
+    "Maintenance can't use this Bot's Claude settings: they choose their own API backend, key helper or managed MCP servers, can't be read, or sit at a relative path.",
   ],
   ["selected_model_unavailable", "This Bot's model isn't available on its account."],
   ["option_unsupported", "One of this Bot's model options isn't supported for maintenance."],
