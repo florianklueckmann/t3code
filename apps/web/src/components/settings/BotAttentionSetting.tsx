@@ -74,7 +74,7 @@ export function BotAttentionSetting({
     setBusy(false);
     query.refresh();
     if (result._tag === "Failure") {
-      if (isAtomCommandInterrupted(result)) return;
+      if (isAtomCommandInterrupted(result)) return false;
       const error = squashAtomCommandFailure(result);
       toastManager.add(
         stackedThreadToast({
@@ -91,13 +91,17 @@ export function BotAttentionSetting({
           description: "Check the current settings, then change them again if you still want to.",
         }),
       );
-    } else if (change.remit !== undefined) setRemitDraft(null);
+    } else {
+      if (change.remit !== undefined) setRemitDraft(null);
+      return true;
+    }
+    return false;
   };
 
-  const saveLimit = (input: HTMLInputElement) => {
+  const saveLimit = async (input: HTMLInputElement) => {
     const limit = parseBotAlertDailyLimit(input.value);
-    if (limit === null) input.value = String(view.dailyLimit);
-    else if (limit !== view.dailyLimit) void save({ dailyLimit: limit });
+    if (limit !== null && limit !== view.dailyLimit && (await save({ dailyLimit: limit }))) return;
+    input.value = String(view.dailyLimit);
   };
 
   const saveTime = (edge: "start" | "end", value: string) => {
@@ -130,7 +134,7 @@ export function BotAttentionSetting({
           className="w-24"
           defaultValue={view.dailyLimit}
           disabled={disabled}
-          onBlur={(event) => saveLimit(event.currentTarget)}
+          onBlur={(event) => void saveLimit(event.currentTarget)}
           onKeyDown={(event) => {
             if (event.key === "Enter") event.currentTarget.blur();
           }}
