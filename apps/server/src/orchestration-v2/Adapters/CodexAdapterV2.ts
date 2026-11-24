@@ -2640,6 +2640,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             }),
             Effect.mapError((cause) => refuseLoad(load, cause)),
           );
+        /** The user's servers, which an exclusive load turns off, or expects where a Bot keeps them. */
+        const readExclusiveLoadUserMcpServers = (load: CodexThreadLoad, cwd: string | null) =>
+          isOrdinaryLoad(load)
+            ? Effect.succeed<Readonly<Record<string, CodexMcpTransport>>>({})
+            : readUserMcpServers(load, cwd);
         /**
          * A server added to the user's config between the read and the load is loaded but not
          * turned off. Reading again after the load finds it, and the thread is released before
@@ -2671,6 +2676,85 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               ),
             ),
         );
+        /**
+         * A Bot's load, confirmed against what Codex reports the thread has. A disabled server is
+         * off, and one listed without a runtime status was added to the config after the load and
+         * is not in the thread (measured on 0.166.0 and 0.172.0). Anything else, even a granted
+         * server still starting or one Codex starts lazily, is in it.
+         */
+        const requireOnlyExpectedMcpServers = Effect.fn(
+          "CodexAdapterV2.requireOnlyExpectedMcpServers",
+        )(
+          function* (load: CodexThreadLoad, nativeThreadId: string, expected: ReadonlySet<string>) {
+            let cursor: string | null | undefined;
+            do {
+              const page = yield* client
+                .request("mcpServerStatus/list", {
+                  threadId: nativeThreadId,
+                  detail: "toolsAndAuthOnly",
+                  ...(cursor == null ? {} : { cursor }),
+                })
+                .pipe(Effect.mapError((cause) => refuseLoad(load, cause)));
+              const unexpected = page.data.find(
+                (server) =>
+                  server.runtimeStatus != null &&
+                  server.runtimeStatus !== "disabled" &&
+                  !expected.has(server.name),
+              );
+              if (unexpected !== undefined) {
+                yield* client
+                  .request("thread/unsubscribe", { threadId: nativeThreadId })
+                  .pipe(Effect.mapError((cause) => refuseLoad(load, cause)));
+                return yield* new ProviderAdapter.ProviderAdapterMcpConnectionsRefusedError({
+                  driver: CODEX_PROVIDER,
+                  reason: "unexpected",
+                  serverName: unexpected.name,
+                });
+              }
+              cursor = page.nextCursor;
+            } while (cursor != null);
+          },
+          (effect, _load, nativeThreadId) =>
+            effect.pipe(
+              Effect.onError(() =>
+                Effect.sync(() => {
+                  threadLoads.set(nativeThreadId, "unknown");
+                  sessionApprovals.delete(nativeThreadId);
+                }),
+              ),
+            ),
+        );
+        /**
+         * What every exclusive load checks once it is loaded: a Bot's against the servers Codex
+         * reports, any other seal against the user's config read again.
+         */
+        const confirmLoad = (
+          load: CodexThreadLoad,
+          nativeThreadId: string,
+          cwd: string | null,
+          resolved: {
+            readonly granted:
+              | ReadonlyArray<McpConnectionDelivery.DeliveredMcpConnection>
+              | undefined;
+            readonly turnsOffUserServers: boolean;
+          },
+          userMcpServers: Readonly<Record<string, CodexMcpTransport>>,
+        ) => {
+          if (resolved.granted !== undefined)
+            return requireOnlyExpectedMcpServers(
+              load,
+              nativeThreadId,
+              new Set([
+                "t3-code",
+                CODEX_T3_DIRECT_MCP_SERVER,
+                ...resolved.granted.map(({ id }) => codexGrantedServerName(id)),
+                ...(resolved.turnsOffUserServers ? [] : Object.keys(userMcpServers)),
+              ]),
+            );
+          return resolved.turnsOffUserServers
+            ? requireUnchangedUserMcpServers(load, nativeThreadId, cwd, userMcpServers)
+            : Effect.void;
+        };
         const runningCommandItemsByTurn = yield* Ref.make(
           new Map<string, Map<string, TrackedRunningCommandItem>>(),
         );
@@ -8230,11 +8314,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             Effect.gen(function* () {
               yield* ensureInitialized;
               if (seal !== "ordinary") yield* prepareSeal(seal, load.providerThread, mcpSession);
-              const {
-                load: wanted,
-                granted,
-                turnsOffUserServers,
-              } = yield* resolveLoad(load.runtimePolicy);
+              const resolved = yield* resolveLoad(load.runtimePolicy);
+              const { load: wanted, granted } = resolved;
               // Codex ignores a resume's config while the thread is loaded, so a seal or grant
               // change releases it first. Unknown state is released before any exclusive load.
               const current = threadLoads.get(nativeThreadId) ?? ORDINARY_LOAD;
@@ -8246,9 +8327,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 yield* client.request("thread/unsubscribe", { threadId: nativeThreadId });
               }
               const cwd = load.runtimePolicy?.cwd ?? null;
-              const userMcpServers = turnsOffUserServers
-                ? yield* readUserMcpServers(wanted, cwd)
-                : {};
+              const userMcpServers = yield* readExclusiveLoadUserMcpServers(wanted, cwd);
               failedGrantedServers.delete(nativeThreadId);
               rememberGrantedServers(nativeThreadId, granted);
               const resumed = yield* resumeNativeThread(nativeThreadId, {
@@ -8256,7 +8335,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 ...codexThreadRuntimeParams({
                   threadId: load.appThreadId,
                   mcpSession,
-                  userMcpServers,
+                  userMcpServers: resolved.turnsOffUserServers ? userMcpServers : {},
                   ...(granted === undefined ? {} : { grantedConnections: granted }),
                   ...(load.modelSelection === undefined
                     ? {}
@@ -8267,8 +8346,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 }),
               });
               threadLoads.set(nativeThreadId, wanted);
-              if (turnsOffUserServers)
-                yield* requireUnchangedUserMcpServers(wanted, nativeThreadId, cwd, userMcpServers);
+              yield* confirmLoad(wanted, nativeThreadId, cwd, resolved, userMcpServers);
               return resumed;
             }),
           );
@@ -8671,20 +8749,17 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               yield* ensureInitialized;
               const mcpSession = yield* mcpSessions.read(threadInput.threadId);
               if (seal !== "ordinary") yield* refuseUnmeasuredSeal(seal, mcpSession);
-              const { load, granted, turnsOffUserServers } = yield* resolveLoad(
-                threadInput.runtimePolicy,
-              );
+              const resolved = yield* resolveLoad(threadInput.runtimePolicy);
+              const { load, granted } = resolved;
               const { cwd } = threadInput.runtimePolicy;
-              const userMcpServers = turnsOffUserServers
-                ? yield* readUserMcpServers(load, cwd)
-                : {};
+              const userMcpServers = yield* readExclusiveLoadUserMcpServers(load, cwd);
               const response = yield* client.request("thread/start", {
                 ...codexThreadRuntimeParams({
                   threadId: threadInput.threadId,
                   mcpSession,
                   modelSelection: threadInput.modelSelection,
                   runtimePolicy: threadInput.runtimePolicy,
-                  userMcpServers,
+                  userMcpServers: resolved.turnsOffUserServers ? userMcpServers : {},
                   ...(granted === undefined ? {} : { grantedConnections: granted }),
                 }),
                 ...(IdAllocator.isDelegatedTaskThread(threadInput.threadId)
@@ -8693,13 +8768,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               });
               rememberGrantedServers(response.thread.id, granted);
               if (!isOrdinaryLoad(load)) threadLoads.set(response.thread.id, load);
-              if (turnsOffUserServers)
-                yield* requireUnchangedUserMcpServers(
-                  load,
-                  response.thread.id,
-                  cwd,
-                  userMcpServers,
-                );
+              yield* confirmLoad(load, response.thread.id, cwd, resolved, userMcpServers);
               return providerThreadFromCodexThread({
                 appThreadId: threadInput.threadId,
                 idAllocator,
@@ -9665,13 +9734,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               const seal = codexThreadSealOf(threadInput.runtimePolicy);
               if (seal !== "ordinary") yield* refuseUnmeasuredSeal(seal, mcpSession);
               // A fork starts loaded, so it gets its own policy's load like any other start.
-              const { load, granted, turnsOffUserServers } = yield* resolveLoad(
-                threadInput.runtimePolicy,
-              );
+              const resolved = yield* resolveLoad(threadInput.runtimePolicy);
+              const { load, granted } = resolved;
               const cwd = threadInput.runtimePolicy?.cwd ?? null;
-              const userMcpServers = turnsOffUserServers
-                ? yield* readUserMcpServers(load, cwd)
-                : {};
+              const userMcpServers = yield* readExclusiveLoadUserMcpServers(load, cwd);
               const fork = client.request("thread/fork", {
                 threadId,
                 excludeTurns: true,
@@ -9679,7 +9745,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 ...codexThreadRuntimeParams({
                   threadId: threadInput.targetThreadId,
                   mcpSession,
-                  userMcpServers,
+                  userMcpServers: resolved.turnsOffUserServers ? userMcpServers : {},
                   ...(granted === undefined ? {} : { grantedConnections: granted }),
                   ...(threadInput.modelSelection === undefined
                     ? {}
@@ -9713,13 +9779,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               );
               rememberGrantedServers(response.thread.id, granted);
               if (!isOrdinaryLoad(load)) threadLoads.set(response.thread.id, load);
-              if (turnsOffUserServers)
-                yield* requireUnchangedUserMcpServers(
-                  load,
-                  response.thread.id,
-                  cwd,
-                  userMcpServers,
-                );
+              yield* confirmLoad(load, response.thread.id, cwd, resolved, userMcpServers);
               let forkedThread = response.thread;
               if (boundary.rollbackTurnCount > 0) {
                 const { historyMode } = yield* ensureInitialized.pipe(
