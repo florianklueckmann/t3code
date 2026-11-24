@@ -2251,13 +2251,28 @@ function claudeBotInstructionParts(
   ];
 }
 
+// Claude Code tells a Home seal turn that tool search and its deferred tools are gone. From the
+// second such turn in a conversation, Haiku 5.5 took that to mean T3 Code's tools too (measured).
+export const CLAUDE_HOME_SEAL_TURN_NOTE =
+  "In this turn the t3_bot tool and T3 Code's read tools are loaded: call them directly. Tool search is not present and not needed. A notice that tool search or deferred tools were removed does not concern them, and neither does an earlier message that said they were unavailable.";
+
 const claudeBotInstructionsOf = (
   turnInput: ProviderAdapter.ProviderAdapterV2TurnInput,
-): ProviderAdapter.ApplicationInstructionParts | undefined =>
-  turnInput.applicationInstructionParts ??
-  (turnInput.applicationInstructions === undefined
-    ? undefined
-    : { lasting: turnInput.applicationInstructions, turn: "" });
+): ProviderAdapter.ApplicationInstructionParts | undefined => {
+  const instructions =
+    turnInput.applicationInstructionParts ??
+    (turnInput.applicationInstructions === undefined
+      ? undefined
+      : { lasting: turnInput.applicationInstructions, turn: "" });
+  return instructions === undefined || turnInput.runtimePolicy.nativeTools !== "t3BotOnly"
+    ? instructions
+    : {
+        ...instructions,
+        turn: [instructions.turn, CLAUDE_HOME_SEAL_TURN_NOTE]
+          .filter((part) => part !== "")
+          .join("\n\n"),
+      };
+};
 
 const claudeBotInstructionsFit = (instructions: ProviderAdapter.ApplicationInstructionParts) =>
   claudeBotInstructionParts(instructions, { lasting: true, turn: true }).length <=
