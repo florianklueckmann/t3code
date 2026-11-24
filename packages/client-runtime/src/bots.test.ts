@@ -31,6 +31,7 @@ import {
   homeBotLearningNoticeGroups,
   botLearningRevisionInput,
   botLearningScopeChange,
+  botLearningViews,
   botModelCapabilities,
   botOfHomeThread,
   botProjectContextChanges,
@@ -731,6 +732,31 @@ describe("bot learning", () => {
     ]);
     // A server that does not report the selection shows nothing rather than a guess.
     expect(botTurnLearningView({ projects: [context], learning: entries }, projectA)).toBeNull();
+  });
+
+  it("shows a suggestion on its lesson while the other project's copy is in use", () => {
+    const entries = [
+      lesson("here", 1, { text: "Use metric units." }),
+      lesson("same", 2, { projectId: projectB, text: "Use metric units." }),
+      lesson("reworded", 3, { projectId: projectB, text: "Metric only." }),
+      lesson("gone", 4, { projectId: projectB, status: "retired" }),
+    ];
+    const suggestionOf = (matched: string, dismissedAt: string | null = null) =>
+      botLearningViews(entries, projectA, [
+        {
+          entryId: BotLearningEntryId.make("here"),
+          matchedEntryId: BotLearningEntryId.make(matched),
+          dismissedAt,
+        },
+      ])[0]?.suggestion;
+    expect(suggestionOf("same")).toEqual({ projectId: projectB, text: null, dismissed: false });
+    expect(suggestionOf("reworded", "2026-01-02T00:00:00.000Z")).toEqual({
+      projectId: projectB,
+      text: "Metric only.",
+      dismissed: true,
+    });
+    expect(suggestionOf("gone")).toBeUndefined();
+    expect(botLearningViews(entries, projectA)[0]?.suggestion).toBeUndefined();
   });
 
   const bot = {

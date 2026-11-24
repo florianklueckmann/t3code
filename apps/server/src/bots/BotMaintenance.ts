@@ -71,6 +71,8 @@ export interface Outcome {
   readonly pending: number;
   readonly stale: number;
   readonly duplicate: number;
+  /** Lessons offered to the user for all projects; a pair settled before is not counted again. */
+  readonly suggested: number;
 }
 
 export type DeferReason =
@@ -767,6 +769,7 @@ export const make = Effect.gen(function* () {
       authority: { policy: bot.learning_policy, bot, context },
       sources: eligible,
       learning: yield* store.listLearning(scope.botId),
+      suggestions: yield* store.listLearningSuggestions(scope.botId),
     });
     if (built._tag === "blocked") {
       yield* recordRun("deferred", { reason: built.reason });
@@ -829,8 +832,34 @@ export const make = Effect.gen(function* () {
               pending: 0,
               stale: 0,
               duplicate: 0,
+              suggested: 0,
             };
             for (const operation of verified.proposal.operations) {
+              if (operation.op === "match") {
+                // The basis pins this project's entry; the other project's may have changed.
+                const { matched } = operation;
+                const current = learning.rows.some(
+                  (row) =>
+                    row.entry_id === matched.entryId &&
+                    row.revision === matched.revision &&
+                    row.status === "active" &&
+                    row.project_id !== null,
+                );
+                if (!current) continue;
+                yield* learning.suggest({
+                  botId: scope.botId,
+                  entry: {
+                    entryId: BotLearningEntryId.make(operation.target.entryId),
+                    revision: operation.target.revision,
+                  },
+                  matched: {
+                    entryId: BotLearningEntryId.make(matched.entryId),
+                    revision: matched.revision,
+                  },
+                });
+                outcome.suggested += 1;
+                continue;
+              }
               const kind = operation.op === "add" ? operation.kind : operation.target.kind;
               // Stricter than ordinary learning: a standing instruction of this kind may
               // govern the lesson, so it waits for the user instead of applying itself.

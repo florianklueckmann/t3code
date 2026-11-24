@@ -2319,6 +2319,12 @@ export function createServerEnvironmentAtoms<R, E>(
       scheduler: configScheduler,
       concurrency: configConcurrency,
     }),
+    decideBotLearningSuggestion: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bots:decide-learning-suggestion",
+      tag: WS_METHODS.botsDecideLearningSuggestion,
+      scheduler: configScheduler,
+      concurrency: configConcurrency,
+    }),
     restoreBotLearning: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:bots:restore-learning",
       tag: WS_METHODS.botsRestoreLearning,

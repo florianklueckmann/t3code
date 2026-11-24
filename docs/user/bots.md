@@ -289,6 +289,13 @@ codebase does not leak into another. You see it under each project in
   move it back. If all projects already have the same entry, that one stays
   and the project's copy is retired. A proposal that would move an entry says
   so, and the entry stays in its project until you adopt it.
+- When a second project learns a lesson another project already has, the Bot
+  marks the newer one **Suggested for all projects**, in settings and in that
+  conversation's memory notices. Nothing moves until you choose **Apply to all
+  projects**, which also retires the other project's copy. **Dismiss** keeps
+  the lesson where it is and the suggestion does not come back for it; **Show
+  again** undoes that. The Bot finds lessons with the same wording on its own,
+  and reworded ones during nightly maintenance.
 - **Edit** rewords an entry as a new version, so its earlier wording stays in
   its history.
 - **Retire** stops an entry, and **Restore** brings back an earlier version.

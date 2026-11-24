@@ -2,6 +2,7 @@ import { RegistryContext, useAtomValue } from "@effect/atom-react";
 import {
   BOT_LEARNING_KIND_LABELS,
   BOT_LEARNING_STATUS_LABELS,
+  BOT_LEARNING_SUGGESTION_LABEL,
   BOT_TURN_LEARNING_EXPLANATION,
   botLearningOriginLabel,
   botLearningRevisionInput,
@@ -1112,7 +1113,10 @@ export function BotLearningList({
   const [shared, setShared] = useState(false);
   const [editing, setEditing] = useState<{ entryId: string; text: string } | null>(null);
   const locked = disabled || busy || !canChange;
-  const views = botLearningViews(bot.learning, projectId).filter(
+  const decideSuggestion = useAtomCommand(serverEnvironment.decideBotLearningSuggestion, {
+    label: "bot learning",
+  });
+  const views = botLearningViews(bot.learning, projectId, bot.learningSuggestions).filter(
     (view) => focus === undefined || view.entry.id === focus.entryId,
   );
   const turn =
@@ -1156,6 +1160,14 @@ export function BotLearningList({
     const revised = await run(title, () => record({ environmentId, input }));
     if (revised) setEditing(null);
   };
+  const settleSuggestion = (
+    title: string,
+    entryId: BotLearningEntry["id"],
+    decision: "accept" | "dismiss" | "undismiss",
+  ) =>
+    void run(title, () =>
+      decideSuggestion({ environmentId, input: { botId: bot.id, entryId, decision } }),
+    );
 
   if (projectId === null && views.length === 0 && focus === undefined) return null;
   return (
@@ -1237,7 +1249,8 @@ export function BotLearningList({
                   >
                     Edit
                   </Button>
-                  {view.entry.projectId === null ? null : (
+                  {/* An open suggestion offers the same move below, with the other copy. */}
+                  {view.entry.projectId === null || view.suggestion?.dismissed === false ? null : (
                     <Button
                       size="xs"
                       variant="ghost-muted"
@@ -1365,6 +1378,54 @@ export function BotLearningList({
                 </div>
               </div>
             ))}
+            {view.suggestion === undefined ? null : view.suggestion.dismissed ? (
+              <p className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
+                You dismissed the suggestion to apply this to all projects.
+                <Button
+                  size="xs"
+                  variant="ghost-muted"
+                  disabled={locked}
+                  onClick={() =>
+                    settleSuggestion("Could not show the suggestion", entryId, "undismiss")
+                  }
+                >
+                  Show again
+                </Button>
+              </p>
+            ) : (
+              <div className="space-y-1 rounded-md bg-muted/40 p-2">
+                <p className="text-xs font-medium">
+                  {`${BOT_LEARNING_SUGGESTION_LABEL} · also learned in ${titleOf(view.suggestion.projectId)}`}
+                </p>
+                {view.suggestion.text === null ? null : (
+                  <p className="wrap-anywhere">{view.suggestion.text}</p>
+                )}
+                <p className="text-xs text-muted-foreground">
+                  {`Applying it retires the copy in ${titleOf(view.suggestion.projectId)}.`}
+                </p>
+                <div className="flex gap-2">
+                  <Button
+                    size="xs"
+                    disabled={locked}
+                    onClick={() =>
+                      settleSuggestion("Could not apply it to all projects", entryId, "accept")
+                    }
+                  >
+                    Apply to all projects
+                  </Button>
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    disabled={locked}
+                    onClick={() =>
+                      settleSuggestion("Could not dismiss the suggestion", entryId, "dismiss")
+                    }
+                  >
+                    Dismiss
+                  </Button>
+                </div>
+              </div>
+            )}
             {view.restorable.length === 0 ? null : (
               <details
                 className="text-xs"

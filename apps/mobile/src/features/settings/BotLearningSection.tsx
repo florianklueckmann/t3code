@@ -2,6 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import {
   BOT_LEARNING_KIND_LABELS,
   BOT_LEARNING_STATUS_LABELS,
+  BOT_LEARNING_SUGGESTION_LABEL,
   BOT_TURN_LEARNING_EXPLANATION,
   botLearningOriginLabel,
   botLearningRevisionInput,
@@ -20,6 +21,7 @@ import { Pressable, View } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";
 import * as Dialog from "../../components/ui/Dialog";
+import { useProjects } from "../../state/entities";
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -87,8 +89,15 @@ export function BotLearningSection({
   const [text, setText] = useState("");
   const [editing, setEditing] = useState<{ entryId: string; text: string } | null>(null);
   const locked = disabled || busy || !canChange;
+  const decideSuggestion = useAtomCommand(serverEnvironment.decideBotLearningSuggestion, {
+    reportFailure: false,
+  });
+  const projects = useProjects();
+  const titleOf = (id: ProjectId) =>
+    projects.find((project) => project.environmentId === environmentId && project.id === id)
+      ?.title ?? "Unknown project";
   const views = detail.data
-    ? botLearningViews(detail.data.learning, projectId).filter(
+    ? botLearningViews(detail.data.learning, projectId, detail.data.learningSuggestions).filter(
         (view) => focus === undefined || view.entry.id === focus.entryId,
       )
     : [];
@@ -127,6 +136,14 @@ export function BotLearningSection({
     const revised = await run(failureTitle, () => record({ environmentId, input }));
     if (revised) setEditing(null);
   };
+  const settleSuggestion = (
+    failureTitle: string,
+    entryId: BotLearningEntry["id"],
+    decision: "accept" | "dismiss" | "undismiss",
+  ) =>
+    void run(failureTitle, () =>
+      decideSuggestion({ environmentId, input: { botId, entryId, decision } }),
+    );
 
   if (projectId === null && views.length === 0 && focus === undefined) return null;
   return (
@@ -273,7 +290,8 @@ export function BotLearningSection({
                   disabled={locked}
                   onPress={() => setEditing({ entryId, text: view.current?.text ?? "" })}
                 />
-                {view.entry.projectId === null ? null : (
+                {/* An open suggestion offers the same move below, with the other copy. */}
+                {view.entry.projectId === null || view.suggestion?.dismissed === false ? null : (
                   <ActionText
                     label="Apply to all projects"
                     tone="muted"
@@ -297,6 +315,52 @@ export function BotLearningSection({
                 />
               </View>
             ) : null}
+            {view.suggestion === undefined ? null : view.suggestion.dismissed ? (
+              <View className="flex-row flex-wrap items-center gap-x-3 pt-2">
+                <Text textRole="footnote" className="text-foreground-muted">
+                  You dismissed the suggestion to apply this to all projects.
+                </Text>
+                <ActionText
+                  label="Show again"
+                  tone="muted"
+                  disabled={locked}
+                  onPress={() =>
+                    settleSuggestion("Could not show the suggestion", entryId, "undismiss")
+                  }
+                />
+              </View>
+            ) : (
+              <View className="gap-1 pt-2">
+                <Text textRole="footnote" className="text-foreground">
+                  {`${BOT_LEARNING_SUGGESTION_LABEL} · also learned in ${titleOf(view.suggestion.projectId)}`}
+                </Text>
+                {view.suggestion.text === null ? null : (
+                  <Text textRole="body" className="text-foreground">
+                    {view.suggestion.text}
+                  </Text>
+                )}
+                <Text textRole="footnote" className="text-foreground-muted">
+                  {`Applying it retires the copy in ${titleOf(view.suggestion.projectId)}.`}
+                </Text>
+                <View className="flex-row gap-5 pt-1">
+                  <ActionText
+                    label="Apply to all projects"
+                    disabled={locked}
+                    onPress={() =>
+                      settleSuggestion("Could not apply it to all projects", entryId, "accept")
+                    }
+                  />
+                  <ActionText
+                    label="Dismiss"
+                    tone="muted"
+                    disabled={locked}
+                    onPress={() =>
+                      settleSuggestion("Could not dismiss the suggestion", entryId, "dismiss")
+                    }
+                  />
+                </View>
+              </View>
+            )}
             {view.restorable.map((revision) => (
               <View
                 key={revision.revision}

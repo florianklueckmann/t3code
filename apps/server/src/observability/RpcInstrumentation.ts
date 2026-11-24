@@ -134,6 +134,7 @@ const RPC_AGGREGATES = {
   [WS_METHODS.botsDecideLearning]: "bots",
   [WS_METHODS.botsRetireLearning]: "bots",
   [WS_METHODS.botsRestoreLearning]: "bots",
+  [WS_METHODS.botsDecideLearningSuggestion]: "bots",
   [WS_METHODS.botsSubscribeLearningNotices]: "bots",
   [WS_METHODS.mcpConnectionsList]: "mcpConnections",
   [WS_METHODS.mcpConnectionsCreate]: "mcpConnections",

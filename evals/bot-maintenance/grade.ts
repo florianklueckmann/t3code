@@ -9,7 +9,7 @@ export const batchFor = (testCase: MaintenanceCase): Evidence.Batch => {
     entry_id: entry.id,
     revision: 1,
     bot_id: WORLD.botId,
-    project_id: WORLD.projectId,
+    project_id: entry.project ?? WORLD.projectId,
     kind: entry.kind,
     text: entry.text,
     normalized_text: entry.text.toLowerCase(),
@@ -17,7 +17,7 @@ export const batchFor = (testCase: MaintenanceCase): Evidence.Batch => {
     evidence: "",
     origin: entry.origin,
     source_json: '{"kind":"user"}',
-    learned_in_project_id: WORLD.projectId,
+    learned_in_project_id: entry.project ?? WORLD.projectId,
     status: "active",
     base_revision: null,
     conflicts_with_instruction: 0,
@@ -55,6 +55,10 @@ export const batchFor = (testCase: MaintenanceCase): Evidence.Batch => {
     },
     sources: testCase.sources,
     learning,
+    suggestions: (testCase.suggestions ?? []).map(([entry_id, matched_entry_id]) => ({
+      entry_id,
+      matched_entry_id,
+    })),
   });
   if (built._tag === "blocked")
     throw new Error(`Case ${testCase.id} does not fit one packet: ${built.reason}.`);
@@ -62,10 +66,13 @@ export const batchFor = (testCase: MaintenanceCase): Evidence.Batch => {
 };
 
 export interface GradedOperation {
-  readonly op: "add" | "replace";
+  readonly op: "add" | "replace" | "match";
   readonly kind: string;
+  /** The lesson's text; for a match, the text of the entry it targets. */
   readonly text: string;
   readonly target: string | null;
+  /** The other project's entry a match names. */
+  readonly matched: string | null;
   readonly cites: ReadonlyArray<string>;
 }
 
@@ -80,6 +87,7 @@ export interface SampleGrade {
 const matches = (where: Where, operation: GradedOperation) =>
   (where.op === undefined || where.op === operation.op) &&
   (where.target === undefined || where.target === operation.target) &&
+  (where.matched === undefined || where.matched === operation.matched) &&
   (where.kinds === undefined || where.kinds.some((kind) => kind === operation.kind)) &&
   (where.text === undefined || where.text.every((pattern) => pattern.test(operation.text))) &&
   (where.cites === undefined || operation.cites.some((id) => where.cites!.includes(id)));
@@ -98,13 +106,25 @@ export const gradeSample = (
   const verified = Evidence.verifyProposal(batch, output);
   if (verified._tag === "rejected")
     return { verifier: verified.reason, operations: [], checks: [], pass: false };
-  const operations = verified.proposal.operations.map((operation): GradedOperation => ({
-    op: operation.op,
-    kind: operation.op === "add" ? operation.kind : operation.target.kind,
-    text: operation.text,
-    target: operation.op === "replace" ? operation.target.entryId : null,
-    cites: operation.evidence.map((ref) => ref.source.id),
-  }));
+  const operations = verified.proposal.operations.map((operation): GradedOperation =>
+    operation.op === "match"
+      ? {
+          op: operation.op,
+          kind: operation.target.kind,
+          text: operation.target.text,
+          target: operation.target.entryId,
+          matched: operation.matched.entryId,
+          cites: [],
+        }
+      : {
+          op: operation.op,
+          kind: operation.op === "add" ? operation.kind : operation.target.kind,
+          text: operation.text,
+          target: operation.op === "replace" ? operation.target.entryId : null,
+          matched: null,
+          cites: operation.evidence.map((ref) => ref.source.id),
+        },
+  );
   const checks = testCase.checks.map((check) => ({
     check: check.name,
     pass: holds(check, operations),

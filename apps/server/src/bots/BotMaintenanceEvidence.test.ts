@@ -77,7 +77,17 @@ const learning = (
 const build = (
   sources: ReadonlyArray<Evidence.Source>,
   rows: ReadonlyArray<BotStore.BotLearningRow> = [],
-) => Evidence.buildBatch({ authority: authority(), sources, learning: rows });
+  suggestions: ReadonlyArray<readonly [entry: string, matched: string]> = [],
+) =>
+  Evidence.buildBatch({
+    authority: authority(),
+    sources,
+    learning: rows,
+    suggestions: suggestions.map(([entry_id, matched_entry_id]) => ({
+      entry_id,
+      matched_entry_id,
+    })),
+  });
 const ready = (result: Evidence.BuildResult) =>
   result._tag === "ready" ? result.batch : assert.fail(`blocked: ${result.reason}`);
 
@@ -150,6 +160,23 @@ it("puts every applicable standing instruction first, leaves other projects out,
   assert.equal(batch.targets.get("e5")?.entryId, "moved");
   assert.equal(batch.targets.get("e1")?.entryId, "rule");
   assert.isTrue(batch.packet.learningComplete);
+  // Other projects' lessons in use are listed apart, only to be matched.
+  assert.deepEqual(
+    batch.packet.otherProjects.map((entry) => [entry.key, entry.text]),
+    [
+      ["o1", "Lesson other-project"],
+      ["o2", "Lesson moving"],
+    ],
+  );
+  assert.deepEqual(batch.others.get("o2"), { entryId: "moving", revision: 1 });
+  // A pair already suggested, decided or not, is not offered again from either lesson.
+  for (const pair of [
+    ["own", "other-project"],
+    ["other-project", "own"],
+  ] as const) {
+    const rows = [learning("own"), learning("other-project", { project: "elsewhere" })];
+    assert.deepEqual(ready(build([home("m1", "hello")], rows, [pair])).packet.otherProjects, []);
+  }
 
   const inferred = Array.from({ length: 81 }, (_, index) => learning(`inferred-${index}`));
   const partial = ready(build([home("m1", "hello")], inferred));
@@ -199,7 +226,12 @@ it("verifies proposals against the exact packet and rejects the whole batch on a
         home("m1", "Please always cite the rulebook page when you answer."),
         taskResult("task", "Converted the notes. The vault index lives in Index.md."),
       ],
-      [learning("own", { text: "Cite sources." }), learning("waiting", { status: "pending" })],
+      [
+        learning("own", { text: "Cite sources." }),
+        learning("waiting", { status: "pending" }),
+        learning("shared", { project: null }),
+        learning("far", { project: "elsewhere", text: "Always cite your sources." }),
+      ],
     ),
   );
   const add = {
@@ -226,19 +258,23 @@ it("verifies proposals against the exact packet and rejects the whole batch on a
         rationale: "",
         evidence: [{ source: "t1", quote: "The vault index lives in Index.md." }],
       },
+      { op: "match", target: "e1", sameAs: "o1" },
     ],
   });
   if (verified._tag !== "verified") return assert.fail(verified.reason);
   assert.deepEqual(
     verified.proposal.operations.map((operation) =>
-      operation.op === "add"
-        ? [operation.op, operation.kind, operation.evidence[0]?.source.id]
-        : [operation.op, operation.target.entryId, operation.evidence[0]?.source.id],
+      operation.op === "match"
+        ? [operation.op, operation.target.entryId, operation.matched.entryId]
+        : operation.op === "add"
+          ? [operation.op, operation.kind, operation.evidence[0]?.source.id]
+          : [operation.op, operation.target.entryId, operation.evidence[0]?.source.id],
     ),
     [
       ["add", "preference", "m1"],
       ["replace", "own", "m1"],
       ["add", "fact", "task"],
+      ["match", "own", "far"],
     ],
   );
   const empty = Evidence.verifyProposal(batch, { operations: [] });
@@ -261,6 +297,10 @@ it("verifies proposals against the exact packet and rejects the whole batch on a
     ],
     [withOperation({ ...add, op: "replace", kind: undefined, target: "e9" }), "unknown_target"],
     [withOperation({ ...add, op: "replace", kind: undefined, target: "e2" }), "unknown_target"],
+    // Only a lesson in use in this project alone can be suggested for all projects.
+    [withOperation({ op: "match", target: "e2", sameAs: "o1" }), "unknown_target"],
+    [withOperation({ op: "match", target: "e3", sameAs: "o1" }), "unknown_target"],
+    [withOperation({ op: "match", target: "e1", sameAs: "e1" }), "unknown_match"],
     [
       withOperation({
         op: "replace",

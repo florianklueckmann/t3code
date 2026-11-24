@@ -1738,6 +1738,71 @@ it.effect("shows each committed learning change once, in the Home it came from",
   }).pipe(Effect.provide(layerDatabase)),
 );
 
+it.effect("suggests a lesson a second project repeats, in that Home, until the user decides", () =>
+  Effect.gen(function* () {
+    yield* seedProjects;
+    const world = yield* makeThreadWorld;
+    yield* withServices(world.threadLayer, ({ bots }) =>
+      Effect.gen(function* () {
+        yield* createCampaignBot(bots);
+        yield* bots.attachProject({ botId, projectId: campaignA });
+        yield* bots.attachProject({ botId, projectId: campaignB });
+        const lesson = { ...correction, origin: "instruction" as const, botId };
+        const user = { kind: "user" as const };
+        const first = yield* bots.recordLearning({
+          ...lesson,
+          source: user,
+          projectId: campaignA,
+        });
+        yield* TestClock.adjust("1 minute");
+        const repeat = yield* bots.recordLearning({
+          ...lesson,
+          source: user,
+          projectId: campaignB,
+        });
+        const entryId = repeat.learned.entryId;
+        const suggested = (projectId: ProjectId) =>
+          learningNoticesOf(bots, projectId).pipe(
+            Effect.map((notices) => notices.map((notice) => notice.suggestedForAllProjects)),
+          );
+        const open = [{ entryId, matchedEntryId: first.learned.entryId, dismissedAt: null }];
+        assert.deepEqual(repeat.bot.learningSuggestions, open);
+        assert.deepEqual(yield* suggested(campaignB), [true]);
+        assert.deepEqual(yield* suggested(campaignA), [undefined]);
+
+        const dismissed = yield* bots.decideLearningSuggestion({
+          botId,
+          entryId,
+          decision: "dismiss",
+        });
+        assert.isNotNull(dismissed.learningSuggestions?.[0]?.dismissedAt);
+        assert.deepEqual(yield* suggested(campaignB), [undefined]);
+        const shown = yield* bots.decideLearningSuggestion({
+          botId,
+          entryId,
+          decision: "undismiss",
+        });
+        assert.deepEqual(shown.learningSuggestions, open);
+
+        // A detached project's lesson cannot move, as "Apply to all projects" cannot there.
+        yield* bots.detachProject({ botId, projectId: campaignB });
+        const accept = bots.decideLearningSuggestion({ botId, entryId, decision: "accept" });
+        assert.include((yield* Effect.flip(accept)).message, "not attached");
+        yield* bots.attachProject({ botId, projectId: campaignB });
+        const accepted = yield* accept;
+        assert.deepEqual(accepted.learningSuggestions, []);
+        assert.deepEqual(
+          accepted.learning.map((entry) => [entry.projectId, entry.revisions.at(-1)?.status]),
+          [
+            [campaignA, "retired"],
+            [null, "active"],
+          ],
+        );
+      }),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
 it.effect("shows a shared change from a detached Home once, in the Home most active then", () =>
   Effect.gen(function* () {
     yield* seedProjects;

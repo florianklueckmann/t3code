@@ -75,6 +75,18 @@ export interface BotLearningRow {
   readonly restored_from: number | null;
 }
 
+/** A project lesson suggested for all projects because another project keeps `matched`. */
+export interface BotLearningSuggestionRow {
+  readonly entry_id: string;
+  readonly bot_id: string;
+  /** The revisions that matched; the suggestion holds only while both are still in use. */
+  readonly entry_revision: number;
+  readonly matched_entry_id: string;
+  readonly matched_revision: number;
+  readonly created_at: string;
+  readonly dismissed_at: string | null;
+}
+
 export class BotStoreError extends Schema.TaggedError<BotStoreError>()("BotStoreError", {
   operation: Schema.String,
   cause: Schema.Defect(),
@@ -145,6 +157,21 @@ export class BotStore extends Context.Service<
       readonly decidedAt: string;
       readonly origin?: string;
     }) => Effect.Effect<void, BotStoreError>;
+    readonly listLearningSuggestions: (
+      botId: string,
+    ) => Effect.Effect<ReadonlyArray<BotLearningSuggestionRow>, BotStoreError>;
+    /**
+     * Records what a lesson matches now. A dismissal survives it, and the same pair is never
+     * stored the other way round, so a dismissed pair cannot return from its other lesson.
+     */
+    readonly upsertLearningSuggestion: (
+      row: Omit<BotLearningSuggestionRow, "dismissed_at">,
+    ) => Effect.Effect<void, BotStoreError>;
+    /** True when the lesson has a suggestion. */
+    readonly setLearningSuggestionDismissed: (input: {
+      readonly entryId: string;
+      readonly dismissedAt: string | null;
+    }) => Effect.Effect<boolean, BotStoreError>;
     /** Every Bot's grants, or one Bot's; a Bot without any has revision 0 or its last one. */
     readonly listMcpGrants: (
       botId?: string,
@@ -421,6 +448,11 @@ export const layer = Layer.effect(
         yield* sql.withTransaction(
           Effect.gen(function* () {
             yield* sql`DELETE FROM bot_learning_revisions WHERE project_id = ${projectId}`;
+            yield* sql`
+              DELETE FROM bot_learning_suggestions
+              WHERE entry_id NOT IN (SELECT entry_id FROM bot_learning_revisions)
+                OR matched_entry_id NOT IN (SELECT entry_id FROM bot_learning_revisions)
+            `;
             yield* sql`DELETE FROM bot_project_contexts WHERE project_id = ${projectId}`;
           }),
         );
@@ -480,6 +512,47 @@ export const layer = Layer.effect(
       `;
       },
       Effect.mapError(fail("set-learning-status")),
+    );
+
+    const listLearningSuggestions = Effect.fn("BotStore.listLearningSuggestions")(
+      function* (botId: string) {
+        return yield* sql<BotLearningSuggestionRow>`
+          SELECT * FROM bot_learning_suggestions WHERE bot_id = ${botId} ORDER BY created_at, entry_id
+        `;
+      },
+      Effect.mapError(fail("list-learning-suggestions")),
+    );
+
+    const upsertLearningSuggestion = Effect.fn("BotStore.upsertLearningSuggestion")(
+      function* (row: Omit<BotLearningSuggestionRow, "dismissed_at">) {
+        yield* sql`
+          INSERT INTO bot_learning_suggestions (
+            entry_id, bot_id, entry_revision, matched_entry_id, matched_revision, created_at
+          )
+          SELECT ${row.entry_id}, ${row.bot_id}, ${row.entry_revision}, ${row.matched_entry_id},
+            ${row.matched_revision}, ${row.created_at}
+          WHERE NOT EXISTS (
+            SELECT 1 FROM bot_learning_suggestions
+            WHERE entry_id = ${row.matched_entry_id} AND matched_entry_id = ${row.entry_id}
+          )
+          ON CONFLICT(entry_id) DO UPDATE SET
+            entry_revision = excluded.entry_revision,
+            matched_entry_id = excluded.matched_entry_id,
+            matched_revision = excluded.matched_revision
+        `;
+      },
+      Effect.mapError(fail("upsert-learning-suggestion")),
+    );
+
+    const setLearningSuggestionDismissed = Effect.fn("BotStore.setLearningSuggestionDismissed")(
+      function* (input: { readonly entryId: string; readonly dismissedAt: string | null }) {
+        const changed = yield* sql<{ readonly entry_id: string }>`
+          UPDATE bot_learning_suggestions SET dismissed_at = ${input.dismissedAt}
+          WHERE entry_id = ${input.entryId} RETURNING entry_id
+        `;
+        return changed.length > 0;
+      },
+      Effect.mapError(fail("set-learning-suggestion-dismissed")),
     );
 
     const listMcpGrants = Effect.fn("BotStore.listMcpGrants")(
@@ -644,6 +717,9 @@ export const layer = Layer.effect(
       ),
       insertLearning,
       setLearningStatus,
+      listLearningSuggestions,
+      upsertLearningSuggestion,
+      setLearningSuggestionDismissed,
       listMcpGrants,
       replaceMcpGrants,
       forgetMcpConnection,

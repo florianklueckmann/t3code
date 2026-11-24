@@ -35,6 +35,8 @@ export const forHome = Effect.fn("BotLearningNotices.forHome")(function* (
   rows: ReadonlyArray<BotStore.BotLearningRow>,
   projectId: string,
   homes: NoticeHomes,
+  /** Entries with an open suggestion to apply them to all projects. */
+  suggested: ReadonlySet<string>,
 ) {
   const byEntry = new Map<string, Array<BotStore.BotLearningRow>>();
   for (const row of rows) {
@@ -68,6 +70,9 @@ export const forHome = Effect.fn("BotLearningNotices.forHome")(function* (
             ? row.status !== "active" && row.status !== "superseded" && row.status !== "retired"
             : row.activated_at > row.created_at,
         currentRevision,
+        ...(row.status === "active" && suggested.has(row.entry_id)
+          ? { suggestedForAllProjects: true }
+          : {}),
       };
       notices.push({
         at: row.created_at,

@@ -23,6 +23,7 @@ import type {
   BotLearningNotice,
   BotLearningRevision,
   BotLearningStatus,
+  BotLearningSuggestion,
   BotProjectContext,
   BotProjectContextSummary,
   BotSourcePreference,
@@ -235,6 +236,9 @@ export const BOT_LEARNING_STATUS_LABELS: Record<BotLearningStatus, string> = {
   diagnostic: "Task didn't finish",
 };
 
+/** Marks a lesson the Bot offers for all projects, on its settings row and its Home notice. */
+export const BOT_LEARNING_SUGGESTION_LABEL = "Suggested for all projects";
+
 export function botLearningOriginLabel(revision: BotLearningRevision): string {
   if (revision.origin === "instruction") return "Your instruction";
   if (revision.source.kind === "task") return "Proposed by a task";
@@ -251,6 +255,15 @@ export interface BotLearningView {
   readonly latest: BotLearningRevision;
   /** Earlier revisions the user can make current again, newest first. */
   readonly restorable: ReadonlyArray<BotLearningRevision>;
+  /** The other project's lesson this one repeats, while the Bot suggests it for all projects. */
+  readonly suggestion:
+    | {
+        readonly projectId: ProjectId;
+        /** The other lesson's wording when it differs from this one's. */
+        readonly text: string | null;
+        readonly dismissed: boolean;
+      }
+    | undefined;
 }
 
 /**
@@ -260,15 +273,33 @@ export interface BotLearningView {
 export function botLearningViews(
   entries: ReadonlyArray<BotLearningEntry>,
   projectId: ProjectId | null,
+  suggestions: ReadonlyArray<BotLearningSuggestion> = [],
 ): ReadonlyArray<BotLearningView> {
+  const active = (entry: BotLearningEntry | undefined) =>
+    entry?.revisions.find((revision) => revision.status === "active");
   const views = entries.flatMap((entry): ReadonlyArray<BotLearningView> => {
     const latest = entry.revisions.at(-1);
     if (entry.projectId !== projectId || latest === undefined) return [];
     const newestFirst = [...entry.revisions].reverse();
+    const current = active(entry);
+    const suggestion = suggestions.find((each) => each.entryId === entry.id);
+    const matched = entries.find((each) => each.id === suggestion?.matchedEntryId);
+    const matchedText = active(matched)?.text;
     return [
       {
         entry,
-        current: entry.revisions.find((revision) => revision.status === "active"),
+        current,
+        suggestion:
+          suggestion === undefined ||
+          current === undefined ||
+          matched?.projectId == null ||
+          matchedText === undefined
+            ? undefined
+            : {
+                projectId: matched.projectId,
+                text: matchedText === current.text ? null : matchedText,
+                dismissed: suggestion.dismissedAt !== null,
+              },
         pending: newestFirst.filter((revision) => revision.status === "pending"),
         latest,
         restorable: newestFirst.filter(
@@ -723,7 +754,11 @@ export function botLearningNoticeEntryState(notice: BotLearningNotice): string |
   if (notice.change === "retired") return notice.currentRevision === null ? null : "Restored since";
   if (notice.status === "pending") return BOT_LEARNING_STATUS_LABELS.pending;
   if (notice.status === "rejected") return BOT_LEARNING_STATUS_LABELS.rejected;
-  if (notice.currentRevision === notice.revision) return BOT_LEARNING_STATUS_LABELS.active;
+  if (notice.currentRevision === notice.revision) {
+    return notice.suggestedForAllProjects === true
+      ? BOT_LEARNING_SUGGESTION_LABEL
+      : BOT_LEARNING_STATUS_LABELS.active;
+  }
   return notice.currentRevision === null ? "Not in use now" : "No longer current";
 }
 

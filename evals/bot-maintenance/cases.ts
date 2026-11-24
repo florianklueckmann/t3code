@@ -18,6 +18,8 @@ export interface LearningFixture {
   readonly kind: BotLearningKind;
   readonly text: string;
   readonly origin: "instruction" | "correction";
+  /** Another of the Bot's projects; the case's own project when absent. */
+  readonly project?: string;
 }
 
 /** Matches an operation when every given field matches. */
@@ -25,9 +27,11 @@ export interface Where {
   /** Every pattern must match the lesson text. */
   readonly text?: ReadonlyArray<RegExp>;
   readonly kinds?: ReadonlyArray<BotLearningKind>;
-  readonly op?: "add" | "replace";
-  /** The learning entry id a replace targets. */
+  readonly op?: "add" | "replace" | "match";
+  /** The learning entry id a replace or a match targets. */
   readonly target?: string;
+  /** The other project's learning entry id a match names. */
+  readonly matched?: string;
   /** The operation cites at least one of these source ids. */
   readonly cites?: ReadonlyArray<string>;
 }
@@ -42,8 +46,32 @@ export interface MaintenanceCase {
   readonly source: string;
   readonly sources: ReadonlyArray<Evidence.Source>;
   readonly learning?: ReadonlyArray<LearningFixture>;
+  /** Suggestions the Bot already stored, as [suggested entry, matched entry]. */
+  readonly suggestions?: ReadonlyArray<readonly [string, string]>;
   readonly checks: ReadonlyArray<Check>;
 }
+
+const OTHER_PROJECT = "acme-docs";
+const subjectLine: LearningFixture = {
+  id: "entry-subject-line",
+  kind: "preference",
+  text: "Commit subject lines stay under 50 characters and use the imperative mood.",
+  origin: "correction",
+};
+const subjectLineElsewhere: LearningFixture = {
+  id: "docs-subject-line",
+  kind: "preference",
+  text: "Write commit subjects in the imperative, 50 characters at most.",
+  origin: "correction",
+  project: OTHER_PROJECT,
+};
+const ordinary = [
+  {
+    kind: "home-input",
+    id: "msg-9",
+    text: "Thanks. Please rerun the flaky e2e job on PR 312 and tell me if it passes.",
+  },
+] as const;
 
 const input = (id: string, text: string): Evidence.Source => ({ kind: "home-input", id, text });
 const taskResult = (id: string, text: string): Evidence.Source => ({
@@ -226,6 +254,85 @@ export const CASES: ReadonlyArray<MaintenanceCase> = [
       input("msg-7", "Morning! Can you summarize what changed in yesterday's PRs?"),
       input("msg-8", "Thanks, that's helpful. Please also rerun the flaky e2e job on PR 312."),
     ],
+    checks: [{ name: "proposes nothing", expect: "empty" }],
+  },
+  {
+    id: "repeat-in-second-project-matched",
+    source: "T3B-33: the same lesson learned in two of the Bot's projects is suggested",
+    learning: [
+      subjectLine,
+      subjectLineElsewhere,
+      {
+        id: "docs-british",
+        kind: "preference",
+        text: "Write documentation in British English.",
+        origin: "instruction",
+        project: OTHER_PROJECT,
+      },
+    ],
+    sources: ordinary,
+    checks: [
+      {
+        name: "matches the lesson with the other project's copy",
+        expect: "some",
+        where: { op: "match", target: "entry-subject-line", matched: "docs-subject-line" },
+      },
+      {
+        name: "matches nothing else",
+        expect: "none",
+        where: { op: "match", matched: "docs-british" },
+      },
+      { name: "adds nothing", expect: "none", where: { op: "add" } },
+      { name: "replaces nothing", expect: "none", where: { op: "replace" } },
+    ],
+  },
+  {
+    id: "project-specific-not-matched",
+    source: "T3B-33 control: a project-specific lesson is not suggested",
+    learning: [
+      {
+        id: "entry-staging-db",
+        kind: "fact",
+        text: "The staging database is Postgres 16 on port 5433.",
+        origin: "correction",
+      },
+      {
+        id: "entry-bullets",
+        kind: "preference",
+        text: "Status updates are three bullet points at most.",
+        origin: "correction",
+      },
+      {
+        id: "docs-staging-db",
+        kind: "fact",
+        text: "The staging database is MySQL 8 on port 3307.",
+        origin: "correction",
+        project: OTHER_PROJECT,
+      },
+      {
+        id: "docs-status",
+        kind: "preference",
+        text: "Status updates go to the #docs channel every Friday.",
+        origin: "correction",
+        project: OTHER_PROJECT,
+      },
+      {
+        id: "docs-german",
+        kind: "preference",
+        text: "Always answer in German.",
+        origin: "instruction",
+        project: OTHER_PROJECT,
+      },
+    ],
+    sources: ordinary,
+    checks: [{ name: "proposes nothing", expect: "empty" }],
+  },
+  {
+    id: "settled-pair-not-matched-again",
+    source: "T3B-33: a dismissed suggestion is not suggested again",
+    learning: [subjectLine, subjectLineElsewhere],
+    suggestions: [["entry-subject-line", "docs-subject-line"]],
+    sources: ordinary,
     checks: [{ name: "proposes nothing", expect: "empty" }],
   },
 ];

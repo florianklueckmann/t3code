@@ -453,7 +453,7 @@ it.effect(
         readonly migration_id: number;
         readonly name: string;
       }>`SELECT migration_id, name FROM effect_sql_migrations ORDER BY migration_id`;
-      assert.deepEqual(history.slice(-14), [
+      assert.deepEqual(history.slice(-15), [
         { migration_id: 11, name: "BotMaintenance" },
         { migration_id: 12, name: "BotMaintenanceReceipts" },
         { migration_id: 13, name: "BotMaintenanceNightly" },
@@ -468,6 +468,7 @@ it.effect(
         { migration_id: 22, name: "BotMcpGrantLevels" },
         { migration_id: 23, name: "BotCalendarWrites" },
         { migration_id: 24, name: "BotMcpCalendarChoice" },
+        { migration_id: 25, name: "BotLearningSuggestions" },
       ]);
       const maintenance = yield* BotMaintenance.BotMaintenance;
       const view = yield* maintenance.get(scope);
@@ -2282,6 +2283,57 @@ it.effect("keeps a project fact out of the Bot's other projects", () =>
   }).pipe(Effect.provide(storeOnly)),
 );
 
+it.effect("suggests a lesson the generator matches with another project's, once per pair", () =>
+  Effect.gen(function* () {
+    yield* seedBot("automatic");
+    const { packets, generate } = yield* recordingGenerator((packet) =>
+      Effect.succeed({
+        operations: packet.otherProjects.flatMap((other) =>
+          packet.learning.map((entry) => ({ op: "match", target: entry.key, sameAs: other.key })),
+        ),
+      }),
+    );
+    yield* withEngine(generate, ({ maintenance, bots }) =>
+      Effect.gen(function* () {
+        const lesson = {
+          kind: "preference",
+          origin: "instruction",
+          source: { kind: "user" },
+        } as const;
+        const here = yield* bots.recordLearning({ ...scope, ...lesson, text: "Cite the page." });
+        const there = yield* bots.recordLearning({
+          ...otherScope,
+          ...lesson,
+          text: "Always give the page number.",
+        });
+        yield* enable(maintenance);
+        yield* input("ask", "What does the rulebook say about grappling?");
+        const pass = yield* maintenance.runNow(scope);
+        assert.equal(pass.status === "applied" && pass.outcome.suggested, 1);
+        const suggestion = {
+          entryId: here.learned.entryId,
+          matchedEntryId: there.learned.entryId,
+          dismissedAt: null,
+        };
+        assert.deepEqual((yield* bots.get(scope)).learningSuggestions, [suggestion]);
+
+        // The stored pair leaves the next packet, dismissed or not.
+        yield* bots.decideLearningSuggestion({
+          botId: scope.botId,
+          entryId: suggestion.entryId,
+          decision: "dismiss",
+        });
+        yield* input("again", "And about shoving?");
+        assert.equal((yield* maintenance.runNow(scope)).status, "noop");
+        assert.deepEqual(
+          (yield* Ref.get(packets)).map((packet) => packet.otherProjects.length),
+          [1, 0],
+        );
+      }),
+    );
+  }).pipe(Effect.provide(storeOnly)),
+);
+
 it.effect(
   "resumes after a crash during generation or before its receipts commit without applying twice",
   () =>
@@ -2479,6 +2531,7 @@ it.effect("never lets an inferred lesson override or sidestep a standing instruc
           pending: 2,
           stale: 0,
           duplicate: 0,
+          suggested: 0,
         });
         assert.deepEqual(
           (yield* learningRows).map((row) => [row.text, row.origin, row.status]),
