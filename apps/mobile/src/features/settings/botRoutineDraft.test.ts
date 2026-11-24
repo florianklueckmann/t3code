@@ -2,11 +2,29 @@ import { emptyBotRoutineDraft } from "@t3tools/client-runtime/bots";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  botRoutineLoadError,
   formatLeadTime,
   leadTimeOptions,
   toggleBotRoutineWeekday,
   withBotRoutineTiming,
 } from "./botRoutineDraft";
+
+describe("botRoutineLoadError", () => {
+  const loaded = { data: {}, error: null };
+  it.each([
+    ["everything loaded", [loaded, loaded, loaded], null],
+    ["still loading", [loaded, { data: null, error: null }, loaded], null],
+    // A reconnect's failed refresh keeps the open form and what was typed in it.
+    ["a refresh failed after loading", [loaded, { data: {}, error: "Offline" }, loaded], null],
+    [
+      "a first load failed",
+      [loaded, loaded, { data: null, error: "Bot not found." }],
+      "Bot not found.",
+    ],
+  ] as const)("reports an error only with nothing to show: %s", (_, queries, error) => {
+    expect(botRoutineLoadError(queries)).toBe(error);
+  });
+});
 
 describe("formatLeadTime", () => {
   it.each([

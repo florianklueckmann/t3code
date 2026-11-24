@@ -12,6 +12,7 @@ import {
 } from "@t3tools/shared/serverSettings";
 import type {
   EnvironmentId,
+  ModelCapabilities,
   ModelSelection,
   ProjectId,
   ProviderOptionDescriptor,
@@ -274,6 +275,8 @@ type ThreadSettingsSessionProps = {
   readonly providerGroups: ReadonlyArray<ProviderGroup>;
   /** The caller's restriction on `providerGroups`, kept when hidden models are revealed. */
   readonly isModelOptionEligible?: (option: ModelOption) => boolean;
+  /** The caller's narrowing of a picked model's options, whichever list it was picked from. */
+  readonly modelCapabilities?: (option: ModelOption) => ModelCapabilities | null;
   readonly selectedModel: ModelSelection | null;
   readonly prompt: string;
   readonly onPromptChange: (prompt: string) => void;
@@ -506,7 +509,9 @@ function ThreadSettingsSessionProvider(
 
   const displayedDescriptors = pendingModel
     ? resolveProviderOptionDescriptors({
-        capabilities: pendingModel.capabilities,
+        capabilities: props.modelCapabilities
+          ? props.modelCapabilities(pendingModel)
+          : pendingModel.capabilities,
         selections: pendingModel.selection.options,
       })
     : props.optionDescriptors;

@@ -754,6 +754,7 @@ function ScheduledTaskRow({
   const [busy, setBusy] = useState(false);
   const [deliveriesOpen, setDeliveriesOpen] = useState(false);
   const isWebhook = task.schedule.type === "webhook";
+  const routineBotId = task.bot?.botId;
   const toggle = useAtomCommand(serverEnvironment.setScheduledTaskEnabled, {
     label: "scheduled task enabled",
   });
@@ -854,13 +855,20 @@ function ScheduledTaskRow({
               <MoreHorizontalIcon className="size-4" />
             </MenuTrigger>
             <MenuPopup align="end">
-              {task.bot === undefined ? (
+              {routineBotId === undefined ? (
                 <MenuItem onClick={onEdit}>
                   <PencilIcon />
                   Edit
                 </MenuItem>
               ) : (
-                <MenuItem onClick={() => void navigate({ to: "/settings/bots" })}>
+                <MenuItem
+                  onClick={() =>
+                    void navigate({
+                      to: "/settings/bots",
+                      search: { machine: environmentId, bot: routineBotId, section: "projects" },
+                    })
+                  }
+                >
                   <BotMessageSquareIcon />
                   Edit in Bots settings
                 </MenuItem>

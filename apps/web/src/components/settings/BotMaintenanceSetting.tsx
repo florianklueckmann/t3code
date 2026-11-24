@@ -11,7 +11,7 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import type { BotId, EnvironmentId, ProjectId } from "@t3tools/contracts";
-import { useState } from "react";
+import { type Ref, useState } from "react";
 
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
@@ -29,6 +29,7 @@ export function BotMaintenanceSetting({
   title,
   formLocked,
   runSupported,
+  ref,
 }: {
   readonly environmentId: EnvironmentId;
   readonly botId: BotId;
@@ -36,6 +37,7 @@ export function BotMaintenanceSetting({
   readonly title: string;
   readonly formLocked: boolean;
   readonly runSupported: boolean;
+  readonly ref?: Ref<HTMLDivElement> | undefined;
 }) {
   const scope = { botId, projectId };
   const query = useEnvironmentQuery(
@@ -111,7 +113,7 @@ export function BotMaintenanceSetting({
   };
 
   return (
-    <div className="flex items-start justify-between gap-3 rounded-lg border p-3">
+    <div ref={ref} className="flex items-start justify-between gap-3 rounded-lg border p-3">
       <div className="min-w-0 space-y-1">
         <Label htmlFor={switchId}>{`${title} · Maintenance`}</Label>
         <p className="text-xs text-muted-foreground">{BOT_MAINTENANCE_DESCRIPTION}</p>

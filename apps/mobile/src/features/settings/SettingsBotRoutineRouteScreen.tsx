@@ -33,6 +33,7 @@ import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { reportBotFailure } from "../bots/reportBotFailure";
 import {
+  botRoutineLoadError,
   defaultBotSessionAtMs,
   formatLeadTime,
   leadTimeOptions,
@@ -82,11 +83,12 @@ export function SettingsBotRoutineRouteScreen({
   const initialDraft =
     taskId === undefined ? emptyBotRoutineDraft(capabilities) : task ? botRoutineDraft(task) : null;
 
+  const loadError = botRoutineLoadError([bots, scheduled, detail]);
   const unavailable =
     config?.environment.capabilities.botRoutines !== true
       ? "Update T3 Code on this environment to use routines."
-      : bots.error || scheduled.error || detail.error
-        ? (bots.error ?? scheduled.error ?? detail.error)
+      : loadError !== null
+        ? loadError
         : !bots.data || !scheduled.data || !detail.data
           ? null
           : !attached

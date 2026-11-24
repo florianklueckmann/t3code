@@ -31,6 +31,7 @@ import {
   homeBotLearningNoticeGroups,
   botLearningRevisionInput,
   botLearningScopeChange,
+  botModelCapabilities,
   botOfHomeThread,
   botProjectContextChanges,
   botProjectContextDraft,
@@ -384,6 +385,29 @@ describe("Bot model support", () => {
   ] as const)("offers the providers %s accepts", (_, capabilities, expected) => {
     expect(botProviderDrivers(capabilities)).toEqual(expected);
   });
+
+  it.each([
+    [
+      "codex",
+      ["reasoningEffort", "serviceTier", "cyberAccessProgram"],
+      ["reasoningEffort", "serviceTier"],
+    ],
+    [
+      "claudeAgent",
+      ["effort", "thinking", "fastMode", "contextWindow", "ultracode"],
+      ["effort", "thinking", "fastMode", "contextWindow"],
+    ],
+  ] as const)(
+    "offers a %s Bot only the model options every Bot run honors",
+    (driver, ids, kept) => {
+      const descriptors = ids.map((id) => ({ id, label: id, type: "boolean" as const }));
+      expect(
+        botModelCapabilities(driver, { optionDescriptors: descriptors })?.optionDescriptors?.map(
+          (descriptor) => descriptor.id,
+        ),
+      ).toEqual(kept);
+    },
+  );
 
   const capabilities = (noChangesRoutines: string | null) => ({
     mcpGrants: null,

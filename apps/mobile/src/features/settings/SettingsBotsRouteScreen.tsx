@@ -43,6 +43,7 @@ import {
   defaultBotModelSelection,
   detachBotProjectDraft,
   botModelOptionFilter,
+  botOptionCapabilities,
   emptyBotSourceDraft,
   newBotDraft,
   planBotSave,
@@ -949,6 +950,7 @@ export function BotModelPickerRouteScreen() {
       projectId={null}
       providerGroups={groupByProvider(models)}
       isModelOptionEligible={botModelOptionFilter(config)}
+      modelCapabilities={botOptionCapabilities}
       selectedModel={selectedModel}
       // Bots have no prompt here, and pickers offer no prompt-controlled options.
       prompt=""
@@ -957,7 +959,7 @@ export function BotModelPickerRouteScreen() {
         setDraft((current) => ({ ...current, modelSelection: option.selection }))
       }
       optionDescriptors={resolveProviderOptionDescriptors({
-        capabilities: selectedOption?.capabilities,
+        capabilities: selectedOption && botOptionCapabilities(selectedOption),
         selections: selectedModel?.options,
       })}
       onUpdateOptionSelections={(options) =>

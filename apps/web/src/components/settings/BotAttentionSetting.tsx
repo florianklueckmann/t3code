@@ -16,7 +16,7 @@ import {
   type BotId,
   type EnvironmentId,
 } from "@t3tools/contracts";
-import { useState } from "react";
+import { type Ref, useState } from "react";
 
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
@@ -35,10 +35,12 @@ export function BotAttentionSetting({
   environmentId,
   botId,
   formLocked,
+  ref,
 }: {
   readonly environmentId: EnvironmentId;
   readonly botId: BotId;
   readonly formLocked: boolean;
+  readonly ref?: Ref<HTMLDivElement> | undefined;
 }) {
   const query = useEnvironmentQuery(
     serverEnvironment.botAttention({ environmentId, input: { botId } }),
@@ -113,7 +115,7 @@ export function BotAttentionSetting({
   };
 
   return (
-    <div className="space-y-3 rounded-lg border p-3">
+    <div ref={ref} className="space-y-3 rounded-lg border p-3">
       <div className="space-y-1">
         <Label htmlFor={`${id}-limit`}>Alerts</Label>
         <p className="text-xs text-muted-foreground">{BOT_ALERTS_DESCRIPTION}</p>

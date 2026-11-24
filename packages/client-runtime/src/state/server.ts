@@ -8,6 +8,7 @@ import {
   type BotAttentionInput,
   type BotAttentionView,
   type BotFailureDiagnosisView,
+  type BotId,
   type EnvironmentId,
   type BotSummary,
   type BotTaskResult,
@@ -1430,6 +1431,15 @@ export function createServerEnvironmentAtoms<R, E>(
       );
     });
   });
+  /** The Bot's model as its live summary reports it; a detail's capabilities follow from it. */
+  const botModelFamily = Atom.family((key: string) => {
+    const [environmentId, botId] = JSON.parse(key) as [EnvironmentId, BotId];
+    return Atom.make((get) => {
+      const list = AsyncResult.getOrElse(get(botsLive({ environmentId, input: {} })), () => null);
+      const bot = list?.bots.find((entry) => entry.id === botId);
+      return bot === undefined ? null : JSON.stringify(bot.modelSelection);
+    });
+  });
   const botContinuationQuery = createEnvironmentRpcQueryAtomFamily(runtime, {
     label: "environment-data:server:bots:botContinuation",
     tag: WS_METHODS.botsGetContinuation,
@@ -1907,6 +1917,9 @@ export function createServerEnvironmentAtoms<R, E>(
       tag: WS_METHODS.botsGet,
       // Agents edit Bots too, so an editor that opens must not start from a cached copy.
       staleTimeMs: 0,
+      // A model switched on another client changes the capabilities an open form offers.
+      refreshTrigger: ({ environmentId, input }) =>
+        botModelFamily(JSON.stringify([environmentId, input.botId])),
     }),
     // A cold transcript scan is measured in seconds, so keep the result around
     // long enough that switching windows or re-rendering does not rescan. With

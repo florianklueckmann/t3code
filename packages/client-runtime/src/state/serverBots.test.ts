@@ -111,6 +111,27 @@ const makeHarness = Effect.gen(function* () {
         ],
       });
       const client = {
+        [WS_METHODS.botsGet]: (input: { readonly botId: BotId }) =>
+          Ref.update(continuationReads, (all) => [...all, `detail:${input.botId}`]).pipe(
+            Effect.andThen(SubscriptionRef.get(bots)),
+            Effect.map((state) => {
+              const bot = state.bots.find((entry) => entry.id === input.botId)!;
+              return {
+                ...bot,
+                capabilities: {
+                  mcpGrants: null,
+                  ownMcpServers: null,
+                  noChangesRoutines: null,
+                  maintenance:
+                    bot.modelSelection.instanceId === "codex" ? null : "claude_unsupported",
+                  homeCheck: null,
+                  failureDiagnosis: null,
+                },
+                instructions: "",
+                learning: [],
+              };
+            }),
+          ),
         [WS_METHODS.botsGetContinuation]: (input: BotContinuationScope) =>
           Ref.update(continuationReads, (all) => [
             ...all,
@@ -527,6 +548,75 @@ it.effect("reads a shown continuation again after a maintenance run this client 
     expect(yield* Ref.get(continuationReads)).toEqual([
       "get:same-bot:same-project",
       "get:same-bot:same-project",
+    ]);
+  }).pipe(Effect.scoped),
+);
+
+it.effect("reads a shown Bot detail again when another client switches the Bot's model", () =>
+  Effect.gen(function* () {
+    const { atoms, registry, environments } = yield* makeHarness;
+    const { environmentId, supervisor, bots, continuationReads } = environments[0]!;
+    yield* SubscriptionRef.set(supervisor.state, {
+      ...AVAILABLE_CONNECTION_STATE,
+      phase: "connected" as const,
+    });
+    const botId = BotId.make("same-bot-id");
+    const live = atoms.botsLive({ environmentId, input: {} });
+    const detail = atoms.botDetail({ environmentId, input: { botId } });
+    // The list loads first, so the detail's single read happens under a known model.
+    for (const atom of [
+      Atom.map(live, AsyncResult.isSuccess),
+      Atom.map(detail, AsyncResult.isSuccess),
+    ]) {
+      yield* Effect.acquireRelease(
+        Effect.sync(() => registry.mount(atom)),
+        (unmount) => Effect.sync(unmount),
+      );
+      yield* AtomRegistry.toStream(registry, atom).pipe(
+        Stream.filter((ready) => ready),
+        Stream.runHead,
+      );
+    }
+    const maintenanceOffered = (offered: boolean) =>
+      AtomRegistry.toStream(registry, detail).pipe(
+        Stream.filter(
+          (result) =>
+            AsyncResult.isSuccess(result) &&
+            !result.waiting &&
+            (result.value.capabilities?.maintenance === null) === offered,
+        ),
+        Stream.runHead,
+      );
+    yield* maintenanceOffered(true);
+    const switchTo = (instanceId: string, name?: string) =>
+      Effect.gen(function* () {
+        const updated = yield* SubscriptionRef.updateAndGet(bots, (current) => ({
+          bots: current.bots.map((bot) => ({
+            ...bot,
+            ...(name === undefined ? {} : { name }),
+            modelSelection: { instanceId: ProviderInstanceId.make(instanceId), model: "model" },
+          })),
+        }));
+        yield* AtomRegistry.toStream(registry, live).pipe(
+          Stream.filter(
+            (result) =>
+              AsyncResult.isSuccess(result) &&
+              result.value.bots[0]?.name === updated.bots[0]?.name &&
+              result.value.bots[0]?.modelSelection.instanceId === instanceId,
+          ),
+          Stream.runHead,
+        );
+      });
+    yield* switchTo("claudeAgent");
+    yield* maintenanceOffered(false);
+    yield* switchTo("codex");
+    yield* maintenanceOffered(true);
+    // A change that leaves the model alone does not read the detail again.
+    yield* switchTo("codex", "Renamed");
+    expect(yield* Ref.get(continuationReads)).toEqual([
+      "detail:same-bot-id",
+      "detail:same-bot-id",
+      "detail:same-bot-id",
     ]);
   }).pipe(Effect.scoped),
 );

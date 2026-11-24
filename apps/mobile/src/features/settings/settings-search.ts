@@ -1,3 +1,4 @@
+import { BOT_EDITOR_SECTIONS } from "@t3tools/client-runtime/bots";
 import { foldSearchQuery, rankSearchItems, scoreSearchTerms } from "@t3tools/shared/paletteSearch";
 
 import type { SettingsPageTarget } from "./components/settings-page-targets";
@@ -56,8 +57,8 @@ const SETTINGS_SEARCH_TERMS = {
     "instructions",
     "learning",
     "preferred sources",
-    "routines",
     "session preparation",
+    ...BOT_EDITOR_SECTIONS.flatMap((section) => [section.title, ...section.searchTerms]),
   ],
   SettingsMcpConnections: ["mcp", "mcp server", "tool", "account", "credentials", "header"],
   SettingsProjectOverview: ["project", "overview", "checkouts", "delete project"],

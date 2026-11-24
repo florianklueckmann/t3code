@@ -1,5 +1,15 @@
 import type { BotRoutineDraft } from "@t3tools/client-runtime/bots";
 
+/**
+ * The error of a query with nothing loaded to show. A failed refresh keeps its last answer, so an
+ * open routine form survives a reconnect with what was typed.
+ */
+export function botRoutineLoadError(
+  queries: ReadonlyArray<{ readonly data: unknown; readonly error: string | null }>,
+): string | null {
+  return queries.find((query) => query.data === null && query.error !== null)?.error ?? null;
+}
+
 const HOUR_MINUTES = 60;
 const DAY_MINUTES = 24 * HOUR_MINUTES;
 

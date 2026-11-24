@@ -1,5 +1,5 @@
 import { sameBotAppearance, savedBotAppearance } from "@t3tools/client-runtime/bot-appearance";
-import { botProviderDrivers } from "@t3tools/client-runtime/bots";
+import { botModelCapabilities, botProviderDrivers } from "@t3tools/client-runtime/bots";
 import type {
   BotAppearance,
   BotAttachProjectInput,
@@ -11,6 +11,7 @@ import type {
   BotSourcePreference,
   BotUpdateInput,
   BotUpdateProjectContextInput,
+  ModelCapabilities,
   ModelSelection,
   ProjectId,
   ServerConfig,
@@ -60,6 +61,10 @@ export function botModelOptionFilter(
 ): (option: ModelOption) => boolean {
   const drivers = botProviderDrivers(config?.environment.capabilities);
   return (option) => drivers.includes(option.providerDriver);
+}
+
+export function botOptionCapabilities(option: ModelOption): ModelCapabilities | null {
+  return botModelCapabilities(option.providerDriver, option.capabilities);
 }
 
 export function botModelOptions(
