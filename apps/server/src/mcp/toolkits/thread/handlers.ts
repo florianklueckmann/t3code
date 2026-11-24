@@ -117,15 +117,15 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
           code: "invalid_request",
           message: "The scheduled task was not found.",
         });
+      const scope = yield* McpInvocationContext.McpInvocationContext;
       const { task, threadId } = yield* scheduler
-        .runNow({ id: input.taskId })
+        .runNow({ id: input.taskId }, { requestedIn: scope.thread?.threadId ?? null })
         .pipe(
           Effect.mapError(
             (error) =>
               new OrchestratorMcpFailure({ code: "orchestration_error", message: error.message }),
           ),
         );
-      const scope = yield* McpInvocationContext.McpInvocationContext;
       return {
         taskId: task.id,
         threadId,

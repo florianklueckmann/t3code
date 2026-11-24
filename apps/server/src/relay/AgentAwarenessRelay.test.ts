@@ -1504,7 +1504,7 @@ describe("AgentAwarenessRelay", () => {
     { byHand: false, alerts: 0 },
     { byHand: true, alerts: 1 },
   ])(
-    "holds a proactive Bot result in quiet hours and sends one digest as they end (by hand: $byHand)",
+    "holds a proactive Bot result in quiet hours and over the limit and sends one digest as they end (by hand: $byHand)",
     ({ byHand, alerts }) =>
       Effect.gen(function* () {
         yield* seedBot;
@@ -1512,6 +1512,14 @@ describe("AgentAwarenessRelay", () => {
         const attention = yield* BotAttention.make.pipe(
           Effect.provide(DateTime.layerCurrentZoneOffset(0)),
         );
+        const { quietHours, remit } = yield* attention.get(BotId.make("bot"));
+        yield* attention.configure({
+          botId: BotId.make("bot"),
+          baseRevision: 0,
+          dailyLimit: 0,
+          quietHours,
+          remit,
+        });
         const botTasks: TestTask[] = [
           {
             taskId: BotTaskId.make("bot-task:night"),

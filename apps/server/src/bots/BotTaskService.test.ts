@@ -1024,6 +1024,52 @@ it.effect.each([
 );
 
 it.effect.each([
+  { caller: "client", byHand: true },
+  { caller: "ui", byHand: true },
+  { caller: "automatic", byHand: false },
+  { caller: "outside-agent", byHand: false },
+  { caller: "other-thread", byHand: false },
+  { caller: "schedule", byHand: false },
+] as const)("records whether the user started a routine run: $caller", ({ caller, byHand }) =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(START);
+    yield* seedProject;
+    const world = yield* makeThreadWorld;
+    yield* withServices(world, (services) =>
+      Effect.gen(function* () {
+        const home = yield* attachBot(services);
+        yield* seedHomeRun(world, home, caller === "automatic" ? "automatic" : "ui");
+        const { task: routine } = yield* services.routines.upsert(
+          routineInput({ type: "once", runAt: iso(START + HOUR) }),
+        );
+        let workThreadId: ThreadId | null;
+        if (caller === "schedule") {
+          const launched = yield* world.nextLaunch;
+          yield* TestClock.setTime(START + HOUR);
+          yield* TestClock.adjust("6 seconds");
+          workThreadId = yield* Deferred.await(launched);
+        } else {
+          const requestedIn =
+            caller === "outside-agent"
+              ? null
+              : caller === "other-thread"
+                ? ThreadId.make("other")
+                : home;
+          ({ threadId: workThreadId } = yield* services.routines.runNow(
+            { id: routine.id },
+            caller === "client" ? undefined : { requestedIn },
+          ));
+        }
+        const [awareness] = yield* services.tasks.getAwarenessTasks(
+          workThreadId ?? assert.fail("no work thread"),
+        );
+        assert.equal(awareness?.byHand, byHand);
+      }),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect.each([
   "failed",
   "cancelled",
   "detach",

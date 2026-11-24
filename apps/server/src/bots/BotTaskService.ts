@@ -630,14 +630,30 @@ const make = Effect.gen(function* () {
       );
   });
 
-  const readHomeTurn = Effect.fnUntraced(function* (
-    input: BotStartTaskInput,
-    homeThreadId: ThreadId,
-    runId: RunId,
+  /** The turn running in the Bot's Home, when `requestedIn` names that Home; it is what asked. */
+  const readRequestingHomeTurn = Effect.fnUntraced(function* (
+    input: { readonly botId: BotId; readonly projectId: ProjectId },
+    homeThreadId: string,
+    home: OrchestrationV2ThreadShell | null,
+    requestedIn: ThreadId | null | undefined,
   ) {
+    if (
+      requestedIn === undefined ||
+      requestedIn !== homeThreadId ||
+      home === null ||
+      home.id !== requestedIn ||
+      home.projectId !== input.projectId ||
+      home.deletedAt !== null ||
+      home.archivedAt !== null ||
+      home.status !== "running" ||
+      home.activeRunId === null ||
+      home.activeRunId !== home.latestRunId
+    )
+      return undefined;
+    const runId = home.activeRunId;
     const records = yield* threads
       .getProjectThreadRecords(
-        { projectId: input.projectId, threadId: homeThreadId },
+        { projectId: input.projectId, threadId: home.id },
         ["runs", "messages", "turnItems"],
         {
           runIds: [runId],
@@ -651,6 +667,29 @@ const make = Effect.gen(function* () {
     const run = records.runs.find((candidate) => candidate.id === runId);
     const message = records.messages.find((candidate) => candidate.id === run?.userMessageId);
     return { records, run, message };
+  });
+  /** An agent acts by hand only inside a Home turn the user began with a typed message. */
+  const isUserTurn = (turn: Effect.Success<ReturnType<typeof readRequestingHomeTurn>>) =>
+    turn?.run?.status === "running" && isUserHomeInput(turn.message);
+
+  /** Whether the user asked for this routine run, read before its admission. */
+  const routineByHand = Effect.fnUntraced(function* (occurrence: BotRoutineOccurrence) {
+    const { requestedBy } = occurrence;
+    if (requestedBy === undefined) return false;
+    if (requestedBy === "client") return true;
+    const context = yield* activeContext(occurrence.botId, occurrence.projectId);
+    if (context._tag === "inactive") return false;
+    const home = yield* threads
+      .getThreadShell(ThreadId.make(context.context.home_thread_id))
+      .pipe(Effect.mapError(botError("Failed to read the Bot conversation.", occurrence.botId)));
+    return isUserTurn(
+      yield* readRequestingHomeTurn(
+        occurrence,
+        context.context.home_thread_id,
+        home,
+        requestedBy.requestedIn,
+      ),
+    );
   });
 
   const start: BotTaskService["Service"]["start"] = Effect.fn("BotTaskService.start")(
@@ -680,22 +719,13 @@ const make = Effect.gen(function* () {
       // No options: the user's own client asked. Otherwise the thread whose turn asked, if any.
       const requestedIn =
         options === undefined ? undefined : (options.requestedIn ?? options.returnToHomeFrom);
-      const homeTurn =
-        requestedIn !== undefined &&
-        requestedIn === context.context.home_thread_id &&
-        home !== null &&
-        home.id === requestedIn &&
-        home.projectId === input.projectId &&
-        home.deletedAt === null &&
-        home.archivedAt === null &&
-        home.status === "running" &&
-        home.activeRunId !== null &&
-        home.activeRunId === home.latestRunId
-          ? yield* readHomeTurn(input, home.id, home.activeRunId)
-          : undefined;
-      const byHand =
-        options === undefined ||
-        (homeTurn?.run?.status === "running" && isUserHomeInput(homeTurn.message));
+      const homeTurn = yield* readRequestingHomeTurn(
+        input,
+        context.context.home_thread_id,
+        home,
+        requestedIn,
+      );
+      const byHand = options === undefined || isUserTurn(homeTurn);
       let returnHomeRunId: string | null = null;
       let returnHomeMessageId: string | null = null;
       if (options?.returnToHomeFrom !== undefined) {
@@ -772,6 +802,7 @@ const make = Effect.gen(function* () {
     "BotTaskService.admitRoutine",
   )(function* (occurrence) {
     const taskId = `bot-task:${occurrence.occurrenceKey}`;
+    const byHand = yield* routineByHand(occurrence);
     const decided = yield* sql
       .withTransaction(
         Effect.gen(function* () {
@@ -793,19 +824,22 @@ const make = Effect.gen(function* () {
               : open.length > 0
                 ? "The previous run of this routine was still working."
                 : undefined;
-          const row = newRow({
-            taskId,
-            botId: occurrence.botId,
-            projectId: occurrence.projectId,
-            homeThreadId: context.context.home_thread_id,
-            origin: "routine",
-            title: occurrence.title,
-            prompt: occurrence.prompt,
-            runtimeMode: BOT_ROUTINE_RUNTIME_MODE,
-            now,
-            occurrence,
-            ...(skipReason === undefined ? {} : { skipReason }),
-          });
+          const row = {
+            ...newRow({
+              taskId,
+              botId: occurrence.botId,
+              projectId: occurrence.projectId,
+              homeThreadId: context.context.home_thread_id,
+              origin: "routine",
+              title: occurrence.title,
+              prompt: occurrence.prompt,
+              runtimeMode: BOT_ROUTINE_RUNTIME_MODE,
+              now,
+              occurrence,
+              ...(skipReason === undefined ? {} : { skipReason }),
+            }),
+            by_hand: byHand ? 1 : 0,
+          };
           yield* insertTask(row);
           return { row, fresh: true } as const;
         }),
