@@ -11,6 +11,7 @@ import type {
   BotSourcePreference,
   BotUpdateInput,
   BotUpdateProjectContextInput,
+  ModelCapabilities,
   ModelSelection,
   ProjectId,
   ServerConfig,
@@ -62,16 +63,15 @@ export function botModelOptionFilter(
   return (option) => drivers.includes(option.providerDriver);
 }
 
+export function botOptionCapabilities(option: ModelOption): ModelCapabilities | null {
+  return botModelCapabilities(option.providerDriver, option.capabilities);
+}
+
 export function botModelOptions(
   config: ServerConfig | null,
   selected: ModelSelection | null,
 ): ReadonlyArray<ModelOption> {
-  return buildModelOptions(config, selected, undefined, null)
-    .filter(botModelOptionFilter(config))
-    .map((option) => ({
-      ...option,
-      capabilities: botModelCapabilities(option.providerDriver, option.capabilities),
-    }));
+  return buildModelOptions(config, selected, undefined, null).filter(botModelOptionFilter(config));
 }
 
 export function defaultBotModelSelection(config: ServerConfig | null): ModelSelection | null {

@@ -121,9 +121,9 @@ const makeHarness = Effect.gen(function* () {
                 capabilities: {
                   mcpGrants: null,
                   ownMcpServers: null,
-                  noChangesRoutines:
-                    bot.modelSelection.instanceId === "codex" ? null : "Needs Codex",
-                  maintenance: null,
+                  noChangesRoutines: null,
+                  maintenance:
+                    bot.modelSelection.instanceId === "codex" ? null : "claude_unsupported",
                   homeCheck: null,
                   failureDiagnosis: null,
                 },
@@ -577,17 +577,17 @@ it.effect("reads a shown Bot detail again when another client switches the Bot's
         Stream.runHead,
       );
     }
-    const noChangesOffered = (offered: boolean) =>
+    const maintenanceOffered = (offered: boolean) =>
       AtomRegistry.toStream(registry, detail).pipe(
         Stream.filter(
           (result) =>
             AsyncResult.isSuccess(result) &&
             !result.waiting &&
-            (result.value.capabilities?.noChangesRoutines === null) === offered,
+            (result.value.capabilities?.maintenance === null) === offered,
         ),
         Stream.runHead,
       );
-    yield* noChangesOffered(true);
+    yield* maintenanceOffered(true);
     const switchTo = (instanceId: string, name?: string) =>
       Effect.gen(function* () {
         const updated = yield* SubscriptionRef.updateAndGet(bots, (current) => ({
@@ -608,9 +608,9 @@ it.effect("reads a shown Bot detail again when another client switches the Bot's
         );
       });
     yield* switchTo("claudeAgent");
-    yield* noChangesOffered(false);
+    yield* maintenanceOffered(false);
     yield* switchTo("codex");
-    yield* noChangesOffered(true);
+    yield* maintenanceOffered(true);
     // A change that leaves the model alone does not read the detail again.
     yield* switchTo("codex", "Renamed");
     expect(yield* Ref.get(continuationReads)).toEqual([

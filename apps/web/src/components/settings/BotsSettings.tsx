@@ -859,8 +859,9 @@ function BotEditorForm({
           ) : null}
         </fieldset>
         {current !== null ? (
-          <div ref={sectionRef("alerts")} className="mt-5">
+          <div className="mt-5">
             <BotAttentionSetting
+              ref={sectionRef("alerts")}
               environmentId={environmentId}
               botId={current.id}
               formLocked={saving || archived}
@@ -869,10 +870,11 @@ function BotEditorForm({
         ) : null}
         {/* Outside the fieldset so pausing stays reachable for an archived Bot or a detached project. */}
         {current !== null && maintenanceSupported ? (
-          <div ref={sectionRef("maintenance")} className="mt-5 space-y-3">
-            {current.projects.map((context) => (
+          <div className="mt-5 space-y-3">
+            {current.projects.map((context, index) => (
               <Fragment key={context.projectId}>
                 <BotMaintenanceSetting
+                  ref={index === 0 ? sectionRef("maintenance") : undefined}
                   environmentId={environmentId}
                   botId={current.id}
                   projectId={context.projectId}
