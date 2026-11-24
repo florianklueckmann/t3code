@@ -228,6 +228,7 @@ function startWithMissingWorktree(
         Layer.mock(RunExecutionService.RunExecutionServiceV2)({ startRootRun }),
         Layer.mock(RuntimePolicy.RuntimePolicyV2)({}),
         Layer.mock(TextGeneration.TextGeneration)({}),
+        ThreadCommandExecutor.layer,
       ),
     ),
   );
@@ -1397,6 +1398,8 @@ function makeLocalCommandHarness(input: {
           }),
         ),
   );
+  let lockedThreadId: ThreadId | null = null;
+  const runningWriteLocks: Array<ThreadId | null> = [];
   const writeIfRunCurrent = vi.fn<EventSink.EventSinkV2["Service"]["writeIfRunCurrent"]>(
     ({ events: incoming, activeAttemptId, expectedStatus }) =>
       "writeFailure" in input
@@ -1412,6 +1415,14 @@ function makeLocalCommandHarness(input: {
               current !== undefined &&
               current.activeAttemptId === activeAttemptId &&
               current.status === expectedStatus;
+            if (
+              committed &&
+              incoming.some(
+                (event) => event.type === "run.updated" && event.payload.status === "running",
+              )
+            ) {
+              runningWriteLocks.push(lockedThreadId);
+            }
             if (committed) {
               for (const event of incoming) {
                 expect(isDomainEvent(event)).toBe(true);
@@ -1513,6 +1524,19 @@ function makeLocalCommandHarness(input: {
       Layer.mergeAll(
         Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({
           prepareProviderHandoff,
+        }),
+        Layer.mock(ThreadCommandExecutor.ThreadCommandExecutor)({
+          withLock: (key, effect) =>
+            Effect.acquireUseRelease(
+              Effect.sync(() => {
+                lockedThreadId = key;
+              }),
+              () => effect,
+              () =>
+                Effect.sync(() => {
+                  lockedThreadId = null;
+                }),
+            ),
         }),
         Layer.mock(EventSink.EventSinkV2)({
           writeIfRunCurrent,
@@ -1645,6 +1669,8 @@ function makeLocalCommandHarness(input: {
     prepareProviderHandoff,
     compactThread,
     writeIfRunCurrent,
+    runningWriteLocks,
+    threadId,
     startRootRun,
     startTurn,
     forkThread,
@@ -3187,6 +3213,20 @@ effectIt.effect("does not overwrite a run interrupted while its provider session
     expect(projection.nodes[0]?.status).toBe("pending");
     expect(projection.turnItems).toEqual([]);
     expect(harness.events).toEqual([]);
+  }),
+);
+
+effectIt.effect("marks the run running under the thread's command lock, as Stop plans", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text: "Continue",
+      previousTurn: { runStatus: "completed", turnStatus: "completed" },
+    });
+
+    yield* harness.start;
+
+    expect(harness.projection().runs.at(-1)?.status).toBe("running");
+    expect(harness.runningWriteLocks).toEqual([harness.threadId]);
   }),
 );
 

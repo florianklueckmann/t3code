@@ -800,6 +800,48 @@ it.effect("a message the user sends after Stop releases the held queue; an agent
   }).pipe(Effect.provide(layerTest)),
 );
 
+it.effect.each(["thread.stop", "run.interrupt"] as const)(
+  "%s returns the provider thread to idle when no provider turn was stored yet",
+  (type) =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const threadId = ThreadId.make(`thread:stop-before-turn:${type}`);
+      yield* createWatchingThread(threadId, 7);
+      yield* send(threadId, "active", "start_immediately");
+      const before = yield* orchestrator.getThreadProjection(threadId);
+      const run = before.runs[0]!;
+      const now = yield* DateTime.now;
+      // The start marks the run running and its provider thread active before any turn exists.
+      yield* projections.apply({
+        id: EventId.make(`event:stop-before-turn:${type}:provider-thread`),
+        type: "provider-thread.updated",
+        threadId,
+        occurredAt: now,
+        payload: { ...before.providerThreads[0]!, status: "active", lastRunOrdinal: run.ordinal },
+      });
+      yield* projections.apply({
+        id: EventId.make(`event:stop-before-turn:${type}:run`),
+        type: "run.updated",
+        threadId,
+        runId: run.id,
+        occurredAt: now,
+        payload: { ...run, status: "running", startedAt: now },
+      });
+      const stop = { commandId: CommandId.make(`stop-before-turn:${type}`), threadId };
+      yield* orchestrator.dispatch(
+        type === "run.interrupt" ? { ...stop, type, runId: run.id } : { ...stop, type },
+      );
+      const stopped = yield* orchestrator.getThreadProjection(threadId);
+      assert.deepEqual((yield* threadState(threadId)).runs, ["interrupted"]);
+      assert.deepEqual(stopped.providerTurns, []);
+      assert.deepEqual(
+        stopped.providerThreads.map((providerThread) => providerThread.status),
+        ["idle"],
+      );
+    }).pipe(Effect.provide(layerTest)),
+);
+
 it.effect(
   "an agent's auto send queues behind a run that is still stopping instead of steering it",
   () =>

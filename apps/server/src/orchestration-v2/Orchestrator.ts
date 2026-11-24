@@ -13590,6 +13590,23 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             (attempt) => attempt.id === candidate.runAttemptId && attempt.runId === run.id,
           ),
       );
+      // The start marks the thread active with the run, before the provider reports a turn.
+      // A superseded turn still running on it settles the thread itself.
+      if (
+        providerThread.status === "active" &&
+        providerThread.lastRunOrdinal === run.ordinal &&
+        supersededTurn?.providerThreadId !== providerThread.id
+      ) {
+        yield* emitEvent({
+          type: "provider-thread.updated",
+          threadId: command.threadId,
+          runId: run.id,
+          nodeId: rootNode.id,
+          providerInstanceId: run.providerInstanceId,
+          occurredAt: now,
+          payload: { ...providerThread, status: "idle", updatedAt: now },
+        });
+      }
       const supersededOwner =
         supersededTurn === undefined
           ? undefined
