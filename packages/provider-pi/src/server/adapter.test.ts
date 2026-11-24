@@ -2834,7 +2834,7 @@ describe("PiAdapterV2", () => {
                       type: "stdio",
                       command: "work-mail-mcp",
                       args: ["--stdio"],
-                      env: Redacted.make({ MAIL_TOKEN: "work-token" }),
+                      env: Redacted.make({ MAIL_TOKEN: "!work$HOME-token" }),
                     },
                   },
                 ],
@@ -2858,7 +2858,8 @@ describe("PiAdapterV2", () => {
       // Pi's built-in MCP (which reads ~/.pi/agent/mcp.json and .pi/mcp.json) and every user,
       // project and package extension stay off; only T3 Code's two extensions load.
       const { args } = fake.lastSpawn();
-      assert.include(args, "--no-extensions");
+      // Ahead of the user's arguments, where a trailing option cannot take it as its value.
+      assert.isBelow(args.indexOf("--no-extensions"), args.indexOf("--approve"));
       assert.notInclude(args, userExtension);
       assert.deepEqual(
         args.flatMap((arg, index) =>
@@ -2910,7 +2911,8 @@ describe("PiAdapterV2", () => {
             [`t3c-${granted}`]: {
               command: "work-mail-mcp",
               args: ["--stdio"],
-              env: { MAIL_TOKEN: "work-token" },
+              // Pi would expand $HOME and run a leading ! as a command; escaped, both stay literal.
+              env: { MAIL_TOKEN: "$!work$$HOME-token" },
             },
           },
         },
@@ -2925,6 +2927,31 @@ describe("PiAdapterV2", () => {
       Effect.provideService(HostProcess.Platform, "darwin"),
       Effect.provide(layerTest),
     ),
+  );
+
+  it.effect("refuses a message that would change a Bot's connections in place of T3 Code", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi;
+      const { runtime } = yield* openRuntime(fake);
+      const providerThread = yield* runtime.ensureThread({
+        threadId: THREAD_ID,
+        modelSelection: modelSelection("default"),
+        runtimePolicy,
+      });
+      const refused = yield* startTurn(
+        runtime,
+        providerThread,
+        "default",
+        [],
+        `  /${PI_T3_BOT_SESSION_COMMAND} /tmp/servers.json`,
+      ).pipe(Effect.flip);
+      assert.include(String("cause" in refused ? refused.cause : refused), "reserved for T3 Code");
+      assert.isFalse(
+        fake
+          .allRequests()
+          .some((request) => String(request["message"]).includes(PI_T3_BOT_SESSION_COMMAND)),
+      );
+    }).pipe(Effect.scoped, Effect.provide(layerTest)),
   );
 
   it.effect("tracks the session file a user extension switches to during a turn", () =>

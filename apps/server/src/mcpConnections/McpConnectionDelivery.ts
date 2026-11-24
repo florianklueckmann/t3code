@@ -281,7 +281,7 @@ export const grantsLayer = Layer.effect(
     return McpConnectionGrants.McpConnectionGrants.of({
       resolve: Effect.fn("McpConnectionGrants.resolve")(function* (input) {
         const load = yield* delivery
-          .resolve(input.ids, input.macCalendarWrite)
+          .resolve(input.ids)
           .pipe(Effect.mapError((error) => deliveryRefusal(input.driver, error)));
         const servers: Array<McpConnectionGrants.GrantedMcpServer> = [];
         for (const { id, transport } of load.connections) {

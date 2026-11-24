@@ -290,6 +290,8 @@ export function buildPiRpcLaunch(input: {
       : input.sessionPath !== undefined
         ? ["--session", input.sessionPath]
         : []),
+    // Before launch args too: a trailing option that takes a value cannot swallow the Bot's seal.
+    ...(botSession ? ["--no-extensions"] : []),
     ...launchArgs,
     ...(input.shortLived === true && !launchArgs.includes("--offline") ? ["--offline"] : []),
     // Restrictions must follow launch args so user flags cannot re-enable unattended tools/extensions.

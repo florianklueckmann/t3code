@@ -99,6 +99,18 @@ const PI_SUBAGENT_ASYNC_PREFIX = "PI_SUBAGENT_ASYNC_JSON:";
 const decodePiJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 const encodeBotSessionPayload = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
+/**
+ * Pi reads `$NAME`, `${NAME}` and a leading `!command` in MCP env and header values; T3 Code sends
+ * resolved secrets, so each is escaped to stay literal (`$$` is `$`, `$!` is `!`).
+ */
+const piLiteralValues = (values: Readonly<Record<string, string>>) =>
+  Object.fromEntries(
+    Object.entries(values).map(([key, value]) => {
+      const escaped = value.replaceAll("$", "$$$$");
+      return [key, escaped.startsWith("!") ? `$${escaped}` : escaped];
+    }),
+  );
+
 /** Where a Bot's Pi session was measured to load only its granted MCP connections. */
 export const piMcpGrantsPlatformSupported = (platform: NodeJS.Platform) => platform === "darwin";
 const PI_SESSION_TIMEOUT_MS = 60_000;
@@ -3217,12 +3229,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
                   driver: PI_PROVIDER,
                   reason: "unavailable",
                 })
-              : yield* mcpGrants.value.resolve({
-                  driver: PI_PROVIDER,
-                  ids,
-                  macCalendarWrite: policy.macCalendarWrite === true,
-                  mcpSession,
-                });
+              : yield* mcpGrants.value.resolve({ driver: PI_PROVIDER, ids, mcpSession });
         const instructions = [turnInput.applicationInstructions, load.instructions]
           .filter((text) => text !== undefined && text.length > 0)
           .join("\n\n");
@@ -3235,9 +3242,12 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
                 ? {
                     command: transport.command,
                     args: transport.args,
-                    env: Redacted.value(transport.env),
+                    env: piLiteralValues(Redacted.value(transport.env)),
                   }
-                : { url: transport.url, headers: Redacted.value(transport.headers) },
+                : {
+                    url: transport.url,
+                    headers: piLiteralValues(Redacted.value(transport.headers)),
+                  },
             ]),
           ),
         };
@@ -3259,7 +3269,9 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
               type: "prompt",
               message: `/${PI_T3_BOT_SESSION_COMMAND} ${payloadPath}`,
             });
-            if (recordString(result, "disposition") !== "handled")
+            // Pi before 0.99 acknowledges a handled extension command without a disposition.
+            const disposition = recordString(result, "disposition");
+            if (disposition !== undefined && disposition !== "handled")
               return yield* protocolError(
                 "T3 Code's Pi Bot extension did not apply this Bot's instructions and connections",
               );
@@ -3271,6 +3283,9 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
         text: string,
         attachments: ReadonlyArray<ChatAttachment>,
       ) {
+        // Only the adapter may change a Bot's instructions and connections.
+        if (text.trimStart().startsWith(`/${PI_T3_BOT_SESSION_COMMAND}`))
+          return yield* protocolError(`/${PI_T3_BOT_SESSION_COMMAND} is reserved for T3 Code`);
         const images: Array<{ type: "image"; data: string; mimeType: string }> = [];
         const message = yield* providerMessageTextWithAttachmentPaths({
           text,

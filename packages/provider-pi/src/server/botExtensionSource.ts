@@ -30,6 +30,7 @@ const SESSION_COMMAND = ${JSON.stringify(PI_T3_BOT_SESSION_COMMAND)};
 
 type McpExtensionFactory = (options: {
   loadConfig: () => { servers: never[]; errors: string[] };
+  credentials: unknown;
 }) => (pi: ExtensionAPI) => unknown;
 
 export default async function t3BotExtension(pi: ExtensionAPI) {
@@ -39,46 +40,80 @@ export default async function t3BotExtension(pi: ExtensionAPI) {
     typeof pi.registerMcpServer === "function" &&
     typeof pi.unregisterMcpServer === "function";
   // Pi's own MCP client with no configured servers: it connects only the servers registered below.
-  if (mcpAvailable) await createMcpExtension({ loadConfig: () => ({ servers: [], errors: [] }) })(pi);
+  // Its OAuth store lives only in this session, so a grant never picks up the user's Pi sign-ins.
+  const oauth = new Map<string, { tokens?: unknown }>();
+  const credentials = {
+    forServer: (name: string, url: string) => ({
+      load: () => oauth.get(name + " " + url),
+      save: (state: { tokens?: unknown }) => void oauth.set(name + " " + url, state),
+      withRefreshLock: <T>(fn: () => Promise<T>) => fn(),
+    }),
+    tokens: (name: string, url: string) => oauth.get(name + " " + url)?.tokens,
+    remove: (name: string, url: string) => oauth.delete(name + " " + url),
+  };
+  if (mcpAvailable)
+    await createMcpExtension({ loadConfig: () => ({ servers: [], errors: [] }), credentials })(pi);
 
   let instructions: string | undefined;
   const registered = new Map<string, string>();
 
+  const apply = async (path: string) => {
+    let payload: { instructions?: unknown; servers?: Record<string, Record<string, unknown>> };
+    try {
+      payload = JSON.parse(NodeFS.readFileSync(path, "utf8"));
+    } finally {
+      NodeFS.rmSync(path, { force: true });
+    }
+    instructions =
+      typeof payload.instructions === "string" && payload.instructions.length > 0
+        ? payload.instructions
+        : undefined;
+    const servers = payload.servers ?? {};
+    if (!mcpAvailable) {
+      if (Object.keys(servers).length > 0)
+        throw new Error("this Pi version cannot load MCP connections. Update Pi.");
+      return;
+    }
+    for (const name of [...registered.keys()]) {
+      if (name in servers) continue;
+      pi.unregisterMcpServer(name);
+      registered.delete(name);
+    }
+    const added: string[] = [];
+    for (const [name, server] of Object.entries(servers)) {
+      // Declared directly: Pi's tool search and codemode are built-ins this session leaves off.
+      const config = { ...server, exposure: "direct" };
+      const key = JSON.stringify(config);
+      if (registered.get(name) === key) continue;
+      if (!registered.has(name)) added.push("mcp__" + name.replace(/[^A-Za-z0-9_]/g, "_") + "__");
+      pi.registerMcpServer(name, config as Parameters<ExtensionAPI["registerMcpServer"]>[1]);
+      registered.set(name, key);
+    }
+    // Pi connects new servers in the background; give their tools a bounded chance to reach this turn.
+    const deadline = Date.now() + 10_000;
+    while (
+      added.some((prefix) => !pi.getAllTools().some((tool) => tool.name.startsWith(prefix))) &&
+      Date.now() < deadline
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  };
+
   pi.registerCommand(SESSION_COMMAND, {
     description: "Apply T3 Code's Bot instructions and granted MCP connections",
     handler: async (args, ctx) => {
-      const path = args.trim();
-      let payload: { instructions?: unknown; servers?: Record<string, Record<string, unknown>> };
       try {
-        payload = JSON.parse(NodeFS.readFileSync(path, "utf8"));
-      } finally {
-        NodeFS.rmSync(path, { force: true });
-      }
-      instructions =
-        typeof payload.instructions === "string" && payload.instructions.length > 0
-          ? payload.instructions
-          : undefined;
-      const servers = payload.servers ?? {};
-      if (!mcpAvailable) {
-        if (Object.keys(servers).length > 0)
-          ctx.ui.notify(
-            "This Bot's MCP connections are unavailable: this Pi version cannot load them. Update Pi.",
-            "error",
-          );
-        return;
-      }
-      for (const name of [...registered.keys()]) {
-        if (name in servers) continue;
-        pi.unregisterMcpServer(name);
-        registered.delete(name);
-      }
-      for (const [name, server] of Object.entries(servers)) {
-        // Declared directly: Pi's tool search and codemode are built-ins this session leaves off.
-        const config = { ...server, exposure: "direct" };
-        const key = JSON.stringify(config);
-        if (registered.get(name) === key) continue;
-        pi.registerMcpServer(name, config as Parameters<ExtensionAPI["registerMcpServer"]>[1]);
-        registered.set(name, key);
+        await apply(args.trim());
+      } catch (error) {
+        // Fail closed: never keep connections or instructions this turn may no longer have.
+        instructions = undefined;
+        for (const name of registered.keys()) pi.unregisterMcpServer(name);
+        registered.clear();
+        ctx.ui.notify(
+          "This Bot's MCP connections and instructions could not be loaded: " +
+            (error instanceof Error ? error.message : String(error)),
+          "error",
+        );
       }
     },
   });
