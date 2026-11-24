@@ -281,7 +281,13 @@ export const BotSummary = Schema.Struct({
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   archivedAt: Schema.NullOr(IsoDateTime),
-  projects: Schema.Array(BotProjectContextSummary),
+  projects: Schema.Array(
+    Schema.Struct({
+      ...BotProjectContextSummary.fields,
+      /** The newest working-notes revision, null before the first save; absent on older servers. */
+      notesRevision: Schema.optionalKey(Schema.NullOr(NonNegativeInt)),
+    }),
+  ),
   /** Learning revisions waiting for the user to adopt or reject them. */
   pendingLearning: NonNegativeInt,
   /** Proactive alerts sent today and held for the digest; absent on servers without alerts. */

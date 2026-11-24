@@ -42,6 +42,7 @@ vi.mock("../../state/use-atom-command", () => ({ useAtomCommand: () => state.sav
 vi.mock("../bots/reportBotFailure", () => ({ reportBotFailure: vi.fn() }));
 vi.mock("../../components/ui/AppText", () => ({ AppText: Children }));
 vi.mock("../../components/ui/ThemedSwitch", () => ({ ThemedSwitch: () => null }));
+vi.mock("../../components/ui/ListToggleRow", () => ({ ListToggleRow: () => null }));
 vi.mock("../../components/ui/Dialog", () => ({ alert: state.alert }));
 vi.mock("./components/SettingsSection", () => ({ SettingsSection: Children }));
 vi.mock("./components/SettingsFormRows", () => ({

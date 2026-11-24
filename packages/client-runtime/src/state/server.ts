@@ -1431,13 +1431,28 @@ export function createServerEnvironmentAtoms<R, E>(
       );
     });
   });
-  /** The Bot's model as its live summary reports it; a detail's capabilities follow from it. */
-  const botModelFamily = Atom.family((key: string) => {
+  /**
+   * The Bot's model and archive state as its live summary reports them; a detail's capabilities
+   * and an open editor's read-only state follow from them.
+   */
+  const botDetailSignalFamily = Atom.family((key: string) => {
     const [environmentId, botId] = JSON.parse(key) as [EnvironmentId, BotId];
     return Atom.make((get) => {
       const list = AsyncResult.getOrElse(get(botsLive({ environmentId, input: {} })), () => null);
       const bot = list?.bots.find((entry) => entry.id === botId);
-      return bot === undefined ? null : JSON.stringify(bot.modelSelection);
+      return bot === undefined ? null : JSON.stringify([bot.modelSelection, bot.archivedAt]);
+    });
+  });
+  /** Write availability and the newest saved revision, so open notes follow a save elsewhere. */
+  const botNotesSignalFamily = Atom.family((key: string) => {
+    const [environmentId, input] = JSON.parse(key) as [EnvironmentId, BotContinuationScope];
+    return Atom.make((get) => {
+      const active = get(botContinuationActiveFamily(key));
+      const list = AsyncResult.getOrElse(get(botsLive({ environmentId, input: {} })), () => null);
+      const project = list?.bots
+        .find((entry) => entry.id === input.botId)
+        ?.projects.find((entry) => entry.projectId === input.projectId);
+      return JSON.stringify([active, project?.notesRevision ?? null]);
     });
   });
   const botContinuationQuery = createEnvironmentRpcQueryAtomFamily(runtime, {
@@ -1446,7 +1461,7 @@ export function createServerEnvironmentAtoms<R, E>(
     staleTimeMs: 0,
     idleTtlMs: 0,
     refreshTrigger: (target) =>
-      botContinuationActiveFamily(JSON.stringify([target.environmentId, target.input])),
+      botNotesSignalFamily(JSON.stringify([target.environmentId, target.input])),
   });
   const botContinuationFamily = Atom.family((key: string) => {
     const [environmentId, input] = JSON.parse(key) as [EnvironmentId, BotContinuationReadInput];
@@ -1471,6 +1486,8 @@ export function createServerEnvironmentAtoms<R, E>(
     tag: WS_METHODS.botsListContinuationRevisions,
     staleTimeMs: 0,
     idleTtlMs: 0,
+    refreshTrigger: (target) =>
+      botNotesSignalFamily(JSON.stringify([target.environmentId, target.input])),
   });
   const botContinuationHistoryFamily = Atom.family((key: string) => {
     const [environmentId, input] = JSON.parse(key) as [EnvironmentId, BotContinuationScope];
@@ -1917,9 +1934,9 @@ export function createServerEnvironmentAtoms<R, E>(
       tag: WS_METHODS.botsGet,
       // Agents edit Bots too, so an editor that opens must not start from a cached copy.
       staleTimeMs: 0,
-      // A model switched on another client changes the capabilities an open form offers.
+      // A model switched or an archive on another client changes what an open form offers.
       refreshTrigger: ({ environmentId, input }) =>
-        botModelFamily(JSON.stringify([environmentId, input.botId])),
+        botDetailSignalFamily(JSON.stringify([environmentId, input.botId])),
     }),
     // A cold transcript scan is measured in seconds, so keep the result around
     // long enough that switching windows or re-rendering does not rescan. With

@@ -141,7 +141,11 @@ const makeHarness = Effect.gen(function* () {
             Effect.map((state) => ({
               ...input,
               homeThreadId: ThreadId.make(`home-${environmentId}`),
-              revision: null,
+              revision:
+                state.bots
+                  .find((bot) => bot.id === input.botId)
+                  ?.projects.find((project) => project.projectId === input.projectId)
+                  ?.notesRevision ?? null,
               note: { requests: [], waiting: [], decided: [], context: [] },
               updatedBy: null,
               updatedAt: null,
@@ -618,6 +622,17 @@ it.effect("reads a shown Bot detail again when another client switches the Bot's
       "detail:same-bot-id",
       "detail:same-bot-id",
     ]);
+    // An archive elsewhere reaches an open editor, which then locks its form.
+    yield* SubscriptionRef.update(bots, (current) => ({
+      bots: current.bots.map((bot) => ({ ...bot, archivedAt: "2026-01-02T00:00:00.000Z" })),
+    }));
+    yield* AtomRegistry.toStream(registry, detail).pipe(
+      Stream.filter(
+        (result) =>
+          AsyncResult.isSuccess(result) && !result.waiting && result.value.archivedAt !== null,
+      ),
+      Stream.runHead,
+    );
   }).pipe(Effect.scoped),
 );
 
@@ -693,6 +708,22 @@ it.effect(
           Stream.runHead,
         );
       }
+      // A notes save on another client moves the pushed revision, so the open notes read again.
+      const reads = (yield* Ref.get(continuationReads)).length;
+      yield* SubscriptionRef.update(bots, (current) => ({
+        bots: current.bots.map((bot) => ({
+          ...bot,
+          projects: bot.projects.map((entry) => ({ ...entry, notesRevision: 4 })),
+        })),
+      }));
+      yield* AtomRegistry.toStream(registry, note).pipe(
+        Stream.filter(
+          (result) =>
+            AsyncResult.isSuccess(result) && !result.waiting && result.value?.revision === 4,
+        ),
+        Stream.runHead,
+      );
+      expect((yield* Ref.get(continuationReads)).length).toBe(reads + 1);
       yield* SubscriptionRef.update(bots, (current) => ({
         bots: current.bots.map((bot) => ({ ...bot, name: "Renamed without changing attachment" })),
       }));
@@ -706,7 +737,7 @@ it.effect(
       );
       expect(
         (yield* Ref.get(continuationReads)).filter((read) => read.startsWith("get:")),
-      ).toHaveLength(5);
+      ).toHaveLength(6);
       expect(yield* Ref.get(environments[1]!.continuationReads)).toEqual([]);
     }).pipe(Effect.scoped),
 );

@@ -500,12 +500,12 @@ it.effect(
 );
 
 it.effect(
-  "pushes a rename and each move of the alert counts to open Bot list subscriptions without renaming the conversation",
+  "pushes a rename, each move of the alert counts and a notes save to open Bot list subscriptions without renaming the conversation",
   () =>
     Effect.gen(function* () {
       yield* seedProjects;
       const world = yield* makeThreadWorld;
-      yield* withServices(world.threadLayer, ({ bots, attention }) =>
+      yield* withServices(world.threadLayer, ({ bots, attention, continuation }) =>
         Effect.gen(function* () {
           yield* createCampaignBot(bots);
           yield* bots.attachProject({ botId, projectId: campaignA });
@@ -549,6 +549,27 @@ it.effect(
           const [digest] = yield* attention.claimDigests;
           yield* attention.markDigestSent(digest!);
           assert.deepEqual(yield* counts, [{ sentToday: 0, held: 0 }]);
+
+          // Open notes on another client follow a save through the pushed revision.
+          const notesRevisions = Effect.map(pull, ({ 0: list }) =>
+            list?.bots.flatMap((bot) => bot.projects.map((project) => project.notesRevision)),
+          );
+          yield* continuation.save(
+            {
+              botId,
+              projectId: campaignA,
+              baseRevision: null,
+              updateId: "pushed-note",
+              note: {
+                requests: [{ text: "Prepare the Amber Temple encounter." }],
+                waiting: [],
+                decided: [],
+                context: [],
+              },
+            },
+            { kind: "user" },
+          );
+          assert.deepEqual(yield* notesRevisions, [1]);
         }).pipe(Effect.scoped),
       );
     }).pipe(Effect.provide(layerDatabase)),

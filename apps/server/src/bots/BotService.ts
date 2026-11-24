@@ -57,6 +57,7 @@ import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as BotAttention from "./BotAttention.ts";
+import * as BotContinuation from "./BotContinuation.ts";
 import * as BotLearning from "./BotLearning.ts";
 import * as BotLearningNotices from "./BotLearningNotices.ts";
 import * as BotProjectGuard from "./BotProjectGuard.ts";
@@ -188,6 +189,7 @@ const make = Effect.gen(function* () {
   const scheduledTasks = yield* ScheduledTaskService.ScheduledTaskService;
   const botTasks = yield* BotTaskService.BotTaskService;
   const attention = yield* BotAttention.BotAttention;
+  const continuation = yield* BotContinuation.BotContinuation;
   const turnContext = yield* BotTurnContext.BotTurnContext;
   const random = yield* SecureRandom.SecureRandom;
   const main = yield* SqlClient.SqlClient;
@@ -308,6 +310,7 @@ const make = Effect.gen(function* () {
     const contexts = yield* store.listContexts();
     const pendingLearning = yield* store.pendingLearningCounts;
     const alerts = yield* attention.counts;
+    const notesRevisions = yield* continuation.latestRevisions;
     const grants = yield* store.listMcpGrants();
     const details = yield* Effect.forEach(bots, (bot) =>
       BotStore.toDetail(
@@ -328,6 +331,7 @@ const make = Effect.gen(function* () {
             homeThreadId: project.homeThreadId,
             attachedAt: project.attachedAt,
             detachedAt: project.detachedAt,
+            notesRevision: notesRevisions.get(project.homeThreadId) ?? null,
           })),
         }),
       ),
@@ -1057,8 +1061,8 @@ const make = Effect.gen(function* () {
     Effect.forkScoped,
   );
   yield* scheduler.register("bot-task-learning", reconcileTaskLearning);
-  // The alert counts ride on the list, so an open Alerts section follows them.
-  yield* (yield* attention.changes).pipe(
+  // The alert counts and note revisions ride on the list, so open views follow them.
+  yield* Stream.merge(yield* attention.changes, yield* continuation.changes).pipe(
     Stream.runForEach(() => notifyChanged),
     Effect.forkScoped,
   );
@@ -1093,5 +1097,7 @@ const make = Effect.gen(function* () {
 });
 
 export const layer = Layer.effect(BotService, make).pipe(
-  Layer.provide(Layer.mergeAll(BotStore.layer, BotTurnContext.layer, BotAttention.layer)),
+  Layer.provide(
+    Layer.mergeAll(BotStore.layer, BotTurnContext.layer, BotAttention.layer, BotContinuation.layer),
+  ),
 );
