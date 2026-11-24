@@ -3349,6 +3349,29 @@ effectIt.effect.each([
     }),
 );
 
+effectIt.effect("keeps a pending handoff cut when the recovering turn defers its history", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text: "/compact",
+      previousMessages: ["Stop the controller."],
+      recovery: "rewind",
+      pendingSwitchDelta: true,
+    });
+    harness.tryHandlePromptCommand.mockReturnValue(Effect.succeed(false));
+
+    yield* harness.start;
+
+    expect(harness.compactThread).toHaveBeenCalledOnce();
+    const projection = harness.projection();
+    expect(projection.providerThreads.at(-1)?.conversationRecovery).toBeUndefined();
+    expect(
+      projection.contextHandoffs
+        .find((handoff) => handoff.id === "provider-switch-delta")
+        ?.history?.messages.map((message) => message.text),
+    ).toEqual(["DELTA_REQUEST", "DELTA_FINAL_REPLY"]);
+  }),
+);
+
 effectIt.effect.each([
   ["summarizes", {}],
   ["falls back without a summary", { summaryFailure: "error" }],

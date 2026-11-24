@@ -2010,6 +2010,20 @@ export const layer: Layer.Layer<
                 },
               },
             ]),
+        // The recovery clears with this write, so the cut must hold even when delivery defers.
+        ...(providerThread.conversationRecovery === undefined
+          ? []
+          : yield* Effect.forEach(handoffs, (handoff) =>
+              Effect.map(idAllocator.allocate.event({ threadId: projection.thread.id }), (id) => ({
+                id,
+                type: "context-handoff.updated" as const,
+                threadId: projection.thread.id,
+                runId: run.id,
+                providerInstanceId: run.providerInstanceId,
+                occurredAt: now,
+                payload: { ...handoff, updatedAt: now },
+              })),
+            )),
         // Shown only once the replacement session commits with the running transition.
         ...(recoveryTurnItem === undefined
           ? []
