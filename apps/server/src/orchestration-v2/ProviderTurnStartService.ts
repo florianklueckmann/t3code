@@ -50,6 +50,7 @@ import * as ContextHandoffService from "./ContextHandoffService.ts";
 import { isActiveRun } from "./CommandPolicy.ts";
 import {
   conversationRecoveryHandoffItems,
+  conversationRecoveryPendingHandoffs,
   freshConversationPlan,
   previousConversationSummary,
 } from "./ConversationRecovery.ts";
@@ -603,12 +604,17 @@ export const layer: Layer.Layer<
       const isSideChatHandoff = (handoff: OrchestrationV2ContextHandoff) =>
         projection.thread.lineage.sideChat === true &&
         ContextHandoffService.isSideChatContextHandoff(handoff);
-      const handoffs = projection.contextHandoffs.filter(
+      const pendingHandoffs = projection.contextHandoffs.filter(
         (handoff) =>
           !isSideChatHandoff(handoff) &&
           (handoff.transferId == null || !subagentResultTransfers.has(handoff.transferId)) &&
           isPendingForRun(handoff),
       );
+      // A requested recovery leaves the refused trajectory behind, also in handoffs pending beside it.
+      const handoffs =
+        providerThread?.conversationRecovery === undefined
+          ? pendingHandoffs
+          : conversationRecoveryPendingHandoffs(pendingHandoffs);
       // Carried forward until a provider turn accepts it, also after a provider switch.
       const sideChatHandoff = projection.contextHandoffs.find(
         (handoff) =>
@@ -2004,6 +2010,20 @@ export const layer: Layer.Layer<
                 },
               },
             ]),
+        // The recovery clears with this write, so the cut must hold even when delivery defers.
+        ...(providerThread.conversationRecovery === undefined
+          ? []
+          : yield* Effect.forEach(handoffs, (handoff) =>
+              Effect.map(idAllocator.allocate.event({ threadId: projection.thread.id }), (id) => ({
+                id,
+                type: "context-handoff.updated" as const,
+                threadId: projection.thread.id,
+                runId: run.id,
+                providerInstanceId: run.providerInstanceId,
+                occurredAt: now,
+                payload: { ...handoff, updatedAt: now },
+              })),
+            )),
         // Shown only once the replacement session commits with the running transition.
         ...(recoveryTurnItem === undefined
           ? []

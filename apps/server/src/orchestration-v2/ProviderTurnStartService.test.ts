@@ -422,6 +422,8 @@ function makeLocalCommandHarness(input: {
   readonly recoveryRequest?: string;
   /** A summary an earlier fresh conversation wrote. */
   readonly previousSummary?: { readonly text: string; readonly throughRunOrdinal: number };
+  /** A provider-switch delta with tool output still pending for this run. */
+  readonly pendingSwitchDelta?: boolean;
   /** What the fresh start prepared before this turn. */
   readonly prepared?: OrchestrationV2FreshConversationPreparation;
   /** This run's own request is already in the recorded history. */
@@ -956,11 +958,52 @@ function makeLocalCommandHarness(input: {
           completedAt: now,
         },
       ],
-      contextHandoffs:
-        input.previousSummary === undefined
-          ? projection.contextHandoffs
+      contextHandoffs: [
+        ...projection.contextHandoffs,
+        ...(input.pendingSwitchDelta
+          ? [
+              {
+                id: ContextHandoffId.make("provider-switch-delta"),
+                threadId,
+                targetRunId: runId,
+                fromProviderThreadIds: [oldProviderThreadId],
+                toProviderThreadId: providerThreadId,
+                coveredRunOrdinals: { from: 1, to: 1 },
+                strategy: "delta_since_target_last_seen",
+                status: "ready",
+                summaryMessageId: null,
+                summaryText: "",
+                history: {
+                  messages: (
+                    [
+                      ["user", "user_message", "DELTA_REQUEST"],
+                      ["assistant", "assistant_message", "DELTA_INTERMEDIATE"],
+                      ["assistant", "command_execution", "Command: kill\nDELTA_TOOL_OUTPUT"],
+                      ["assistant", "assistant_message", "DELTA_FINAL_REPLY"],
+                    ] as const
+                  ).map(([role, kind, text], index) => ({
+                    role,
+                    kind,
+                    text,
+                    threadId,
+                    runId: keptRunId,
+                    runOrdinal: 1,
+                    itemId: TurnItemId.make(`provider-switch-delta-${index}`),
+                    providerThreadId: oldProviderThreadId,
+                    status: "completed",
+                  })),
+                  coverage: "Delta from the earlier provider.",
+                  omittedItems: 0,
+                },
+                createdByProviderInstanceId: oldInstanceId,
+                createdAt: now,
+                updatedAt: now,
+              } satisfies OrchestrationV2ThreadProjection["contextHandoffs"][number],
+            ]
+          : []),
+        ...(input.previousSummary === undefined
+          ? []
           : [
-              ...projection.contextHandoffs,
               {
                 id: ContextHandoffId.make("previous-fresh-conversation"),
                 threadId,
@@ -982,8 +1025,9 @@ function makeLocalCommandHarness(input: {
                 createdByProviderInstanceId: null,
                 createdAt: now,
                 updatedAt: now,
-              },
-            ],
+              } satisfies OrchestrationV2ThreadProjection["contextHandoffs"][number],
+            ]),
+      ],
       providerThreads: projection.providerThreads.map((candidate) =>
         candidate.id === providerThreadId
           ? {
@@ -1313,7 +1357,9 @@ function makeLocalCommandHarness(input: {
     input.resumeFailure !== undefined || input.recovery !== undefined
       ? input.text === "/compact"
         ? compactThread()
-        : startTurn(runInput as never)
+        : input.pendingSwitchDelta
+          ? runInput.session.startTurn(runInput as never).pipe(Effect.orDie)
+          : startTurn(runInput as never)
       : input.sideChat !== undefined
         ? (runInput.resume
             ? runInput.session.resumeTurn!({
@@ -3253,10 +3299,20 @@ effectIt.effect.each([
   "applies a requested %s conversation recovery once, before the turn prompts",
   ([recovery, resumes, freshFallback, nativeId]) =>
     Effect.gen(function* () {
-      const harness = makeLocalCommandHarness({ text: "Reply with OK.", recovery });
+      const harness = makeLocalCommandHarness({
+        text: "Reply with OK.",
+        recovery,
+        pendingSwitchDelta: true,
+      });
 
       yield* harness.start;
 
+      // A delta pending next to the recovery hands over only its messages and final replies.
+      const prompt = harness.startTurn.mock.calls[0]?.[0].message.text ?? "";
+      expect(prompt).toContain("DELTA_REQUEST");
+      expect(prompt).toContain("DELTA_FINAL_REPLY");
+      expect(prompt).not.toContain("DELTA_TOOL_OUTPUT");
+      expect(prompt).not.toContain("DELTA_INTERMEDIATE");
       expect(harness.resumeThread).toHaveBeenCalledTimes(resumes ? 1 : 0);
       expect(harness.rollbackThread).toHaveBeenCalledTimes(resumes ? 1 : 0);
       if (resumes) {
@@ -3276,7 +3332,9 @@ effectIt.effect.each([
       expect(providerThread?.conversationRecovery).toBeUndefined();
       expect(projection.runs.at(-1)?.status).toBe("running");
       expect(projection.contextHandoffs.map((handoff) => handoff.strategy)).toEqual(
-        nativeId === "replacement-native" ? ["full_thread_summary"] : [],
+        nativeId === "replacement-native"
+          ? ["delta_since_target_last_seen", "full_thread_summary"]
+          : ["delta_since_target_last_seen"],
       );
       expect(
         harness.prepareProviderHandoff.mock.calls.map(([handoff]) =>
@@ -3289,6 +3347,29 @@ effectIt.effect.each([
       // The whole conversation fits the verbatim tail, so nothing is summarized.
       expect(harness.generateConversationSummary).not.toHaveBeenCalled();
     }),
+);
+
+effectIt.effect("keeps a pending handoff cut when the recovering turn defers its history", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text: "/compact",
+      previousMessages: ["Stop the controller."],
+      recovery: "rewind",
+      pendingSwitchDelta: true,
+    });
+    harness.tryHandlePromptCommand.mockReturnValue(Effect.succeed(false));
+
+    yield* harness.start;
+
+    expect(harness.compactThread).toHaveBeenCalledOnce();
+    const projection = harness.projection();
+    expect(projection.providerThreads.at(-1)?.conversationRecovery).toBeUndefined();
+    expect(
+      projection.contextHandoffs
+        .find((handoff) => handoff.id === "provider-switch-delta")
+        ?.history?.messages.map((message) => message.text),
+    ).toEqual(["DELTA_REQUEST", "DELTA_FINAL_REPLY"]);
+  }),
 );
 
 effectIt.effect.each([
