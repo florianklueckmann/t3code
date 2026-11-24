@@ -45,20 +45,17 @@ working notes, tasks and routines. Its threads load T3 Code's own tools and the
 Claude MCP servers, claude.ai connectors and plugins stay out. Hooks, skills, permission rules and `CLAUDE.md` files still apply, as they
 do on Codex, and so do plugins and hooks your organization manages for Claude.
 
-Some features need a Codex model for now. On a Claude Bot, **Settings → Bots**
-shows them as unavailable and says why:
-
-- **Use my own Codex MCP servers**
-- Maintenance
+One feature needs a Codex model: **Use my own Codex MCP servers**. On a Claude
+Bot, **Settings → Bots** shows it as unavailable and says why.
 
 A Bot on Pi works with the same instructions, guidance, sources, learning,
 working notes, tasks and routines. Its threads load T3 Code's own tools and the
 MCP connections you grant it, and nothing else: Pi's own MCP servers from
 `mcp.json` and every Pi extension and package stay off, including Pi's built-in
 codemode and tool search, so its tools are declared to the model directly.
-Skills, prompt templates and `AGENTS.md` files still apply. On a Pi Bot, the
-features above that need Codex, and also No changes routines, the Daily Home
-check and Diagnose failed routines, show as unavailable.
+Skills, prompt templates and `AGENTS.md` files still apply. On a Pi Bot, **Use
+my own Codex MCP servers**, Maintenance, No changes routines, the Daily Home
+check and Diagnose failed routines show as unavailable.
 
 To switch a Bot to Claude or Pi, first turn off what that provider can't do
 yet. Otherwise the switch is refused, the message lists what to change, and the
@@ -305,7 +302,8 @@ codebase does not leak into another. You see it under each project in
 **Maintenance**, under each project in **Settings → Bots**, reviews that
 project's new messages and newly finished tasks once a night at 03:00 server
 time and records lessons by the same **Learning** option. It needs the Bot on a
-signed-in Codex model, and starts with what comes after you turn it on. A night
+signed-in Codex or Claude model, and starts with what comes after you turn it
+on. It always uses the Bot's own provider and model, never another one. A night
 is skipped while the Bot's conversation or its tasks are still busy, while the
 conversation is snoozed or archived, while maintenance is paused, or
 while its model can't run.
@@ -319,9 +317,35 @@ not start while a pass is already running for that project.
 Once the lessons and the Bot's working notes are saved, maintenance compacts a
 long Bot conversation's context, so the next day starts small. The conversation
 and its history stay as they were. A message you send before compaction starts
-skips it for that night. Your Codex hooks run on the Bot's conversation turns,
-including this compaction, and not on No changes routines, the working notes
-refresh, the Daily Home check or the learning step.
+skips it for that night. Your Codex or Claude hooks run on the Bot's
+conversation turns, including this compaction, and not on No changes routines,
+the working notes refresh, the Daily Home check or the learning step.
+
+The learning step is one model call without tools. When Claude's answer does not
+fit the expected format, Claude Code asks it again, up to three answers in all;
+more than that and the step fails for the night. On Claude it needs a Mac
+server and Claude Code 2.1.331 or later, and it loads none of your Claude
+settings: no hooks, plugins, skills, MCP servers, permission rules or
+`CLAUDE.md` files, and it leaves no Claude session behind. Three things are
+outside that seal:
+
+- Settings your organization manages for Claude Code still apply, including its
+  hooks and instructions, because Claude has no switch to turn them off.
+- Claude Code adds its own context to every call, such as your account's email
+  address and the empty temporary folder the call runs in.
+- Claude Code's own background requests, for example its usage check, run as in
+  every Claude process.
+
+Because your Claude settings stay out, maintenance is unavailable on a Claude
+Bot whose `settings.json` or `--settings` launch argument chooses its own API
+backend, model mapping or key helper, where those settings can't be read, where
+that argument or `CLAUDE_CONFIG_DIR` is a relative path, or where your
+organization manages Claude's MCP servers. Otherwise the call could reach a
+different service than the Bot's own turns. Set the backend in the provider's
+environment in **Settings → Providers** instead, and give settings files and the
+Claude config directory as absolute paths. A project's own Claude settings are not read
+for this call, so a backend set only there applies to the Bot's turns in that
+project and not to the learning step.
 
 **Daily Home check**, next to Maintenance, has the Bot look over that
 project's conversation once a day at the time you choose (08:00 server time by
@@ -481,8 +505,10 @@ before asking the Bot to try again.
 - On Claude, MCP connections apply only on a macOS server. Elsewhere a Claude
   Bot with connections does not run; one without loads only T3 Code's own tools.
 - On a Claude Bot, plugins and hooks your organization manages for Claude still
-  load, in No changes routines and Home checks too. Own MCP servers and
-  maintenance are not available yet.
+  load, in No changes routines, Home checks and maintenance too. Own MCP servers
+  are not available.
+- On a Claude Bot, maintenance needs a Mac server and Claude Code 2.1.331 or
+  later.
 - On Pi, MCP connections apply only on a macOS server. Elsewhere a Pi Bot with
   connections does not run; one without loads only T3 Code's own tools. A Pi Bot
   runs without your Pi extensions and packages, so a model or tool that comes

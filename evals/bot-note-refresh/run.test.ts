@@ -41,6 +41,14 @@ const failed = (id: string, observation: Observation) =>
 it.each([
   ["a refresh that records everything", "records-unrecorded-input", run(), []],
   [
+    "a refresh on Claude, which names the tool differently",
+    "records-unrecorded-input",
+    run({
+      tools: ["mcp__t3-code__t3_bot read_continuation", "mcp__t3-code__t3_bot save_continuation"],
+    }),
+    [],
+  ],
+  [
     "a refresh that drops an existing item",
     "records-unrecorded-input",
     run({ after: { ...recorded, waiting: recorded.waiting.slice(1) } }),

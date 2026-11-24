@@ -36,6 +36,10 @@ function claudeModelSettingsKey(settings: ClaudeSdkSettings): string {
 
 const NO_MODEL_SETTINGS_KEY = claudeModelSettingsKey({});
 
+/** Whether these settings pick the backend, its region, or the model an id resolves to. */
+export const claudeSettingsRouteModels = (settings: ClaudeSdkSettings): boolean =>
+  claudeModelSettingsKey(settings) !== NO_MODEL_SETTINGS_KEY;
+
 class ClaudeModelSettingsReadError extends Schema.TaggedError<ClaudeModelSettingsReadError>()(
   "ClaudeModelSettingsReadError",
   { cause: Schema.Defect() },

@@ -18,7 +18,7 @@ export const unsupportedReason = (driver: string | undefined) =>
 /**
  * What a driver can enforce for a Bot, before any platform or sign-in check. Every Bot driver keeps
  * a Bot's threads to T3 Code's own MCP server and its grants. Claude also seals No changes runs and
- * the Home's scoped turns; Pi seals neither. Sealed generation and the user's own servers are Codex's.
+ * the Home's scoped turns and generates sealed; Pi does none of that. The user's own servers are Codex's.
  */
 export function botDriverSupport(driver: string | undefined) {
   const codex = driver === "codex";
@@ -31,7 +31,8 @@ export function botDriverSupport(driver: string | undefined) {
     readOnlySeal: seals,
     /** The Home's scoped turns ("t3BotOnly"): the Home check and maintenance's note refresh. */
     homeSeal: seals,
-    sealedGeneration: codex,
+    /** Maintenance's learning step, and with the Home seal its deliberate compaction. */
+    sealedGeneration: seals,
     /** Loads no MCP server but T3 Code's own and the Bot's grants. */
     mcpIsolation,
   };

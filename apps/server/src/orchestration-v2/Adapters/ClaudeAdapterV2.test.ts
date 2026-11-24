@@ -1758,6 +1758,18 @@ describe("ClaudeAdapterV2 append-system-prompt-file launch argument", () => {
           const t3Server = options.mcpServers?.["t3-code"] as { headers?: Record<string, string> };
           assert.equal(t3Server.headers?.["t3-sealed-load"], "1");
           assert.isTrue(options.strictMcpConfig);
+          // The Home turn is told its tools are loaded, against Claude's own tool search notice.
+          const promptHooks = options.hooks?.UserPromptSubmit?.[0]?.hooks ?? [];
+          const promptContext = yield* Effect.promise(() =>
+            Promise.all(
+              promptHooks.map((hook) =>
+                hook({ hook_event_name: "UserPromptSubmit" } as never, undefined, {
+                  signal: new AbortController().signal,
+                }),
+              ),
+            ),
+          );
+          assert.include(JSON.stringify(promptContext), ClaudeAdapterV2.CLAUDE_HOME_SEAL_TURN_NOTE);
           assert.deepEqual(Object.keys(options.extraArgs ?? {}).sort(), [
             "fallback-model",
             "thinking-display",

@@ -129,7 +129,7 @@ export type CompactDeferReason =
   | "learning_pending"
   | "note_behind"
   | Extract<BotContinuation.NoteCoverage, { readonly _tag: "unprovable" }>["reason"]
-  /** Deliberate compaction runs on Codex Homes only. */
+  /** Deliberate compaction runs on Codex and Claude Homes only. */
   | "unsupported"
   /** The latest attempts all failed; the Home's next ordinary run opens a new window. */
   | "retry_exhausted"
@@ -233,7 +233,7 @@ const failure = (cause: unknown) =>
     : new BotError({ message: "Could not read or change Bot maintenance.", cause });
 const unavailable = () =>
   invalid(
-    "Bot maintenance is not available for this Bot's model right now. It needs a supported, signed-in Codex model, so it stays off.",
+    "Bot maintenance is not available for this Bot's model right now. It needs a supported, signed-in Codex or Claude model, so it stays off.",
   );
 const keyOf = (source: { readonly kind: string; readonly id: string }) =>
   `${source.kind}\u0000${source.id}`;
@@ -281,7 +281,7 @@ export const make = Effect.gen(function* () {
     if (sealed === undefined)
       return {
         unavailableReason:
-          instance.driverKind === "claudeAgent" || instance.driverKind === "pi"
+          instance.driverKind === "pi"
             ? BotProviderSupport.unsupportedReason(instance.driverKind)
             : "codex_required",
       } as const;
@@ -1193,7 +1193,8 @@ export const make = Effect.gen(function* () {
     if (usage?.used == null) return { _tag: "not_needed", reason: "usage_unknown" } as const;
     if (usage.used < Math.max(COMPACT_MIN_TOKENS, Math.ceil((usage.max ?? 0) / 2)))
       return { _tag: "not_needed", reason: "below_threshold" } as const;
-    if (native?.driver !== "codex") return { _tag: "deferred", reason: "unsupported" } as const;
+    if (!BotProviderSupport.botDriverSupport(native?.driver ?? undefined).sealedGeneration)
+      return { _tag: "deferred", reason: "unsupported" } as const;
     return { _tag: "needed" } as const;
   });
 

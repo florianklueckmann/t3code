@@ -7,6 +7,11 @@ export const SealedRefusalReason = Schema.Literals([
   "instance_unavailable",
   "provider_signed_out",
   "codex_version_unsupported",
+  "claude_version_unsupported",
+  /** Claude seals only on the platform where that was measured. */
+  "platform_unsupported",
+  /** The instance's Claude settings pick a backend, credential or MCP setup the seal leaves out. */
+  "claude_settings_unsupported",
   "selected_model_unavailable",
   "option_unsupported",
 ]);
@@ -56,9 +61,12 @@ export interface SealedGenerationInput<S extends Schema.Top> {
   readonly schema: S;
 }
 
-/** One bounded, tool-free, ephemeral model call on exactly the selected instance and model. */
+/**
+ * One bounded, tool-free, ephemeral model call on exactly the selected instance and model. On
+ * Claude, an answer that misses the schema is asked for again, up to three responses in all.
+ */
 export interface SealedGeneration {
-  /** Reads the instance snapshot only; starts no process and runs no model. */
+  /** Reads the instance snapshot and settings; starts no process and runs no model. */
   readonly availability: (selection: ModelSelection) => Effect.Effect<SealedRefusalReason | null>;
   readonly generate: <S extends Schema.Top>(
     input: SealedGenerationInput<S>,

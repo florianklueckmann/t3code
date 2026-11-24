@@ -106,9 +106,10 @@ const sealedInstance = (options: {
   readonly availability?: Effect.Effect<SealedRefusalReason | null>;
   readonly generate?: TestGenerator;
   readonly calls?: Ref.Ref<ReadonlyArray<SealedGenerationInput<Schema.Top>>>;
+  readonly driver?: "codex" | "claudeAgent";
 }) =>
   ({
-    driverKind: ProviderDriverKind.make("codex"),
+    driverKind: ProviderDriverKind.make(options.driver ?? "codex"),
     sealedGeneration: {
       availability: () => options.availability ?? Effect.succeed(null),
       generate: (input: SealedGenerationInput<Schema.Top>) =>
@@ -736,6 +737,7 @@ const withEngine = <A, E, R>(
               generate,
               calls: sealedCalls,
             }),
+            claudeAgent: sealedInstance({ generate, calls: sealedCalls, driver: "claudeAgent" }),
           }),
           Layer.mock(EventStore.EventStoreV2)({ latestSequence: () => Ref.get(homeSequence) }),
           Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
@@ -3068,84 +3070,97 @@ const compactOutcomes = runOutcomes.pipe(
   Effect.map((rows) => rows.filter((row) => row.outcome?.compact !== undefined)),
 );
 
-it.effect(
-  "compacts a large idle Home only after its learning and note are saved, and only once",
-  () =>
+it.effect.each(["codex", "claudeAgent"] as const)(
+  "compacts a large idle %s Home only after its learning and note are saved, and only once",
+  (driver) =>
     Effect.gen(function* () {
-      yield* compactableHome(large);
+      yield* compactableHome(large, driver);
+      const bots = yield* BotDatabase.BotDatabase;
+      yield* bots`UPDATE bots SET model_selection_json = ${JSON.stringify({ instanceId: driver, model: "selected-model" })} WHERE bot_id = 'bot'`;
       const { generate } = yield* recordingGenerator(() =>
         Effect.succeed({ operations: [add("i1", "open every session recap", goldLesson)] }),
       );
-      yield* withEngine(generate, ({ maintenance, homeSequence, homeTurns, homeEvents }) =>
-        Effect.gen(function* () {
-          yield* enable(maintenance);
-          const turns = yield* scopedTurns(homeSequence);
-          yield* Ref.set(homeTurns, turns.dispatch);
-          yield* input("ask", gold);
-          const unlearned = yield* maintenance.compactHome(scope);
-          assert.deepEqual(unlearned.status === "deferred" && unlearned.reason, "learning_pending");
-          assert.equal((yield* maintenance.runNow(scope)).status, "applied");
-          const unsaved = yield* maintenance.compactHome(scope);
-          assert.deepEqual(unsaved.status === "deferred" && unsaved.reason, "note_behind");
+      yield* withEngine(
+        generate,
+        ({ maintenance, homeSequence, homeTurns, homeEvents, sealedCalls }) =>
+          Effect.gen(function* () {
+            assert.isNull((yield* maintenance.get(scope)).unavailableReason);
+            yield* enable(maintenance);
+            const turns = yield* scopedTurns(homeSequence);
+            yield* Ref.set(homeTurns, turns.dispatch);
+            yield* input("ask", gold);
+            const unlearned = yield* maintenance.compactHome(scope);
+            assert.deepEqual(
+              unlearned.status === "deferred" && unlearned.reason,
+              "learning_pending",
+            );
+            assert.equal((yield* maintenance.runNow(scope)).status, "applied");
+            const unsaved = yield* maintenance.compactHome(scope);
+            assert.deepEqual(unsaved.status === "deferred" && unsaved.reason, "note_behind");
 
-          const refresh = yield* maintenance
-            .refreshNote(scope)
-            .pipe(Effect.forkChild({ startImmediately: true }));
-          const refreshRun = yield* Queue.take(turns.started);
-          assert.equal((yield* saveNoteAsBot("refresh"))._tag, "saved");
-          yield* endScopedRun(refreshRun, "completed", homeSequence, homeEvents);
-          assert.equal((yield* Fiber.join(refresh)).status, "refreshed");
-          assert.deepEqual(yield* maintenance.runNow(scope), { status: "idle" });
+            const refresh = yield* maintenance
+              .refreshNote(scope)
+              .pipe(Effect.forkChild({ startImmediately: true }));
+            const refreshRun = yield* Queue.take(turns.started);
+            assert.equal((yield* saveNoteAsBot("refresh"))._tag, "saved");
+            yield* endScopedRun(refreshRun, "completed", homeSequence, homeEvents);
+            assert.equal((yield* Fiber.join(refresh)).status, "refreshed");
+            assert.deepEqual(yield* maintenance.runNow(scope), { status: "idle" });
 
-          yield* Ref.set(homeSequence, 40);
-          const compaction = yield* maintenance
-            .compactHome(scope)
-            .pipe(Effect.forkChild({ startImmediately: true }));
-          const runId = yield* Queue.take(turns.started);
-          const messageId = `bot-maintenance:compact:${home}:40`;
-          assert.deepEqual((yield* Ref.get(turns.commands)).at(-1) as unknown, {
-            type: "message.dispatch",
-            commandId: messageId,
-            threadId: home,
-            messageId,
-            text: "/compact",
-            attachments: [],
-            createdBy: "system",
-            creationSource: "server",
-            dispatchMode: { type: "start_immediately" },
-            ifIdleAtSequence: 40,
-          });
-          yield* endScopedRun(runId, "completed", homeSequence, homeEvents);
-          const compacted = yield* Fiber.join(compaction);
-          assert.deepEqual(compacted.status === "compacted" && compacted.homeRunId, runId);
-          // Preservation committed before the compaction was asked for.
-          assert.deepEqual(
-            (yield* runOutcomes).map((row) =>
-              row.outcome?.compact !== undefined
-                ? `compact:${row.outcome.compact}`
-                : row.outcome?.note !== undefined
-                  ? `note:${row.outcome.note}`
-                  : `learning:${row.status}`,
-            ),
-            [
-              "compact:deferred",
-              "learning:applied",
-              "compact:deferred",
-              "note:refreshed",
-              "compact:compacted",
-            ],
-          );
-          assert.equal((yield* learningRows).length, 1);
+            yield* Ref.set(homeSequence, 40);
+            const compaction = yield* maintenance
+              .compactHome(scope)
+              .pipe(Effect.forkChild({ startImmediately: true }));
+            const runId = yield* Queue.take(turns.started);
+            const messageId = `bot-maintenance:compact:${home}:40`;
+            assert.deepEqual((yield* Ref.get(turns.commands)).at(-1) as unknown, {
+              type: "message.dispatch",
+              commandId: messageId,
+              threadId: home,
+              messageId,
+              text: "/compact",
+              attachments: [],
+              createdBy: "system",
+              creationSource: "server",
+              dispatchMode: { type: "start_immediately" },
+              ifIdleAtSequence: 40,
+            });
+            yield* endScopedRun(runId, "completed", homeSequence, homeEvents);
+            const compacted = yield* Fiber.join(compaction);
+            assert.deepEqual(compacted.status === "compacted" && compacted.homeRunId, runId);
+            // Preservation committed before the compaction was asked for.
+            assert.deepEqual(
+              (yield* runOutcomes).map((row) =>
+                row.outcome?.compact !== undefined
+                  ? `compact:${row.outcome.compact}`
+                  : row.outcome?.note !== undefined
+                    ? `note:${row.outcome.note}`
+                    : `learning:${row.status}`,
+              ),
+              [
+                "compact:deferred",
+                "learning:applied",
+                "compact:deferred",
+                "note:refreshed",
+                "compact:compacted",
+              ],
+            );
+            assert.equal((yield* learningRows).length, 1);
+            // Learning asked the Bot's own instance, never another provider's.
+            assert.deepEqual(
+              (yield* Ref.get(sealedCalls)).map((call) => call.selection),
+              [{ instanceId: ProviderInstanceId.make(driver), model: "selected-model" }],
+            );
 
-          // Nothing happened since, so the next night leaves the compacted Home alone.
-          assert.deepEqual(yield* maintenance.runNow(scope), { status: "idle" });
-          assert.deepEqual(yield* maintenance.compactHome(scope), {
-            status: "not_needed",
-            reason: "already_compacted",
-          });
-          assert.lengthOf(yield* Ref.get(turns.commands), 2);
-          assert.lengthOf(yield* compactOutcomes, 3);
-        }),
+            // Nothing happened since, so the next night leaves the compacted Home alone.
+            assert.deepEqual(yield* maintenance.runNow(scope), { status: "idle" });
+            assert.deepEqual(yield* maintenance.compactHome(scope), {
+              status: "not_needed",
+              reason: "already_compacted",
+            });
+            assert.lengthOf(yield* Ref.get(turns.commands), 2);
+            assert.lengthOf(yield* compactOutcomes, 3);
+          }),
       );
     }).pipe(Effect.provide(storeOnly), Effect.provideService(HostProcess.Platform, "darwin")),
 );
