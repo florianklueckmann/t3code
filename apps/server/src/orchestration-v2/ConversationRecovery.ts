@@ -78,6 +78,33 @@ export function conversationRecoveryHandoffItems(
   );
 }
 
+/**
+ * Other handoffs pending next to a requested recovery, cut to the same shape. Their history
+ * records no response kind, so a run's last assistant message stands for its final reply.
+ */
+export function conversationRecoveryPendingHandoffs(
+  handoffs: ReadonlyArray<OrchestrationV2ContextHandoff>,
+): ReadonlyArray<OrchestrationV2ContextHandoff> {
+  return handoffs.map((handoff) => {
+    // Only side chat context has no history, and it is never a pending history handoff.
+    if (handoff.history === undefined) return handoff;
+    const lastReplies = new Map<string, string>();
+    for (const message of handoff.history.messages) {
+      if (message.kind === "assistant_message" && message.runId !== null) {
+        lastReplies.set(message.runId, message.itemId);
+      }
+    }
+    const messages = handoff.history.messages.filter((message) =>
+      message.kind === "assistant_message"
+        ? message.runId !== null && lastReplies.get(message.runId) === message.itemId
+        : message.kind === "user_message" &&
+          message.text.trim() !== "" &&
+          !isCompactionCommandMessage({ role: "user", text: message.text, attachments: [] }),
+    );
+    return { ...handoff, history: { ...handoff.history, messages } };
+  });
+}
+
 /** The fresh-start notice as its preparation stands. Only a failure is a warning. */
 export function freshConversationNotice(
   prepared: OrchestrationV2FreshConversationPreparation | undefined,
