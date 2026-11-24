@@ -347,7 +347,7 @@ describe("Calendar (this Mac) in a Bot's grants", () => {
     );
 
   it.each([
-    ["ready", {}, "ok", "Bots granted it read Work"],
+    ["ready", {}, "ok", "Bots granted it can read Work"],
     ["without a selection", { calendars: [] }, "warning", "No calendars selected"],
     ["without the helper", { availability: "helper-missing" as const }, "warning", "not installed"],
     ["disabled", { enabled: false }, "muted", "Disabled"],
@@ -418,7 +418,7 @@ describe("Calendar (this Mac) in a Bot's grants", () => {
       ],
       all: true,
     });
-    expect(all.rows[0]?.status.text).toBe("Bots granted it read Work and Family");
+    expect(all.rows[0]?.status.text).toBe("This Bot reads Work and Family");
     // Unchecking one of all selected calendars saves the rest as the Bot's own choice.
     expect(botCalendarChoiceToggle(all.calendarChoice!, "cal-family", false)).toEqual(["cal-work"]);
     // A calendar no longer selected is not shown, so it cannot be saved back.

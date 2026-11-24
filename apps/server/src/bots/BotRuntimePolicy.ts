@@ -149,8 +149,8 @@ export const layer: Layer.Layer<
         }
         const calendarGranted =
           access._tag === "bot" && access.connectionIds.includes(MAC_CALENDAR_CONNECTION_ID);
-        // The Bot's calendars decide whether the calendar loads and whether it can write, so a
-        // changed choice changes the load and reloads the provider.
+        // The Bot's calendars decide whether the calendar loads and offers write tools, so a choice
+        // that changes either reloads the provider. Each call checks the current choice anyway.
         const calendars =
           access._tag === "bot" && calendarGranted
             ? macCalendarsForBot(

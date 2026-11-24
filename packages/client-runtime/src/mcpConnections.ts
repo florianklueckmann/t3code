@@ -338,17 +338,18 @@ export function macCalendarStatusText(calendar: MacCalendarSummary): McpConnecti
   }
   return {
     tone: "ok",
-    text: `Bots granted it read ${listNames(calendar.calendars.map((calendar) => calendar.title))}`,
+    text: `Bots granted it can read ${listNames(calendar.calendars.map((calendar) => calendar.title))}`,
   };
 }
 
 /** The calendar row in a Bot's settings: what this Bot reads, once the connection itself works. */
 function botMacCalendarStatusText(
   calendar: MacCalendarSummary,
+  granted: boolean,
   choice: ReadonlyArray<string> | undefined,
 ): McpConnectionStatusText {
   const status = macCalendarStatusText(calendar);
-  if (status.tone !== "ok" || choice === undefined) return status;
+  if (status.tone !== "ok" || !granted) return status;
   const chosen = macCalendarsForBot(calendar.calendars, choice);
   return chosen.length === 0
     ? { tone: "warning", text: "No calendars chosen, so this Bot doesn't load it." }
@@ -504,7 +505,8 @@ export function botMcpGrantsSection(input: {
             granted: granted.has(calendar.id),
             status: botMacCalendarStatusText(
               calendar,
-              granted.has(calendar.id) ? input.grants.calendarIds : undefined,
+              granted.has(calendar.id),
+              input.grants.calendarIds,
             ),
             oauth: null,
           },

@@ -376,14 +376,21 @@ const make = Effect.gen(function* () {
   const updateCalendar = Effect.fn("McpConnections.updateCalendar")(function* (
     input: MacCalendarUpdateInput,
   ) {
-    const saved = yield* macCalendar.update(input);
-    // Reads already narrow to the selection, so a lost cleanup only lets a reselected calendar back.
-    yield* bots
-      .keepMacCalendars(saved.calendars.map(({ id }) => id))
-      .pipe(
-        Effect.mapError((cause) => new MacCalendarError({ reason: "settings-unavailable", cause })),
-      );
-    return saved;
+    // Choices are pruned before the selection is saved, so a failure in between can only narrow a
+    // Bot, never leave it a calendar that comes back when selected again.
+    if (input.calendarIds !== undefined) {
+      if ((yield* macCalendar.summary).revision !== input.expectedRevision) {
+        return yield* new MacCalendarError({ reason: "revision-conflict" });
+      }
+      yield* bots
+        .keepMacCalendars(input.calendarIds)
+        .pipe(
+          Effect.mapError(
+            (cause) => new MacCalendarError({ reason: "settings-unavailable", cause }),
+          ),
+        );
+    }
+    return yield* macCalendar.update(input);
   });
 
   return McpConnections.of({ list, create, update, remove, refresh, updateCalendar });

@@ -1492,13 +1492,16 @@ export function createServerEnvironmentAtoms<R, E>(
   };
   // Each saved edit advances a revision in the settings snapshot, from this client or another.
   const mcpConnectionRevisionsAtom = Atom.family((environmentId: EnvironmentId) =>
-    Atom.make((get) =>
-      JSON.stringify(
-        Object.entries(get(settingsValueAtom(environmentId))?.mcpConnections ?? {}).map(
-          ([id, definition]) => [id, definition.revision],
-        ),
-      ),
-    ).pipe(Atom.withLabel(`environment-data:server:mcp-connections:revisions:${environmentId}`)),
+    Atom.make((get) => {
+      const settings = get(settingsValueAtom(environmentId));
+      return JSON.stringify([
+        settings?.macCalendar.revision,
+        Object.entries(settings?.mcpConnections ?? {}).map(([id, definition]) => [
+          id,
+          definition.revision,
+        ]),
+      ]);
+    }).pipe(Atom.withLabel(`environment-data:server:mcp-connections:revisions:${environmentId}`)),
   );
   // Listing reads no secret provider on the server, so following every revision is cheap.
   const mcpConnectionsQuery = createEnvironmentRpcQueryAtomFamily(runtime, {
