@@ -367,6 +367,64 @@ export const layer: Layer.Layer<
           },
         ),
         shouldFinalizeRun: () => isCurrentAttemptIn(["starting", "running"]),
+        // A steer superseded this attempt and Stop ended the run before the restart started, so
+        // no later turn settles the provider thread this attempt's turn kept active. Under the
+        // lock Stop plans with, so a Stop that read this turn as running has committed.
+        settleStoppedProviderThread: Effect.fn(
+          "ProviderTurnStartService.settleStoppedProviderThread",
+        )(
+          function* (status: OrchestrationV2ProviderThread["status"]) {
+            const run = yield* projectionStore.getRun(input.threadId, input.runId);
+            if (run === undefined || !NON_COMPLETING_TERMINAL_RUN_STATUSES.has(run.status)) return;
+            const { providerThreads, providerTurns } = yield* projectionStore.getThreadRecords(
+              input.threadId,
+              ["providerThreads", "providerTurns"],
+              {
+                providerThreadIds: [input.providerThreadId],
+                providerTurnThreadIds: [input.providerThreadId],
+              },
+            );
+            const providerThread = providerThreads.find(
+              (candidate) => candidate.id === input.providerThreadId,
+            );
+            if (
+              providerThread?.status !== "active" ||
+              providerThread.lastRunOrdinal !== input.runOrdinal ||
+              providerTurns.some(
+                (turn) =>
+                  turn.providerThreadId === providerThread.id &&
+                  turn.runAttemptId !== input.attemptId &&
+                  turn.status === "running",
+              )
+            ) {
+              return;
+            }
+            const now = yield* DateTime.now;
+            yield* eventSink.writeIfProviderThreadUnchanged({
+              expected: providerThread,
+              events: [
+                {
+                  id: yield* idAllocator.allocate.event({ threadId: input.threadId }),
+                  type: "provider-thread.updated",
+                  threadId: input.threadId,
+                  runId: input.runId,
+                  driver: providerThread.driver,
+                  providerInstanceId: providerThread.providerInstanceId,
+                  occurredAt: now,
+                  payload: { ...providerThread, status, updatedAt: now },
+                },
+              ],
+            });
+          },
+          (effect) => threadCommands.withLock(input.threadId, effect),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Failed to settle a stopped run's provider thread", {
+              threadId: input.threadId,
+              runId: input.runId,
+              cause,
+            }),
+          ),
+        ),
         hasUnpairedRunInterruptRequest: () =>
           projectionStore
             .hasUnpairedRunInterruptRequest(
@@ -2255,6 +2313,7 @@ export const layer: Layer.Layer<
             !acceptedAttempts.some((source) => source.nativeThreadId !== undefined)),
         shouldStartProviderTurn: runControls.shouldStartProviderTurn,
         shouldFinalizeRun: runControls.shouldFinalizeRun,
+        settleStoppedProviderThread: runControls.settleStoppedProviderThread,
         hasUnpairedRunInterruptRequest: runControls.hasUnpairedRunInterruptRequest,
         loadRunInterruptReason: runControls.loadRunInterruptReason,
         hasWorkspaceMoved: runControls.hasWorkspaceMoved,

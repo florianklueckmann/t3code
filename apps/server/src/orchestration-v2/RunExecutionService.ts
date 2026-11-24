@@ -657,6 +657,10 @@ export interface RunExecutionServiceV2StartRootRunInput {
     readonly checkInterruptRequest?: boolean;
   }) => Effect.Effect<boolean, ProjectionStoreV2Error>;
   readonly shouldFinalizeRun?: () => Effect.Effect<boolean, ProjectionStoreV2Error>;
+  /** Runs when the root turn ends but `shouldFinalizeRun` refuses the write. */
+  readonly settleStoppedProviderThread?: (
+    status: OrchestrationV2ProviderThread["status"],
+  ) => Effect.Effect<void>;
   readonly hasUnpairedRunInterruptRequest?: () => Effect.Effect<boolean, never>;
   readonly loadRunInterruptReason?: () => Effect.Effect<string | undefined, never>;
   readonly hasWorkspaceMoved?: () => Effect.Effect<boolean, never>;
@@ -732,6 +736,9 @@ export const layer: Layer.Layer<
         readonly providerThread: OrchestrationV2ProviderThread;
         readonly attempt: OrchestrationV2RunAttempt;
         readonly shouldFinalizeRun?: () => Effect.Effect<boolean, ProjectionStoreV2Error>;
+        readonly settleStoppedProviderThread?: (
+          status: OrchestrationV2ProviderThread["status"],
+        ) => Effect.Effect<void>;
         readonly hasUnpairedRunInterruptRequest?: () => Effect.Effect<boolean, never>;
         readonly loadRunInterruptReason?: () => Effect.Effect<string | undefined, never>;
         readonly openRunOwnedSubagents?: OpenRunOwnedSubagentProjection;
@@ -793,6 +800,11 @@ export const layer: Layer.Layer<
               });
               yield* input.refreshAfterTurn;
             }
+          }
+          if (input.settleStoppedProviderThread !== undefined) {
+            yield* input.settleStoppedProviderThread(
+              finalProviderThreadStatus(input.terminal.threadDisposition),
+            );
           }
           return false;
         }
@@ -1253,6 +1265,9 @@ export const layer: Layer.Layer<
                 ? {}
                 : {
                     shouldFinalizeRun: input.shouldFinalizeRun,
+                    ...(input.settleStoppedProviderThread === undefined
+                      ? {}
+                      : { settleStoppedProviderThread: input.settleStoppedProviderThread }),
                     // Stop may commit between the ownership read and this
                     // terminal write. Gate the events and checkpoint together.
                     writeIfRunCurrent: {

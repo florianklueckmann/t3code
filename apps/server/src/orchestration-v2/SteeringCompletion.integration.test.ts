@@ -2602,6 +2602,74 @@ it.effect.each([false, true])(
     }),
 );
 
+it.effect.each(["thread.stop", "run.interrupt"] as const)(
+  "%s during a steering restart returns the provider thread to idle once the superseded turn stops",
+  (type) =>
+    Effect.gen(function* () {
+      const { started, layer, startFirstTurn } = yield* nextTurnSelectionHarness(
+        `stop-during-restart-${type}`,
+        true,
+      );
+      yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        const threadId = yield* startFirstTurn;
+        const first = started[0]!;
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("restart"),
+          threadId,
+          messageId: MessageId.make("message:restart"),
+          text: "restart",
+          attachments: [],
+          modelSelection: runSelection,
+          dispatchMode: { type: "restart_active", targetRunId: first.runId },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        // Stop lands before the worker runs the restart, while the superseded turn still runs.
+        const stop = { commandId: CommandId.make("stop"), threadId };
+        yield* orchestrator.dispatch(
+          type === "run.interrupt" ? { ...stop, type, runId: first.runId } : { ...stop, type },
+        );
+        assert.deepEqual(
+          (yield* orchestrator.getThreadProjection(threadId)).providerThreads.map(
+            (providerThread) => providerThread.status,
+          ),
+          ["active"],
+        );
+        const idle = yield* orchestrator.streamDomainEvents.pipe(
+          Stream.filter(
+            (event) => event.type === "provider-thread.updated" && event.payload.status === "idle",
+          ),
+          Stream.take(1),
+          Stream.runDrain,
+          Effect.forkScoped,
+        );
+        yield* worker.drain();
+        yield* Fiber.join(idle);
+
+        const stopped = yield* orchestrator.getThreadProjection(threadId);
+        assert.deepEqual(
+          started.map((turn) => turn.message.text),
+          ["first"],
+        );
+        assert.deepEqual(
+          stopped.runs.map((run) => run.status),
+          ["interrupted"],
+        );
+        assert.deepEqual(
+          stopped.providerTurns.map((turn) => turn.status),
+          ["interrupted"],
+        );
+        assert.deepEqual(
+          stopped.providerThreads.map((providerThread) => providerThread.status),
+          ["idle"],
+        );
+      }).pipe(Effect.provide(layer));
+    }),
+);
+
 // regression: #32891 a restart that arrives after the turn ended is lost
 it.effect.each([
   { status: "completed", settled: true },
