@@ -1162,16 +1162,13 @@ export function BotLearningList({
   };
   const settleSuggestion = (
     title: string,
-    { entry, suggestion }: (typeof views)[number],
+    { suggestion }: (typeof views)[number],
     decision: "accept" | "dismiss" | "undismiss",
   ) => {
     if (suggestion === undefined) return;
-    const { matchedEntryId } = suggestion;
+    const { pair } = suggestion;
     void run(title, () =>
-      decideSuggestion({
-        environmentId,
-        input: { botId: bot.id, entryId: entry.id, matchedEntryId, decision },
-      }),
+      decideSuggestion({ environmentId, input: { botId: bot.id, ...pair, decision } }),
     );
   };
 

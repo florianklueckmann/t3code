@@ -138,16 +138,13 @@ export function BotLearningSection({
   };
   const settleSuggestion = (
     failureTitle: string,
-    { entry, suggestion }: (typeof views)[number],
+    { suggestion }: (typeof views)[number],
     decision: "accept" | "dismiss" | "undismiss",
   ) => {
     if (suggestion === undefined) return;
-    const { matchedEntryId } = suggestion;
+    const { pair } = suggestion;
     void run(failureTitle, () =>
-      decideSuggestion({
-        environmentId,
-        input: { botId, entryId: entry.id, matchedEntryId, decision },
-      }),
+      decideSuggestion({ environmentId, input: { botId, ...pair, decision } }),
     );
   };
 

@@ -2317,20 +2317,18 @@ it.effect("suggests a lesson the generator matches with another project's, once 
         yield* input("ask", "What does the rulebook say about grappling?");
         const pass = yield* maintenance.runNow(scope);
         assert.equal(pass.status === "applied" && pass.outcome.suggested, 1);
-        const suggestion = {
+        const shown = {
           entryId: here.learned.entryId,
+          revision: 1,
           matchedEntryId: there.learned.entryId,
-          dismissedAt: null,
+          matchedRevision: 1,
         };
-        assert.deepEqual((yield* bots.get(scope)).learningSuggestions, [suggestion]);
+        assert.deepEqual((yield* bots.get(scope)).learningSuggestions, [
+          { ...shown, dismissedAt: null },
+        ]);
 
         // The stored pair leaves the next packet, dismissed or not.
-        yield* bots.decideLearningSuggestion({
-          botId: scope.botId,
-          entryId: suggestion.entryId,
-          matchedEntryId: suggestion.matchedEntryId,
-          decision: "dismiss",
-        });
+        yield* bots.decideLearningSuggestion({ botId: scope.botId, ...shown, decision: "dismiss" });
         yield* input("again", "And about shoving?");
         assert.equal((yield* maintenance.runNow(scope)).status, "noop");
         assert.deepEqual(

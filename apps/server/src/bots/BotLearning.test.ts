@@ -216,6 +216,15 @@ const fixture = Effect.gen(function* () {
 
 const projectC = "project-c";
 const elsewhere = { ...correction, projectId: ProjectId.make(projectB) } as const;
+const pair = (
+  entry: BotLearning.RecordLearningResult,
+  matched: BotLearning.RecordLearningResult,
+) => ({
+  entryId: entry.entryId,
+  revision: entry.revision,
+  matchedEntryId: matched.entryId,
+  matchedRevision: matched.revision,
+});
 
 it.effect("suggests a lesson for all projects once a second project learns the same", () =>
   Effect.gen(function* () {
@@ -229,9 +238,7 @@ it.effect("suggests a lesson for all projects once a second project learns the s
     const repeat = yield* learning.record(policy, { ...elsewhere, text: "use  METRIC units." });
     yield* learning.record(policy, { ...elsewhere, text: "Deploys run on Fridays." });
     yield* learning.syncSuggestions(botId);
-    expect(yield* suggestions).toEqual([
-      { entryId: repeat.entryId, matchedEntryId: first.entryId, dismissedAt: null },
-    ]);
+    expect(yield* suggestions).toEqual([{ ...pair(repeat, first), dismissedAt: null }]);
 
     // An edit ends the match; the suggestion goes with it.
     yield* learning.record(policy, {
@@ -254,17 +261,13 @@ it.effect("keeps a dismissed suggestion dismissed until the user shows it again"
     yield* learning.syncSuggestions(botId);
     const decide = (
       decision: "accept" | "dismiss" | "undismiss",
-      entryId = repeat.entryId,
-      matchedEntryId = first.entryId,
-    ) => learning.decideSuggestion(policy, { botId, entryId, matchedEntryId, decision });
+      entry = repeat,
+      matched = first,
+    ) => learning.decideSuggestion(policy, { botId, ...pair(entry, matched), decision });
 
     yield* TestClock.adjust("1 minute");
     yield* decide("dismiss");
-    const dismissed = {
-      entryId: repeat.entryId,
-      matchedEntryId: first.entryId,
-      dismissedAt: "1970-01-01T00:02:00.000Z",
-    };
+    const dismissed = { ...pair(repeat, first), dismissedAt: "1970-01-01T00:02:00.000Z" };
     // Neither a later sync nor the same pair found from the other lesson brings it back.
     yield* learning.syncSuggestions(botId);
     yield* learning.suggest({ botId, entry: first, matched: repeat });
@@ -273,9 +276,9 @@ it.effect("keeps a dismissed suggestion dismissed until the user shows it again"
 
     yield* decide("undismiss");
     expect(yield* suggestions).toEqual([{ ...dismissed, dismissedAt: null }]);
-    expect(
-      (yield* Effect.flip(decide("dismiss", first.entryId, repeat.entryId))).message,
-    ).toContain("no suggestion");
+    expect((yield* Effect.flip(decide("dismiss", first, repeat))).message).toContain(
+      "no suggestion",
+    );
   }).pipe(Effect.provide(storeLayer)),
 );
 
@@ -292,19 +295,14 @@ it.effect("keeps a lesson's dismissal when the copy it matched goes with its pro
     yield* learning.syncSuggestions(botId);
     yield* learning.decideSuggestion(policy, {
       botId,
-      entryId: repeat.entryId,
-      matchedEntryId: first.entryId,
+      ...pair(repeat, first),
       decision: "dismiss",
     });
 
     yield* store.deleteContextsForProject(ProjectId.make(projectA));
     yield* learning.syncSuggestions(botId);
     expect(yield* suggestions).toEqual([
-      {
-        entryId: repeat.entryId,
-        matchedEntryId: third.entryId,
-        dismissedAt: "1970-01-01T00:01:00.000Z",
-      },
+      { ...pair(repeat, third), dismissedAt: "1970-01-01T00:01:00.000Z" },
     ]);
   }).pipe(Effect.provide(storeLayer)),
 );
@@ -318,16 +316,14 @@ it.effect("accepts a suggestion as Apply to all projects does, and retires the o
     const repeat = yield* learning.record(policy, elsewhere);
     yield* learning.syncSuggestions(botId);
 
-    const accept = (matchedEntryId: typeof first.entryId) =>
-      learning.decideSuggestion(policy, {
-        botId,
-        entryId: repeat.entryId,
-        matchedEntryId,
-        decision: "accept",
-      });
-    // Accepting names the copy the user saw, so it never retires another one.
-    expect((yield* Effect.flip(accept(control.entryId))).message).toContain("no suggestion");
-    yield* accept(first.entryId);
+    const accept = (matched: BotLearning.RecordLearningResult) =>
+      learning.decideSuggestion(policy, { botId, ...pair(repeat, matched), decision: "accept" });
+    // Accepting names the two revisions the user saw, so it never moves or retires another.
+    expect((yield* Effect.flip(accept(control))).message).toContain("no suggestion");
+    expect((yield* Effect.flip(accept({ ...first, revision: 2 }))).message).toContain(
+      "no suggestion",
+    );
+    yield* accept(first);
     yield* learning.record(policy, {
       ...elsewhere,
       ...user,

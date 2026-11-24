@@ -489,7 +489,11 @@ export const make = (deps: {
 
   /** Suggests each lesson that a second project now keeps word for word. */
   const syncSuggestions = Effect.fn("BotLearning.syncSuggestions")(function* (botId: string) {
-    for (const { entry, matched } of repeatedLessons(yield* store.listLearning(botId))) {
+    const lessons = projectLessons(
+      yield* store.listLearning(botId),
+      yield* store.listContexts(botId),
+    );
+    for (const { entry, matched } of repeatedLessons(lessons)) {
       yield* suggest({ botId, entry: refOf(entry), matched: refOf(matched) });
     }
   });
@@ -508,7 +512,9 @@ export const make = (deps: {
     // The user decides on the pair they were shown, not on whatever the lesson matches by now.
     if (
       suggestion === undefined ||
+      suggestion.revision !== input.revision ||
       suggestion.matchedEntryId !== input.matchedEntryId ||
+      suggestion.matchedRevision !== input.matchedRevision ||
       head === undefined ||
       head.project_id === null
     ) {
@@ -559,14 +565,25 @@ const refOf = (row: BotStore.BotLearningRow): BotLearningRevisionRef => ({
   revision: row.revision,
 });
 
-/** Each lesson in use in one project only, by entry, in the order the entries were first learned. */
-const projectLessons = (rows: ReadonlyArray<BotStore.BotLearningRow>) => {
+/**
+ * Each lesson in use in one attached project only, in the order the entries were first learned.
+ * A detached project's lesson is neither matched, suggested nor retired.
+ */
+const projectLessons = (
+  rows: ReadonlyArray<BotStore.BotLearningRow>,
+  contexts: ReadonlyArray<BotStore.BotContextRow>,
+) => {
+  const attached = new Set(
+    contexts.filter((context) => context.detached_at === null).map((context) => context.project_id),
+  );
   const learned = new Map<string, number>();
   for (const [index, row] of rows.entries()) {
     if (!learned.has(row.entry_id)) learned.set(row.entry_id, index);
   }
   return rows
-    .filter((row) => row.status === "active" && row.project_id !== null)
+    .filter(
+      (row) => row.status === "active" && row.project_id !== null && attached.has(row.project_id),
+    )
     .toSorted((a, b) => (learned.get(a.entry_id) ?? 0) - (learned.get(b.entry_id) ?? 0));
 };
 
@@ -574,11 +591,8 @@ const projectLessons = (rows: ReadonlyArray<BotStore.BotLearningRow>) => {
  * The same lesson in use in two projects: each later-learned copy with the earliest one from
  * another project. The later copy carries the suggestion, so one pair is suggested once.
  */
-function repeatedLessons(rows: ReadonlyArray<BotStore.BotLearningRow>) {
-  const copies = Map.groupBy(
-    projectLessons(rows),
-    (row) => `${row.kind}\u0000${row.normalized_text}`,
-  );
+function repeatedLessons(lessons: ReadonlyArray<BotStore.BotLearningRow>) {
+  const copies = Map.groupBy(lessons, (row) => `${row.kind}\u0000${row.normalized_text}`);
   return [...copies.values()].flatMap((group) =>
     group.flatMap((entry, index) => {
       const matched = group
@@ -591,22 +605,14 @@ function repeatedLessons(rows: ReadonlyArray<BotStore.BotLearningRow>) {
 
 /**
  * The stored suggestions that still hold: both lessons are in use at the revisions that matched,
- * each in its own attached project. An edit, a move, a retirement or a restore of either ends
- * it, and a detached project's lesson is neither suggested nor retired.
+ * each in its own attached project. An edit, a move, a retirement or a restore of either ends it.
  */
 export function currentSuggestions(
   rows: ReadonlyArray<BotStore.BotLearningRow>,
   stored: ReadonlyArray<BotStore.BotLearningSuggestionRow>,
   contexts: ReadonlyArray<BotStore.BotContextRow>,
 ): ReadonlyArray<BotLearningSuggestion> {
-  const attached = new Set(
-    contexts.filter((context) => context.detached_at === null).map((context) => context.project_id),
-  );
-  const lessons = new Map(
-    projectLessons(rows)
-      .filter((row) => row.project_id !== null && attached.has(row.project_id))
-      .map((row) => [row.entry_id, row]),
-  );
+  const lessons = new Map(projectLessons(rows, contexts).map((row) => [row.entry_id, row]));
   return stored.flatMap((suggestion) => {
     const entry = lessons.get(suggestion.entry_id);
     const matched = lessons.get(suggestion.matched_entry_id);
@@ -617,7 +623,9 @@ export function currentSuggestions(
       ? [
           {
             entryId: BotLearningEntryId.make(suggestion.entry_id),
+            revision: entry.revision,
             matchedEntryId: BotLearningEntryId.make(suggestion.matched_entry_id),
+            matchedRevision: matched.revision,
             dismissedAt: suggestion.dismissed_at,
           },
         ]

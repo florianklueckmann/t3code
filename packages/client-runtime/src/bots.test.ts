@@ -741,22 +741,22 @@ describe("bot learning", () => {
       lesson("reworded", 3, { projectId: projectB, text: "Metric only." }),
       lesson("gone", 4, { projectId: projectB, status: "retired" }),
     ];
+    const pairWith = (matched: string) => ({
+      entryId: BotLearningEntryId.make("here"),
+      revision: 1,
+      matchedEntryId: BotLearningEntryId.make(matched),
+      matchedRevision: 1,
+    });
     const suggestionOf = (matched: string, dismissedAt: string | null = null) =>
-      botLearningViews(entries, projectA, [
-        {
-          entryId: BotLearningEntryId.make("here"),
-          matchedEntryId: BotLearningEntryId.make(matched),
-          dismissedAt,
-        },
-      ])[0]?.suggestion;
+      botLearningViews(entries, projectA, [{ ...pairWith(matched), dismissedAt }])[0]?.suggestion;
     expect(suggestionOf("same")).toEqual({
-      matchedEntryId: "same",
+      pair: pairWith("same"),
       projectId: projectB,
       text: null,
       dismissed: false,
     });
     expect(suggestionOf("reworded", "2026-01-02T00:00:00.000Z")).toEqual({
-      matchedEntryId: "reworded",
+      pair: pairWith("reworded"),
       projectId: projectB,
       text: "Metric only.",
       dismissed: true,

@@ -240,8 +240,10 @@ export type BotLearningEntry = typeof BotLearningEntry.Type;
  */
 export const BotLearningSuggestion = Schema.Struct({
   entryId: BotLearningEntryId,
+  revision: PositiveInt,
   /** The other project's lesson; accepting retires it. */
   matchedEntryId: BotLearningEntryId,
+  matchedRevision: PositiveInt,
   /** A dismissed suggestion stays dismissed for its lesson until the user shows it again. */
   dismissedAt: Schema.NullOr(IsoDateTime),
 });
@@ -441,9 +443,11 @@ export type BotRestoreLearningInput = typeof BotRestoreLearningInput.Type;
  */
 export const BotDecideLearningSuggestionInput = Schema.Struct({
   botId: BotId,
+  /** The pair the user was shown; a suggestion that changed since is refused. */
   entryId: BotLearningEntryId,
-  /** The other project's lesson the user was shown; a suggestion that changed since is refused. */
+  revision: PositiveInt,
   matchedEntryId: BotLearningEntryId,
+  matchedRevision: PositiveInt,
   decision: Schema.Literals(["accept", "dismiss", "undismiss"]),
 });
 export type BotDecideLearningSuggestionInput = typeof BotDecideLearningSuggestionInput.Type;
