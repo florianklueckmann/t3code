@@ -41,6 +41,8 @@ export class McpConnectionGrants extends Context.Service<
     readonly resolve: (input: {
       readonly driver: ProviderDriverKind;
       readonly ids: ReadonlyArray<McpConnectionId>;
+      /** Whether the Bot may change its calendars, which changes the tools the calendar lists. */
+      readonly macCalendarWrite: boolean;
       /** The thread's own MCP session, which serves T3 Code's granted toolsets. */
       readonly mcpSession: McpProviderSessionConfig | undefined;
     }) => Effect.Effect<GrantedMcpLoad, ProviderAdapterMcpConnectionsRefusedError>;

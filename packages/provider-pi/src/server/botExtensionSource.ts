@@ -1,6 +1,8 @@
 // No T3 imports inside the string; resolve Pi from the user's Pi install.
 export const PI_T3_BOT_EXTENSION_FILENAME = "pi-t3-bot-extension.ts";
 export const PI_T3_BOT_SESSION_COMMAND = "t3-bot-session";
+/** Written next to the payload once applied: the command's answer cannot say whether it failed. */
+export const PI_T3_BOT_SESSION_ACK_SUFFIX = ".applied";
 
 /** What the adapter writes for the Bot session command: one JSON file, deleted once read. */
 export interface PiBotSessionPayload {
@@ -27,6 +29,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import * as NodeFS from "node:fs";
 
 const SESSION_COMMAND = ${JSON.stringify(PI_T3_BOT_SESSION_COMMAND)};
+const ACK_SUFFIX = ${JSON.stringify(PI_T3_BOT_SESSION_ACK_SUFFIX)};
 
 type McpExtensionFactory = (options: {
   loadConfig: () => { servers: never[]; errors: string[] };
@@ -79,22 +82,22 @@ export default async function t3BotExtension(pi: ExtensionAPI) {
       pi.unregisterMcpServer(name);
       registered.delete(name);
     }
-    const added: string[] = [];
+    const changed: string[] = [];
     for (const [name, server] of Object.entries(servers)) {
       // Declared directly: Pi's tool search and codemode are built-ins this session leaves off.
       const config = { ...server, exposure: "direct" };
       const key = JSON.stringify(config);
       if (registered.get(name) === key) continue;
-      if (!registered.has(name)) added.push("mcp__" + name.replace(/[^A-Za-z0-9_]/g, "_") + "__");
+      changed.push("mcp__" + name.replace(/[^A-Za-z0-9_]/g, "_") + "__");
       pi.registerMcpServer(name, config as Parameters<ExtensionAPI["registerMcpServer"]>[1]);
       registered.set(name, key);
     }
-    // Pi connects new servers in the background; give their tools a bounded chance to reach this turn.
+    // Pi connects a new or replaced server in the background and hides a replaced one's tools until
+    // it lists them again; give them a bounded chance to reach this turn.
     const deadline = Date.now() + 10_000;
-    while (
-      added.some((prefix) => !pi.getAllTools().some((tool) => tool.name.startsWith(prefix))) &&
-      Date.now() < deadline
-    ) {
+    const listed = (prefix: string) =>
+      pi.getAllTools().some((tool) => tool.name.startsWith(prefix) && tool.exposure !== "hidden");
+    while (changed.some((prefix) => !listed(prefix)) && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
   };
@@ -102,8 +105,11 @@ export default async function t3BotExtension(pi: ExtensionAPI) {
   pi.registerCommand(SESSION_COMMAND, {
     description: "Apply T3 Code's Bot instructions and granted MCP connections",
     handler: async (args, ctx) => {
+      const path = args.trim();
       try {
-        await apply(args.trim());
+        await apply(path);
+        // Pi answers "handled" even when this throws, so the adapter waits for this mark instead.
+        NodeFS.writeFileSync(path + ACK_SUFFIX, "");
       } catch (error) {
         // Fail closed: never keep connections or instructions this turn may no longer have.
         instructions = undefined;

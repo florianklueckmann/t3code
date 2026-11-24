@@ -60,7 +60,7 @@ import {
 import { makePiRpcConnection, type PiRpcRecord } from "./rpc.ts";
 import { loadMcpBridge } from "./mcpBridge.testkit.ts";
 import { PI_T3_SERVICE_TIER_COMMAND } from "./mcpExtensionSource.ts";
-import { PI_T3_BOT_SESSION_COMMAND } from "./botExtensionSource.ts";
+import { PI_T3_BOT_SESSION_ACK_SUFFIX, PI_T3_BOT_SESSION_COMMAND } from "./botExtensionSource.ts";
 import { turnItemOutputText } from "../../../client-runtime/src/work-log/itemDetail.ts";
 
 const layerTest = Layer.mergeAll(
@@ -205,6 +205,8 @@ interface FakePi {
   readonly closeStdout: Effect.Effect<void>;
   /** What T3 Code's Bot extension read for each Bot session command. */
   readonly botSessions: ReadonlyArray<unknown>;
+  /** The Bot extension answers "handled" but could not apply the payload. */
+  readonly failBotSessions: () => void;
   readonly lastSpawn: () => {
     readonly args: ReadonlyArray<string>;
     readonly env: NonNullable<ChildProcess.CommandOptions["env"]>;
@@ -232,6 +234,7 @@ const PI_COMPACTING_PROMPT_ERROR =
 const makeFakePi: Effect.Effect<FakePi, never, FileSystem.FileSystem> = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const botSessions: Array<unknown> = [];
+  let applyBotSessions = true;
   const stdout = yield* Queue.unbounded<Uint8Array, Cause.Done>();
   const requests = yield* Queue.unbounded<PiRpcRecord>();
   const entriesQueue: Array<unknown> = [];
@@ -398,6 +401,11 @@ const makeFakePi: Effect.Effect<FakePi, never, FileSystem.FileSystem> = Effect.g
           botSessions.push(
             decodeJsonLine(yield* fileSystem.readFileString(payloadPath).pipe(Effect.orDie)),
           );
+          if (applyBotSessions) {
+            yield* fileSystem
+              .writeFileString(`${payloadPath}${PI_T3_BOT_SESSION_ACK_SUFFIX}`, "")
+              .pipe(Effect.orDie);
+          }
         }
         if (record["type"] === "prompt" && !isT3Command(record)) {
           promptThinkingLevels.push(thinkingLevel);
@@ -532,6 +540,9 @@ const makeFakePi: Effect.Effect<FakePi, never, FileSystem.FileSystem> = Effect.g
     },
     closeStdout: Queue.end(stdout),
     botSessions,
+    failBotSessions: () => {
+      applyBotSessions = false;
+    },
     lastSpawn: () => lastSpawn,
   } satisfies FakePi;
 });
@@ -2804,129 +2815,141 @@ describe("PiAdapterV2", () => {
     }).pipe(Effect.scoped, Effect.provide(layerTest)),
   );
 
-  it.effect("starts a Bot's Pi session with exactly its granted MCP connections", () =>
-    Effect.gen(function* () {
-      const fake = yield* makeFakePi;
-      const granted = McpConnectionId.make("0b5c6f3e-8d1a-4c2b-9e7f-1a2b3c4d5e6f");
-      const resolved: Array<ReadonlyArray<McpConnectionId>> = [];
-      const userExtension = "/home/user/.pi/agent/extensions/personal-mail.ts";
-      const adapter = yield* makePiAdapterV2({
-        instanceId: PI_INSTANCE_ID,
-        settings: {
-          enabled: true,
-          binaryPath: "pi",
-          launchArgs: `-e ${userExtension} --approve`,
-          customModels: [],
-        },
-        environment: {},
-      }).pipe(
-        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
-        Effect.provideService(McpConnectionGrants.McpConnectionGrants, {
-          resolve: (input) =>
-            Effect.sync(() => {
-              resolved.push(input.ids);
-              return {
-                servers: [
-                  {
-                    id: granted,
-                    name: `t3c-${granted}`,
-                    transport: {
-                      type: "stdio",
-                      command: "work-mail-mcp",
-                      args: ["--stdio"],
-                      env: Redacted.make({ MAIL_TOKEN: "!work$HOME-token" }),
+  it.effect.each(["applied", "not applied by Pi"] as const)(
+    "starts a Bot's Pi session with exactly its granted MCP connections, %s",
+    (outcome) =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakePi;
+        if (outcome !== "applied") fake.failBotSessions();
+        const granted = McpConnectionId.make("0b5c6f3e-8d1a-4c2b-9e7f-1a2b3c4d5e6f");
+        const resolved: Array<ReadonlyArray<McpConnectionId>> = [];
+        const userExtension = "/home/user/.pi/agent/extensions/personal-mail.ts";
+        const adapter = yield* makePiAdapterV2({
+          instanceId: PI_INSTANCE_ID,
+          settings: {
+            enabled: true,
+            binaryPath: "pi",
+            launchArgs: `-e ${userExtension} --approve`,
+            customModels: [],
+          },
+          environment: {},
+        }).pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+          Effect.provideService(McpConnectionGrants.McpConnectionGrants, {
+            resolve: (input) =>
+              Effect.sync(() => {
+                resolved.push(input.ids);
+                return {
+                  servers: [
+                    {
+                      id: granted,
+                      name: `t3c-${granted}`,
+                      transport: {
+                        type: "stdio",
+                        command: "work-mail-mcp",
+                        args: ["--stdio"],
+                        env: Redacted.make({ MAIL_TOKEN: "!work$HOME-token" }),
+                      },
                     },
-                  },
-                ],
-                instructions: "Work mail: tools in the mcp__t3c_work namespace",
-              };
-            }),
-        }),
-      );
-      const botPolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
-        ...runtimePolicy,
-        nativeMemory: "disabled",
-        mcpConnections: [granted],
-      });
-      const runtime = yield* adapter.openSession({
-        threadId: THREAD_ID,
-        providerSessionId: SESSION_ID,
-        modelSelection: modelSelection("default"),
-        runtimePolicy: botPolicy,
-      });
+                  ],
+                  instructions: "Work mail: tools in the mcp__t3c_work namespace",
+                };
+              }),
+          }),
+        );
+        const botPolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+          ...runtimePolicy,
+          nativeMemory: "disabled",
+          mcpConnections: [granted],
+        });
+        const runtime = yield* adapter.openSession({
+          threadId: THREAD_ID,
+          providerSessionId: SESSION_ID,
+          modelSelection: modelSelection("default"),
+          runtimePolicy: botPolicy,
+        });
 
-      // Pi's built-in MCP (which reads ~/.pi/agent/mcp.json and .pi/mcp.json) and every user,
-      // project and package extension stay off; only T3 Code's two extensions load.
-      const { args } = fake.lastSpawn();
-      // Ahead of the user's arguments, where a trailing option cannot take it as its value.
-      assert.isBelow(args.indexOf("--no-extensions"), args.indexOf("--approve"));
-      assert.notInclude(args, userExtension);
-      assert.deepEqual(
-        args.flatMap((arg, index) =>
-          arg === "--extension"
-            ? [
-                String(args[index + 1])
-                  .split("/")
-                  .at(-1),
-              ]
-            : [],
-        ),
-        ["pi-t3-mcp-extension.ts", "pi-t3-bot-extension.ts"],
-      );
+        // Pi's built-in MCP (which reads ~/.pi/agent/mcp.json and .pi/mcp.json) and every user,
+        // project and package extension stay off; only T3 Code's two extensions load.
+        const { args } = fake.lastSpawn();
+        // Ahead of the user's arguments, where a trailing option cannot take it as its value.
+        assert.isBelow(args.indexOf("--no-extensions"), args.indexOf("--approve"));
+        assert.notInclude(args, userExtension);
+        assert.deepEqual(
+          args.flatMap((arg, index) =>
+            arg === "--extension"
+              ? [
+                  String(args[index + 1])
+                    .split("/")
+                    .at(-1),
+                ]
+              : [],
+          ),
+          ["pi-t3-mcp-extension.ts", "pi-t3-bot-extension.ts"],
+        );
 
-      const providerThread = yield* runtime.ensureThread({
-        threadId: THREAD_ID,
-        modelSelection: modelSelection("default"),
-        runtimePolicy: botPolicy,
-      });
-      const appThread = yield* makeAppThread("default");
-      const runId = RunId.make(`run:${THREAD_ID}:1`);
-      yield* runtime.startTurn({
-        appThread,
-        threadId: THREAD_ID,
-        runId,
-        runOrdinal: 1,
-        providerTurnOrdinal: 1,
-        attemptId: RunAttemptId.make(`run-attempt:${runId}:1`),
-        rootNodeId: NodeId.make(`node:${runId}:root`),
-        providerThread,
-        message: {
-          messageId: `message:${THREAD_ID}:1` as never,
-          text: "Any new mail?",
-          attachments: [],
-          createdBy: "user",
-          creationSource: "web",
-        },
-        modelSelection: modelSelection("default"),
-        runtimePolicy: botPolicy,
-        applicationInstructions: "You are the mail Bot.",
-      });
-      while (String((yield* fake.takeRequest("prompt"))["message"]).startsWith("/")) {}
+        const providerThread = yield* runtime.ensureThread({
+          threadId: THREAD_ID,
+          modelSelection: modelSelection("default"),
+          runtimePolicy: botPolicy,
+        });
+        const appThread = yield* makeAppThread("default");
+        const runId = RunId.make(`run:${THREAD_ID}:1`);
+        const started = yield* runtime
+          .startTurn({
+            appThread,
+            threadId: THREAD_ID,
+            runId,
+            runOrdinal: 1,
+            providerTurnOrdinal: 1,
+            attemptId: RunAttemptId.make(`run-attempt:${runId}:1`),
+            rootNodeId: NodeId.make(`node:${runId}:root`),
+            providerThread,
+            message: {
+              messageId: `message:${THREAD_ID}:1` as never,
+              text: "Any new mail?",
+              attachments: [],
+              createdBy: "user",
+              creationSource: "web",
+            },
+            modelSelection: modelSelection("default"),
+            runtimePolicy: botPolicy,
+            applicationInstructions: "You are the mail Bot.",
+          })
+          .pipe(Effect.exit);
+        if (outcome === "applied") {
+          assert.isTrue(Exit.isSuccess(started));
+          while (String((yield* fake.takeRequest("prompt"))["message"]).startsWith("/")) {}
+        } else {
+          // Pi answered "handled" without the extension's mark: the message never reaches Pi.
+          assert.isTrue(Exit.isFailure(started));
+        }
 
-      assert.deepEqual(resolved, [[granted]]);
-      assert.deepEqual(fake.botSessions, [
-        {
-          instructions: "You are the mail Bot.\n\nWork mail: tools in the mcp__t3c_work namespace",
-          servers: {
-            [`t3c-${granted}`]: {
-              command: "work-mail-mcp",
-              args: ["--stdio"],
-              // Pi would expand $HOME and run a leading ! as a command; escaped, both stay literal.
-              env: { MAIL_TOKEN: "$!work$$HOME-token" },
+        assert.deepEqual(resolved, [[granted]]);
+        assert.deepEqual(fake.botSessions, [
+          {
+            instructions:
+              "You are the mail Bot.\n\nWork mail: tools in the mcp__t3c_work namespace",
+            servers: {
+              [`t3c-${granted}`]: {
+                command: "work-mail-mcp",
+                args: ["--stdio"],
+                // Pi would expand $HOME and run a leading ! as a command; escaped, both stay literal.
+                env: { MAIL_TOKEN: "$!work$$HOME-token" },
+              },
             },
           },
-        },
-      ]);
-      const prompts = fake
-        .allRequests()
-        .flatMap((request) => (request["type"] === "prompt" ? [String(request["message"])] : []));
-      assert.isTrue(prompts[0]?.startsWith(`/${PI_T3_BOT_SESSION_COMMAND} `));
-      assert.equal(prompts.at(-1), "Any new mail?");
-    }).pipe(
-      Effect.scoped,
-      Effect.provideService(HostProcess.Platform, "darwin"),
-      Effect.provide(layerTest),
-    ),
+        ]);
+        const prompts = fake
+          .allRequests()
+          .flatMap((request) => (request["type"] === "prompt" ? [String(request["message"])] : []));
+        assert.isTrue(prompts[0]?.startsWith(`/${PI_T3_BOT_SESSION_COMMAND} `));
+        assert.equal(prompts.includes("Any new mail?"), outcome === "applied");
+      }).pipe(
+        Effect.scoped,
+        Effect.provideService(HostProcess.Platform, "darwin"),
+        Effect.provide(layerTest),
+      ),
   );
 
   it.effect("refuses a message that would change a Bot's connections in place of T3 Code", () =>

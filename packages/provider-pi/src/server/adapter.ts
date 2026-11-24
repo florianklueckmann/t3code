@@ -83,7 +83,11 @@ import {
   resolvePiLaunchArgs,
 } from "./mcpInjection.ts";
 import { PI_FILE_CHANGE_TOOLS, PI_T3_SERVICE_TIER_COMMAND } from "./mcpExtensionSource.ts";
-import { PI_T3_BOT_SESSION_COMMAND, type PiBotSessionPayload } from "./botExtensionSource.ts";
+import {
+  PI_T3_BOT_SESSION_ACK_SUFFIX,
+  PI_T3_BOT_SESSION_COMMAND,
+  type PiBotSessionPayload,
+} from "./botExtensionSource.ts";
 import { PI_STANDARD_SERVICE_TIER } from "./modelCapabilities.ts";
 
 export const PI_PROVIDER = ProviderDriverKind.make("pi");
@@ -3229,7 +3233,12 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
                   driver: PI_PROVIDER,
                   reason: "unavailable",
                 })
-              : yield* mcpGrants.value.resolve({ driver: PI_PROVIDER, ids, mcpSession });
+              : yield* mcpGrants.value.resolve({
+                  driver: PI_PROVIDER,
+                  ids,
+                  macCalendarWrite: policy.macCalendarWrite === true,
+                  mcpSession,
+                });
         const instructions = [turnInput.applicationInstructions, load.instructions]
           .filter((text) => text !== undefined && text.length > 0)
           .join("\n\n");
@@ -3271,7 +3280,10 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
             });
             // Pi before 0.99 acknowledges a handled extension command without a disposition.
             const disposition = recordString(result, "disposition");
-            if (disposition !== undefined && disposition !== "handled")
+            const applied = yield* fileSystem
+              .exists(`${payloadPath}${PI_T3_BOT_SESSION_ACK_SUFFIX}`)
+              .pipe(Effect.orElseSucceed(() => false));
+            if ((disposition !== undefined && disposition !== "handled") || !applied)
               return yield* protocolError(
                 "T3 Code's Pi Bot extension did not apply this Bot's instructions and connections",
               );

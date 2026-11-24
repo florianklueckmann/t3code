@@ -281,7 +281,7 @@ export const grantsLayer = Layer.effect(
     return McpConnectionGrants.McpConnectionGrants.of({
       resolve: Effect.fn("McpConnectionGrants.resolve")(function* (input) {
         const load = yield* delivery
-          .resolve(input.ids)
+          .resolve(input.ids, input.macCalendarWrite)
           .pipe(Effect.mapError((error) => deliveryRefusal(input.driver, error)));
         const servers: Array<McpConnectionGrants.GrantedMcpServer> = [];
         for (const { id, transport } of load.connections) {
@@ -302,7 +302,11 @@ export const grantsLayer = Layer.effect(
             transport: {
               type: "http",
               url: endpoint.url,
-              headers: Redacted.make(endpoint.headers),
+              // Unread by the server: a changed write choice changes the config, so Pi lists anew.
+              headers: Redacted.make({
+                ...endpoint.headers,
+                ...(input.macCalendarWrite ? { "T3-Calendar-Write": "1" } : {}),
+              }),
             },
           });
         }
