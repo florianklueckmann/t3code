@@ -470,12 +470,19 @@ export const make = (deps: {
     readonly entry: BotLearningRevisionRef;
     readonly matched: BotLearningRevisionRef;
   }) {
+    // A pair stays with the lesson that first carried it, so its dismissal covers both lessons.
+    const reversed = (yield* store.listLearningSuggestions(input.botId)).some(
+      (stored) =>
+        stored.entry_id === input.matched.entryId &&
+        stored.matched_entry_id === input.entry.entryId,
+    );
+    const [entry, matched] = reversed ? [input.matched, input.entry] : [input.entry, input.matched];
     yield* store.upsertLearningSuggestion({
-      entry_id: input.entry.entryId,
+      entry_id: entry.entryId,
       bot_id: input.botId,
-      entry_revision: input.entry.revision,
-      matched_entry_id: input.matched.entryId,
-      matched_revision: input.matched.revision,
+      entry_revision: entry.revision,
+      matched_entry_id: matched.entryId,
+      matched_revision: matched.revision,
       created_at: yield* deps.now,
     });
   });
@@ -490,19 +497,22 @@ export const make = (deps: {
   const decideSuggestion = Effect.fn("BotLearning.decideSuggestion")(function* (
     policy: BotLearningPolicy,
     input: BotDecideLearningSuggestionInput,
-    /** Fails when the lesson's project is detached, as recording there does. */
-    requireAttached: (
-      projectId: ProjectId,
-    ) => Effect.Effect<void, BotError | BotStore.BotStoreError>,
   ) {
     const rows = yield* store.listLearning(input.botId);
     const suggestion = currentSuggestions(
       rows,
       yield* store.listLearningSuggestions(input.botId),
+      yield* store.listContexts(input.botId),
     ).find((each) => each.entryId === input.entryId);
     const head = activeOf(revisionsOf(rows, input.entryId));
-    if (suggestion === undefined || head === undefined || head.project_id === null) {
-      return yield* fail("This lesson has no suggestion to apply it to all projects.");
+    // The user decides on the pair they were shown, not on whatever the lesson matches by now.
+    if (
+      suggestion === undefined ||
+      suggestion.matchedEntryId !== input.matchedEntryId ||
+      head === undefined ||
+      head.project_id === null
+    ) {
+      return yield* fail("This lesson has no suggestion like that any more. Reload and try again.");
     }
     if (input.decision !== "accept") {
       yield* store.setLearningSuggestionDismissed({
@@ -511,8 +521,10 @@ export const make = (deps: {
       });
       return;
     }
+    if (suggestion.dismissedAt !== null) {
+      return yield* fail("This suggestion was dismissed. Show it again first.");
+    }
     const projectId = ProjectId.make(head.project_id);
-    yield* requireAttached(projectId);
     if (!isLearningKind(head.kind)) return yield* fail("This lesson's kind is unreadable.");
     // The same input the clients send for "Apply to all projects".
     yield* record(policy, {
@@ -579,18 +591,28 @@ function repeatedLessons(rows: ReadonlyArray<BotStore.BotLearningRow>) {
 
 /**
  * The stored suggestions that still hold: both lessons are in use at the revisions that matched,
- * each in its own project. An edit, a move, a retirement or a restore of either ends it.
+ * each in its own attached project. An edit, a move, a retirement or a restore of either ends
+ * it, and a detached project's lesson is neither suggested nor retired.
  */
 export function currentSuggestions(
   rows: ReadonlyArray<BotStore.BotLearningRow>,
   stored: ReadonlyArray<BotStore.BotLearningSuggestionRow>,
+  contexts: ReadonlyArray<BotStore.BotContextRow>,
 ): ReadonlyArray<BotLearningSuggestion> {
-  const lessons = new Map(projectLessons(rows).map((row) => [row.entry_id, row]));
+  const attached = new Set(
+    contexts.filter((context) => context.detached_at === null).map((context) => context.project_id),
+  );
+  const lessons = new Map(
+    projectLessons(rows)
+      .filter((row) => row.project_id !== null && attached.has(row.project_id))
+      .map((row) => [row.entry_id, row]),
+  );
   return stored.flatMap((suggestion) => {
     const entry = lessons.get(suggestion.entry_id);
     const matched = lessons.get(suggestion.matched_entry_id);
     return entry?.revision === suggestion.entry_revision &&
       matched?.revision === suggestion.matched_revision &&
+      entry.kind === matched.kind &&
       entry.project_id !== matched.project_id
       ? [
           {

@@ -258,6 +258,8 @@ export interface BotLearningView {
   /** The other project's lesson this one repeats, while the Bot suggests it for all projects. */
   readonly suggestion:
     | {
+        /** The other project's lesson, sent back so a decision is about the pair shown. */
+        readonly matchedEntryId: BotLearningSuggestion["matchedEntryId"];
         readonly projectId: ProjectId;
         /** The other lesson's wording when it differs from this one's. */
         readonly text: string | null;
@@ -296,6 +298,7 @@ export function botLearningViews(
           matchedText === undefined
             ? undefined
             : {
+                matchedEntryId: suggestion.matchedEntryId,
                 projectId: matched.projectId,
                 text: matchedText === current.text ? null : matchedText,
                 dismissed: suggestion.dismissedAt !== null,

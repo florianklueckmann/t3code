@@ -34,7 +34,9 @@ it("credits a replace of the outdated entry and fails an add beside it", () => {
   expect(
     grade("conflict-replaces-not-adds", [{ op: "replace", target: replaceKey(), ...lesson }]).pass,
   ).toBe(true);
-  const added = grade("conflict-replaces-not-adds", [{ op: "add", kind: "fact", ...lesson }]);
+  const added = grade("conflict-replaces-not-adds", [
+    { op: "add", kind: "fact", sameAs: null, ...lesson },
+  ]);
   expect(added.checks.map((check) => check.pass)).toEqual([false, false]);
 });
 
@@ -45,6 +47,7 @@ it("matches cited sources by id and kinds by the operation", () => {
         op: "add",
         kind: "procedure",
         text: "Shard tests four ways in CI.",
+        sameAs: null,
         rationale: "",
         evidence: [{ source: key, quote: quoteText }],
       },
@@ -56,6 +59,7 @@ it("matches cited sources by id and kinds by the operation", () => {
         op: "add",
         kind: "preference",
         text: "Summaries of yesterday's PRs each morning.",
+        sameAs: null,
         rationale: "",
         evidence: [{ source: "i1", quote: "summarize what changed" }],
       },

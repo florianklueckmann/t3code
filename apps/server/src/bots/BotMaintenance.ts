@@ -834,30 +834,35 @@ export const make = Effect.gen(function* () {
               duplicate: 0,
               suggested: 0,
             };
+            // The basis pins this project's entries; the other project's may have changed.
+            const suggest = Effect.fn("BotMaintenance.suggest")(function* (
+              entry: { readonly entryId: string; readonly revision: number },
+              matched: Evidence.OtherLesson,
+            ) {
+              const current = learning.rows.some(
+                (row) =>
+                  row.entry_id === matched.entryId &&
+                  row.revision === matched.revision &&
+                  row.status === "active" &&
+                  row.project_id !== null,
+              );
+              if (!current) return;
+              yield* learning.suggest({
+                botId: scope.botId,
+                entry: {
+                  entryId: BotLearningEntryId.make(entry.entryId),
+                  revision: entry.revision,
+                },
+                matched: {
+                  entryId: BotLearningEntryId.make(matched.entryId),
+                  revision: matched.revision,
+                },
+              });
+              outcome.suggested += 1;
+            });
             for (const operation of verified.proposal.operations) {
               if (operation.op === "match") {
-                // The basis pins this project's entry; the other project's may have changed.
-                const { matched } = operation;
-                const current = learning.rows.some(
-                  (row) =>
-                    row.entry_id === matched.entryId &&
-                    row.revision === matched.revision &&
-                    row.status === "active" &&
-                    row.project_id !== null,
-                );
-                if (!current) continue;
-                yield* learning.suggest({
-                  botId: scope.botId,
-                  entry: {
-                    entryId: BotLearningEntryId.make(operation.target.entryId),
-                    revision: operation.target.revision,
-                  },
-                  matched: {
-                    entryId: BotLearningEntryId.make(matched.entryId),
-                    revision: matched.revision,
-                  },
-                });
-                outcome.suggested += 1;
+                yield* suggest(operation.target, operation.matched);
                 continue;
               }
               const kind = operation.op === "add" ? operation.kind : operation.target.kind;
@@ -893,6 +898,9 @@ export const make = Effect.gen(function* () {
               else if (result.status === "active") outcome.active += 1;
               else if (result.status === "pending") outcome.pending += 1;
               else outcome.stale += 1;
+              // A waiting lesson's suggestion shows once the user adopts it.
+              if (operation.op === "add" && operation.matched !== null && !result.duplicate)
+                yield* suggest(result, operation.matched);
             }
             const receipts = selected.map((source) => ({
               kind: source.kind,

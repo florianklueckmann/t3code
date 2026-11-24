@@ -749,8 +749,14 @@ describe("bot learning", () => {
           dismissedAt,
         },
       ])[0]?.suggestion;
-    expect(suggestionOf("same")).toEqual({ projectId: projectB, text: null, dismissed: false });
+    expect(suggestionOf("same")).toEqual({
+      matchedEntryId: "same",
+      projectId: projectB,
+      text: null,
+      dismissed: false,
+    });
     expect(suggestionOf("reworded", "2026-01-02T00:00:00.000Z")).toEqual({
+      matchedEntryId: "reworded",
       projectId: projectB,
       text: "Metric only.",
       dismissed: true,

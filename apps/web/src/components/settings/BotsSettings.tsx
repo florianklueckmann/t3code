@@ -1162,12 +1162,18 @@ export function BotLearningList({
   };
   const settleSuggestion = (
     title: string,
-    entryId: BotLearningEntry["id"],
+    { entry, suggestion }: (typeof views)[number],
     decision: "accept" | "dismiss" | "undismiss",
-  ) =>
+  ) => {
+    if (suggestion === undefined) return;
+    const { matchedEntryId } = suggestion;
     void run(title, () =>
-      decideSuggestion({ environmentId, input: { botId: bot.id, entryId, decision } }),
+      decideSuggestion({
+        environmentId,
+        input: { botId: bot.id, entryId: entry.id, matchedEntryId, decision },
+      }),
     );
+  };
 
   if (projectId === null && views.length === 0 && focus === undefined) return null;
   return (
@@ -1386,7 +1392,7 @@ export function BotLearningList({
                   variant="ghost-muted"
                   disabled={locked}
                   onClick={() =>
-                    settleSuggestion("Could not show the suggestion", entryId, "undismiss")
+                    settleSuggestion("Could not show the suggestion", view, "undismiss")
                   }
                 >
                   Show again
@@ -1408,7 +1414,7 @@ export function BotLearningList({
                     size="xs"
                     disabled={locked}
                     onClick={() =>
-                      settleSuggestion("Could not apply it to all projects", entryId, "accept")
+                      settleSuggestion("Could not apply it to all projects", view, "accept")
                     }
                   >
                     Apply to all projects
@@ -1418,7 +1424,7 @@ export function BotLearningList({
                     variant="outline"
                     disabled={locked}
                     onClick={() =>
-                      settleSuggestion("Could not dismiss the suggestion", entryId, "dismiss")
+                      settleSuggestion("Could not dismiss the suggestion", view, "dismiss")
                     }
                   >
                     Dismiss

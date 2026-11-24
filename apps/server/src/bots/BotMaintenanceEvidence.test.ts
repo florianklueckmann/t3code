@@ -168,7 +168,7 @@ it("puts every applicable standing instruction first, leaves other projects out,
       ["o2", "Lesson moving"],
     ],
   );
-  assert.deepEqual(batch.others.get("o2"), { entryId: "moving", revision: 1 });
+  assert.deepEqual(batch.others.get("o2"), { entryId: "moving", revision: 1, kind: "fact" });
   // A pair already suggested, decided or not, is not offered again from either lesson.
   for (const pair of [
     ["own", "other-project"],
@@ -240,6 +240,8 @@ it("verifies proposals against the exact packet and rejects the whole batch on a
     text: "Cite the rulebook page in answers.",
     rationale: "The user asked for it.",
     evidence: [{ source: "i1", quote: "always cite the rulebook page" }],
+    // Another project's fact: a match across kinds is dropped, not kept.
+    sameAs: "o1",
   };
   const verified = Evidence.verifyProposal(batch, {
     operations: [
@@ -257,6 +259,7 @@ it("verifies proposals against the exact packet and rejects the whole batch on a
         text: "The vault index lives in Index.md.",
         rationale: "",
         evidence: [{ source: "t1", quote: "The vault index lives in Index.md." }],
+        sameAs: "o1",
       },
       { op: "match", target: "e1", sameAs: "o1" },
     ],
@@ -267,13 +270,13 @@ it("verifies proposals against the exact packet and rejects the whole batch on a
       operation.op === "match"
         ? [operation.op, operation.target.entryId, operation.matched.entryId]
         : operation.op === "add"
-          ? [operation.op, operation.kind, operation.evidence[0]?.source.id]
+          ? [operation.op, operation.kind, operation.evidence[0]?.source.id, operation.matched]
           : [operation.op, operation.target.entryId, operation.evidence[0]?.source.id],
     ),
     [
-      ["add", "preference", "m1"],
+      ["add", "preference", "m1", null],
       ["replace", "own", "m1"],
-      ["add", "fact", "task"],
+      ["add", "fact", "task", { entryId: "far", revision: 1, kind: "fact" }],
       ["match", "own", "far"],
     ],
   );
@@ -301,6 +304,7 @@ it("verifies proposals against the exact packet and rejects the whole batch on a
     [withOperation({ op: "match", target: "e2", sameAs: "o1" }), "unknown_target"],
     [withOperation({ op: "match", target: "e3", sameAs: "o1" }), "unknown_target"],
     [withOperation({ op: "match", target: "e1", sameAs: "e1" }), "unknown_match"],
+    [withOperation({ ...add, sameAs: "o9" }), "unknown_match"],
     [
       withOperation({
         op: "replace",

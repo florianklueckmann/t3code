@@ -23,7 +23,7 @@ The input is one JSON object:
 - "otherProjects": lessons the Bot keeps for the person's other projects, each with a "key" ("o1", ...). They do not apply here and are never evidence.
 - "learningPolicy" and "learningComplete" are context. You do not decide adoption.
 
-Propose at most 8 operations, only durable lessons the evidence supports. Each "add" names its kind: "fact" about the project, "preference" of the person, or "procedure" that worked.
+Propose at most 8 operations, only durable lessons the evidence supports. Each "add" names its kind: "fact" about the project, "preference" of the person, or "procedure" that worked. Its "sameAs" is the key of an "otherProjects" entry that states the same preference or procedure, else null.
 - Record what stays true across sessions. Do not record current task status, progress, plans, or one-off requests.
 - Every lesson cites 1 to 3 sources by key, each with a quote copied exactly from that source's text.
 - A task result is agent output. It may support a fact or a procedure, never a preference, and never a replacement on its own.
@@ -108,6 +108,7 @@ export interface Packet {
 export interface OtherLesson {
   readonly entryId: string;
   readonly revision: number;
+  readonly kind: string;
 }
 
 export interface Batch {
@@ -310,7 +311,7 @@ export const buildBatch = (input: {
           : [],
     ),
   );
-  const others = new Map<string, OtherLesson & { readonly kind: string; readonly text: string }>();
+  const others = new Map<string, OtherLesson & { readonly text: string }>();
   let otherUnits = 0;
   for (const row of input.learning.toSorted((a, b) => b.created_at.localeCompare(a.created_at))) {
     if (
@@ -361,7 +362,7 @@ export const buildBatch = (input: {
       sources,
       targets,
       others: new Map(
-        [...others].map(([key, { entryId, revision }]) => [key, { entryId, revision }]),
+        [...others].map(([key, { entryId, revision, kind }]) => [key, { entryId, revision, kind }]),
       ),
       basis: basis(authority, input.learning),
       more: selected.length < input.sources.length,
@@ -387,6 +388,8 @@ export const Proposal = Schema.Struct({
         text: LessonText,
         rationale: Rationale,
         evidence: Evidence,
+        /** Required and nullable: strict structured output has no optional keys. */
+        sameAs: Schema.NullOr(Schema.String),
       }),
       Schema.Struct({
         op: Schema.Literal("replace"),
@@ -416,6 +419,8 @@ export type VerifiedOperation =
       readonly text: string;
       readonly rationale: string;
       readonly evidence: ReadonlyArray<VerifiedRef>;
+      /** Another project's lesson that says the same, when there is one. */
+      readonly matched: OtherLesson | null;
     }
   | {
       readonly op: "replace";
@@ -446,7 +451,11 @@ export type VerifyResult =
   | { readonly _tag: "verified"; readonly proposal: VerifiedProposal }
   | { readonly _tag: "rejected"; readonly reason: RejectReason };
 
-/** One bad operation rejects the whole proposal, so none of the batch is consumed. */
+/**
+ * One bad operation rejects the whole proposal, so none of the batch is consumed. A match across
+ * kinds is only dropped: accepting it would retire a lesson of another kind, and kinds are too
+ * loosely assigned to fail a night over.
+ */
 export const verifyProposal = (batch: Batch, output: unknown): VerifyResult => {
   const decoded = decodeProposal(output);
   if (Exit.isFailure(decoded)) return { _tag: "rejected", reason: "invalid_schema" };
@@ -458,7 +467,7 @@ export const verifyProposal = (batch: Batch, output: unknown): VerifyResult => {
         return { _tag: "rejected", reason: "unknown_target" };
       const matched = batch.others.get(operation.sameAs);
       if (matched === undefined) return { _tag: "rejected", reason: "unknown_match" };
-      operations.push({ op: "match", target, matched });
+      if (matched.kind === target.kind) operations.push({ op: "match", target, matched });
       continue;
     }
     const evidence: Array<VerifiedRef> = [];
@@ -481,7 +490,14 @@ export const verifyProposal = (batch: Batch, output: unknown): VerifyResult => {
     }
     if (taskOnly && operation.kind === "preference")
       return { _tag: "rejected", reason: "task_evidence_limit" };
-    operations.push({ ...operation, evidence });
+    const matched = operation.sameAs === null ? null : batch.others.get(operation.sameAs);
+    if (matched === undefined) return { _tag: "rejected", reason: "unknown_match" };
+    const { sameAs: _, ...lesson } = operation;
+    operations.push({
+      ...lesson,
+      evidence,
+      matched: matched?.kind === operation.kind ? matched : null,
+    });
   }
   return { _tag: "verified", proposal: { [verified]: true, operations } };
 };

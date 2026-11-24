@@ -1770,26 +1770,24 @@ it.effect("suggests a lesson a second project repeats, in that Home, until the u
         assert.deepEqual(yield* suggested(campaignB), [true]);
         assert.deepEqual(yield* suggested(campaignA), [undefined]);
 
-        const dismissed = yield* bots.decideLearningSuggestion({
-          botId,
-          entryId,
-          decision: "dismiss",
-        });
+        const decide = (decision: "accept" | "dismiss" | "undismiss") =>
+          bots.decideLearningSuggestion({
+            botId,
+            entryId,
+            matchedEntryId: first.learned.entryId,
+            decision,
+          });
+        const dismissed = yield* decide("dismiss");
         assert.isNotNull(dismissed.learningSuggestions?.[0]?.dismissedAt);
         assert.deepEqual(yield* suggested(campaignB), [undefined]);
-        const shown = yield* bots.decideLearningSuggestion({
-          botId,
-          entryId,
-          decision: "undismiss",
-        });
-        assert.deepEqual(shown.learningSuggestions, open);
+        assert.deepEqual((yield* decide("undismiss")).learningSuggestions, open);
 
-        // A detached project's lesson cannot move, as "Apply to all projects" cannot there.
-        yield* bots.detachProject({ botId, projectId: campaignB });
-        const accept = bots.decideLearningSuggestion({ botId, entryId, decision: "accept" });
-        assert.include((yield* Effect.flip(accept)).message, "not attached");
-        yield* bots.attachProject({ botId, projectId: campaignB });
-        const accepted = yield* accept;
+        // A detached project's lesson is neither suggested nor retired.
+        const detached = yield* bots.detachProject({ botId, projectId: campaignA });
+        assert.deepEqual(detached.learningSuggestions, []);
+        assert.include((yield* Effect.flip(decide("accept"))).message, "no suggestion");
+        yield* bots.attachProject({ botId, projectId: campaignA });
+        const accepted = yield* decide("accept");
         assert.deepEqual(accepted.learningSuggestions, []);
         assert.deepEqual(
           accepted.learning.map((entry) => [entry.projectId, entry.revisions.at(-1)?.status]),

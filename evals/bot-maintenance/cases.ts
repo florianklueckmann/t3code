@@ -30,7 +30,7 @@ export interface Where {
   readonly op?: "add" | "replace" | "match";
   /** The learning entry id a replace or a match targets. */
   readonly target?: string;
-  /** The other project's learning entry id a match names. */
+  /** The other project's learning entry id a match, or an add's "sameAs", names. */
   readonly matched?: string;
   /** The operation cites at least one of these source ids. */
   readonly cites?: ReadonlyArray<string>;
@@ -284,6 +284,39 @@ export const CASES: ReadonlyArray<MaintenanceCase> = [
       },
       { name: "adds nothing", expect: "none", where: { op: "add" } },
       { name: "replaces nothing", expect: "none", where: { op: "replace" } },
+    ],
+  },
+  {
+    id: "new-lesson-repeats-other-project",
+    source: "T3B-33: a lesson this pass adds is matched with the other project's copy at once",
+    learning: [
+      subjectLineElsewhere,
+      {
+        id: "docs-british",
+        kind: "preference",
+        text: "Write documentation in British English.",
+        origin: "instruction",
+        project: OTHER_PROJECT,
+      },
+    ],
+    sources: [
+      {
+        kind: "home-input",
+        id: "msg-10",
+        text: 'That commit subject is far too long. In this repo too: imperative mood and no more than 50 characters, like "Fix avatar upload retry". Please amend it.',
+      },
+    ],
+    checks: [
+      {
+        name: "adds the lesson and names the other project's copy",
+        expect: "some",
+        where: { op: "add", text: [/50|fifty/i], cites: ["msg-10"], matched: "docs-subject-line" },
+      },
+      {
+        name: "names no unrelated lesson",
+        expect: "none",
+        where: { matched: "docs-british" },
+      },
     ],
   },
   {

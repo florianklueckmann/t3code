@@ -160,10 +160,7 @@ export class BotStore extends Context.Service<
     readonly listLearningSuggestions: (
       botId: string,
     ) => Effect.Effect<ReadonlyArray<BotLearningSuggestionRow>, BotStoreError>;
-    /**
-     * Records what a lesson matches now. A dismissal survives it, and the same pair is never
-     * stored the other way round, so a dismissed pair cannot return from its other lesson.
-     */
+    /** Records what a lesson matches now; its dismissal survives a new match. */
     readonly upsertLearningSuggestion: (
       row: Omit<BotLearningSuggestionRow, "dismissed_at">,
     ) => Effect.Effect<void, BotStoreError>;
@@ -451,7 +448,6 @@ export const layer = Layer.effect(
             yield* sql`
               DELETE FROM bot_learning_suggestions
               WHERE entry_id NOT IN (SELECT entry_id FROM bot_learning_revisions)
-                OR matched_entry_id NOT IN (SELECT entry_id FROM bot_learning_revisions)
             `;
             yield* sql`DELETE FROM bot_project_contexts WHERE project_id = ${projectId}`;
           }),
@@ -529,12 +525,8 @@ export const layer = Layer.effect(
           INSERT INTO bot_learning_suggestions (
             entry_id, bot_id, entry_revision, matched_entry_id, matched_revision, created_at
           )
-          SELECT ${row.entry_id}, ${row.bot_id}, ${row.entry_revision}, ${row.matched_entry_id},
-            ${row.matched_revision}, ${row.created_at}
-          WHERE NOT EXISTS (
-            SELECT 1 FROM bot_learning_suggestions
-            WHERE entry_id = ${row.matched_entry_id} AND matched_entry_id = ${row.entry_id}
-          )
+          VALUES (${row.entry_id}, ${row.bot_id}, ${row.entry_revision}, ${row.matched_entry_id},
+            ${row.matched_revision}, ${row.created_at})
           ON CONFLICT(entry_id) DO UPDATE SET
             entry_revision = excluded.entry_revision,
             matched_entry_id = excluded.matched_entry_id,

@@ -590,12 +590,19 @@ const finishedTask = Effect.fn("fixture.finishedTask")(function* (id: string, st
     VALUES (${id}, 'bot', 'project', ${home}, 'direct', 'Checklist', 'Read', 'full-access', ${status}, ${later(30)}, ${now}, ${now})`;
 });
 
-const add = (source: string, quote: string, text: string, kind = "preference") => ({
+const add = (
+  source: string,
+  quote: string,
+  text: string,
+  kind = "preference",
+  sameAs: string | null = null,
+) => ({
   op: "add",
   kind,
   text,
   rationale: "Stated by the user.",
   evidence: [{ source, quote }],
+  sameAs,
 });
 
 /** Records every packet it is shown and answers from `respond`. */
@@ -2321,6 +2328,7 @@ it.effect("suggests a lesson the generator matches with another project's, once 
         yield* bots.decideLearningSuggestion({
           botId: scope.botId,
           entryId: suggestion.entryId,
+          matchedEntryId: suggestion.matchedEntryId,
           decision: "dismiss",
         });
         yield* input("again", "And about shoving?");
@@ -2328,6 +2336,42 @@ it.effect("suggests a lesson the generator matches with another project's, once 
         assert.deepEqual(
           (yield* Ref.get(packets)).map((packet) => packet.otherProjects.length),
           [1, 0],
+        );
+      }),
+    );
+  }).pipe(Effect.provide(storeOnly)),
+);
+
+it.effect("suggests a lesson it adds when another project already keeps the same", () =>
+  Effect.gen(function* () {
+    yield* seedBot("automatic");
+    const { generate } = yield* recordingGenerator((packet) =>
+      Effect.succeed({
+        operations: [
+          add("i1", "cite the page", "Cite the page.", "preference", packet.otherProjects[0]?.key),
+        ],
+      }),
+    );
+    yield* withEngine(generate, ({ maintenance, bots }) =>
+      Effect.gen(function* () {
+        const there = yield* bots.recordLearning({
+          ...otherScope,
+          kind: "preference",
+          origin: "instruction",
+          source: { kind: "user" },
+          text: "Always give the page number.",
+        });
+        yield* enable(maintenance);
+        yield* input("ask", "Please cite the page when you quote a rule.");
+        const pass = yield* maintenance.runNow(scope);
+        assert.deepEqual(
+          pass.status === "applied" && [pass.outcome.active, pass.outcome.suggested],
+          [1, 1],
+        );
+        const detail = yield* bots.get(scope);
+        assert.deepEqual(
+          detail.learningSuggestions?.map((suggestion) => suggestion.matchedEntryId),
+          [there.learned.entryId],
         );
       }),
     );

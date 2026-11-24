@@ -442,6 +442,8 @@ export type BotRestoreLearningInput = typeof BotRestoreLearningInput.Type;
 export const BotDecideLearningSuggestionInput = Schema.Struct({
   botId: BotId,
   entryId: BotLearningEntryId,
+  /** The other project's lesson the user was shown; a suggestion that changed since is refused. */
+  matchedEntryId: BotLearningEntryId,
   decision: Schema.Literals(["accept", "dismiss", "undismiss"]),
 });
 export type BotDecideLearningSuggestionInput = typeof BotDecideLearningSuggestionInput.Type;

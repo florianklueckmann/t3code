@@ -121,7 +121,7 @@ export const gradeSample = (
           kind: operation.op === "add" ? operation.kind : operation.target.kind,
           text: operation.text,
           target: operation.op === "replace" ? operation.target.entryId : null,
-          matched: null,
+          matched: operation.op === "add" ? (operation.matched?.entryId ?? null) : null,
           cites: operation.evidence.map((ref) => ref.source.id),
         },
   );

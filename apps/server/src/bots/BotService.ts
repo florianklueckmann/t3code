@@ -218,7 +218,7 @@ const make = Effect.gen(function* () {
     return {
       ...detail,
       capabilities: BotProviderSupport.botCapabilities(instance?.driverKind),
-      learningSuggestions: BotLearning.currentSuggestions(learning, suggestions),
+      learningSuggestions: BotLearning.currentSuggestions(learning, suggestions, contexts),
       projects: detail.projects.map((project) => ({
         ...project,
         turnLearning: BotLearning.turnLearning(learning, project.projectId).summary,
@@ -364,7 +364,11 @@ const make = Effect.gen(function* () {
     ].sort();
     const fallback = yield* mostActiveHomesAt(attachedContexts, cutoffs);
     const suggested = new Set<string>(
-      BotLearning.currentSuggestions(rows, yield* store.listLearningSuggestions(input.botId))
+      BotLearning.currentSuggestions(
+        rows,
+        yield* store.listLearningSuggestions(input.botId),
+        attachedContexts,
+      )
         .filter((suggestion) => suggestion.dismissedAt === null)
         .map((suggestion) => suggestion.entryId),
     );
@@ -974,19 +978,7 @@ const make = Effect.gen(function* () {
   )(function* (input) {
     yield* changeLearning(input.botId, (bot) =>
       isLearningPolicy(bot.learning_policy)
-        ? learning.decideSuggestion(bot.learning_policy, input, (projectId) =>
-            store
-              .getContext(input.botId, projectId)
-              .pipe(
-                Effect.flatMap((context) =>
-                  context === undefined || context.detached_at !== null
-                    ? Effect.fail(
-                        botError("The Bot is not attached to this project.", input.botId)(),
-                      )
-                    : Effect.void,
-                ),
-              ),
-          )
+        ? learning.decideSuggestion(bot.learning_policy, input)
         : botError("The Bot's learning policy is unreadable.", input.botId)(),
     );
     return yield* readDetail(input.botId);
