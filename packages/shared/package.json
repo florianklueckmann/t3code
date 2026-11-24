@@ -95,6 +95,10 @@
       "types": "./src/otelEnvironment.ts",
       "import": "./src/otelEnvironment.ts"
     },
+    "./telemetryDefault": {
+      "types": "./src/telemetryDefault.ts",
+      "import": "./src/telemetryDefault.ts"
+    },
     "./httpObservability": {
       "types": "./src/httpObservability.ts",
       "import": "./src/httpObservability.ts"

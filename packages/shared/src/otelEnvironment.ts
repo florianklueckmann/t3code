@@ -9,6 +9,7 @@ import * as SchemaTransformation from "effect/SchemaTransformation";
 import type { OtlpEndpointSource } from "@t3tools/contracts";
 
 import { OtlpHeadersFromString, OtlpProtocol, type SignalExport } from "./observability.ts";
+import { TELEMETRY_ENABLED_BY_DEFAULT } from "./telemetryDefault.ts";
 
 type OtlpSignalName = "TRACES" | "METRICS" | "LOGS";
 
@@ -324,7 +325,8 @@ export const isRelayTracingEnabled = (env: Readonly<Record<string, string | unde
     telemetry: flag("T3CODE_TELEMETRY_ENABLED", T3CODE_TRUE, T3CODE_FALSE, String),
   }).pipe(
     Effect.map(
-      ({ telemetry, t3, spec }) => telemetry.value !== false && !(t3.value ?? spec.value ?? false),
+      ({ telemetry, t3, spec }) =>
+        (telemetry.value ?? TELEMETRY_ENABLED_BY_DEFAULT) && !(t3.value ?? spec.value ?? false),
     ),
     Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnvRecord(env))),
     Effect.orDie,

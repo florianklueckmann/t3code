@@ -1,5 +1,6 @@
 import Constants from "expo-constants";
 import { type ReleaseChannel, releaseResourceAttributes } from "@t3tools/shared/releaseResource";
+import { TELEMETRY_ENABLED_BY_DEFAULT } from "@t3tools/shared/telemetryDefault";
 import * as RelayTracing from "@t3tools/shared/relayTracing";
 
 import { hasTracingPublicConfig, resolveCloudPublicConfig } from "../cloud/publicConfig";
@@ -24,7 +25,8 @@ const RELEASE_CHANNEL_BY_VARIANT: Readonly<Record<string, ReleaseChannel | undef
 
 export function resolveTracingConfig(): TracingConfig | null {
   const config = resolveCloudPublicConfig();
-  if (!hasTracingPublicConfig(config)) {
+  // The mobile app has no telemetry environment or toggle, so it follows the build's default.
+  if (!TELEMETRY_ENABLED_BY_DEFAULT || !hasTracingPublicConfig(config)) {
     return null;
   }
   const { tracesUrl, tracesDataset, tracesToken } = config.observability;
