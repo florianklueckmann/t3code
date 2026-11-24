@@ -30,7 +30,8 @@ const encode = (value: unknown) => JSON.stringify(value);
 const texts = (note: ObservedNote) => NOTE_SECTIONS.flatMap((section) => note[section]);
 const holds = (note: ObservedNote, pattern: string) =>
   texts(note).some((item) => new RegExp(pattern, "i").test(item.text));
-const NOTE_TOOL = /^t3-code\.t3_bot (read|save)_continuation$/;
+/** Codex names the tool `t3-code.t3_bot`, Claude `mcp__t3-code__t3_bot`. */
+const NOTE_TOOL = /^(t3-code\.|mcp__t3-code__)t3_bot (read|save)_continuation$/;
 
 export function gradeSample(testCase: NoteRefreshCase, run: Observation): readonly Check[] {
   const checks: Check[] = [

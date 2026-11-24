@@ -123,8 +123,7 @@ const EFFORT_OPTION_IDS = ["reasoningEffort", "effort", "thinking"];
 
 /**
  * The Bot model a run creates its Bots with, from `--instance`, `--model` and `--effort`. No
- * fallback: what the server's catalog does not offer stops the run. An eval of a feature only Codex
- * Bots have passes `codexOnly`, the reason, and refuses other providers.
+ * fallback: what the server's catalog does not offer stops the run.
  */
 export const requireBotModel = Effect.fn("evals.requireBotModel")(function* (
   call: Call,
@@ -132,7 +131,6 @@ export const requireBotModel = Effect.fn("evals.requireBotModel")(function* (
     readonly instance: string;
     readonly model: string;
     readonly effort: string;
-    readonly codexOnly?: string;
   },
 ) {
   // The search keeps a model past the default short list in the answer.
@@ -144,13 +142,6 @@ export const requireBotModel = Effect.fn("evals.requireBotModel")(function* (
   const provider = providers.find((candidate) => candidate.providerInstanceId === input.instance);
   if (provider === undefined) {
     return yield* Effect.die(new Error(`This server has no provider instance ${input.instance}.`));
-  }
-  if (input.codexOnly !== undefined && provider.driverKind !== "codex") {
-    return yield* Effect.die(
-      new Error(
-        `This eval runs only on Codex: ${input.codexOnly} (${input.instance} is ${provider.driverKind}).`,
-      ),
-    );
   }
   const effortOption = provider.models
     .find((candidate) => candidate.id === input.model)

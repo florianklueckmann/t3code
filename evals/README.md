@@ -17,7 +17,7 @@ Write or run an eval when a change affects what a model sees or does: agent inst
 
 | [bot-continuation](bot-continuation/) | Whether Home captures and resumes unfinished business without promoting proposals or inventing work. |
 
-| [bot-maintenance](bot-maintenance/) | Whether nightly Bot maintenance learns durable, evidenced lessons through the sealed Codex call. |
+| [bot-maintenance](bot-maintenance/) | Whether nightly Bot maintenance learns durable, evidenced lessons through the sealed Codex or Claude call. |
 
 | [bot-grants](bot-grants/) | Whether a Bot with two accounts of one MCP service calls the account the user names. |
 

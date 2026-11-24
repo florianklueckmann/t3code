@@ -14,6 +14,7 @@ import * as Stream from "effect/Stream";
 import { HttpClient } from "effect/http";
 import { ChildProcessSpawner } from "effect/process";
 
+import { makeClaudeSealedGeneration } from "../../textGeneration/ClaudeSealedGeneration.ts";
 import { makeClaudeTextGeneration } from "../../textGeneration/ClaudeTextGeneration.ts";
 import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderLatestVersions";
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
@@ -58,6 +59,7 @@ import {
 import {
   makeClaudeCapabilitiesCacheKey,
   makeClaudeContinuationGroupKey,
+  makeClaudeEnvironment,
   mergeClaudeProcessEnvironment,
   resolveClaudeHomePath,
 } from "./ClaudeHome.ts";
@@ -340,6 +342,15 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       ),
     );
 
+    const sealedGeneration = yield* makeClaudeSealedGeneration({
+      getSnapshot: snapshot.getSnapshot,
+      settings: effectiveConfig,
+      environment: yield* makeClaudeEnvironment(effectiveConfig, processEnv),
+      configDir,
+      modelCatalog: (cwd) =>
+        modelCatalog.pipe(Effect.flatMap((catalog) => modelRoutes.route(catalog, cwd))),
+    });
+
     // Same rules as Codex: serialised on the config directory that holds the
     // login, one request id kept until Claude answers (a cooldown or rate
     // limit is an answer), then a re-probe.
@@ -430,6 +441,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
         ),
       orchestrationAdapter,
       textGeneration,
+      sealedGeneration,
       consumeResetCredit,
     } satisfies ProviderInstance;
   }),

@@ -1017,14 +1017,21 @@ const BOT_MAINTENANCE_UNAVAILABLE_LABELS: ReadonlyMap<string, string> = new Map(
   ],
   [
     "codex_required",
-    "Needs a Codex model. Pick a Codex model for this Bot to turn maintenance on.",
+    "Needs a Codex or Claude model. Pick one for this Bot to turn maintenance on.",
   ],
-  ["claude_unsupported", "Not available on Claude yet. It runs on Codex models."],
-  ["pi_unsupported", "Not available on Pi yet. It runs on Codex models."],
-  ["instance_unavailable", "This Bot's Codex provider is off or missing."],
-  ["provider_signed_out", "Sign in to Codex to run maintenance."],
+  // Servers from before Claude maintenance still send this.
+  ["claude_unsupported", "Not available on Claude on this server yet. Update T3 Code."],
+  ["pi_unsupported", "Not available on Pi yet. It runs on Codex and Claude models."],
+  ["instance_unavailable", "This Bot's provider is off or missing."],
+  ["provider_signed_out", "Sign in to this Bot's provider to run maintenance."],
   ["codex_version_unsupported", "Update Codex to run maintenance."],
-  ["selected_model_unavailable", "This Bot's model isn't available on its Codex account."],
+  ["claude_version_unsupported", "Update Claude Code to run maintenance."],
+  ["platform_unsupported", "On Claude, maintenance runs only when this server is a Mac."],
+  [
+    "claude_settings_unsupported",
+    "This Bot's Claude settings choose their own API backend, key helper or managed MCP servers, which maintenance can't use.",
+  ],
+  ["selected_model_unavailable", "This Bot's model isn't available on its account."],
   ["option_unsupported", "One of this Bot's model options isn't supported for maintenance."],
 ]);
 /** Settings caption for a maintenance view; unknown reasons from newer servers stay readable. */

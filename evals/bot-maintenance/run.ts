@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // @effect-diagnostics nodeBuiltinImport:off - standalone eval CLI and its output files.
+import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import * as NodeUtil from "node:util";
@@ -10,23 +11,37 @@ import {
   type ModelSelection,
   ProviderDriverKind,
   ProviderInstanceId,
+  type ServerProvider,
 } from "@t3tools/contracts";
 import { withInstanceIdentity } from "@t3tools/provider-core/server/instanceIdentity";
+import type { SealedGeneration } from "@t3tools/provider-core/server/sealedGeneration";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import { ChildProcessSpawner } from "effect/process";
 import * as Schema from "effect/Schema";
 import * as Evidence from "../../apps/server/src/bots/BotMaintenanceEvidence.ts";
+import { BUNDLED_CLAUDE_MODEL_CATALOG } from "../../apps/server/src/provider/ClaudeModelCatalog.ts";
 import {
   checkCodexProviderStatus,
   withCodexAppServerClient,
 } from "../../apps/server/src/provider/CodexProvider.ts";
+import {
+  makeClaudeEnvironment,
+  mergeClaudeProcessEnvironment,
+  resolveClaudeHomePath,
+} from "../../apps/server/src/provider/Drivers/ClaudeHome.ts";
 import {
   codexAccountHomePath,
   resolveCodexHomeLayout,
 } from "../../apps/server/src/provider/Drivers/CodexHomeLayout.ts";
 import { resolveCodexLaunchArgs } from "../../apps/server/src/provider/codexLaunchArgs.ts";
 import { applyCodexModelCatalog } from "../../apps/server/src/provider/codexModelCatalog.ts";
+import {
+  type ClaudeSealedQuery,
+  makeClaudeSealedGeneration,
+  startClaudeSealedQuery,
+} from "../../apps/server/src/textGeneration/ClaudeSealedGeneration.ts";
 import { makeCodexSealedGeneration } from "../../apps/server/src/textGeneration/CodexSealedGeneration.ts";
 import { CASES } from "./cases.ts";
 import { batchFor, casePasses, gradeSample, type SampleGrade } from "./grade.ts";
@@ -35,17 +50,22 @@ const { values } = NodeUtil.parseArgs({
   options: {
     out: { type: "string" },
     instance: { type: "string", default: "codex" },
-    model: { type: "string", default: "gpt-6.1-terra" },
-    effort: { type: "string", default: "high" },
+    model: { type: "string" },
+    effort: { type: "string" },
+    "claude-home": { type: "string" },
     samples: { type: "string", default: "3" },
     case: { type: "string", multiple: true },
     baseline: { type: "string" },
   },
 });
 if (!values.out) throw new Error("Use --out <directory>.");
-if (values.instance !== "codex") {
-  throw new Error("This eval runs only on Codex: maintenance uses Codex's sealed generation.");
+if (values.instance !== "codex" && values.instance !== "claude") {
+  throw new Error("Use --instance codex or --instance claude: maintenance runs on those two.");
 }
+const onClaude = values.instance === "claude";
+const model = values.model ?? (onClaude ? "claude-haiku-5-5" : "gpt-6.1-terra");
+/** Claude runs at the model's own default effort unless one is given. */
+const effort = values.effort ?? (onClaude ? null : "high");
 /** The live process environment: Codex children and `os.tmpdir()` both read it. */
 const environment = process.env;
 const out = NodePath.resolve(values.out);
@@ -53,8 +73,10 @@ const samples = Number(values.samples);
 const selected = values.case ? CASES.filter((item) => values.case!.includes(item.id)) : CASES;
 if (selected.length === 0) throw new Error(`No case matches ${values.case?.join(", ")}.`);
 
-/** What the eval saw on the app-server connection of one sealed call. */
+/** What the eval saw on the app-server connection, or in Claude's stream, of one sealed call. */
 interface Observed {
+  /** Claude only: the model, tools and MCP servers its startup frame reported. */
+  startup: string | null;
   readonly requests: Record<string, number>;
   readonly items: Array<string>;
   /** Notifications the client could not decode; a raw item among them discards the turn. */
@@ -68,6 +90,7 @@ interface Observed {
 }
 
 const observed = (): Observed => ({
+  startup: null,
   requests: {},
   items: [],
   undecoded: [],
@@ -79,7 +102,7 @@ interface Row {
   readonly id: string;
   readonly sample: number;
   readonly model: string;
-  readonly effort: string;
+  readonly effort: string | null;
   readonly threadModel: string | null;
   readonly error: string | null;
   readonly output: unknown;
@@ -244,10 +267,18 @@ const summarize = (input: {
     "## Sealed call acceptance",
     "",
     `- Calls that returned a proposal: ${calls.length}/${rows.length}. Thread models: ${[...new Set(rows.map((row) => row.threadModel ?? "none"))].join(", ")}.`,
-    `- \`turn/start\` requests per call: ${counts("turn/start")}. \`thread/start\` per call: ${counts("thread/start")}.`,
-    `- Raw response items per call: ${itemShapes.map((shape) => `\`${shape || "none"}\``).join("; ")}.`,
-    `- Notifications the client could not decode: ${[...new Set(rows.flatMap((row) => row.observed.undecoded))].join("; ") || "none"}.`,
-    `- Hooks the app-server ran: ${hooks.length === 0 ? "none" : hooks.join("; ")}.`,
+    ...(onClaude
+      ? [
+          `- Startup frames: ${[...new Set(rows.map((row) => row.observed.startup ?? "none"))].map((startup) => `\`${startup}\``).join("; ")}.`,
+          `- Message blocks per call: ${itemShapes.map((shape) => `\`${shape || "none"}\``).join("; ")}.`,
+          `- Hooks Claude reported: ${hooks.length === 0 ? "none" : hooks.join("; ")}.`,
+        ]
+      : [
+          `- \`turn/start\` requests per call: ${counts("turn/start")}. \`thread/start\` per call: ${counts("thread/start")}.`,
+          `- Raw response items per call: ${itemShapes.map((shape) => `\`${shape || "none"}\``).join("; ")}.`,
+          `- Notifications the client could not decode: ${[...new Set(rows.flatMap((row) => row.observed.undecoded))].join("; ") || "none"}.`,
+          `- Hooks the app-server ran: ${hooks.length === 0 ? "none" : hooks.join("; ")}.`,
+        ]),
     `- Paths created under the per-sample TMPDIR: ${createdNames.length === 0 ? "none" : createdNames.join(", ")}.`,
     `- Paths left under it after the run: ${leftover.length === 0 ? "none" : leftover.map(([sample, names]) => `${sample}: ${names.join(", ")}`).join("; ")}.`,
     `- Tokens: ${tokens.input} input (${tokens.cached} cached), ${tokens.output} output.`,
@@ -255,20 +286,15 @@ const summarize = (input: {
   return `${lines.join("\n")}\n`;
 };
 
-const program = Effect.gen(function* () {
-  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-  NodeFS.mkdirSync(out, { recursive: true });
-  const resultsPath = NodePath.join(out, "results.jsonl");
-  const summaryPath = NodePath.join(out, "summary.md");
-  NodeFS.writeFileSync(resultsPath, "");
-  const baseline = values.baseline
-    ? NodeFS.readFileSync(values.baseline, "utf8")
-        .split("\n")
-        .filter((line) => line.trim() !== "")
-        .map((line) => decodeBaselineRow(line))
-    : [];
+interface Backend {
+  readonly snapshot: ServerProvider;
+  readonly sealedFor: (seen: Observed) => Effect.Effect<SealedGeneration>;
+}
 
-  // The same wiring as CodexDriver's sealed generation, on the default Codex home.
+/** The same wiring as CodexDriver's sealed generation, on the default Codex home. */
+const codexBackend = Effect.fn("botMaintenanceEval.codexBackend")(function* (
+  spawner: ChildProcessSpawner.ChildProcessSpawner["Service"],
+) {
   const settings = yield* decodeCodexSettings({});
   const layout = yield* resolveCodexHomeLayout(settings, environment.CODEX_HOME);
   const snapshot = withInstanceIdentity({
@@ -283,32 +309,146 @@ const program = Effect.gen(function* () {
       undefined,
     ),
   );
+  const services = yield* Effect.context<NodeServices.NodeServices>();
+  return {
+    snapshot,
+    sealedFor: (seen) =>
+      makeCodexSealedGeneration({
+        getSnapshot: Effect.succeed(snapshot),
+        storeHomePath: codexAccountHomePath(layout),
+        openClient: (cwd) =>
+          withCodexAppServerClient({
+            binaryPath: settings.binaryPath,
+            homePath: settings.homePath,
+            launchArgs: resolveCodexLaunchArgs(settings.launchArgs, environment),
+            cwd,
+            environment,
+          }).pipe(
+            Effect.flatMap(({ client }) => observe(client, seen)),
+            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+          ),
+      }).pipe(Effect.provideContext(services)),
+  } satisfies Backend;
+});
+
+/** Records Claude's startup frame, hook runs, message blocks and usage as they pass. */
+const observeClaude = (
+  message: ReturnType<ClaudeSealedQuery> extends AsyncIterable<infer Message> ? Message : never,
+  seen: Observed,
+) => {
+  if (message.type === "system" && message.subtype === "init")
+    seen.startup = `model=${message.model} tools=${message.tools.join(",") || "none"} mcp=${
+      message.mcp_servers.map((server: { readonly name: string }) => server.name).join(",") ||
+      "none"
+    }`;
+  if (message.type === "system" && message.subtype === "hook_started")
+    seen.hooks.push({ event: message.hook_event, source: message.hook_name, status: "started" });
+  if (message.type === "assistant")
+    for (const block of message.message.content)
+      seen.items.push(`${block.type}${block.type === "tool_use" ? `:${block.name}` : ""}`);
+  if (message.type === "result")
+    seen.tokens = {
+      input:
+        message.usage.input_tokens +
+        (message.usage.cache_read_input_tokens ?? 0) +
+        (message.usage.cache_creation_input_tokens ?? 0),
+      cached: message.usage.cache_read_input_tokens ?? 0,
+      output: message.usage.output_tokens,
+    };
+};
+
+/**
+ * The same wiring as ClaudeDriver's sealed generation, on `--claude-home` or the default Claude
+ * home. No provider probe runs: the snapshot takes the installed version and the bundled models,
+ * and a signed-out account shows as a refusal on the first call.
+ */
+const claudeBackend = Effect.gen(function* () {
+  const config = { homePath: values["claude-home"] ?? "" };
+  const claudeEnvironment = Effect.suspend(() =>
+    mergeClaudeProcessEnvironment(config, undefined, environment),
+  ).pipe(Effect.flatMap((merged) => makeClaudeEnvironment(config, merged)));
+  const startEnvironment = yield* claudeEnvironment;
+  const snapshot: ServerProvider = {
+    instanceId: ProviderInstanceId.make("claudeAgent"),
+    driver: ProviderDriverKind.make("claudeAgent"),
+    enabled: true,
+    installed: true,
+    status: "ready",
+    auth: { status: "authenticated" },
+    version:
+      /\d+\.\d+\.\d+/.exec(
+        NodeChildProcess.execFileSync("claude", ["--version"], {
+          encoding: "utf8",
+          env: startEnvironment,
+        }),
+      )?.[0] ?? null,
+    checkedAt: DateTime.formatIso(yield* DateTime.now),
+    models: BUNDLED_CLAUDE_MODEL_CATALOG.models.map((entry) => entry.model),
+    slashCommands: [],
+    skills: [],
+  };
+  const configDir = yield* resolveClaudeHomePath(config, startEnvironment);
+  const services = yield* Effect.context<NodeServices.NodeServices>();
+  return {
+    snapshot,
+    sealedFor: (seen) =>
+      claudeEnvironment.pipe(
+        Effect.flatMap((sampleEnvironment) =>
+          makeClaudeSealedGeneration({
+            getSnapshot: Effect.succeed(snapshot),
+            settings: { binaryPath: "claude" },
+            // Read per sample: each one has its own TMPDIR.
+            environment: sampleEnvironment,
+            configDir,
+            modelCatalog: () => Effect.succeed(BUNDLED_CLAUDE_MODEL_CATALOG),
+            // Hook frames are the eval's only addition to the production call.
+            query: ({ prompt, options }) => {
+              const stream = startClaudeSealedQuery({
+                prompt,
+                options: { ...options, includeHookEvents: true },
+              });
+              return (async function* () {
+                for await (const message of stream) {
+                  observeClaude(message, seen);
+                  yield message;
+                }
+              })();
+            },
+          }),
+        ),
+        Effect.provideContext(services),
+      ),
+  } satisfies Backend;
+});
+
+const program = Effect.gen(function* () {
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  NodeFS.mkdirSync(out, { recursive: true });
+  const resultsPath = NodePath.join(out, "results.jsonl");
+  const summaryPath = NodePath.join(out, "summary.md");
+  NodeFS.writeFileSync(resultsPath, "");
+  const baseline = values.baseline
+    ? NodeFS.readFileSync(values.baseline, "utf8")
+        .split("\n")
+        .filter((line) => line.trim() !== "")
+        .map((line) => decodeBaselineRow(line))
+    : [];
+
+  const { snapshot, sealedFor } = yield* onClaude ? claudeBackend : codexBackend(spawner);
   const selection: ModelSelection = {
     instanceId: snapshot.instanceId,
-    model: values.model,
-    options: [{ id: "reasoningEffort", value: values.effort }],
+    model,
+    ...(effort === null
+      ? {}
+      : { options: [{ id: onClaude ? "effort" : "reasoningEffort", value: effort }] }),
   };
-  const sealedFor = (seen: Observed) =>
-    makeCodexSealedGeneration({
-      getSnapshot: Effect.succeed(snapshot),
-      storeHomePath: codexAccountHomePath(layout),
-      openClient: (cwd) =>
-        withCodexAppServerClient({
-          binaryPath: settings.binaryPath,
-          homePath: settings.homePath,
-          launchArgs: resolveCodexLaunchArgs(settings.launchArgs, environment),
-          cwd,
-          environment,
-        }).pipe(
-          Effect.flatMap(({ client }) => observe(client, seen)),
-          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-        ),
-    });
 
   const header = [
-    `# Bot maintenance eval: ${values.model} ${values.effort}`,
+    `# Bot maintenance eval: ${model} ${effort ?? "default effort"}`,
     "",
-    `- Codex ${snapshot.version ?? "unknown"}, account ${snapshot.auth.type ?? "unknown"} (${snapshot.auth.status}), ${samples} sample(s) per case.`,
+    onClaude
+      ? `- Claude Code ${snapshot.version ?? "unknown"}, sign-in not probed, ${samples} sample(s) per case.`
+      : `- Codex ${snapshot.version ?? "unknown"}, account ${snapshot.auth.type ?? "unknown"} (${snapshot.auth.status}), ${samples} sample(s) per case.`,
   ];
   const refusal = yield* (yield* sealedFor(observed())).availability(selection);
   if (refusal !== null) {
@@ -347,8 +487,8 @@ const program = Effect.gen(function* () {
       const row: Row = {
         id: testCase.id,
         sample,
-        model: values.model,
-        effort: values.effort,
+        model,
+        effort,
         threadModel: result._tag === "Success" ? result.success.model : null,
         error: failure === null ? null : `${failure._tag}: ${failure.reason}`,
         output: result._tag === "Success" ? result.success.value : null,
