@@ -378,21 +378,28 @@ const make = Effect.gen(function* () {
   ) {
     // A calendar entering the selection leaves every Bot's choice first, so one that was removed
     // does not come back to Bots limited to it. Outside the selection no Bot can read it, so a
-    // failure or a race before the save changes nothing a Bot sees.
-    if (input.calendarIds !== undefined) {
-      const selected = (yield* macCalendar.summary).calendars.map(({ id }) => id);
-      const added = input.calendarIds.filter((id) => !selected.includes(id));
-      if (added.length > 0) {
-        yield* bots
-          .forgetMacCalendars(added)
-          .pipe(
-            Effect.mapError(
-              (cause) => new MacCalendarError({ reason: "settings-unavailable", cause }),
-            ),
-          );
-      }
-    }
-    return yield* macCalendar.update(input);
+    // failure before the save changes nothing a Bot sees.
+    return yield* bots.withMacCalendarLock(
+      Effect.gen(function* () {
+        const current = yield* macCalendar.summary;
+        if (current.revision !== input.expectedRevision) {
+          return yield* new MacCalendarError({ reason: "revision-conflict" });
+        }
+        const added = (input.calendarIds ?? []).filter(
+          (id) => !current.calendars.some((calendar) => calendar.id === id),
+        );
+        if (added.length > 0) {
+          yield* bots
+            .forgetMacCalendars(added)
+            .pipe(
+              Effect.mapError(
+                (cause) => new MacCalendarError({ reason: "settings-unavailable", cause }),
+              ),
+            );
+        }
+        return yield* macCalendar.update(input);
+      }),
+    );
   });
 
   return McpConnections.of({ list, create, update, remove, refresh, updateCalendar });

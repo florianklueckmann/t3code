@@ -41,6 +41,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 import * as SqlClient from "effect/sql/SqlClient";
 import type * as SqlError from "effect/sql/SqlError";
 import * as Stream from "effect/Stream";
@@ -83,6 +84,10 @@ export class BotService extends Context.Service<
     readonly forgetMacCalendars: (
       calendarIds: ReadonlyArray<string>,
     ) => Effect.Effect<void, BotError>;
+    /** Runs a change to the Calendar (this Mac) selection with no grant save in between. */
+    readonly withMacCalendarLock: <A, E, R>(
+      effect: Effect.Effect<A, E, R>,
+    ) => Effect.Effect<A, E, R>;
     readonly attachProject: (input: BotAttachProjectInput) => Effect.Effect<BotDetail, BotError>;
     readonly updateProjectContext: (
       input: BotUpdateProjectContextInput,
@@ -512,6 +517,8 @@ const make = Effect.gen(function* () {
     },
   );
 
+  // Orders grant saves with changes to the Calendar (this Mac) selection, which validate against it.
+  const macCalendarLock = yield* Semaphore.make(1);
   const setMcpGrants: BotService["Service"]["setMcpGrants"] = Effect.fn("BotService.setMcpGrants")(
     function* (input) {
       const { mcpConnections: catalog, macCalendar } = yield* serverSettings.getSettings.pipe(
@@ -598,6 +605,7 @@ const make = Effect.gen(function* () {
       yield* notifyChanged;
       return yield* readDetail(input.botId);
     },
+    (effect) => macCalendarLock.withPermits(1)(effect),
   );
 
   const forgetMcpConnection: BotService["Service"]["forgetMcpConnection"] = Effect.fn(
@@ -1016,6 +1024,7 @@ const make = Effect.gen(function* () {
     setMcpGrants,
     forgetMcpConnection,
     forgetMacCalendars,
+    withMacCalendarLock: macCalendarLock.withPermits(1),
     attachProject,
     updateProjectContext,
     detachProject,

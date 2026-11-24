@@ -449,6 +449,14 @@ const make = Effect.gen(function* () {
         `Home checks have no access to ${MAC_CALENDAR_LABEL}.`,
       );
     }
+    // The selection before the grant: a calendar selected again leaves every choice before it is
+    // saved, so a choice read after a selection that has it no longer holds a stale entry.
+    const stored = yield* settings.getSettings.pipe(
+      Effect.map((current) => current.macCalendar),
+      Effect.mapError(() =>
+        toolError("orchestration_error", `${MAC_CALENDAR_LABEL} could not be read. Try again.`),
+      ),
+    );
     const access = yield* turns
       .mcpAccessForThreadId(caller.threadId)
       .pipe(
@@ -459,12 +467,6 @@ const make = Effect.gen(function* () {
     if (access._tag !== "bot" || !access.connectionIds.includes(MAC_CALENDAR_CONNECTION_ID)) {
       return yield* toolError("capability_denied", NOT_GRANTED);
     }
-    const stored = yield* settings.getSettings.pipe(
-      Effect.map((current) => current.macCalendar),
-      Effect.mapError(() =>
-        toolError("orchestration_error", `${MAC_CALENDAR_LABEL} could not be read. Try again.`),
-      ),
-    );
     if (!stored.enabled) {
       return yield* toolError(
         "capability_denied",
@@ -614,6 +616,8 @@ const make = Effect.gen(function* () {
     ) {
       return yield* toolError("capability_denied", "Calendar writes are unavailable in this turn.");
     }
+    // The selection before the grant, as in listEvents.
+    const stored = yield* readSettings.pipe(Effect.mapError(writeUnavailable));
     const access = yield* turns
       .mcpAccessForThreadId(caller.threadId)
       .pipe(Effect.mapError(writeUnavailable));
@@ -628,7 +632,6 @@ const make = Effect.gen(function* () {
         "This Bot needs a Read and write calendar grant.",
       );
     }
-    const stored = yield* readSettings.pipe(Effect.mapError(writeUnavailable));
     const calendars = macCalendarsForBot(stored.calendars, access.calendarIds);
     if (!stored.enabled || !calendars.some((calendar) => calendar.allowWrite === true)) {
       return yield* toolError(
