@@ -3167,6 +3167,13 @@ it.effect.each([
     stop: "preCompact hook (user): Save a checkpoint.",
   },
   {
+    name: "a provider failure after the user's Stop",
+    status: "failed",
+    compaction: null,
+    stop: null,
+    request: "Stopped by user",
+  },
+  {
     name: "an agent's stop after the compaction",
     status: "interrupted",
     compaction: "completed",

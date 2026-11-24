@@ -1261,7 +1261,7 @@ export const make = Effect.gen(function* () {
     if (run === undefined) return yield* failed("run_missing", null);
     const hookStop = yield* postCompactStop(run);
     if (run.status !== "completed" && hookStop === undefined) {
-      const skipped = yield* skipReason(run.runId);
+      const skipped = run.status === "interrupted" ? yield* skipReason(run.runId) : undefined;
       if (skipped !== undefined)
         return yield* settle<HomeCompaction>(
           "skipped",
