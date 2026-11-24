@@ -141,7 +141,12 @@ function BotNotesEditor(props: {
   const changed = !("note" in parsed) || !sameBotNote(parsed.note, base.note);
   const hasDraft = changed || conflict !== null;
   // An untouched editor follows a save made elsewhere; a started draft keeps the view it began from.
-  if (!hasDraft && !saving && view.revision !== base.revision) {
+  // Raw text, because parsing drops a newline the user just typed.
+  const opened = botContinuationDraft(base.note);
+  const untouched = BOT_CONTINUATION_SECTIONS.every(
+    (section) => draft[section] === opened[section],
+  );
+  if (untouched && conflict === null && !saving && view.revision !== base.revision) {
     setBase(view);
     setDraft(botContinuationDraft(view.note));
   }

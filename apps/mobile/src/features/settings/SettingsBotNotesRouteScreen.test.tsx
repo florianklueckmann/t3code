@@ -232,6 +232,11 @@ it("keeps a dirty draft protected and inspectable when live activity or write pe
   screen.render();
   expect(state.fields.get("Context")).toMatchObject({ value: "Saved elsewhere" });
   expect(state.preventRemove).toBe(false);
+  // A new line just started parses the same, but is still the user's typing.
+  act(() => state.fields.get("Context")!.onChange("Saved elsewhere\n"));
+  state.view = { ...state.view!, revision: 3 };
+  screen.render();
+  expect(state.fields.get("Context")).toMatchObject({ value: "Saved elsewhere\n" });
   act(() => state.fields.get("Context")!.onChange("Unsaved draft"));
   expect(state.preventRemove).toBe(true);
   state.view = { ...state.view!, writable: false };
