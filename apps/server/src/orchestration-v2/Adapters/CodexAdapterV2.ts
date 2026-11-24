@@ -2620,8 +2620,13 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
         ) {
           const nativeThreadId = turnInput.providerThread.nativeThreadRef?.nativeId;
           // A load in flight, such as an MCP App request's, is unknown until its check passes.
-          if (nativeThreadId != null) yield* withSealLock(nativeThreadId, Effect.void);
-          const loaded = nativeThreadId == null ? undefined : threadLoads.get(nativeThreadId);
+          const loaded =
+            nativeThreadId == null
+              ? undefined
+              : yield* withSealLock(
+                  nativeThreadId,
+                  Effect.sync(() => threadLoads.get(nativeThreadId)),
+                );
           const loadedSeal = loaded === undefined || loaded === "unknown" ? loaded : loaded.seal;
           const seal = codexThreadSealOf(turnInput.runtimePolicy);
           // An ordinary turn is refused in the words of the seal its thread is held in.
