@@ -2,7 +2,7 @@
 
 This fork of T3 Code sends none of the data described here to T3 Code's services until you turn
 it on: product usage events and relay connection traces need `T3CODE_TELEMETRY_ENABLED=true`, and
-mobile crash reports need **Send crash reports**. Upstream T3 Code sends them unless you opt out.
+mobile crash reports need **Send crash reports**. Upstream T3 Code sends them by default.
 
 When turned on, the T3 Code server sends product usage events to T3 Code's own endpoint at `ingest.t3.codes`,
 associated with a hashed account or installation identifier. To count how many installations one person
@@ -36,7 +36,8 @@ Linux, so export it there and restart the app. On Windows, set it as a user envi
 
 The web app in a browser, including one the `t3` CLI opens, does not read these environment
 variables and sends no relay connection traces. app.t3.codes is upstream's build, not this fork's:
-a server you open there still gets that build's relay traces, which this setting cannot stop.
+when you open a server there, that page sends its own relay traces to Axiom, which no setting here
+stops.
 
 ## Mobile app diagnostics
 
