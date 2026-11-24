@@ -203,8 +203,8 @@ diagnoses, and tasks or routine runs the Bot started without a message from you.
 A task you asked for in the conversation and a routine you ran with **Run now**
 always alert at once and never count.
 
-- **Alerts per day** (3 by default, 0 to 10) counts per day in the server's
-  time zone.
+- **Alerts per day** (3 by default) counts per day in the server's time zone.
+  Type any whole number. With 0, every counted alert is held.
 - **Quiet hours** (22:00 to 07:00 server time by default) hold every counted
   alert. You can change the times or turn them off.
 

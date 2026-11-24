@@ -47,12 +47,20 @@ import {
   type HiddenBotTaskCards,
   hideBotTaskCard,
   homeBotTaskCards,
+  parseBotAlertDailyLimit,
   parseBotSourceDrafts,
   rankBotConversations,
   showBotTaskCards,
 } from "./bots.ts";
 
 const draft = (label: string, location: string) => ({ ...emptyBotSourceDraft(), label, location });
+
+it("reads a typed daily alert limit as a whole number the server stores", () => {
+  expect(["0", " 12 ", "250", "007"].map(parseBotAlertDailyLimit)).toEqual([0, 12, 250, 7]);
+  expect(
+    ["", "-1", "1.5", "1e3", "0x10", "abc", "99999999999999999999"].map(parseBotAlertDailyLimit),
+  ).toEqual([null, null, null, null, null, null, null]);
+});
 
 describe("parseBotSourceDrafts", () => {
   it("trims rows and drops blank ones", () => {

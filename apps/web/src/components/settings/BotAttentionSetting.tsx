@@ -1,9 +1,9 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
-  BOT_ALERT_LIMIT_OPTIONS,
   BOT_ALERTS_DESCRIPTION,
   BOT_REMIT_DESCRIPTION,
   botAlertsStatusLabel,
+  parseBotAlertDailyLimit,
 } from "@t3tools/client-runtime/bots";
 import {
   isAtomCommandInterrupted,
@@ -24,7 +24,6 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Label } from "../ui/label";
-import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
 import { Textarea } from "../ui/textarea";
 import { stackedThreadToast, toastManager } from "../ui/toast";
@@ -95,6 +94,12 @@ export function BotAttentionSetting({
     } else if (change.remit !== undefined) setRemitDraft(null);
   };
 
+  const saveLimit = (input: HTMLInputElement) => {
+    const limit = parseBotAlertDailyLimit(input.value);
+    if (limit === null) input.value = String(view.dailyLimit);
+    else if (limit !== view.dailyLimit) void save({ dailyLimit: limit });
+  };
+
   const saveTime = (edge: "start" | "end", value: string) => {
     const hours = view.quietHours;
     if (hours === null || !TIME.test(value) || value === hours[edge]) return;
@@ -114,25 +119,22 @@ export function BotAttentionSetting({
       </div>
       <div className="flex items-center gap-2">
         <Label htmlFor={`${id}-limit`}>Alerts per day</Label>
-        <Select
-          value={String(view.dailyLimit)}
+        <Input
+          key={`limit-${view.dailyLimit}`}
+          id={`${id}-limit`}
+          type="number"
+          inputMode="numeric"
+          nativeInput
+          min={0}
+          step={1}
+          className="w-24"
+          defaultValue={view.dailyLimit}
           disabled={disabled}
-          onValueChange={(value) => {
-            if (value !== null && Number(value) !== view.dailyLimit)
-              void save({ dailyLimit: Number(value) });
+          onBlur={(event) => saveLimit(event.currentTarget)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") event.currentTarget.blur();
           }}
-        >
-          <SelectTrigger id={`${id}-limit`} className="w-20" size="sm">
-            <SelectValue>{String(view.dailyLimit)}</SelectValue>
-          </SelectTrigger>
-          <SelectPopup>
-            {BOT_ALERT_LIMIT_OPTIONS.map((limit) => (
-              <SelectItem key={limit} value={String(limit)}>
-                {limit}
-              </SelectItem>
-            ))}
-          </SelectPopup>
-        </Select>
+        />
       </div>
       <div className="flex flex-wrap items-center gap-2">
         <Switch
