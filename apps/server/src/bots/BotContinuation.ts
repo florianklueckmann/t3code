@@ -27,8 +27,11 @@ import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as PubSub from "effect/PubSub";
 import * as Schema from "effect/Schema";
+import type * as Scope from "effect/Scope";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Stream from "effect/Stream";
 import * as BotDatabase from "./persistence/BotDatabase.ts";
 import * as BotStore from "./BotStore.ts";
 import { isDirectHomeInput } from "./homeReturn.ts";
@@ -303,6 +306,10 @@ export class BotContinuation extends Context.Service<
       caller: Caller,
     ) => Effect.Effect<BotSaveContinuationResult, BotError>;
     readonly coverage: (scope: BotContinuationScope) => Effect.Effect<NoteCoverage, BotError>;
+    /** The newest saved revision of each Home that has notes. */
+    readonly latestRevisions: Effect.Effect<ReadonlyMap<ThreadId, number>, BotError>;
+    /** Signals each committed save, whoever made it. */
+    readonly changes: Effect.Effect<Stream.Stream<void>, never, Scope.Scope>;
   }
 >()("t3/bots/BotContinuation") {}
 
@@ -313,6 +320,8 @@ const make = Effect.gen(function* () {
   const random = yield* SecureRandom.SecureRandom;
   // Bases expire on process restart; committed retry identities remain in SQLite.
   const key = yield* random.randomBytes(32).pipe(Effect.orDie);
+  // Subscribers re-read every Home's revision, so only the newest save signal matters.
+  const changed = yield* PubSub.sliding<void>(1);
   const bases = new Map<string, typeof BasisPayload.Type>();
   const signature = (payload: string) =>
     NodeCrypto.createHmac("sha256", key).update(payload).digest("hex").slice(0, 32);
@@ -999,6 +1008,8 @@ const make = Effect.gen(function* () {
         return { _tag: "saved" as const, acceptedRevision: revision.revision, duplicate: false };
       }),
     );
+    if (committed._tag === "saved" && !committed.duplicate)
+      yield* PubSub.publish(changed, undefined);
     const view = yield* get(input);
     return committed._tag === "conflict" ? { ...committed, current: view } : { ...committed, view };
   }, Effect.mapError(failure));
@@ -1010,7 +1021,22 @@ const make = Effect.gen(function* () {
       ? ({ _tag: "unprovable", reason: "note_too_large", inputs, results } satisfies NoteCoverage)
       : ({ _tag: "behind", inputs, results } satisfies NoteCoverage);
   }, Effect.mapError(failure));
-  return BotContinuation.of({ get, history, save, coverage });
+  const latestRevisions = sql<{
+    readonly home_thread_id: ThreadId;
+    readonly revision: number;
+  }>`SELECT home_thread_id, MAX(revision) AS revision FROM bot_continuation_revisions GROUP BY home_thread_id`.pipe(
+    Effect.map((rows) => new Map(rows.map((row) => [row.home_thread_id, row.revision]))),
+    Effect.mapError(failure),
+    Effect.withSpan("BotContinuation.latestRevisions"),
+  );
+  return BotContinuation.of({
+    get,
+    history,
+    save,
+    coverage,
+    latestRevisions,
+    changes: PubSub.subscribe(changed).pipe(Effect.map(Stream.fromSubscription)),
+  });
 });
 export const layer = Layer.effect(BotContinuation, make).pipe(Layer.provide(BotStore.layer));
 

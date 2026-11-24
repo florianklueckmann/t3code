@@ -15,8 +15,8 @@ import { Platform, View } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";
 import * as Dialog from "../../components/ui/Dialog";
+import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { ThemedSwitch } from "../../components/ui/ThemedSwitch";
-import { cn } from "../../lib/cn";
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -123,22 +123,10 @@ export function BotHomeCheckSection(props: {
         onPress={() => (picking === null ? pick(view.timeOfDay) : closePicker(picking))}
       />
       {hasBotHomeCheckEarly(view) ? (
-        <View className="min-h-14 flex-row items-center gap-3 border-t border-border-subtle px-4 py-3">
-          <View
-            className={cn(
-              "min-w-0 flex-1 gap-1",
-              Platform.OS === "ios" && earlyDisabled && "opacity-50",
-            )}
-          >
-            <Text textRole="body" className="text-foreground">
-              Check early after finished work
-            </Text>
-            <Text textRole="footnote" className="text-foreground-muted">
-              {BOT_HOME_CHECK_EARLY_DESCRIPTION}
-            </Text>
-          </View>
-          <ThemedSwitch
-            accessibilityLabel="Check early after finished work"
+        <View className="border-t border-border-subtle">
+          <ListToggleRow
+            label="Check early after finished work"
+            description={BOT_HOME_CHECK_EARLY_DESCRIPTION}
             value={view.early === true}
             disabled={earlyDisabled}
             onValueChange={(early) => void save({ enabled: view.enabled, early })}
