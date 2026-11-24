@@ -11010,8 +11010,17 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                 ...step(28, "thread/resume", grantResume, resumed),
                 ...listed(29, nativeThreadId, { ...botLoadStatuses, ...grantedStatuses }),
                 ...read(30, resourceResult),
+                // A turn arriving during an app request's reload waits for its check.
+                ...unloaded(31),
+                ...step(32, "config/read", { includeLayers: false, cwd: "/workspace" }, configRead),
+                ...step(33, "thread/resume", grantResume, resumed),
+                ...listed(34, nativeThreadId, { ...botLoadStatuses, ...grantedStatuses }),
+                ...read(35, resourceResult),
+                ...step(36, "thread/goal/get", { threadId: nativeThreadId }, { goal: null }),
               ],
             });
+            const heldResume = yield* Deferred.make<void>();
+            const releaseHeldResume = yield* Deferred.make<void>();
             const interruptedResume = yield* Deferred.make<void>();
             const releaseResume = yield* Deferred.make<void>();
             const resumeParams: Array<{ config: { mcp_servers?: Record<string, unknown> } }> = [];
@@ -11028,17 +11037,22 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                   ? Deferred.succeed(interruptedResume, undefined).pipe(
                       Effect.andThen(Deferred.await(releaseResume)),
                     )
-                  : Effect.void,
+                  : entry.label === "thread/resume 33"
+                    ? Deferred.succeed(heldResume, undefined).pipe(
+                        Effect.andThen(Deferred.await(releaseHeldResume)),
+                      )
+                    : Effect.void,
             );
             const mcpApps = harness.runtime.mcpApps;
             assert.ok(mcpApps, "Codex runtime should expose MCP apps");
+            const botPolicy = {
+              ...CODEX_TEST_RUNTIME_POLICY,
+              nativeMemory: "disabled",
+              mcpConnections: [privateMail, workMail, MAC_CALENDAR_CONNECTION_ID],
+            } as const;
             const readResource = mcpApps.readResource({
               providerThread: harness.providerThread,
-              runtimePolicy: {
-                ...CODEX_TEST_RUNTIME_POLICY,
-                nativeMemory: "disabled",
-                mcpConnections: [privateMail, workMail, MAC_CALENDAR_CONNECTION_ID],
-              },
+              runtimePolicy: botPolicy,
               server: "weather",
               uri: MCP_APP_RESOURCE,
             });
@@ -11070,6 +11084,23 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             yield* Fiber.interrupt(stopped);
             yield* Deferred.succeed(releaseResume, undefined);
             assert.deepEqual(yield* readResource, resourceResult);
+            const reloading = yield* readResource.pipe(Effect.forkChild);
+            yield* Deferred.await(heldResume);
+            const turn = yield* harness.runtime
+              .startTurn({
+                ...makeCodexTestTurnInput({
+                  threadId: harness.threadId,
+                  providerThread: harness.providerThread,
+                  now: yield* DateTime.now,
+                  attemptId: RunAttemptId.make("goal-during-app-reload"),
+                  text: "/goal",
+                }),
+                runtimePolicy: botPolicy,
+              })
+              .pipe(Effect.forkChild({ startImmediately: true }));
+            yield* Deferred.succeed(releaseHeldResume, undefined);
+            assert.deepEqual(yield* Fiber.join(reloading), resourceResult);
+            yield* Fiber.join(turn);
           }).pipe(
             Effect.provideService(HostProcess.Platform, "darwin"),
             Effect.provide(
