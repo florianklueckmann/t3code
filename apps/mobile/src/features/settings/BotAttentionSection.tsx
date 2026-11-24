@@ -1,10 +1,10 @@
 import { useAtomValue } from "@effect/atom-react";
 import { DateTimePicker } from "@expo/ui/community/datetime-picker";
 import {
-  BOT_ALERT_LIMIT_OPTIONS,
   BOT_ALERTS_DESCRIPTION,
   BOT_REMIT_DESCRIPTION,
   botAlertsStatusLabel,
+  parseBotAlertDailyLimit,
 } from "@t3tools/client-runtime/bots";
 import {
   BOT_ALERT_DEFAULT_QUIET_HOURS,
@@ -24,7 +24,7 @@ import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { reportBotFailure } from "../bots/reportBotFailure";
-import { PickerRow, SelectRow } from "./components/SettingsFormRows";
+import { PickerRow } from "./components/SettingsFormRows";
 import { SettingsSection } from "./components/SettingsSection";
 import {
   formatTimeOfDay,
@@ -57,11 +57,13 @@ export function BotAttentionSection(props: {
   const [busy, setBusy] = useState(false);
   const [picking, setPicking] = useState<TimeDraft | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
+  const [limitDraft, setLimitDraft] = useState<string | null>(null);
   const view = query.data;
   if (view === null) return null;
   const disabled = busy || !canConfigure || props.formLocked || !view.writable;
   const quiet = view.quietHours;
   const remit = editing ?? view.remit;
+  const limitText = limitDraft ?? String(view.dailyLimit);
   const remitChanged = remit.trim() !== view.remit;
 
   const save = async (
@@ -95,9 +97,20 @@ export function BotAttentionSection(props: {
   };
   const timeChanged = (next: TimeDraft | null) =>
     next !== null && quiet !== null && next.time !== quiet[next.edge];
+  const limitChanged = (draft: string | null) =>
+    draft !== null && draft.trim() !== String(view.dailyLimit);
   const pick = (next: TimeDraft | null) => {
     setPicking(next);
-    props.onDraftChange(remitChanged || timeChanged(next));
+    props.onDraftChange(remitChanged || timeChanged(next) || limitChanged(limitDraft));
+  };
+  const editLimit = (draft: string | null) => {
+    setLimitDraft(draft);
+    props.onDraftChange(remitChanged || timeChanged(picking) || limitChanged(draft));
+  };
+  const saveLimit = async () => {
+    const limit = parseBotAlertDailyLimit(limitText);
+    if (disabled || limit === null) return;
+    if (limit === view.dailyLimit || (await save({ dailyLimit: limit }))) editLimit(null);
   };
   const closePicker = (next: TimeDraft | null) => {
     pick(null);
@@ -109,7 +122,11 @@ export function BotAttentionSection(props: {
   };
   const edit = (remit: string | null) => {
     setEditing(remit);
-    props.onDraftChange(timeChanged(picking) || (remit !== null && remit.trim() !== view.remit));
+    props.onDraftChange(
+      timeChanged(picking) ||
+        limitChanged(limitDraft) ||
+        (remit !== null && remit.trim() !== view.remit),
+    );
   };
   const saveRemit = async () => {
     if (!disabled && remitChanged && (await save({ remit: remit.trim() }))) edit(null);
@@ -155,22 +172,31 @@ export function BotAttentionSection(props: {
           {botAlertsStatusLabel(view)}
         </Text>
       </View>
-      <SelectRow
-        label="Alerts per day"
-        value={String(view.dailyLimit)}
-        borderTop
-        actions={
-          disabled
-            ? []
-            : BOT_ALERT_LIMIT_OPTIONS.map((limit) => ({
-                id: String(limit),
-                title: String(limit),
-              }))
-        }
-        onSelect={(id) => {
-          if (Number(id) !== view.dailyLimit) void save({ dailyLimit: Number(id) });
-        }}
-      />
+      <View className="min-h-14 flex-row items-center gap-3 border-t border-border-subtle px-4 py-3">
+        <Text textRole="body" className="min-w-0 flex-1 text-foreground">
+          Alerts per day
+        </Text>
+        <TextInput
+          accessibilityLabel="Alerts per day"
+          value={limitText}
+          onChangeText={editLimit}
+          readOnly={disabled}
+          keyboardType="number-pad"
+          returnKeyType="done"
+          selectTextOnFocus
+          onSubmitEditing={() => void saveLimit()}
+          className="min-w-12 text-right font-sans text-base text-foreground"
+        />
+        {limitChanged(limitDraft) ? (
+          <Button
+            label="Save"
+            accessibilityLabel="Save alerts per day"
+            size="compact"
+            disabled={disabled || parseBotAlertDailyLimit(limitText) === null}
+            onPress={() => void saveLimit()}
+          />
+        ) : null}
+      </View>
       <View className="min-h-14 flex-row items-center gap-3 border-t border-border-subtle px-4 py-3">
         <Text textRole="body" className="min-w-0 flex-1 text-foreground">
           Quiet hours (server time)

@@ -1,10 +1,11 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
-import { BotId, ThreadId } from "@t3tools/contracts";
+import { BotConfigureAttentionInput, BotId, ThreadId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 import * as ServerConfig from "../config.ts";
 import * as Sqlite from "../persistence/Sqlite.ts";
@@ -48,6 +49,9 @@ const alert = (n: number, phase: "completed" | "failed" = "completed") => ({
   phase,
 });
 
+/** Decoded as the RPC decodes it, so the contract's bounds apply. */
+const decodeConfigureInput = Schema.decodeEffect(BotConfigureAttentionInput);
+
 const configure = Effect.fn("fixture.configure")(function* (
   attention: BotAttention.BotAttention["Service"],
   change: {
@@ -56,13 +60,14 @@ const configure = Effect.fn("fixture.configure")(function* (
   },
 ) {
   const view = yield* attention.get(botId);
-  const result = yield* attention.configure({
+  const input = yield* decodeConfigureInput({
     botId,
     baseRevision: view.revision,
     dailyLimit: change.dailyLimit ?? view.dailyLimit,
     quietHours: change.quietHours === undefined ? view.quietHours : change.quietHours,
     remit: view.remit,
   });
+  const result = yield* attention.configure(input);
   if (result._tag !== "saved") return yield* Effect.die(result);
 });
 
@@ -109,6 +114,17 @@ it.effect("caps proactive alerts per local day, deciding each run once across a 
       ["send", "send"],
     );
     assert.deepInclude(yield* restarted.get(botId), { sentToday: 2, held: 0, digestAt: null });
+
+    // A limit above ten is saved and caps the same day: ten more go out, the 13th is held.
+    yield* configure(restarted, { dailyLimit: 12 });
+    const raised = [];
+    for (let n = 8; n <= 18; n++) raised.push(yield* restarted.admit(alert(n)));
+    assert.deepEqual(raised, [...Array<string>(10).fill("send"), "hold"]);
+    assert.deepInclude(yield* restarted.get(botId), {
+      dailyLimit: 12,
+      sentToday: 12,
+      held: 1,
+    });
   }).pipe(Effect.provide(services)),
 );
 

@@ -9,7 +9,7 @@ import {
   type BotMaintenanceRunStep,
   type BotMaintenanceView,
   type BotHomeCheckView,
-  BOT_ALERT_DAILY_LIMIT_MAX,
+  BotAlertDailyLimit,
   type BotAttentionView,
   type BotFailureDiagnosisView,
   type BotRecordLearningInput,
@@ -1093,10 +1093,14 @@ export const BOT_ALERTS_DESCRIPTION =
   "Phone alerts for work you didn't start yourself, such as routines and diagnoses. Results of work you start always alert at once. Held alerts arrive as one alert when quiet hours end, or when the next day starts.";
 export const BOT_REMIT_DESCRIPTION =
   "In your words, what deserves a Waiting item from the Home check and what doesn't. It guides the check and gives the Bot no other permissions.";
-export const BOT_ALERT_LIMIT_OPTIONS = Array.from(
-  { length: BOT_ALERT_DAILY_LIMIT_MAX + 1 },
-  (_, limit) => limit,
-);
+const isBotAlertDailyLimit = Schema.is(BotAlertDailyLimit);
+/** A typed alerts-per-day value: digits only, and a number the server stores; null otherwise. */
+export function parseBotAlertDailyLimit(text: string): number | null {
+  const trimmed = text.trim();
+  if (!/^\d+$/.test(trimmed)) return null;
+  const limit = Number(trimmed);
+  return isBotAlertDailyLimit(limit) ? limit : null;
+}
 /** Today's alerts and what waits for the digest, with the digest time in the viewer's clock. */
 export function botAlertsStatusLabel(view: BotAttentionView): string {
   const sent = `${view.sentToday} of ${view.dailyLimit} sent today`;

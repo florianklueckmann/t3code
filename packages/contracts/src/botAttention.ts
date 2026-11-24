@@ -3,7 +3,6 @@ import { IsoDateTime, NonNegativeInt } from "./baseSchemas.ts";
 import { BotId } from "./bot.ts";
 import { BotHomeCheckTimeOfDay } from "./botHomeCheck.ts";
 
-export const BOT_ALERT_DAILY_LIMIT_MAX = 10;
 export const BOT_ALERT_DEFAULT_DAILY_LIMIT = 3;
 export const BOT_ALERT_DEFAULT_QUIET_HOURS = { start: "22:00", end: "07:00" } as const;
 export const BOT_REMIT_MAX_LENGTH = 500;
@@ -20,9 +19,8 @@ export const BotQuietHours = Schema.Struct({
 );
 export type BotQuietHours = typeof BotQuietHours.Type;
 
-export const BotAlertDailyLimit = NonNegativeInt.check(
-  Schema.isLessThanOrEqualTo(BOT_ALERT_DAILY_LIMIT_MAX),
-);
+/** Any safe whole number; 0 never pushes unasked. */
+export const BotAlertDailyLimit = NonNegativeInt;
 
 export const BotRemit = Schema.String.check(Schema.isMaxLength(BOT_REMIT_MAX_LENGTH));
 
