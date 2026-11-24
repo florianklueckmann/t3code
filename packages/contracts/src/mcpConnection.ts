@@ -448,6 +448,21 @@ export type McpGrantLevel = typeof McpGrantLevel.Type;
 const MacCalendarId = TrimmedNonEmptyString.check(Schema.isMaxLength(256));
 const MAC_CALENDAR_SELECTION_MAX = 64;
 
+/** A Bot's choice from the selected calendars, by id. */
+export const MacCalendarChoice = Schema.Array(MacCalendarId).check(
+  Schema.isMaxLength(MAC_CALENDAR_SELECTION_MAX),
+);
+
+/** The selected calendars a Bot may use: those in its choice, or all of them without one. */
+export function macCalendarsForBot<Calendar extends { readonly id: string }>(
+  selection: ReadonlyArray<Calendar>,
+  choice: ReadonlyArray<string> | undefined,
+): ReadonlyArray<Calendar> {
+  return choice === undefined
+    ? selection
+    : selection.filter((calendar) => choice.includes(calendar.id));
+}
+
 export const MacCalendarRef = Schema.Struct({
   id: MacCalendarId,
   title: Schema.String,
@@ -459,7 +474,10 @@ export type MacCalendarRef = typeof MacCalendarRef.Type;
 export const MacCalendarSettings = Schema.Struct({
   enabled: Schema.Boolean,
   revision: NonNegativeInt,
-  /** The one selected set. Bots read only these; titles are as they were when selected. */
+  /**
+   * The calendars any Bot may use; each Bot's choice narrows it. Titles are as they were when
+   * selected.
+   */
   calendars: Schema.Array(MacCalendarRef),
 });
 export type MacCalendarSettings = typeof MacCalendarSettings.Type;

@@ -1,5 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
+  botCalendarChoiceToggle,
   botMcpGrantableIds,
   botMcpGrantRowBadge,
   botMcpGrantsChange,
@@ -150,11 +151,8 @@ export function BotMcpGrantsSetting({
           {view.rows.map((row) => {
             const badge = botMcpGrantRowBadge(row, grants.levels);
             const calendarWrite = grants.levels?.[row.id] === "read-write";
-            const canWrite =
-              row.transport === "calendar" &&
-              row.granted &&
-              (calendarWrite ||
-                list.calendar?.calendars.some((entry) => entry.allowWrite === true));
+            const calendarRow = row.transport === "calendar";
+            const choice = calendarRow ? view.calendarChoice : null;
             return (
               <li key={row.id} className="space-y-1">
                 <label className="flex items-start gap-3 text-sm">
@@ -175,7 +173,44 @@ export function BotMcpGrantsSetting({
                     )}
                   </span>
                 </label>
-                {canWrite ? (
+                {choice === null ? null : (
+                  <div className="space-y-1 pl-7">
+                    {choice.calendars.map((calendar) => (
+                      <label key={calendar.id} className="flex items-center gap-3 text-sm">
+                        <Checkbox
+                          checked={calendar.chosen}
+                          disabled={disabled}
+                          onCheckedChange={(checked) =>
+                            void change({
+                              calendarIds: botCalendarChoiceToggle(
+                                choice,
+                                calendar.id,
+                                checked === true,
+                              ),
+                            })
+                          }
+                        />
+                        <span className="min-w-0 wrap-anywhere">{calendar.title}</span>
+                      </label>
+                    ))}
+                    <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                      {choice.all
+                        ? "Uses every selected calendar, including ones you select later."
+                        : "Uses only the calendars checked here."}
+                      {choice.all ? null : (
+                        <Button
+                          size="xs"
+                          variant="link"
+                          disabled={disabled}
+                          onClick={() => void change({ calendarIds: null })}
+                        >
+                          Use all selected calendars
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                )}
+                {calendarRow && view.offersCalendarWrite ? (
                   <label className="flex items-center gap-3 pl-7 text-sm">
                     <Checkbox
                       checked={calendarWrite}

@@ -1,6 +1,9 @@
 import {
   isSecretReference,
   MAC_CALENDAR_CONNECTION_ID,
+  MacCalendarError,
+  type MacCalendarSummary,
+  type MacCalendarUpdateInput,
   MCP_CONNECTIONS_MAX,
   mcpConnectionBindings,
   mcpConnectionBindingValueProblem,
@@ -55,6 +58,10 @@ export class McpConnections extends Context.Service<
     readonly refresh: (
       input: McpConnectionRefreshInput,
     ) => Effect.Effect<McpConnectionListResult, McpConnectionError>;
+    /** Saves the Calendar (this Mac) selection and drops deselected calendars from every Bot. */
+    readonly updateCalendar: (
+      input: MacCalendarUpdateInput,
+    ) => Effect.Effect<MacCalendarSummary, MacCalendarError>;
   }
 >()("t3/mcpConnections/McpConnections") {}
 
@@ -366,7 +373,20 @@ const make = Effect.gen(function* () {
     };
   });
 
-  return McpConnections.of({ list, create, update, remove, refresh });
+  const updateCalendar = Effect.fn("McpConnections.updateCalendar")(function* (
+    input: MacCalendarUpdateInput,
+  ) {
+    const saved = yield* macCalendar.update(input);
+    // Reads already narrow to the selection, so a lost cleanup only lets a reselected calendar back.
+    yield* bots
+      .keepMacCalendars(saved.calendars.map(({ id }) => id))
+      .pipe(
+        Effect.mapError((cause) => new MacCalendarError({ reason: "settings-unavailable", cause })),
+      );
+    return saved;
+  });
+
+  return McpConnections.of({ list, create, update, remove, refresh, updateCalendar });
 });
 
 export const layer = Layer.effect(McpConnections, make);

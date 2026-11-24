@@ -418,22 +418,29 @@ synced into it. Elsewhere it explains why it is missing.
    Helper. From a phone or another computer, the dialog shows the state but
    setup has to happen on the Mac. A denied request is changed in System
    Settings > Privacy & Security > Calendars.
-2. Select the calendars Bots may read and choose **Save selection**. One
-   selection applies to every Bot. To make a selected calendar eligible for
-   writing, check **Allow changes** beside that calendar.
+2. Select the calendars any Bot may read and choose **Save selection**. To make
+   a selected calendar eligible for writing, check **Allow changes** beside
+   that calendar.
 3. Grant **Calendar (this Mac)** in a Bot's **MCP connections**. The Bot starts
-   with **Read** access. Turn on **Allow calendar changes** to grant
-   **Read and write**.
+   with **Read** access to every selected calendar. Uncheck calendars below the
+   grant to limit this Bot to the rest, for example only your work calendar.
+   **Use all selected calendars** undoes that. Turn on **Allow calendar
+   changes** to grant **Read and write**.
 
-The Bot can then list events from the selected calendars, at most 14 days and
+A Bot that uses every selected calendar also gets calendars you select later. A
+Bot limited to some calendars does not until you check them for it. A calendar
+you remove from the selection is gone for every Bot, and selecting it again
+does not give it back to Bots that were limited.
+
+The Bot can then list events from its calendars, at most 14 days and
 100 events per request: in its conversation, tasks, routines and No changes
 routines, but not in the Daily Home check. It sees each event's title,
 calendar, start, end and whether it lasts all day, never notes, attendees,
-locations or links. Without a selection, or while disabled, the Bot runs
+locations or links. Without calendars, or while disabled, the Bot runs
 without it.
 
 With **Read and write**, a Bot can create, rename, move in time, or delete
-individual events in the calendars you enabled for writing. Events with guests
+individual events in its calendars that allow changes. Events with guests
 and recurring events are excluded. In a Home turn you start, the Bot can also
 change events you created. A routine set to **Changes allowed** can change or
 delete events that Bot created. No changes routines and Home checks cannot

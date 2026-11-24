@@ -9,6 +9,7 @@ import {
   type BotSummary,
   type ExecutionEnvironmentPlatformOs,
   MAC_CALENDAR_CONNECTION_ID,
+  macCalendarsForBot,
   type MacCalendarSummary,
   type McpConnectionCreateInput,
   type McpConnectionDefinition,
@@ -341,6 +342,30 @@ export function macCalendarStatusText(calendar: MacCalendarSummary): McpConnecti
   };
 }
 
+/** The calendar row in a Bot's settings: what this Bot reads, once the connection itself works. */
+function botMacCalendarStatusText(
+  calendar: MacCalendarSummary,
+  choice: ReadonlyArray<string> | undefined,
+): McpConnectionStatusText {
+  const status = macCalendarStatusText(calendar);
+  if (status.tone !== "ok" || choice === undefined) return status;
+  const chosen = macCalendarsForBot(calendar.calendars, choice);
+  return chosen.length === 0
+    ? { tone: "warning", text: "No calendars chosen, so this Bot doesn't load it." }
+    : { tone: "ok", text: `This Bot reads ${listNames(chosen.map(({ title }) => title))}` };
+}
+
+/** The choice to save after one calendar is checked or unchecked. */
+export function botCalendarChoiceToggle(
+  choice: BotCalendarChoice,
+  calendarId: string,
+  chosen: boolean,
+): ReadonlyArray<string> {
+  return choice.calendars.flatMap((calendar) =>
+    (calendar.id === calendarId ? chosen : calendar.chosen) ? [calendar.id] : [],
+  );
+}
+
 /** The helper's Calendar permission, as the setup step shows it. */
 export function macCalendarAuthorizationText(authorization: string): McpConnectionStatusText {
   switch (authorization) {
@@ -391,8 +416,23 @@ export interface BotOwnMcpServersSwitch {
   readonly canTurnOn: boolean;
 }
 
+/** Which of the selected Calendar (this Mac) calendars a granted Bot may use. */
+export interface BotCalendarChoice {
+  readonly calendars: ReadonlyArray<{
+    readonly id: string;
+    readonly title: string;
+    readonly chosen: boolean;
+  }>;
+  /** True while the Bot uses every selected calendar, including ones selected later. */
+  readonly all: boolean;
+}
+
 export interface BotMcpGrantsSection {
   readonly rows: ReadonlyArray<BotMcpGrantRow>;
+  /** Null unless Calendar (this Mac) is granted and has selected calendars. */
+  readonly calendarChoice: BotCalendarChoice | null;
+  /** Offers "Allow calendar changes": it is on, or one of this Bot's calendars allows changes. */
+  readonly offersCalendarWrite: boolean;
   /** False where the Bot's model can't load connections; removing a grant always works. */
   readonly canGrant: boolean;
   /** Null on servers without the switch. */
@@ -462,7 +502,10 @@ export function botMcpGrantsSection(input: {
             label: calendar.label,
             transport: "calendar" as const,
             granted: granted.has(calendar.id),
-            status: macCalendarStatusText(calendar),
+            status: botMacCalendarStatusText(
+              calendar,
+              granted.has(calendar.id) ? input.grants.calendarIds : undefined,
+            ),
             oauth: null,
           },
         ]),
@@ -553,8 +596,25 @@ export function botMcpGrantsSection(input: {
     });
   }
   notes.push({ tone: "muted", text: "Changes apply from the Bot's next turn." });
+  const choice = input.grants.calendarIds;
+  const calendarGranted = calendar !== undefined && granted.has(calendar.id);
   return {
     rows,
+    calendarChoice:
+      !calendarGranted || calendar.calendars.length === 0
+        ? null
+        : {
+            calendars: calendar.calendars.map(({ id, title }) => ({
+              id,
+              title,
+              chosen: choice === undefined || choice.includes(id),
+            })),
+            all: choice === undefined,
+          },
+    offersCalendarWrite:
+      calendarGranted &&
+      (input.grants.levels?.[calendar.id] === "read-write" ||
+        macCalendarsForBot(calendar.calendars, choice).some((entry) => entry.allowWrite === true)),
     canGrant: grantsUnavailable === null,
     ownServers:
       input.grants.ownCodexMcpServers === undefined
@@ -583,7 +643,9 @@ export function botMcpGrantsChange(
   change:
     | { readonly connectionId: McpConnectionId; readonly granted: boolean }
     | { readonly ownCodexMcpServers: boolean }
-    | { readonly calendarWrite: boolean },
+    | { readonly calendarWrite: boolean }
+    /** Null returns the Bot to every selected calendar. */
+    | { readonly calendarIds: ReadonlyArray<string> | null },
 ): BotSetMcpGrantsInput {
   const next = new Set(grants.connectionIds);
   if ("connectionId" in change) {
@@ -615,6 +677,7 @@ export function botMcpGrantsChange(
               ? "read-write"
               : "read",
           },
+          ...("calendarIds" in change ? { calendarIds: change.calendarIds } : {}),
         }
       : {}),
   };

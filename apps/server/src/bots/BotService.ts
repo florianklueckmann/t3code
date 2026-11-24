@@ -25,6 +25,7 @@ import {
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   MAC_CALENDAR_CONNECTION_ID,
+  MAC_CALENDAR_LABEL,
   type McpConnectionId,
   ProjectId,
   ThreadId,
@@ -78,6 +79,10 @@ export class BotService extends Context.Service<
     readonly setMcpGrants: (input: BotSetMcpGrantsInput) => Effect.Effect<BotDetail, BotError>;
     /** Drops a removed catalog connection from every Bot's grants, advancing their revisions. */
     readonly forgetMcpConnection: (connectionId: McpConnectionId) => Effect.Effect<void, BotError>;
+    /** Drops calendars that left the Calendar (this Mac) selection from every Bot's choice. */
+    readonly keepMacCalendars: (
+      selectedIds: ReadonlyArray<string>,
+    ) => Effect.Effect<void, BotError>;
     readonly attachProject: (input: BotAttachProjectInput) => Effect.Effect<BotDetail, BotError>;
     readonly updateProjectContext: (
       input: BotUpdateProjectContextInput,
@@ -509,10 +514,18 @@ const make = Effect.gen(function* () {
 
   const setMcpGrants: BotService["Service"]["setMcpGrants"] = Effect.fn("BotService.setMcpGrants")(
     function* (input) {
-      const catalog = (yield* serverSettings.getSettings.pipe(
+      const { mcpConnections: catalog, macCalendar } = yield* serverSettings.getSettings.pipe(
         Effect.mapError(botError("Could not read MCP connections.", input.botId)),
-      )).mcpConnections;
+      );
       const connectionIds = [...new Set(input.connectionIds)];
+      if (
+        input.calendarIds?.some((id) => !macCalendar.calendars.some((entry) => entry.id === id))
+      ) {
+        return yield* botError(
+          `One of these calendars is no longer selected for ${MAC_CALENDAR_LABEL}. Reload and try again.`,
+          input.botId,
+        )();
+      }
       // Calendar (this Mac) is built in, and only a Mac has it.
       const calendarHere = (yield* HostProcess.Platform) === "darwin";
       // Removed connections are never granted anew; only a stale row left by removal survives.
@@ -568,6 +581,12 @@ const make = Effect.gen(function* () {
                       input.levels?.[MAC_CALENDAR_CONNECTION_ID] ?? ("read" as const),
                   }
                 : {},
+              calendarIds:
+                input.calendarIds === undefined
+                  ? current.calendarIds
+                  : input.calendarIds === null
+                    ? undefined
+                    : [...new Set(input.calendarIds)],
             });
           }),
         )
@@ -587,6 +606,13 @@ const make = Effect.gen(function* () {
     const affected = yield* store
       .forgetMcpConnection(connectionId)
       .pipe(Effect.mapError(storeError()));
+    if (affected.length > 0) yield* notifyChanged;
+  });
+
+  const keepMacCalendars: BotService["Service"]["keepMacCalendars"] = Effect.fn(
+    "BotService.keepMacCalendars",
+  )(function* (selectedIds) {
+    const affected = yield* store.keepMacCalendars(selectedIds).pipe(Effect.mapError(storeError()));
     if (affected.length > 0) yield* notifyChanged;
   });
 
@@ -987,6 +1013,7 @@ const make = Effect.gen(function* () {
     setArchived,
     setMcpGrants,
     forgetMcpConnection,
+    keepMacCalendars,
     attachProject,
     updateProjectContext,
     detachProject,

@@ -2381,7 +2381,7 @@ export const layerWsRpc = (
           mcpConnectionOAuth.subscribe(input.connectionId),
         [WS_METHODS.mcpConnectionsCalendarInspect]: (_input) => macCalendar.inspect,
         [WS_METHODS.mcpConnectionsCalendarSetup]: (_input) => macCalendar.setup,
-        [WS_METHODS.mcpConnectionsCalendarUpdate]: (input) => macCalendar.update(input),
+        [WS_METHODS.mcpConnectionsCalendarUpdate]: (input) => mcpConnections.updateCalendar(input),
         [WS_METHODS.guestShareCreate]: (input) =>
           Effect.annotateCurrentSpan({ "orchestration_v2.thread_id": input.threadId }).pipe(
             Effect.andThen(guestShares.create(input)),

@@ -7,6 +7,7 @@ import {
   type BotLearningStatus,
   type BotMcpGrants,
   BotSourcePreference,
+  MAC_CALENDAR_CONNECTION_ID,
   type McpConnectionId,
   type McpGrantLevel,
   type ModelSelection,
@@ -17,6 +18,7 @@ import {
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as BotDatabase from "./persistence/BotDatabase.ts";
 
@@ -90,6 +92,12 @@ const decodeDetail = Schema.decodeUnknownEffect(BotDetail);
 export const decodeModelSelection = Schema.decodeUnknownEffect(ModelSelectionJson);
 const decodeSources = Schema.decodeUnknownEffect(SourcesJson);
 const decodeAppearance = Schema.decodeUnknownEffect(AppearanceJson);
+const CalendarChoiceJson = Schema.fromJsonString(Schema.Array(Schema.String));
+const encodeCalendarChoice = Schema.encodeSync(CalendarChoiceJson);
+const decodeCalendarChoiceOption = Schema.decodeOption(CalendarChoiceJson);
+// An unreadable choice narrows to no calendars rather than widening to all of them.
+const decodeCalendarChoice = (json: string) =>
+  Option.getOrElse(decodeCalendarChoiceOption(json), () => []);
 
 export class BotStore extends Context.Service<
   BotStore,
@@ -148,10 +156,19 @@ export class BotStore extends Context.Service<
       readonly ownCodexMcpServers: boolean;
       /** Saved for the granted connections that have levels. */
       readonly levels: Readonly<Partial<Record<McpConnectionId, McpGrantLevel>>>;
+      /** Saved with a Calendar (this Mac) grant; undefined uses every selected calendar. */
+      readonly calendarIds?: ReadonlyArray<string> | undefined;
     }) => Effect.Effect<void, BotStoreError>;
     /** Removes a connection from every Bot that has it and returns those Bots. */
     readonly forgetMcpConnection: (
       connectionId: McpConnectionId,
+    ) => Effect.Effect<ReadonlyArray<string>, BotStoreError>;
+    /**
+     * Drops calendars that left the Calendar (this Mac) selection from every Bot's choice, so
+     * selecting one again does not bring it back to them. Returns the Bots it changed.
+     */
+    readonly keepMacCalendars: (
+      selectedIds: ReadonlyArray<string>,
     ) => Effect.Effect<ReadonlyArray<string>, BotStoreError>;
   }
 >()("t3/bots/BotStore") {}
@@ -476,10 +493,11 @@ export const layer = Layer.effect(
           readonly mcp_own_codex_servers: number;
           readonly connection_id: string | null;
           readonly level: string | null;
+          readonly calendar_ids: string | null;
         }>`
           SELECT
             bots.bot_id, bots.mcp_grant_revision, bots.mcp_own_codex_servers,
-            bot_mcp_grants.connection_id, bot_mcp_grants.level
+            bot_mcp_grants.connection_id, bot_mcp_grants.level, bot_mcp_grants.calendar_ids
           FROM bots LEFT JOIN bot_mcp_grants ON bot_mcp_grants.bot_id = bots.bot_id
           WHERE ${botId ?? null} IS NULL OR bots.bot_id = ${botId ?? null}
           ORDER BY bots.bot_id, bot_mcp_grants.connection_id
@@ -491,6 +509,7 @@ export const layer = Layer.effect(
             connectionIds: McpConnectionId[];
             ownCodexMcpServers: boolean;
             levels?: Record<McpConnectionId, string>;
+            calendarIds?: ReadonlyArray<string>;
           }
         >();
         for (const row of rows) {
@@ -508,6 +527,9 @@ export const layer = Layer.effect(
             if (row.level !== null) {
               entry.levels = { ...entry.levels, [row.connection_id]: row.level };
             }
+            if (row.connection_id === MAC_CALENDAR_CONNECTION_ID && row.calendar_ids !== null) {
+              entry.calendarIds = decodeCalendarChoice(row.calendar_ids);
+            }
           }
         }
         return grants as ReadonlyMap<string, BotMcpGrants>;
@@ -521,13 +543,18 @@ export const layer = Layer.effect(
         readonly connectionIds: ReadonlyArray<McpConnectionId>;
         readonly ownCodexMcpServers: boolean;
         readonly levels: Readonly<Partial<Record<McpConnectionId, McpGrantLevel>>>;
+        readonly calendarIds?: ReadonlyArray<string> | undefined;
       }) {
         yield* sql`DELETE FROM bot_mcp_grants WHERE bot_id = ${input.botId}`;
         for (const connectionId of input.connectionIds) {
           const level = input.levels[connectionId] ?? null;
+          const calendarIds =
+            connectionId === MAC_CALENDAR_CONNECTION_ID && input.calendarIds !== undefined
+              ? encodeCalendarChoice(input.calendarIds)
+              : null;
           yield* sql`
-            INSERT INTO bot_mcp_grants (bot_id, connection_id, level)
-            VALUES (${input.botId}, ${connectionId}, ${level})
+            INSERT INTO bot_mcp_grants (bot_id, connection_id, level, calendar_ids)
+            VALUES (${input.botId}, ${connectionId}, ${level}, ${calendarIds})
           `;
         }
         yield* sql`
@@ -563,6 +590,36 @@ export const layer = Layer.effect(
       Effect.mapError(fail("forget-mcp-connection")),
     );
 
+    const keepMacCalendars = Effect.fn("BotStore.keepMacCalendars")(
+      function* (selectedIds: ReadonlyArray<string>) {
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const rows = yield* sql<{ readonly bot_id: string; readonly calendar_ids: string }>`
+              SELECT bot_id, calendar_ids FROM bot_mcp_grants
+              WHERE connection_id = ${MAC_CALENDAR_CONNECTION_ID} AND calendar_ids IS NOT NULL
+            `;
+            const changed: Array<string> = [];
+            for (const row of rows) {
+              const choice = decodeCalendarChoice(row.calendar_ids);
+              const kept = choice.filter((id) => selectedIds.includes(id));
+              if (kept.length === choice.length) continue;
+              yield* sql`
+                UPDATE bot_mcp_grants SET calendar_ids = ${encodeCalendarChoice(kept)}
+                WHERE bot_id = ${row.bot_id} AND connection_id = ${MAC_CALENDAR_CONNECTION_ID}
+              `;
+              yield* sql`
+                UPDATE bots SET mcp_grant_revision = mcp_grant_revision + 1
+                WHERE bot_id = ${row.bot_id}
+              `;
+              changed.push(row.bot_id);
+            }
+            return changed;
+          }),
+        );
+      },
+      Effect.mapError(fail("keep-mac-calendars")),
+    );
+
     return BotStore.of({
       listBots: sql<BotRow>`SELECT * FROM bots ORDER BY created_at, bot_id`.pipe(
         Effect.mapError(fail("list-bots")),
@@ -593,6 +650,7 @@ export const layer = Layer.effect(
       listMcpGrants,
       replaceMcpGrants,
       forgetMcpConnection,
+      keepMacCalendars,
     });
   }),
 );

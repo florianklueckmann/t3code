@@ -3,6 +3,7 @@ import {
   MAC_CALENDAR_LABEL,
   MacCalendarError,
   type MacCalendarErrorReason,
+  macCalendarsForBot,
   type MacCalendarInspectResult,
   type MacCalendarSettings,
   type MacCalendarSetupResult,
@@ -476,6 +477,13 @@ const make = Effect.gen(function* () {
         `No calendars are selected for ${MAC_CALENDAR_LABEL}. The user selects them in Settings → MCP connections.`,
       );
     }
+    const shared = macCalendarsForBot(stored.calendars, access.calendarIds);
+    if (shared.length === 0) {
+      return yield* toolError(
+        "capability_denied",
+        `No calendars are chosen for this Bot. The user chooses them in the Bot's settings.`,
+      );
+    }
     const start = calendarBound(input.start);
     const end = calendarBound(input.end);
     if (start === undefined || end === undefined) {
@@ -494,21 +502,21 @@ const make = Effect.gen(function* () {
     if (!Number.isInteger(limit) || limit < 1 || limit > MAX_EVENT_LIMIT) {
       return yield* toolError("invalid_request", "limit must be an integer from 1 to 100.");
     }
-    const selected = new Map(stored.calendars.map((calendar) => [calendar.id, calendar]));
+    const selected = new Map(shared.map((calendar) => [calendar.id, calendar]));
     const requested =
       input.calendar_ids === undefined ? undefined : [...new Set(input.calendar_ids)];
     const outside = requested?.filter((id) => !selected.has(id)) ?? [];
     if (requested?.length === 0 || outside.length > 0) {
       return yield* toolError(
         "capability_denied",
-        `Only the calendars the user selected can be read: ${stored.calendars
+        `Only the calendars the user shared with this Bot can be read: ${shared
           .map((calendar) => `"${calendar.title}" (${calendar.id})`)
           .join(", ")}.`,
       );
     }
     const calendars =
       requested === undefined
-        ? stored.calendars
+        ? shared
         : requested.flatMap((id) => {
             const calendar = selected.get(id);
             return calendar === undefined ? [] : [calendar];
@@ -621,13 +629,14 @@ const make = Effect.gen(function* () {
       );
     }
     const stored = yield* readSettings.pipe(Effect.mapError(writeUnavailable));
-    if (!stored.enabled || !stored.calendars.some((calendar) => calendar.allowWrite === true)) {
+    const calendars = macCalendarsForBot(stored.calendars, access.calendarIds);
+    if (!stored.enabled || !calendars.some((calendar) => calendar.allowWrite === true)) {
       return yield* toolError(
         "capability_denied",
-        "Select a calendar for writing in Settings → MCP connections.",
+        "None of this Bot's calendars allows changes. The user allows them in Settings → MCP connections and chooses them in the Bot's settings.",
       );
     }
-    return { botId: access.botId, direct: access.direct, calendars: stored.calendars };
+    return { botId: access.botId, direct: access.direct, calendars };
   });
   const canWrite = (caller: CalendarCaller) =>
     writeAccess(caller).pipe(
@@ -655,7 +664,10 @@ const make = Effect.gen(function* () {
           (calendar) => calendar.id === calendarId && calendar.allowWrite === true,
         )
       ) {
-        return yield* toolError("capability_denied", "This calendar is not selected for writing.");
+        return yield* toolError(
+          "capability_denied",
+          "This Bot may not change this calendar. Use a calendar marked writable by list_events.",
+        );
       }
       if ((yield* helper.availability) !== "available") {
         return yield* toolError(

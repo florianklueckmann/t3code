@@ -15,6 +15,7 @@ import {
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  botCalendarChoiceToggle,
   botMcpGrantableIds,
   botMcpGrantsChange,
   botMcpGrantsSection,
@@ -380,6 +381,77 @@ describe("Calendar (this Mac) in a Bot's grants", () => {
       { connectionId: MAC_CALENDAR_CONNECTION_ID, granted: false },
     );
     expect(revoked).toEqual({ botId: BOT, expectedRevision: 3, connectionIds: [MAIL] });
+  });
+
+  it("chooses this Bot's calendars from the selection, and goes back to all of them", () => {
+    const pool = calendar({
+      calendars: [
+        { id: "cal-work", title: "Work" },
+        { id: "cal-family", title: "Family" },
+      ],
+    });
+    const view = (calendarIds?: ReadonlyArray<string>) =>
+      botMcpGrantsSection({
+        botId: BOT,
+        grants: {
+          revision: 4,
+          connectionIds: [MAC_CALENDAR_CONNECTION_ID],
+          ...(calendarIds === undefined ? {} : { calendarIds }),
+        },
+        codexMcpServerNames: null,
+        catalog: CATALOG,
+        calendar: pool,
+        capabilities: undefined,
+        providerDriver: ProviderDriverKind.make("codex"),
+        platformOs: "darwin",
+        environmentLabel: "Studio Mac",
+        routines: [],
+        canChange: true,
+        archived: false,
+        now: NOW,
+      });
+    const all = view();
+    expect(all.calendarChoice).toEqual({
+      calendars: [
+        { id: "cal-work", title: "Work", chosen: true },
+        { id: "cal-family", title: "Family", chosen: true },
+      ],
+      all: true,
+    });
+    expect(all.rows[0]?.status.text).toBe("Bots granted it read Work and Family");
+    // Unchecking one of all selected calendars saves the rest as the Bot's own choice.
+    expect(botCalendarChoiceToggle(all.calendarChoice!, "cal-family", false)).toEqual(["cal-work"]);
+    // A calendar no longer selected is not shown, so it cannot be saved back.
+    const work = view(["cal-work", "cal-retired"]);
+    expect(work.calendarChoice?.all).toBe(false);
+    expect(work.rows[0]?.status).toEqual({ tone: "ok", text: "This Bot reads Work" });
+    expect(botCalendarChoiceToggle(work.calendarChoice!, "cal-family", true)).toEqual([
+      "cal-work",
+      "cal-family",
+    ]);
+    expect(view([]).rows[0]?.status.tone).toBe("warning");
+    expect(
+      section({ calendar: pool, granted: [MAIL], ownServers: false }).calendarChoice,
+    ).toBeNull();
+
+    const grants: BotMcpGrants = {
+      revision: 4,
+      connectionIds: [MAC_CALENDAR_CONNECTION_ID],
+      levels: { [MAC_CALENDAR_CONNECTION_ID]: "read-write" },
+      calendarIds: ["cal-work"],
+    };
+    const catalog = botMcpGrantableIds({ connections: CATALOG, calendar: pool });
+    expect(botMcpGrantsChange(BOT, grants, catalog, { calendarIds: null })).toEqual({
+      botId: BOT,
+      expectedRevision: 4,
+      connectionIds: [MAC_CALENDAR_CONNECTION_ID],
+      levels: { [MAC_CALENDAR_CONNECTION_ID]: "read-write" },
+      calendarIds: null,
+    });
+    // Other changes leave the choice out, so the server keeps it.
+    expect(botMcpGrantsChange(BOT, grants, catalog, { calendarWrite: false })).not.toHaveProperty(
+      "calendarIds",
+    );
   });
 });
 
