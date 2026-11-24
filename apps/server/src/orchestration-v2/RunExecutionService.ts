@@ -658,7 +658,9 @@ export interface RunExecutionServiceV2StartRootRunInput {
   }) => Effect.Effect<boolean, ProjectionStoreV2Error>;
   readonly shouldFinalizeRun?: () => Effect.Effect<boolean, ProjectionStoreV2Error>;
   /** Runs when the root turn ends but `shouldFinalizeRun` refuses the write. */
-  readonly settleStoppedProviderThread?: () => Effect.Effect<void>;
+  readonly settleStoppedProviderThread?: (
+    status: OrchestrationV2ProviderThread["status"],
+  ) => Effect.Effect<void>;
   readonly hasUnpairedRunInterruptRequest?: () => Effect.Effect<boolean, never>;
   readonly loadRunInterruptReason?: () => Effect.Effect<string | undefined, never>;
   readonly hasWorkspaceMoved?: () => Effect.Effect<boolean, never>;
@@ -734,7 +736,9 @@ export const layer: Layer.Layer<
         readonly providerThread: OrchestrationV2ProviderThread;
         readonly attempt: OrchestrationV2RunAttempt;
         readonly shouldFinalizeRun?: () => Effect.Effect<boolean, ProjectionStoreV2Error>;
-        readonly settleStoppedProviderThread?: () => Effect.Effect<void>;
+        readonly settleStoppedProviderThread?: (
+          status: OrchestrationV2ProviderThread["status"],
+        ) => Effect.Effect<void>;
         readonly hasUnpairedRunInterruptRequest?: () => Effect.Effect<boolean, never>;
         readonly loadRunInterruptReason?: () => Effect.Effect<string | undefined, never>;
         readonly openRunOwnedSubagents?: OpenRunOwnedSubagentProjection;
@@ -798,7 +802,9 @@ export const layer: Layer.Layer<
             }
           }
           if (input.settleStoppedProviderThread !== undefined) {
-            yield* input.settleStoppedProviderThread();
+            yield* input.settleStoppedProviderThread(
+              finalProviderThreadStatus(input.terminal.threadDisposition),
+            );
           }
           return false;
         }

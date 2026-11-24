@@ -368,11 +368,12 @@ export const layer: Layer.Layer<
         ),
         shouldFinalizeRun: () => isCurrentAttemptIn(["starting", "running"]),
         // A steer superseded this attempt and Stop ended the run before the restart started, so
-        // no later turn settles the provider thread this attempt's turn kept active.
+        // no later turn settles the provider thread this attempt's turn kept active. Under the
+        // lock Stop plans with, so a Stop that read this turn as running has committed.
         settleStoppedProviderThread: Effect.fn(
           "ProviderTurnStartService.settleStoppedProviderThread",
         )(
-          function* () {
+          function* (status: OrchestrationV2ProviderThread["status"]) {
             const { runs, providerThreads, providerTurns } =
               yield* projectionStore.getThreadRecords(
                 input.threadId,
@@ -413,11 +414,12 @@ export const layer: Layer.Layer<
                   driver: providerThread.driver,
                   providerInstanceId: providerThread.providerInstanceId,
                   occurredAt: now,
-                  payload: { ...providerThread, status: "idle", updatedAt: now },
+                  payload: { ...providerThread, status, updatedAt: now },
                 },
               ],
             });
           },
+          (effect) => threadCommands.withLock(input.threadId, effect),
           Effect.catchCause((cause) =>
             Effect.logWarning("Failed to settle a stopped run's provider thread", {
               threadId: input.threadId,
