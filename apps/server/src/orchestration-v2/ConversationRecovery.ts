@@ -97,9 +97,7 @@ export function conversationRecoveryPendingHandoffs(
     const messages = handoff.history.messages.filter((message) =>
       message.kind === "assistant_message"
         ? message.runId !== null && lastReplies.get(message.runId) === message.itemId
-        : message.kind === "user_message" &&
-          message.text.trim() !== "" &&
-          !isCompactionCommandMessage({ role: "user", text: message.text, attachments: [] }),
+        : message.kind === "user_message",
     );
     return { ...handoff, history: { ...handoff.history, messages } };
   });
