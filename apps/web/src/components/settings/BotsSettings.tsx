@@ -258,23 +258,26 @@ function EnvironmentBots({
       Number(left.archivedAt !== null) - Number(right.archivedAt !== null) ||
       left.name.localeCompare(right.name),
   );
-  // A link opens its Bot's editor once that Bot is listed. An editor already open keeps its draft.
+  // A link opens its Bot's editor once that Bot is listed. While another editor is open, the link
+  // waits for it to close, so its draft is never replaced.
   const linkKey = link.bot === undefined ? undefined : `${link.bot}#${link.section ?? ""}`;
   const [openedLink, setOpenedLink] = useState<string | undefined>();
   if (linkKey === undefined && openedLink !== undefined) setOpenedLink(undefined);
   if (
+    editor === null &&
     linkKey !== undefined &&
     linkKey !== openedLink &&
     link.bot !== undefined &&
     bots?.some((bot) => bot.id === link.bot)
   ) {
     setOpenedLink(linkKey);
-    if (editor === null) setEditor({ botId: link.bot, section: link.section });
+    setEditor({ botId: link.bot, section: link.section });
   }
   const navigate = useNavigate({ from: "/settings/bots" });
   const closeEditor = () => {
+    const closing = editor?.botId;
     setEditor(null);
-    if (link.bot === undefined) return;
+    if (link.bot === undefined || link.bot !== closing) return;
     void navigate({
       to: "/settings/bots",
       search: ({ bot: _bot, section: _section, ...rest }) => rest,
