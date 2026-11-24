@@ -715,7 +715,11 @@ export const make = Effect.gen(function* () {
         workThreadId: task.workThreadId,
         homeThreadId: task.homeThreadId,
         phase: state.phase,
-        endedAt,
+        // A saved result alerts as of its save, which can come long after the run ended.
+        endedAt:
+          state.phase === "completed" && savedResultAt !== undefined
+            ? DateTime.makeUnsafe(savedResultAt)
+            : endedAt,
       });
       if (decision === "hold") return null;
       // Pinned to the run's end, as a saved result is, so a later rename cannot ring again.
