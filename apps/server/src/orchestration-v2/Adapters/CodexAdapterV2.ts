@@ -389,6 +389,13 @@ function isCodexActiveWriterError(error: unknown): boolean {
   );
 }
 
+const isCodexLoadRefusal = Schema.is(
+  Schema.Union([
+    ProviderAdapter.ProviderAdapterSealRefusedError,
+    ProviderAdapter.ProviderAdapterMcpConnectionsRefusedError,
+  ]),
+);
+
 function isCodexThreadNotFoundError(error: unknown): boolean {
   return (
     isCodexAppServerRequestError(error) &&
@@ -8584,34 +8591,32 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             ),
         );
 
-        const mcpAppsError = (detail: string) => (cause: unknown) =>
-          new ProviderAdapter.ProviderAdapterProtocolError({
-            driver: CODEX_PROVIDER,
-            detail,
-            payload: cause,
-          });
-        // Codex unloads idle threads; MCP requests against one fail until it is resumed.
+        const mcpAppsError =
+          (detail: string) =>
+          (cause: unknown): ProviderAdapter.ProviderAdapterV2Error =>
+            isCodexLoadRefusal(cause)
+              ? cause
+              : new ProviderAdapter.ProviderAdapterProtocolError({
+                  driver: CODEX_PROVIDER,
+                  detail,
+                  payload: cause,
+                });
+        // Codex unloads idle threads; MCP requests against one fail until it is loaded again,
+        // with the thread's own seal and grants as a turn would load it.
         const withLoadedThread = <A, E, R>(
-          providerThread: OrchestrationV2ProviderThread,
+          target: Parameters<ProviderAdapter.ProviderAdapterV2McpApps["listTools"]>[0],
           threadId: string,
           request: Effect.Effect<A, E, R>,
         ) =>
           request.pipe(
             Effect.catchIf(isCodexThreadNotFoundError, () =>
-              readMcpSession(providerThread.appThreadId).pipe(
-                Effect.flatMap((mcpSession) =>
-                  resumeNativeThread(threadId, {
-                    excludeTurns: true,
-                    ...codexThreadRuntimeParams({
-                      threadId: providerThread.appThreadId,
-                      mcpSession,
-                      modelSelection: input.modelSelection,
-                      runtimePolicy: input.runtimePolicy,
-                    }),
-                  }),
-                ),
-                Effect.andThen(request),
-              ),
+              loadNativeThread({
+                nativeThreadId: threadId,
+                appThreadId: target.providerThread.appThreadId,
+                providerThread: target.providerThread,
+                modelSelection: input.modelSelection,
+                runtimePolicy: target.runtimePolicy,
+              }).pipe(Effect.andThen(request)),
             ),
           );
         const mcpApps: ProviderAdapter.ProviderAdapterV2McpApps = {
@@ -8619,7 +8624,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             function* (toolsInput) {
               const threadId = yield* getNativeThreadId(toolsInput.providerThread);
               const response = yield* withLoadedThread(
-                toolsInput.providerThread,
+                toolsInput,
                 threadId,
                 ensureInitialized.pipe(
                   Effect.andThen(
@@ -8640,7 +8645,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             function* (callInput) {
               const threadId = yield* getNativeThreadId(callInput.providerThread);
               const response = yield* withLoadedThread(
-                callInput.providerThread,
+                callInput,
                 threadId,
                 ensureInitialized.pipe(
                   Effect.andThen(
@@ -8668,7 +8673,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             function* (readInput) {
               const threadId = yield* getNativeThreadId(readInput.providerThread);
               const response = yield* withLoadedThread(
-                readInput.providerThread,
+                readInput,
                 threadId,
                 ensureInitialized.pipe(
                   Effect.andThen(

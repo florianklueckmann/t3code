@@ -10846,6 +10846,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
 
         const result = yield* mcpApps.readResource({
           providerThread: harness.providerThread,
+          runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
           server: "weather",
           uri: MCP_APP_RESOURCE,
         });
@@ -10862,6 +10863,157 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         ),
       ),
     ),
+  );
+
+  it.effect(
+    "loads an unloaded Bot thread for an MCP App request with only its grants, or refuses it",
+    () =>
+      Effect.gen(function* () {
+        const delivery = yield* makeDelivery;
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const scenario = "mcp-app-bot-thread-recovery";
+            const nativeThreadId = `native-${scenario}`;
+            const seal = codexHomeSealReplay(scenario, nativeThreadId);
+            const { step, resumed, configRead, listed, botLoadStatuses } = seal;
+            yield* seal.setMcpSession;
+            const grantedStatuses = Object.fromEntries(
+              [privateMail, workMail, MAC_CALENDAR_CONNECTION_ID].map((id) => [
+                `t3c-${id}`,
+                "connected",
+              ]),
+            );
+            const read = (id: number, result: unknown) =>
+              step(
+                id,
+                "mcpServer/resource/read",
+                { threadId: nativeThreadId, server: "weather", uri: MCP_APP_RESOURCE },
+                result,
+              );
+            const unloaded = (id: number): Array<CodexReplay.CodexAppServerReplayEntry> => [
+              {
+                type: "expect_outbound",
+                label: `mcpServer/resource/read ${id}`,
+                frame: {
+                  id,
+                  method: "mcpServer/resource/read",
+                  params: { threadId: nativeThreadId, server: "weather", uri: MCP_APP_RESOURCE },
+                },
+              },
+              {
+                type: "emit_inbound",
+                label: `thread not found ${id}`,
+                frame: {
+                  id,
+                  error: { code: -32600, message: `thread not found: ${nativeThreadId}` },
+                },
+              },
+            ];
+            const resourceResult = { contents: [{ uri: MCP_APP_RESOURCE, text: MCP_APP_HTML }] };
+            const grantResume = {
+              threadId: nativeThreadId,
+              excludeTurns: true,
+              config: {
+                ...CodexAdapterV2.CODEX_THREAD_CONFIG,
+                "features.memories": false,
+                "memories.use_memories": false,
+                "memories.generate_memories": false,
+                "features.apps": false,
+                "features.plugins": false,
+                "features.remote_plugin": false,
+                "features.skill_mcp_dependency_install": false,
+              },
+            };
+            const transcript = makeCodexReplayTranscript({
+              scenario,
+              entries: [
+                ...seal.onMeasuredVersion(
+                  codexReplayPreamble({
+                    nativeThreadId,
+                    nativeTurnId: "unused-turn",
+                    prompt: "unused-prompt",
+                  }).slice(0, 5),
+                ),
+                ...unloaded(3),
+                // Loaded as a Bot turn loads it: released, the user's servers read and turned
+                // off, the grants loaded, and what Codex loaded checked.
+                ...step(
+                  4,
+                  "thread/unsubscribe",
+                  { threadId: nativeThreadId },
+                  { status: "notLoaded" },
+                ),
+                ...step(5, "config/read", { includeLayers: false, cwd: "/workspace" }, configRead),
+                ...step(6, "thread/resume", grantResume, resumed),
+                ...listed(7, nativeThreadId, { ...botLoadStatuses, ...grantedStatuses }),
+                ...read(8, resourceResult),
+                // Unloaded again, and this time Codex loads a server the Bot wasn't granted.
+                ...unloaded(9),
+                ...step(10, "config/read", { includeLayers: false, cwd: "/workspace" }, configRead),
+                ...step(11, "thread/resume", grantResume, resumed),
+                ...listed(12, nativeThreadId, {
+                  ...botLoadStatuses,
+                  ...grantedStatuses,
+                  leak: "connected",
+                }),
+                ...step(
+                  13,
+                  "thread/unsubscribe",
+                  { threadId: nativeThreadId },
+                  { status: "unsubscribed" },
+                ),
+              ],
+            });
+            const resumeParams: Array<{ config: { mcp_servers?: Record<string, unknown> } }> = [];
+            const harness = yield* makeCodexReplayHarness(transcript, undefined, (method, params) =>
+              Effect.sync(() => {
+                if (method === "thread/resume") resumeParams.push(params as never);
+              }),
+            );
+            const mcpApps = harness.runtime.mcpApps;
+            assert.ok(mcpApps, "Codex runtime should expose MCP apps");
+            const readResource = mcpApps.readResource({
+              providerThread: harness.providerThread,
+              runtimePolicy: {
+                ...CODEX_TEST_RUNTIME_POLICY,
+                nativeMemory: "disabled",
+                mcpConnections: [privateMail, workMail, MAC_CALENDAR_CONNECTION_ID],
+              },
+              server: "weather",
+              uri: MCP_APP_RESOURCE,
+            });
+
+            assert.deepEqual(yield* readResource, resourceResult);
+            assert.hasAllKeys(resumeParams[0]!.config.mcp_servers ?? {}, [
+              ...Object.keys(seal.disabledUserServers),
+              ...Object.keys(grantedStatuses),
+              "t3-code",
+              "t3-code-direct",
+            ]);
+            assert.deepEqual(
+              Object.fromEntries(
+                Object.entries(resumeParams[0]!.config.mcp_servers ?? {}).filter(
+                  ([name]) => name in seal.disabledUserServers,
+                ),
+              ),
+              seal.disabledUserServers,
+            );
+            const refused = yield* readResource.pipe(Effect.flip);
+            assert.include(refused.message, 'Codex loaded the MCP server "leak"');
+          }).pipe(
+            Effect.provideService(HostProcess.Platform, "darwin"),
+            Effect.provide(
+              Layer.mergeAll(
+                IdAllocator.layer,
+                McpProviderSessions.layer,
+                NodeServices.layer,
+                NodeCrypto.layer,
+                delivery.layer,
+              ),
+            ),
+          ),
+        );
+      }),
   );
 
   it.effect("captures an MCP app's resource and holds the turn open until it lands", () =>
