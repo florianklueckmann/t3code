@@ -545,11 +545,19 @@ export function botMcpGrantsSection(input: {
   const grantsUnavailable = botCapabilityUnavailableLabel(input.capabilities, "mcpGrants");
   const ownServersUnavailable = botCapabilityUnavailableLabel(input.capabilities, "ownMcpServers");
   // Servers that send capabilities decide the model's support; older ones run Bots on Codex.
-  const onClaude = input.capabilities !== undefined && input.providerDriver === "claudeAgent";
+  // Claude and Pi keep a Bot to T3 Code's tools everywhere and load grants only on macOS.
+  const macOnlyProvider =
+    input.capabilities === undefined
+      ? undefined
+      : input.providerDriver === "claudeAgent"
+        ? "Claude"
+        : input.providerDriver === "pi"
+          ? "Pi"
+          : undefined;
   const unenforceable =
     input.capabilities === undefined && input.providerDriver !== "codex"
       ? "This Bot's model is not on a Codex provider, so without connections it uses that provider's own MCP setup."
-      : onClaude
+      : macOnlyProvider !== undefined
         ? null
         : input.platformOs !== "darwin" && input.platformOs !== "linux"
           ? `On ${input.environmentLabel}, this Bot without connections uses Codex's own MCP setup.`
@@ -557,10 +565,10 @@ export function botMcpGrantsSection(input: {
   const notes: Array<BotMcpGrantsNote> = [];
   if (grantsUnavailable !== null) {
     notes.push({ tone: "muted", text: grantsUnavailable });
-  } else if (onClaude && input.platformOs !== "darwin") {
+  } else if (macOnlyProvider !== undefined && input.platformOs !== "darwin") {
     notes.push({
       tone: "warning",
-      text: `On Claude, MCP connections apply only on macOS. On ${input.environmentLabel}, this Bot with connections does not run; without them it loads only T3 Code's own tools.`,
+      text: `On ${macOnlyProvider}, MCP connections apply only on macOS. On ${input.environmentLabel}, this Bot with connections does not run; without them it loads only T3 Code's own tools.`,
     });
   } else if (unenforceable !== null) {
     notes.push({

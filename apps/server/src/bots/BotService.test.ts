@@ -136,7 +136,11 @@ const layerSupport = Layer.mergeAll(
       Effect.succeed({
         instanceId,
         driverKind: ProviderDriverKind.make(
-          instanceId === "claude" ? "claudeAgent" : instanceId === "pi" ? "pi" : "codex",
+          instanceId === "claude"
+            ? "claudeAgent"
+            : instanceId === "pi" || instanceId === "cursor"
+              ? instanceId
+              : "codex",
         ),
       } as ProviderInstance),
   }),
@@ -452,7 +456,7 @@ it.effect("finishes an interrupted archive when the request is repeated", () =>
 );
 
 it.effect(
-  "moves home conversations to a new model, Claude included, and rejects other providers",
+  "moves home conversations to a new model, Claude and Pi included, and rejects other providers",
   () =>
     Effect.gen(function* () {
       yield* seedProjects;
@@ -470,19 +474,26 @@ it.effect(
           yield* bots.update({ botId, modelSelection: claude });
           assert.equal((yield* Ref.get(world.threads)).get(home)?.model, "claude-opus");
 
-          const pi = { instanceId: ProviderInstanceId.make("pi"), model: "pi-model" };
-          const rejected = yield* bots.update({ botId, modelSelection: pi }).pipe(Effect.flip);
-          assert.equal(rejected.message, "Bots run on Codex and Claude providers only.");
+          const pi = {
+            instanceId: ProviderInstanceId.make("pi"),
+            model: "openai-codex/gpt-6-luna",
+          };
+          yield* bots.update({ botId, modelSelection: pi });
+          assert.equal((yield* Ref.get(world.threads)).get(home)?.model, pi.model);
+
+          const cursor = { instanceId: ProviderInstanceId.make("cursor"), model: "cursor-model" };
+          const rejected = yield* bots.update({ botId, modelSelection: cursor }).pipe(Effect.flip);
+          assert.equal(rejected.message, "Bots run on Codex, Claude and Pi providers only.");
           const rejectedCreate = yield* bots
             .create({
               botId: BotId.make("other-bot"),
               name: "Other",
               instructions: "",
-              modelSelection: pi,
+              modelSelection: cursor,
               learningPolicy: "automatic",
             })
             .pipe(Effect.flip);
-          assert.equal(rejectedCreate.message, "Bots run on Codex and Claude providers only.");
+          assert.equal(rejectedCreate.message, "Bots run on Codex, Claude and Pi providers only.");
         }),
       );
     }).pipe(Effect.provide(layerDatabase)),

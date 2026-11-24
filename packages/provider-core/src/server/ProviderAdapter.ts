@@ -261,7 +261,7 @@ export class ProviderAdapterOpenSessionError extends Schema.TaggedError<Provider
 
 const sealRefusalText = (driver: string) =>
   ({
-    provider: "only Codex can enforce it",
+    provider: "only Codex and Claude can enforce it",
     version: `this ${driver === "claudeAgent" ? "Claude Code" : "Codex"} version's tools have not been verified`,
     platform: "it is only verified on macOS",
     children: "this conversation already has agents it could reach",
@@ -292,6 +292,7 @@ const mcpConnectionsRefusalText = {
   version: "this Codex version has not been verified with them",
   platform: "they are only verified on macOS and Linux",
   claudePlatform: "on Claude they are only verified on macOS",
+  piPlatform: "on Pi they are only verified on macOS",
   children: "this conversation has agents still running with its earlier connections",
   load: "the conversation's MCP setup could not be confirmed",
   unavailable: "this server cannot read its MCP connections",
@@ -333,7 +334,7 @@ export class ProviderAdapterMcpConnectionsRefusedError extends Schema.TaggedErro
       case "missing":
         return "An MCP connection granted to this Bot no longer exists. Review the Bot's MCP connections in Settings → Bots. Nothing ran.";
       default:
-        return `This Bot's MCP connections can't be loaded because ${mcpConnectionsRefusalText[this.reason === "platform" && this.driver === "claudeAgent" ? "claudePlatform" : this.reason]}, so nothing ran.`;
+        return `This Bot's MCP connections can't be loaded because ${mcpConnectionsRefusalText[this.reason !== "platform" ? this.reason : this.driver === "claudeAgent" ? "claudePlatform" : this.driver === "pi" ? "piPlatform" : "platform"]}, so nothing ran.`;
     }
   }
 }

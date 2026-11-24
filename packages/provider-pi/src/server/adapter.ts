@@ -39,6 +39,7 @@ import * as Exit from "effect/Exit";
 import * as Scope from "effect/Scope";
 import * as Fiber from "effect/Fiber";
 import * as Queue from "effect/Queue";
+import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
@@ -48,6 +49,7 @@ import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
 import { providerMessageTextWithAttachmentPaths } from "@t3tools/provider-core/server/attachmentPrompt";
 import { mcpToolPresentation } from "@t3tools/provider-core/server/mcpToolPresentation";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
+import * as McpConnectionGrants from "@t3tools/provider-core/server/McpConnectionGrants";
 import { parsePiCompactCommand, type PiCompactCommand } from "./commands.ts";
 import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -76,10 +78,12 @@ import {
 } from "./rpc.ts";
 import {
   buildPiRpcLaunch,
+  materializePiT3BotExtension,
   materializePiT3McpExtension,
   resolvePiLaunchArgs,
 } from "./mcpInjection.ts";
 import { PI_FILE_CHANGE_TOOLS, PI_T3_SERVICE_TIER_COMMAND } from "./mcpExtensionSource.ts";
+import { PI_T3_BOT_SESSION_COMMAND, type PiBotSessionPayload } from "./botExtensionSource.ts";
 import { PI_STANDARD_SERVICE_TIER } from "./modelCapabilities.ts";
 
 export const PI_PROVIDER = ProviderDriverKind.make("pi");
@@ -93,6 +97,10 @@ const STREAM_FLUSH_MS = 50;
 const PI_REQUEST_TIMEOUT_MS = 15_000;
 const PI_SUBAGENT_ASYNC_PREFIX = "PI_SUBAGENT_ASYNC_JSON:";
 const decodePiJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
+const encodeBotSessionPayload = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+
+/** Where a Bot's Pi session was measured to load only its granted MCP connections. */
+export const piMcpGrantsPlatformSupported = (platform: NodeJS.Platform) => platform === "darwin";
 const PI_SESSION_TIMEOUT_MS = 60_000;
 const MAX_EXTENSION_STATUSES = 32;
 const MAX_EXTENSION_STATUS_KEY_LENGTH = 256;
@@ -455,6 +463,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
   const idAllocator = yield* IdAllocator.IdAllocatorV2;
   const host = yield* ProviderHost.ProviderHost;
   const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
+  const mcpGrants = yield* Effect.serviceOption(McpConnectionGrants.McpConnectionGrants);
   const { continuationRequests } = options;
 
   const protocolError = (detail: string, payload?: unknown) =>
@@ -495,6 +504,11 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
       const extensionPath = yield* provideCacheFs(
         materializePiT3McpExtension(host.paths.providerStatusCacheDir),
       );
+      // A Bot's thread is sealed for the life of the process: it never loads the user's MCP setup.
+      const botExtensionPath =
+        input.runtimePolicy.mcpConnections === undefined
+          ? undefined
+          : yield* provideCacheFs(materializePiT3BotExtension(host.paths.providerStatusCacheDir));
       const resolvedLaunchArgs = resolvePiLaunchArgs(options.settings.launchArgs);
       if (!resolvedLaunchArgs.ok) {
         return yield* protocolError(resolvedLaunchArgs.message);
@@ -529,6 +543,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
             environment: { ...options.environment, T3CODE_THREAD_ID: input.threadId },
             mcpSession,
             extensionPath,
+            botExtensionPath,
             sessionPath,
             runtimeMode: input.runtimePolicy.runtimeMode,
           });
@@ -3163,6 +3178,95 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
         }
       });
 
+      /**
+       * Before each Bot turn, hands T3 Code's Bot extension the Bot's instructions and its granted
+       * connections, resolved now, through a private file it deletes on reading. The extension
+       * connects exactly those servers and drops any no longer granted.
+       */
+      const applyBotSession = Effect.fnUntraced(function* (
+        turnInput: ProviderAdapter.ProviderAdapterV2TurnInput,
+      ) {
+        const policy = turnInput.runtimePolicy;
+        if (policy.nativeTools !== undefined)
+          return yield* new ProviderAdapter.ProviderAdapterSealRefusedError({
+            driver: PI_PROVIDER,
+            seal: policy.nativeTools,
+            reason: "provider",
+          });
+        if (botExtensionPath === undefined) {
+          if (policy.mcpConnections !== undefined)
+            return yield* new ProviderAdapter.ProviderAdapterMcpConnectionsRefusedError({
+              driver: PI_PROVIDER,
+              reason: "load",
+            });
+          if (turnInput.applicationInstructions !== undefined)
+            return yield* protocolError("This Pi session was not started for a Bot");
+          return;
+        }
+        const ids = policy.mcpConnections ?? [];
+        if (ids.length > 0 && !piMcpGrantsPlatformSupported(yield* HostProcess.Platform))
+          return yield* new ProviderAdapter.ProviderAdapterMcpConnectionsRefusedError({
+            driver: PI_PROVIDER,
+            reason: "platform",
+          });
+        const load =
+          ids.length === 0
+            ? { servers: [], instructions: undefined }
+            : Option.isNone(mcpGrants)
+              ? yield* new ProviderAdapter.ProviderAdapterMcpConnectionsRefusedError({
+                  driver: PI_PROVIDER,
+                  reason: "unavailable",
+                })
+              : yield* mcpGrants.value.resolve({
+                  driver: PI_PROVIDER,
+                  ids,
+                  macCalendarWrite: policy.macCalendarWrite === true,
+                  mcpSession,
+                });
+        const instructions = [turnInput.applicationInstructions, load.instructions]
+          .filter((text) => text !== undefined && text.length > 0)
+          .join("\n\n");
+        const payload: PiBotSessionPayload = {
+          instructions: instructions.length > 0 ? instructions : null,
+          servers: Object.fromEntries(
+            load.servers.map(({ name, transport }) => [
+              name,
+              transport.type === "stdio"
+                ? {
+                    command: transport.command,
+                    args: transport.args,
+                    env: Redacted.value(transport.env),
+                  }
+                : { url: transport.url, headers: Redacted.value(transport.headers) },
+            ]),
+          ),
+        };
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            // A fresh private directory: the payload can carry credentials.
+            const payloadPath = yield* fileSystem
+              .makeTempDirectoryScoped({ directory: host.paths.providerStatusCacheDir })
+              .pipe(
+                Effect.map((directory) => path.join(directory, "bot-session.json")),
+                Effect.tap((file) =>
+                  fileSystem.writeFileString(file, encodeBotSessionPayload(payload), {
+                    mode: 0o600,
+                  }),
+                ),
+                Effect.mapError(() => protocolError("Could not hand this Bot's session to Pi")),
+              );
+            const result = yield* request({
+              type: "prompt",
+              message: `/${PI_T3_BOT_SESSION_COMMAND} ${payloadPath}`,
+            });
+            if (recordString(result, "disposition") !== "handled")
+              return yield* protocolError(
+                "T3 Code's Pi Bot extension did not apply this Bot's instructions and connections",
+              );
+          }),
+        );
+      });
+
       const resolvePromptPayload = Effect.fnUntraced(function* (
         text: string,
         attachments: ReadonlyArray<ChatAttachment>,
@@ -3276,7 +3380,10 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
             const continuation =
               turnInput.message.createdBy === "agent" &&
               turnInput.message.creationSource === "provider";
-            if (!continuation) yield* applySelection(turnInput.modelSelection);
+            if (!continuation) {
+              yield* applySelection(turnInput.modelSelection);
+              yield* applyBotSession(turnInput);
+            }
             if (turnInput.appThread.title !== appliedSessionName) {
               yield* request({
                 type: "set_session_name",

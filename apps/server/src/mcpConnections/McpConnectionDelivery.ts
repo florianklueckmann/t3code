@@ -11,6 +11,7 @@ import {
   McpConnectionProblem,
   type ProviderDriverKind,
 } from "@t3tools/contracts";
+import * as McpConnectionGrants from "@t3tools/provider-core/server/McpConnectionGrants";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
 import * as Context from "effect/Context";
@@ -39,13 +40,13 @@ export const grantedConnectionOf = (serverName: string): McpConnectionId | undef
     : undefined;
 
 /**
- * The tool namespace a provider shows the model for a granted server: Codex turns hyphens into
- * underscores (measured on 0.166, 0.167), Claude keeps them (measured on 2.1.326).
+ * The tool namespace a provider shows the model for a granted server: Codex and Pi turn hyphens
+ * into underscores (measured on Codex 0.166, 0.167 and Pi 1.6.0), Claude keeps them (2.1.326).
  */
-const grantedToolNamespace = (id: McpConnectionId, driver: "codex" | "claudeAgent") =>
-  driver === "codex"
-    ? `mcp__${grantedServerName(id).replaceAll("-", "_")}`
-    : `mcp__${grantedServerName(id)}`;
+const grantedToolNamespace = (id: McpConnectionId, driver: string) =>
+  driver === "claudeAgent"
+    ? `mcp__${grantedServerName(id)}`
+    : `mcp__${grantedServerName(id).replaceAll("-", "_")}`;
 
 /**
  * Tells the model which granted account each namespace is. Labels and ids only: two accounts of
@@ -53,7 +54,7 @@ const grantedToolNamespace = (id: McpConnectionId, driver: "codex" | "claudeAgen
  */
 export const grantedConnectionsInstructions = (
   delivered: ReadonlyArray<Pick<DeliveredMcpConnection, "id" | "label">>,
-  driver: "codex" | "claudeAgent",
+  driver: string,
 ): string | undefined =>
   delivered.length === 0
     ? undefined
@@ -271,3 +272,45 @@ const make = Effect.gen(function* () {
 });
 
 export const layer = Layer.effect(McpConnectionDelivery, make);
+
+/** Grants for adapters outside this package: T3-served toolsets become HTTP on the thread's session. */
+export const grantsLayer = Layer.effect(
+  McpConnectionGrants.McpConnectionGrants,
+  Effect.gen(function* () {
+    const delivery = yield* McpConnectionDelivery;
+    return McpConnectionGrants.McpConnectionGrants.of({
+      resolve: Effect.fn("McpConnectionGrants.resolve")(function* (input) {
+        const load = yield* delivery
+          .resolve(input.ids, input.macCalendarWrite)
+          .pipe(Effect.mapError((error) => deliveryRefusal(input.driver, error)));
+        const servers: Array<McpConnectionGrants.GrantedMcpServer> = [];
+        for (const { id, transport } of load.connections) {
+          const name = grantedServerName(id);
+          if (transport.type !== "t3") {
+            servers.push({ id, name, transport });
+            continue;
+          }
+          if (input.mcpSession === undefined)
+            return yield* new ProviderAdapter.ProviderAdapterMcpConnectionsRefusedError({
+              driver: input.driver,
+              reason: "unavailable",
+            });
+          const endpoint = t3ServedEndpoint(transport.toolset, input.mcpSession);
+          servers.push({
+            id,
+            name,
+            transport: {
+              type: "http",
+              url: endpoint.url,
+              headers: Redacted.make(endpoint.headers),
+            },
+          });
+        }
+        return {
+          servers,
+          instructions: grantedConnectionsInstructions(load.connections, input.driver),
+        };
+      }),
+    });
+  }),
+);

@@ -51,6 +51,7 @@ export function botProviderDrivers(
 const BOT_DRIVER_NAMES: ReadonlyMap<string, string> = new Map([
   ["codex", "Codex"],
   ["claudeAgent", "Claude"],
+  ["pi", "Pi"],
 ]);
 /** Shown in place of the model picker when no provider a Bot can run on is set up. */
 export function botNoProviderLabel(drivers: ReadonlyArray<string>): string {
@@ -74,12 +75,17 @@ const BOT_CAPABILITY_LABELS: Record<BotCapabilityFeature, ReadonlyMap<string, st
       "claude_unsupported",
       "Not available on Claude yet. A Claude Bot loads none of your own MCP servers.",
     ],
+    ["pi_unsupported", "Not available on Pi yet. A Pi Bot loads none of your own MCP servers."],
     ["provider", "Needs a Codex model for this Bot."],
   ]),
   noChangesRoutines: new Map([
     [
       "claude_unsupported",
       "No changes isn't available on Claude yet, because Claude can't enforce it. Switch the Bot to a Codex model for No changes routines.",
+    ],
+    [
+      "pi_unsupported",
+      "No changes isn't available on Pi yet, because Pi can't enforce it. Switch the Bot to a Codex or Claude model for No changes routines.",
     ],
     ["provider", "No changes needs a Codex or Claude model for this Bot."],
   ]),
@@ -924,6 +930,7 @@ const BOT_MAINTENANCE_UNAVAILABLE_LABELS: ReadonlyMap<string, string> = new Map(
     "Needs a Codex model. Pick a Codex model for this Bot to turn maintenance on.",
   ],
   ["claude_unsupported", "Not available on Claude yet. It runs on Codex models."],
+  ["pi_unsupported", "Not available on Pi yet. It runs on Codex models."],
   ["instance_unavailable", "This Bot's Codex provider is off or missing."],
   ["provider_signed_out", "Sign in to Codex to run maintenance."],
   ["codex_version_unsupported", "Update Codex to run maintenance."],
@@ -1035,6 +1042,7 @@ export const BOT_HOME_CHECK_DESCRIPTION =
 const BOT_HOME_CHECK_UNAVAILABLE_LABELS: ReadonlyMap<string, string> = new Map([
   ["provider", "Needs a Codex model. Pick a Codex model for this Bot to turn the check on."],
   ["claude_unsupported", "Not available on Claude yet. It runs on Codex models."],
+  ["pi_unsupported", "Not available on Pi yet. It runs on Codex or Claude models."],
   ["platform", "Runs only when this server is a Mac."],
 ]);
 /** Settings caption for a Home check; unknown reasons from newer servers stay readable. */
@@ -1119,6 +1127,7 @@ export const BOT_FAILURE_DIAGNOSIS_DESCRIPTION =
 const BOT_FAILURE_DIAGNOSIS_UNAVAILABLE_LABELS: ReadonlyMap<string, string> = new Map([
   ["provider", "Needs a Codex or Claude model for this Bot."],
   ["claude_unsupported", "Not available on Claude yet. It runs on Codex models."],
+  ["pi_unsupported", "Not available on Pi yet. It runs on Codex or Claude models."],
   ["platform", "Runs only when this server is a Mac."],
 ]);
 /** Settings caption; unknown reasons from newer servers stay readable. */

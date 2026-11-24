@@ -407,7 +407,7 @@ it.effect("stays off at 08:00 by default and configures by compare-and-set", () 
     assert.deepInclude(yield* onMac(check.get(scope)), {
       enabled: false,
       early: false,
-      unavailableReason: "provider",
+      unavailableReason: "pi_unsupported",
     });
     // A Claude Home seals the check, so both switches turn on.
     yield* main`UPDATE orchestration_v2_projection_threads SET provider_instance_id = 'claudeAgent' WHERE thread_id = ${home}`;
@@ -685,7 +685,7 @@ it.effect.each([
         {
           kind: "unsupported",
           at: "2026-11-09T09:00:00.000Z",
-          reason: provider === "codex" ? "platform" : "provider",
+          reason: provider === "codex" ? "platform" : "pi_unsupported",
         },
       ],
     );

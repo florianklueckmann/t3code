@@ -67,6 +67,10 @@
       "types": "./src/server/managedProvider.ts",
       "import": "./src/server/managedProvider.ts"
     },
+    "./server/McpConnectionGrants": {
+      "types": "./src/server/McpConnectionGrants.ts",
+      "import": "./src/server/McpConnectionGrants.ts"
+    },
     "./server/McpProviderSessions": {
       "types": "./src/server/McpProviderSessions.ts",
       "import": "./src/server/McpProviderSessions.ts"

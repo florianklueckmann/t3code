@@ -2208,7 +2208,7 @@ export const layer: Layer.Layer<
             ? botContext.value.message
             : applicationInstructions !== undefined &&
                 !BotProviderSupport.isBotDriver(input.providerThread.driver)
-              ? `${BotProviderSupport.BOT_DRIVERS_MESSAGE} Switch this conversation to a Codex or Claude model.`
+              ? `${BotProviderSupport.BOT_DRIVERS_MESSAGE} Switch this conversation to a Codex, Claude or Pi model.`
               : undefined;
         const turnInput = {
           appThread: input.appThread,

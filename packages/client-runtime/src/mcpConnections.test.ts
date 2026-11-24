@@ -151,6 +151,7 @@ describe("botMcpGrantsSection", () => {
   const PLATFORM_LIMIT =
     "MCP connections apply only to Codex on macOS and Linux. On Studio Mac, this Bot without connections uses Codex's own MCP setup. A Bot with connections does not run there.";
   const claude = ProviderDriverKind.make("claudeAgent");
+  const pi = ProviderDriverKind.make("pi");
   const codex = ProviderDriverKind.make("codex");
 
   it.each([
@@ -192,12 +193,25 @@ describe("botMcpGrantsSection", () => {
   const CLAUDE_PLATFORM_LIMIT =
     "On Claude, MCP connections apply only on macOS. On Studio Mac, this Bot with connections does not run; without them it loads only T3 Code's own tools.";
 
+  const PI_PLATFORM_LIMIT =
+    "On Pi, MCP connections apply only on macOS. On Studio Mac, this Bot with connections does not run; without them it loads only T3 Code's own tools.";
+
   it.each([
-    ["available, with grants", available, "darwin", [MAIL], [], true],
-    ["available, on Windows", available, "windows", [MAIL], [CLAUDE_PLATFORM_LIMIT], true],
-    ["available, on Linux", available, "linux", [MAIL], [CLAUDE_PLATFORM_LIMIT], true],
-    ["unavailable on Claude, with grants", onClaude, "darwin", [MAIL], [CLAUDE_GRANTS], false],
-    ["unavailable on Claude, on Windows", onClaude, "windows", [], [CLAUDE_GRANTS], false],
+    ["available, with grants", available, "darwin", [MAIL], [], true, claude],
+    ["available, on Windows", available, "windows", [MAIL], [CLAUDE_PLATFORM_LIMIT], true, claude],
+    ["available, on Linux", available, "linux", [MAIL], [CLAUDE_PLATFORM_LIMIT], true, claude],
+    ["available on Pi, with grants", available, "darwin", [MAIL], [], true, pi],
+    ["available on Pi, on Linux", available, "linux", [MAIL], [PI_PLATFORM_LIMIT], true, pi],
+    [
+      "unavailable on Claude, with grants",
+      onClaude,
+      "darwin",
+      [MAIL],
+      [CLAUDE_GRANTS],
+      false,
+      claude,
+    ],
+    ["unavailable on Claude, on Windows", onClaude, "windows", [], [CLAUDE_GRANTS], false, claude],
     [
       "unavailable for a reason this client doesn't know",
       { ...available, mcpGrants: "newer_reason" },
@@ -205,14 +219,15 @@ describe("botMcpGrantsSection", () => {
       [],
       ["Not available on this Bot's model."],
       false,
+      claude,
     ],
   ] as const)(
     "follows the server's capabilities when it sends them: %s",
-    (_, capabilities, platformOs, granted, expected, canGrant) => {
+    (_, capabilities, platformOs, granted, expected, canGrant, providerDriver) => {
       // The driver no longer decides once the server reports what the model supports.
       const result = section({
         capabilities,
-        providerDriver: claude,
+        providerDriver,
         platformOs,
         granted: [...granted],
         routines: null,
