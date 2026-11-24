@@ -220,6 +220,18 @@ it("keeps a dirty draft protected and inspectable when live activity or write pe
   using screen = setup();
   screen.render();
   expect(state.header.gestureEnabled).toBe(true);
+  // An untouched editor follows a save made on another client.
+  state.view = {
+    ...state.view!,
+    revision: 2,
+    note: {
+      ...state.view!.note,
+      context: [{ text: "Saved elsewhere", refs: [{ kind: "user", revision: 2 }] }],
+    },
+  };
+  screen.render();
+  expect(state.fields.get("Context")).toMatchObject({ value: "Saved elsewhere" });
+  expect(state.preventRemove).toBe(false);
   act(() => state.fields.get("Context")!.onChange("Unsaved draft"));
   expect(state.preventRemove).toBe(true);
   state.view = { ...state.view!, writable: false };
@@ -258,7 +270,7 @@ it("keeps a dirty draft protected and inspectable when live activity or write pe
   expect(state.save).toHaveBeenCalledWith(
     expect.objectContaining({
       input: expect.objectContaining({
-        baseRevision: 1,
+        baseRevision: 2,
         note: expect.objectContaining({ context: [{ text: "Unsaved draft" }] }),
       }),
     }),

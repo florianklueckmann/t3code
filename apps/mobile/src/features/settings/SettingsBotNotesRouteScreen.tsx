@@ -123,7 +123,7 @@ function BotNotesEditor(props: {
   const navigation = useNavigation();
   const selectDetail = useSelectWorkspaceDetail();
   const scope = { botId: view.botId, projectId: view.projectId };
-  const [base] = useState(view);
+  const [base, setBase] = useState(view);
   const [draft, setDraft] = useState<BotContinuationDraft>(() => botContinuationDraft(view.note));
   const [conflict, setConflict] = useState<BotNoteConflict | null>(null);
   const [saving, setSaving] = useState(false);
@@ -140,6 +140,11 @@ function BotNotesEditor(props: {
   const hint = botNoteLimitHint(draft);
   const changed = !("note" in parsed) || !sameBotNote(parsed.note, base.note);
   const hasDraft = changed || conflict !== null;
+  // An untouched editor follows a save made elsewhere; a started draft keeps the view it began from.
+  if (!hasDraft && !saving && view.revision !== base.revision) {
+    setBase(view);
+    setDraft(botContinuationDraft(view.note));
+  }
   const preventRemove = hasDraft || saving;
 
   const leave = () => {
