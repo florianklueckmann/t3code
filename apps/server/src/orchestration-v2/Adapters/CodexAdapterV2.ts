@@ -8603,22 +8603,26 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 });
         // Codex unloads idle threads; MCP requests against one fail until it is loaded again,
         // with the thread's own seal and grants as a turn would load it.
-        const withLoadedThread = <A, E, R>(
+        const withLoadedThread = Effect.fn("CodexAdapterV2.withLoadedThread")(function* <A, E, R>(
           target: Parameters<ProviderAdapter.ProviderAdapterV2McpApps["listTools"]>[0],
           threadId: string,
           request: Effect.Effect<A, E, R>,
-        ) =>
-          request.pipe(
-            Effect.catchIf(isCodexThreadNotFoundError, () =>
-              loadNativeThread({
-                nativeThreadId: threadId,
-                appThreadId: target.providerThread.appThreadId,
-                providerThread: target.providerThread,
-                modelSelection: input.modelSelection,
-                runtimePolicy: target.runtimePolicy,
-              }).pipe(Effect.andThen(request)),
-            ),
+        ) {
+          const load = loadNativeThread({
+            nativeThreadId: threadId,
+            appThreadId: target.providerThread.appThreadId,
+            providerThread: target.providerThread,
+            modelSelection: input.modelSelection,
+            runtimePolicy: target.runtimePolicy,
+          });
+          // A load still checking what Codex loaded holds the lock, and one whose check failed
+          // leaves the thread loaded but unknown; neither may serve a request.
+          yield* withSealLock(threadId, Effect.void);
+          if (threadLoads.get(threadId) === "unknown") yield* load;
+          return yield* request.pipe(
+            Effect.catchIf(isCodexThreadNotFoundError, () => load.pipe(Effect.andThen(request))),
           );
+        });
         const mcpApps: ProviderAdapter.ProviderAdapterV2McpApps = {
           listTools: Effect.fn("CodexAdapterV2.listTools")(
             function* (toolsInput) {

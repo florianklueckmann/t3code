@@ -10962,6 +10962,40 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                   { threadId: nativeThreadId },
                   { status: "unsubscribed" },
                 ),
+                // An unverified thread is reloaded before any request reaches it. Here the check
+                // itself fails, which leaves the thread loaded and unverified.
+                ...step(
+                  14,
+                  "thread/unsubscribe",
+                  { threadId: nativeThreadId },
+                  { status: "notLoaded" },
+                ),
+                ...step(15, "config/read", { includeLayers: false, cwd: "/workspace" }, configRead),
+                ...step(16, "thread/resume", grantResume, resumed),
+                {
+                  type: "expect_outbound",
+                  label: "mcpServerStatus/list 17",
+                  frame: {
+                    id: 17,
+                    method: "mcpServerStatus/list",
+                    params: { threadId: nativeThreadId, detail: "toolsAndAuthOnly" },
+                  },
+                },
+                {
+                  type: "emit_inbound",
+                  label: "status list fails",
+                  frame: { id: 17, error: { code: -32603, message: "status unavailable" } },
+                },
+                ...step(
+                  18,
+                  "thread/unsubscribe",
+                  { threadId: nativeThreadId },
+                  { status: "unsubscribed" },
+                ),
+                ...step(19, "config/read", { includeLayers: false, cwd: "/workspace" }, configRead),
+                ...step(20, "thread/resume", grantResume, resumed),
+                ...listed(21, nativeThreadId, { ...botLoadStatuses, ...grantedStatuses }),
+                ...read(22, resourceResult),
               ],
             });
             const resumeParams: Array<{ config: { mcp_servers?: Record<string, unknown> } }> = [];
@@ -11000,6 +11034,11 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             );
             const refused = yield* readResource.pipe(Effect.flip);
             assert.include(refused.message, 'Codex loaded the MCP server "leak"');
+            assert.equal(
+              (yield* readResource.pipe(Effect.flip))._tag,
+              "ProviderAdapterMcpConnectionsRefusedError",
+            );
+            assert.deepEqual(yield* readResource, resourceResult);
           }).pipe(
             Effect.provideService(HostProcess.Platform, "darwin"),
             Effect.provide(
