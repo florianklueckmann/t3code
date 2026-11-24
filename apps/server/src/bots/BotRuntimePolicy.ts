@@ -1,4 +1,8 @@
-import { MAC_CALENDAR_CONNECTION_ID, type ProviderInstanceId } from "@t3tools/contracts";
+import {
+  MAC_CALENDAR_CONNECTION_ID,
+  macCalendarsForBot,
+  type ProviderInstanceId,
+} from "@t3tools/contracts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
@@ -8,6 +12,7 @@ import * as ClaudeAdapterV2 from "../orchestration-v2/Adapters/ClaudeAdapterV2.t
 import * as CodexAdapterV2 from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as RuntimePolicy from "../orchestration-v2/RuntimePolicy.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import * as BotExecutionConstraint from "./BotExecutionConstraint.ts";
 import * as BotProviderSupport from "./BotProviderSupport.ts";
 import * as BotTurnContext from "./BotTurnContext.ts";
@@ -55,10 +60,12 @@ export const layer: Layer.Layer<
   | BotTurnContext.BotTurnContext
   | BotExecutionConstraint.BotExecutionConstraint
   | ProviderInstanceRegistry.ProviderInstanceRegistry
+  | ServerSettings.ServerSettingsService
 > = Layer.effect(
   RuntimePolicy.RuntimePolicyV2,
   Effect.gen(function* () {
     const base = yield* RuntimePolicy.RuntimePolicyV2;
+    const settings = yield* ServerSettings.ServerSettingsService;
     const providerInstances = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
     const botTurnContext = yield* BotTurnContext.BotTurnContext;
     const executionConstraint = yield* BotExecutionConstraint.BotExecutionConstraint;
@@ -140,7 +147,24 @@ export const layer: Layer.Layer<
             detail: access.message,
           });
         }
-        const mcpConnections = access._tag === "bot" ? access.connectionIds : [];
+        const calendarGranted =
+          access._tag === "bot" && access.connectionIds.includes(MAC_CALENDAR_CONNECTION_ID);
+        // The Bot's calendars decide whether the calendar loads and offers write tools, so a choice
+        // that changes either reloads the provider. Each call checks the current choice anyway.
+        const calendars =
+          access._tag === "bot" && calendarGranted
+            ? macCalendarsForBot(
+                (yield* settings.getSettings.pipe(Effect.mapError(resolveError))).macCalendar
+                  .calendars,
+                access.calendarIds,
+              )
+            : [];
+        const mcpConnections =
+          access._tag === "bot"
+            ? access.connectionIds.filter(
+                (id) => id !== MAC_CALENDAR_CONNECTION_ID || calendars.length > 0,
+              )
+            : [];
         const botName = access._tag === "bot" ? access.botName : "This Bot";
         const refuseMcp = (detail: string) =>
           new RuntimePolicy.RuntimePolicyMcpUnsupportedError({
@@ -182,7 +206,8 @@ export const layer: Layer.Layer<
           !noChanges &&
           access._tag === "bot" &&
           access.direct !== undefined &&
-          access.levels?.[MAC_CALENDAR_CONNECTION_ID] === "read-write"
+          access.levels?.[MAC_CALENDAR_CONNECTION_ID] === "read-write" &&
+          calendars.some((calendar) => calendar.allowWrite === true)
             ? { macCalendarWrite: true as const }
             : {}),
         });

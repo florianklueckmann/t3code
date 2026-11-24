@@ -2,6 +2,7 @@ import { assert, it } from "@effect/vitest";
 import {
   BotId,
   BotTaskId,
+  MAC_CALENDAR_CONNECTION_ID,
   McpConnectionId,
   type OrchestrationV2AppThread,
   type OrchestrationV2RunRestriction,
@@ -17,6 +18,7 @@ import * as Layer from "effect/Layer";
 
 import * as RuntimePolicy from "../orchestration-v2/RuntimePolicy.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import * as BotExecutionConstraint from "./BotExecutionConstraint.ts";
 import * as BotRuntimePolicy from "./BotRuntimePolicy.ts";
 import * as BotStore from "./BotStore.ts";
@@ -39,8 +41,26 @@ const orphanThread = ThreadId.make("subagent-of-lost-parent");
 const ownServersBotThread = ThreadId.make("bot-home:own-servers:campaign");
 const ownServersOnlyBotThread = ThreadId.make("subagent-of-own-servers-codex-bot");
 const privateMail = McpConnectionId.make("2a2a2a2a-0000-4000-8000-00000000002a");
+const calendarChoices = {
+  "bot-home:calendar-all:campaign": undefined,
+  "bot-home:calendar-family:campaign": ["family"],
+  "bot-home:calendar-none:campaign": [],
+} as const;
 
 const mcpAccessOf = (id: ThreadId): BotTurnContext.BotMcpAccess => {
+  if (Object.hasOwn(calendarChoices, id)) {
+    const choice = calendarChoices[id as keyof typeof calendarChoices];
+    return {
+      _tag: "bot",
+      botId: BotId.make("companion"),
+      botName: "Calendar Bot",
+      connectionIds: [MAC_CALENDAR_CONNECTION_ID],
+      levels: { [MAC_CALENDAR_CONNECTION_ID]: "read-write" },
+      ...(choice === undefined ? {} : { calendarIds: choice }),
+      direct: "home",
+      ownCodexMcpServers: false,
+    };
+  }
   const bot = (connectionIds: ReadonlyArray<McpConnectionId>, ownCodexMcpServers = false) =>
     ({
       _tag: "bot",
@@ -110,6 +130,16 @@ const usePolicy = <A, E>(
         Layer.provide(
           Layer.mergeAll(
             RuntimePolicy.layer,
+            ServerSettings.layerTest({
+              macCalendar: {
+                enabled: true,
+                revision: 1,
+                calendars: [
+                  { id: "work", title: "Work", allowWrite: true },
+                  { id: "family", title: "Family" },
+                ],
+              },
+            }),
             // Instance ids are not driver kinds: the registry decides which driver runs one.
             Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
               getInstance: (id) =>
@@ -267,6 +297,21 @@ it.effect.each([
         assert.isUndefined(policy.nativeTools);
       }
     }),
+);
+
+it.effect("loads Calendar (this Mac) with the Bot's own calendars", () =>
+  Effect.gen(function* () {
+    const all = yield* resolveFor(ThreadId.make("bot-home:calendar-all:campaign"));
+    assert.deepEqual(all.mcpConnections, [MAC_CALENDAR_CONNECTION_ID]);
+    assert.equal(all.macCalendarWrite, true);
+    // Only Work allows changes, and this Bot chose Family alone.
+    const family = yield* resolveFor(ThreadId.make("bot-home:calendar-family:campaign"));
+    assert.deepEqual(family.mcpConnections, [MAC_CALENDAR_CONNECTION_ID]);
+    assert.isUndefined(family.macCalendarWrite);
+    const none = yield* resolveFor(ThreadId.make("bot-home:calendar-none:campaign"));
+    assert.deepEqual(none.mcpConnections, []);
+    assert.isUndefined(none.macCalendarWrite);
+  }),
 );
 
 it.effect("never gives a Claude thread the user's own Codex MCP servers", () =>

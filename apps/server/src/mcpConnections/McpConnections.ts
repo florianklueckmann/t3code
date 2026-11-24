@@ -1,6 +1,9 @@
 import {
   isSecretReference,
   MAC_CALENDAR_CONNECTION_ID,
+  MacCalendarError,
+  type MacCalendarSummary,
+  type MacCalendarUpdateInput,
   MCP_CONNECTIONS_MAX,
   mcpConnectionBindings,
   mcpConnectionBindingValueProblem,
@@ -55,6 +58,10 @@ export class McpConnections extends Context.Service<
     readonly refresh: (
       input: McpConnectionRefreshInput,
     ) => Effect.Effect<McpConnectionListResult, McpConnectionError>;
+    /** Saves the Calendar (this Mac) selection; calendars it adds start outside every Bot's choice. */
+    readonly updateCalendar: (
+      input: MacCalendarUpdateInput,
+    ) => Effect.Effect<MacCalendarSummary, MacCalendarError>;
   }
 >()("t3/mcpConnections/McpConnections") {}
 
@@ -366,7 +373,36 @@ const make = Effect.gen(function* () {
     };
   });
 
-  return McpConnections.of({ list, create, update, remove, refresh });
+  const updateCalendar = Effect.fn("McpConnections.updateCalendar")(function* (
+    input: MacCalendarUpdateInput,
+  ) {
+    // A calendar entering the selection leaves every Bot's choice first, so one that was removed
+    // does not come back to Bots limited to it. Outside the selection no Bot can read it, so a
+    // failure before the save changes nothing a Bot sees.
+    return yield* bots.withMacCalendarLock(
+      Effect.gen(function* () {
+        const current = yield* macCalendar.summary;
+        if (current.revision !== input.expectedRevision) {
+          return yield* new MacCalendarError({ reason: "revision-conflict" });
+        }
+        const added = (input.calendarIds ?? []).filter(
+          (id) => !current.calendars.some((calendar) => calendar.id === id),
+        );
+        if (added.length > 0) {
+          yield* bots
+            .forgetMacCalendars(added)
+            .pipe(
+              Effect.mapError(
+                (cause) => new MacCalendarError({ reason: "settings-unavailable", cause }),
+              ),
+            );
+        }
+        return yield* macCalendar.update(input);
+      }),
+    );
+  });
+
+  return McpConnections.of({ list, create, update, remove, refresh, updateCalendar });
 });
 
 export const layer = Layer.effect(McpConnections, make);

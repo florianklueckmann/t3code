@@ -2,6 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { useNavigation } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import {
+  botCalendarChoiceToggle,
   botMcpGrantableIds,
   botMcpGrantRowBadge,
   botMcpGrantsChange,
@@ -118,10 +119,8 @@ export function BotMcpGrantsSection(props: {
         const oauth = oauthSupported ? row.oauth : null;
         const badge = botMcpGrantRowBadge(row, grants.levels);
         const calendarWrite = grants.levels?.[row.id] === "read-write";
-        const canWrite =
-          row.transport === "calendar" &&
-          row.granted &&
-          (calendarWrite || list.calendar?.calendars.some((entry) => entry.allowWrite === true));
+        const calendarRow = row.transport === "calendar";
+        const choice = calendarRow ? view.calendarChoice : null;
         return (
           <View key={row.id} className={index === 0 ? "" : "border-t border-border-subtle"}>
             <View className="min-h-14 flex-row items-center gap-3 px-4 py-3">
@@ -147,7 +146,43 @@ export function BotMcpGrantsSection(props: {
                 onValueChange={(granted) => void change({ connectionId: row.id, granted })}
               />
             </View>
-            {canWrite ? (
+            {choice === null ? null : (
+              <View>
+                {choice.calendars.map((calendar) => (
+                  <View
+                    key={calendar.id}
+                    className="flex-row items-center justify-between gap-3 py-2 pr-4 pl-8"
+                  >
+                    <Text textRole="body" className="min-w-0 flex-1 text-foreground">
+                      {calendar.title}
+                    </Text>
+                    <ThemedSwitch
+                      accessibilityLabel={calendar.title}
+                      value={calendar.chosen}
+                      disabled={disabled}
+                      onValueChange={(chosen) =>
+                        void change({
+                          calendarIds: botCalendarChoiceToggle(choice, calendar.id, chosen),
+                        })
+                      }
+                    />
+                  </View>
+                ))}
+                <Text textRole="footnote" className="py-2 pr-4 pl-8 text-foreground-muted">
+                  {choice.all
+                    ? "Uses every selected calendar, including ones you select later."
+                    : "Uses only the calendars switched on here."}
+                </Text>
+                {choice.all ? null : (
+                  <ListActionRow
+                    label="Use all selected calendars"
+                    disabled={disabled}
+                    onPress={() => void change({ calendarIds: null })}
+                  />
+                )}
+              </View>
+            )}
+            {calendarRow && view.offersCalendarWrite ? (
               <View className="flex-row items-center justify-between gap-3 px-4 py-2">
                 <Text textRole="body" className="text-foreground">
                   Allow calendar changes

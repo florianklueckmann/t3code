@@ -176,6 +176,11 @@ it.effect.each([
   ["a Home Waiting check", { changes: "botWaiting" as const }, "Home checks have no access"],
   ["a turned-off connection", { enabled: false }, "is turned off"],
   ["no selected calendars", { calendars: [] }, "No calendars are selected"],
+  [
+    "a Bot whose choice left the selection",
+    { access: [{ ...granted, calendarIds: ["cal-retired"] }] },
+    "No calendars are chosen for this Bot",
+  ],
 ] as const)("refuses %s without asking the helper", ([, options, message]) =>
   Effect.gen(function* () {
     const { calendar, requests } = yield* harness({ ...options, answer: () => eventsResponse });
@@ -229,6 +234,41 @@ it.effect("refuses calendars outside the selection and reads a subset inside it"
     assert.deepEqual(yield* requests, []);
     yield* calendar.listEvents(caller, { ...today, calendar_ids: [work.id] });
     assert.deepEqual((yield* requests)[0]?.calendarIds, [work.id]);
+  }),
+);
+
+it.effect("gives each Bot only the selected calendars it chose", () =>
+  Effect.gen(function* () {
+    const workBot = { ...granted, calendarIds: [work.id] };
+    const familyBot = { ...granted, botId: BotId.make("bot-family"), calendarIds: [family.id] };
+    const { calendar, requests } = yield* harness({
+      access: [workBot, familyBot, familyBot, workBot],
+      answer: () => eventsResponse,
+    });
+    const workRead = yield* calendar.listEvents(caller, today);
+    assert.deepEqual(workRead.calendars, [work]);
+    assert.deepEqual(
+      workRead.events.map((event) => event.title),
+      ["Standup"],
+    );
+    const familyRead = yield* calendar.listEvents(caller, today);
+    assert.deepEqual(familyRead.calendars, [family]);
+    assert.deepEqual(
+      familyRead.events.map((event) => event.title),
+      ["Holiday"],
+    );
+    assert.deepEqual(
+      (yield* requests).map((request) => request.calendarIds),
+      [[work.id], [family.id]],
+    );
+    for (const outside of [work.id, family.id]) {
+      const refused = yield* refusal(
+        calendar.listEvents(caller, { ...today, calendar_ids: [outside] }),
+      );
+      assert.equal(refused.code, "capability_denied");
+      assert.notInclude(refused.message, outside === work.id ? "Work" : "Family");
+    }
+    assert.lengthOf(yield* requests, 2);
   }),
 );
 
@@ -461,6 +501,13 @@ it.effect.each([
   ["No changes", { changes: "none" as const }],
   ["a Home check", { changes: "botWaiting" as const }],
   ["an unselected calendar", { calendars: [work, { ...family, allowWrite: true }] }],
+  [
+    "a writable calendar outside the Bot's choice",
+    {
+      access: [{ ...writableGrant, calendarIds: [family.id] }],
+      calendars: [writableWork, { ...family, allowWrite: true }],
+    },
+  ],
 ] as const)("refuses a calendar mutation with %s", ([, options]) =>
   Effect.gen(function* () {
     const { calendar, requests } = yield* harness({

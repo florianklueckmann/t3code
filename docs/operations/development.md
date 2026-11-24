@@ -239,7 +239,8 @@ accounts.
 Bots reach the helper as the built-in connection Calendar (this Mac). A grant loads it as another
 server entry on T3's own `/mcp` endpoint with the thread's credential and `T3-Toolset: calendar`.
 [MacCalendar.ts](../../apps/server/src/calendar/MacCalendar.ts) checks the calling Bot's grant,
-the run, and the selected calendars before listing or calling write tools. Only Settings runs `setup` and
+the run, and the selected calendars narrowed to that Bot's choice before listing or calling write
+tools. Only Settings runs `setup` and
 `list-calendars`. Tests and evals use a fake helper; never point them at real calendars.
 
 - `status` returns `{"status":{"authorization":"notDetermined"}}` before an access decision. The other

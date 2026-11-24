@@ -12,7 +12,12 @@ import {
   TrimmedNonEmptyString,
   TrimmedString,
 } from "./baseSchemas.ts";
-import { MCP_CONNECTIONS_MAX, McpConnectionId, McpGrantLevel } from "./mcpConnection.ts";
+import {
+  MCP_CONNECTIONS_MAX,
+  MacCalendarChoice,
+  McpConnectionId,
+  McpGrantLevel,
+} from "./mcpConnection.ts";
 import { ModelSelection, ModelSelectionInput } from "./modelSelection.ts";
 import { RuntimeMode } from "./providerPolicy.ts";
 
@@ -244,6 +249,8 @@ export const BotMcpGrants = Schema.Struct({
    * `McpGrantLevel`. A string, so a level a newer server adds still decodes.
    */
   levels: Schema.optionalKey(Schema.Record(McpConnectionId, Schema.String)),
+  /** The selected Calendar (this Mac) calendars this Bot may use. Absent: all of them. */
+  calendarIds: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 export type BotMcpGrants = typeof BotMcpGrants.Type;
 
@@ -333,6 +340,11 @@ export const BotSetMcpGrantsInput = Schema.Struct({
   ownCodexMcpServers: Schema.optionalKey(Schema.Boolean),
   /** Levels for granted connections that have them; a connection left out gets "read". */
   levels: Schema.optionalKey(Schema.Record(McpConnectionId, McpGrantLevel)),
+  /**
+   * The Bot's choice from the selected Calendar (this Mac) calendars. Absent keeps the saved
+   * choice, so an older client cannot widen it; null returns to all of them.
+   */
+  calendarIds: Schema.optionalKey(Schema.NullOr(MacCalendarChoice)),
 });
 export type BotSetMcpGrantsInput = typeof BotSetMcpGrantsInput.Type;
 

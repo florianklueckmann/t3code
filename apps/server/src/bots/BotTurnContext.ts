@@ -63,6 +63,7 @@ export type BotMcpAccess =
       readonly botName: string;
       readonly connectionIds: ReadonlyArray<McpConnectionId>;
       readonly levels?: BotMcpGrants["levels"];
+      readonly calendarIds?: BotMcpGrants["calendarIds"];
       readonly direct?: "home" | "work";
       readonly ownCodexMcpServers: boolean;
     };
@@ -354,7 +355,8 @@ export const layer = Layer.effect(
             botId: owner.bot.bot_id as BotId,
             botName: owner.bot.name,
             connectionIds: grants?.connectionIds ?? [],
-            levels: grants?.levels,
+            ...(grants?.levels === undefined ? {} : { levels: grants.levels }),
+            ...(grants?.calendarIds === undefined ? {} : { calendarIds: grants.calendarIds }),
             ...(threadId === start
               ? { direct: owner.task === null ? ("home" as const) : ("work" as const) }
               : {}),

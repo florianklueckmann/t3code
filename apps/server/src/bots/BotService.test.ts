@@ -655,13 +655,79 @@ it.effect("grants Calendar (this Mac) on a Mac only, with the read level", () =>
           ownCodexMcpServers: false,
           levels: { [MAC_CALENDAR_CONNECTION_ID]: "read" },
         });
+
+        // Each Bot chooses from the environment's selection.
+        yield* settings.updateMcpConnections((current) =>
+          Effect.succeed({
+            mcpConnections: current.mcpConnections,
+            retiredMcpConnectionIds: current.retiredMcpConnectionIds,
+            macCalendar: {
+              enabled: true,
+              revision: 1,
+              calendars: [
+                { id: "cal-work", title: "Work" },
+                { id: "cal-family", title: "Family" },
+              ],
+            },
+          }),
+        );
+        const calendarGrant = (
+          expectedRevision: number,
+          extra: Partial<Parameters<typeof bots.setMcpGrants>[0]> = {},
+        ) =>
+          bots
+            .setMcpGrants({
+              botId,
+              expectedRevision,
+              connectionIds: [privateMail, MAC_CALENDAR_CONNECTION_ID],
+              ...extra,
+            })
+            .pipe(Effect.provideService(HostProcess.Platform, "darwin"));
+        const unselected = yield* calendarGrant(1, { calendarIds: ["cal-elsewhere"] }).pipe(
+          Effect.flip,
+        );
+        assert.include(unselected.message, "no longer selected");
+        const chosen = yield* calendarGrant(1, { calendarIds: ["cal-work", "cal-family"] });
+        assert.deepEqual(chosen.mcpGrants?.calendarIds, ["cal-work", "cal-family"]);
+        // A save that leaves the choice out keeps it, so an older client cannot widen it.
+        const releveled = yield* calendarGrant(2, {
+          levels: { [MAC_CALENDAR_CONNECTION_ID]: "read-write" },
+        });
+        assert.deepEqual(releveled.mcpGrants?.calendarIds, ["cal-work", "cal-family"]);
+        // A calendar selected again leaves every choice first, so it does not come back.
+        const pull = yield* Stream.toPull(bots.subscribeList());
+        yield* pull;
+        yield* bots.forgetMacCalendars(["cal-work"]);
+        const [listed] = yield* pull;
+        assert.deepEqual(listed?.bots[0]?.mcpGrants, {
+          revision: 4,
+          connectionIds: [privateMail, MAC_CALENDAR_CONNECTION_ID].toSorted(),
+          ownCodexMcpServers: false,
+          levels: { [MAC_CALENDAR_CONNECTION_ID]: "read-write" },
+          calendarIds: ["cal-family"],
+        });
+      }).pipe(Effect.scoped),
+    );
+    yield* withServices(world.threadLayer, ({ bots, settings }) =>
+      Effect.gen(function* () {
+        assert.deepEqual((yield* bots.get({ botId })).mcpGrants?.calendarIds, ["cal-family"]);
+        yield* seedCatalog(settings);
+        const all = yield* bots
+          .setMcpGrants({
+            botId,
+            expectedRevision: 4,
+            connectionIds: [privateMail, MAC_CALENDAR_CONNECTION_ID],
+            calendarIds: null,
+          })
+          .pipe(Effect.provideService(HostProcess.Platform, "darwin"));
+        assert.isUndefined(all.mcpGrants?.calendarIds);
         const revoked = yield* bots.setMcpGrants({
           botId,
-          expectedRevision: 1,
+          expectedRevision: 5,
           connectionIds: [privateMail],
         });
         assert.deepEqual(revoked.mcpGrants, {
-          revision: 2,
+          revision: 6,
           connectionIds: [privateMail],
           ownCodexMcpServers: false,
         });
@@ -755,7 +821,11 @@ it.effect(
             "launched-by-helper",
             "launched-fork",
           ]) {
-            assert.deepEqual(yield* access(id), granted, id);
+            assert.deepEqual(
+              yield* access(id),
+              id === home ? { ...granted, direct: "home" } : granted,
+              id,
+            );
           }
           for (const id of ["plain", "plain-fork", "launched-by-plain"]) {
             assert.deepEqual(yield* access(id), { _tag: "none" }, id);
