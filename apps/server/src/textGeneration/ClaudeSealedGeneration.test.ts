@@ -325,7 +325,13 @@ it.effect.each<{
   },
   {
     name: "a relative settings launch argument, which each project resolves for itself",
-    launchArgs: "--settings ./claude-settings.json",
+    // A readable JSON file without routing, so only the relative path refuses.
+    launchArgs: "--settings ./package.json",
+    reason: "claude_settings_unsupported",
+  },
+  {
+    name: "a padded config directory, which Claude would read as another path",
+    configDirVariable: " /home/user/.claude",
     reason: "claude_settings_unsupported",
   },
   {

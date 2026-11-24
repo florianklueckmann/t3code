@@ -273,11 +273,11 @@ export const makeClaudeSealedGeneration = Effect.fn("makeClaudeSealedGeneration"
     typeof launchSettings === "string" &&
     !launchSettings.startsWith("{") &&
     !path.isAbsolute(expandHomePath(launchSettings, home));
-  const inheritedConfigDir = options.environment.CLAUDE_CONFIG_DIR?.trim();
+  // As Claude gets it: padding would make it read another directory than admission does.
+  const inheritedConfigDir = options.environment.CLAUDE_CONFIG_DIR ?? "";
   const relativeConfigDir =
-    inheritedConfigDir !== undefined &&
     inheritedConfigDir.length > 0 &&
-    !path.isAbsolute(inheritedConfigDir);
+    (inheritedConfigDir !== inheritedConfigDir.trim() || !path.isAbsolute(inheritedConfigDir));
 
   const routesElsewhere = (settings: unknown) =>
     !isRecord(settings) ||
