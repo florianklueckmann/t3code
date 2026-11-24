@@ -389,6 +389,13 @@ function isCodexActiveWriterError(error: unknown): boolean {
   );
 }
 
+const isCodexLoadRefusal = Schema.is(
+  Schema.Union([
+    ProviderAdapter.ProviderAdapterSealRefusedError,
+    ProviderAdapter.ProviderAdapterMcpConnectionsRefusedError,
+  ]),
+);
+
 function isCodexThreadNotFoundError(error: unknown): boolean {
   return (
     isCodexAppServerRequestError(error) &&
@@ -2612,7 +2619,14 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           turnInput: ProviderAdapter.ProviderAdapterV2TurnInput,
         ) {
           const nativeThreadId = turnInput.providerThread.nativeThreadRef?.nativeId;
-          const loaded = nativeThreadId == null ? undefined : threadLoads.get(nativeThreadId);
+          // A load in flight, such as an MCP App request's, is unknown until its check passes.
+          const loaded =
+            nativeThreadId == null
+              ? undefined
+              : yield* withSealLock(
+                  nativeThreadId,
+                  Effect.sync(() => threadLoads.get(nativeThreadId)),
+                );
           const loadedSeal = loaded === undefined || loaded === "unknown" ? loaded : loaded.seal;
           const seal = codexThreadSealOf(turnInput.runtimePolicy);
           // An ordinary turn is refused in the words of the seal its thread is held in.
@@ -8330,6 +8344,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               const userMcpServers = yield* readExclusiveLoadUserMcpServers(wanted, cwd);
               failedGrantedServers.delete(nativeThreadId);
               rememberGrantedServers(nativeThreadId, granted);
+              // Unchecked until confirmed, so an interrupted load never passes for a verified one.
+              if (!isOrdinaryLoad(wanted)) threadLoads.set(nativeThreadId, "unknown");
               const resumed = yield* resumeNativeThread(nativeThreadId, {
                 excludeTurns: true,
                 ...codexThreadRuntimeParams({
@@ -8345,8 +8361,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     : { runtimePolicy: load.runtimePolicy }),
                 }),
               });
-              threadLoads.set(nativeThreadId, wanted);
               yield* confirmLoad(wanted, nativeThreadId, cwd, resolved, userMcpServers);
+              threadLoads.set(nativeThreadId, wanted);
               return resumed;
             }),
           );
@@ -8584,42 +8600,44 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             ),
         );
 
-        const mcpAppsError = (detail: string) => (cause: unknown) =>
-          new ProviderAdapter.ProviderAdapterProtocolError({
-            driver: CODEX_PROVIDER,
-            detail,
-            payload: cause,
-          });
-        // Codex unloads idle threads; MCP requests against one fail until it is resumed.
-        const withLoadedThread = <A, E, R>(
-          providerThread: OrchestrationV2ProviderThread,
+        const mcpAppsError =
+          (detail: string) =>
+          (cause: unknown): ProviderAdapter.ProviderAdapterV2Error =>
+            isCodexLoadRefusal(cause)
+              ? cause
+              : new ProviderAdapter.ProviderAdapterProtocolError({
+                  driver: CODEX_PROVIDER,
+                  detail,
+                  payload: cause,
+                });
+        // Codex unloads idle threads; MCP requests against one fail until it is loaded again,
+        // with the thread's own seal and grants as a turn would load it.
+        const withLoadedThread = Effect.fn("CodexAdapterV2.withLoadedThread")(function* <A, E, R>(
+          target: Parameters<ProviderAdapter.ProviderAdapterV2McpApps["listTools"]>[0],
           threadId: string,
           request: Effect.Effect<A, E, R>,
-        ) =>
-          request.pipe(
-            Effect.catchIf(isCodexThreadNotFoundError, () =>
-              readMcpSession(providerThread.appThreadId).pipe(
-                Effect.flatMap((mcpSession) =>
-                  resumeNativeThread(threadId, {
-                    excludeTurns: true,
-                    ...codexThreadRuntimeParams({
-                      threadId: providerThread.appThreadId,
-                      mcpSession,
-                      modelSelection: input.modelSelection,
-                      runtimePolicy: input.runtimePolicy,
-                    }),
-                  }),
-                ),
-                Effect.andThen(request),
-              ),
-            ),
+        ) {
+          const load = loadNativeThread({
+            nativeThreadId: threadId,
+            appThreadId: target.providerThread.appThreadId,
+            providerThread: target.providerThread,
+            modelSelection: input.modelSelection,
+            runtimePolicy: target.runtimePolicy,
+          });
+          // A load still checking what Codex loaded holds the lock, and one whose check failed
+          // leaves the thread loaded but unknown; neither may serve a request.
+          yield* withSealLock(threadId, Effect.void);
+          if (threadLoads.get(threadId) === "unknown") yield* load;
+          return yield* request.pipe(
+            Effect.catchIf(isCodexThreadNotFoundError, () => load.pipe(Effect.andThen(request))),
           );
+        });
         const mcpApps: ProviderAdapter.ProviderAdapterV2McpApps = {
           listTools: Effect.fn("CodexAdapterV2.listTools")(
             function* (toolsInput) {
               const threadId = yield* getNativeThreadId(toolsInput.providerThread);
               const response = yield* withLoadedThread(
-                toolsInput.providerThread,
+                toolsInput,
                 threadId,
                 ensureInitialized.pipe(
                   Effect.andThen(
@@ -8640,7 +8658,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             function* (callInput) {
               const threadId = yield* getNativeThreadId(callInput.providerThread);
               const response = yield* withLoadedThread(
-                callInput.providerThread,
+                callInput,
                 threadId,
                 ensureInitialized.pipe(
                   Effect.andThen(
@@ -8668,7 +8686,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             function* (readInput) {
               const threadId = yield* getNativeThreadId(readInput.providerThread);
               const response = yield* withLoadedThread(
-                readInput.providerThread,
+                readInput,
                 threadId,
                 ensureInitialized.pipe(
                   Effect.andThen(

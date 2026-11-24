@@ -1,4 +1,5 @@
 import {
+  McpConnectionId,
   ProviderDriverKind,
   ProviderSessionId,
   ProviderThreadId,
@@ -17,6 +18,7 @@ import * as Option from "effect/Option";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderSessionManager from "../orchestration-v2/ProviderSessionManager.ts";
+import * as RuntimePolicy from "../orchestration-v2/RuntimePolicy.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as McpAppModelContext from "./McpAppModelContext.ts";
 import * as McpAppRequests from "./McpAppRequests.ts";
@@ -63,6 +65,13 @@ const app = {
   resourceUri: "ui://weather/dashboard",
 };
 
+const botPolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+  runtimeMode: "full-access",
+  interactionMode: "default",
+  cwd: "/workspace",
+  mcpConnections: [McpConnectionId.make("2a2a2a2a-0000-4000-8000-00000000002a")],
+});
+
 const storedContext = new Map<string, string>();
 
 function makeLayer(input: {
@@ -88,6 +97,7 @@ function makeLayer(input: {
           getThreadRecords: (id: ThreadId) =>
             Effect.succeed({
               thread: {
+                id,
                 lineage:
                   deepParent(id) !== null
                     ? {
@@ -107,6 +117,10 @@ function makeLayer(input: {
                 { id: providerThreadId, providerSessionId } as OrchestrationV2ProviderThread,
               ],
             } as never),
+        }),
+        Layer.mock(RuntimePolicy.RuntimePolicyV2)({
+          resolve: (policyInput) =>
+            Effect.succeed({ ...botPolicy, cwd: `/worktrees/${policyInput.thread.id}` }),
         }),
         Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
           get: () =>
@@ -134,7 +148,11 @@ const reason = <A, R>(effect: Effect.Effect<A, McpAppRequestError, R>) =>
   );
 
 describe("McpAppRequests", () => {
-  const calls: Array<{ server: string; tool: string }> = [];
+  const calls: Array<{
+    server: string;
+    tool: string;
+    runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
+  }> = [];
   const mcpApps: ProviderAdapter.ProviderAdapterV2McpApps = {
     listTools: () =>
       Effect.succeed([
@@ -147,7 +165,7 @@ describe("McpAppRequests", () => {
       ]),
     callTool: (input) =>
       Effect.sync(() => {
-        calls.push({ server: input.server, tool: input.tool });
+        calls.push({ server: input.server, tool: input.tool, runtimePolicy: input.runtimePolicy });
         return { content: [{ type: "text", text: "ok" }] };
       }),
     readResource: () => Effect.succeed({ contents: [] }),
@@ -163,7 +181,12 @@ describe("McpAppRequests", () => {
         arguments: {},
       });
       assert.deepEqual(result, { content: [{ type: "text", text: "ok" }] });
-      assert.deepEqual(calls.at(-1), { server: "weather", tool: "refresh" });
+      // The app's own thread's policy, which a provider loads an unloaded thread with.
+      assert.deepEqual(calls.at(-1), {
+        server: "weather",
+        tool: "refresh",
+        runtimePolicy: { ...botPolicy, cwd: `/worktrees/${threadId}` },
+      });
       assert.deepEqual(yield* requests.toolInfo({ threadId, itemId, name: "refresh" }), {
         callable: true,
         readOnly: true,

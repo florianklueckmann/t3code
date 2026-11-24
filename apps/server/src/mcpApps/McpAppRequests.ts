@@ -23,6 +23,7 @@ import * as Schema from "effect/Schema";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderSessionManager from "../orchestration-v2/ProviderSessionManager.ts";
+import * as RuntimePolicy from "../orchestration-v2/RuntimePolicy.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as McpAppModelContext from "./McpAppModelContext.ts";
 
@@ -61,6 +62,7 @@ const make = Effect.gen(function* () {
   const threadManagement = yield* ThreadManagementService.ThreadManagementService;
   const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
   const modelContext = yield* McpAppModelContext.McpAppModelContext;
+  const runtimePolicies = yield* RuntimePolicy.RuntimePolicyV2;
 
   const fail = (threadId: ThreadId, reason: McpAppRequestError["reason"], cause?: unknown) =>
     new McpAppRequestError({ threadId, reason, ...(cause === undefined ? {} : { cause }) });
@@ -108,7 +110,11 @@ const make = Effect.gen(function* () {
     if (runtime === undefined) return yield* fail(input.threadId, "session-stopped");
     const mcpApps: ProviderAdapter.ProviderAdapterV2McpApps | undefined = runtime.mcpApps;
     if (mcpApps === undefined) return yield* fail(input.threadId, "provider-unsupported");
-    return { app, providerThread, mcpApps };
+    // The session is shared, so its own policy is not this thread's; a Bot's carries its grants.
+    const runtimePolicy = yield* runtimePolicies
+      .resolve({ thread: projection.thread, modelSelection: projection.thread.modelSelection })
+      .pipe(Effect.mapError((cause) => fail(input.threadId, "request-failed", cause)));
+    return { app, target: { providerThread, runtimePolicy, server: app.server }, mcpApps };
   });
 
   const findTool = Effect.fn("McpAppRequests.findTool")(function* (
@@ -117,7 +123,7 @@ const make = Effect.gen(function* () {
     name: string,
   ) {
     const tools = yield* resolved.mcpApps
-      .listTools({ providerThread: resolved.providerThread, server: resolved.app.server })
+      .listTools(resolved.target)
       .pipe(Effect.mapError(adapterFailure(threadId)));
     return tools.find((tool) => tool.name === name);
   });
@@ -143,8 +149,7 @@ const make = Effect.gen(function* () {
     }
     return yield* resolved.mcpApps
       .callTool({
-        providerThread: resolved.providerThread,
-        server: resolved.app.server,
+        ...resolved.target,
         tool: input.name,
         arguments: input.arguments,
       })
@@ -156,11 +161,7 @@ const make = Effect.gen(function* () {
   ) {
     const resolved = yield* resolve(input);
     return yield* resolved.mcpApps
-      .readResource({
-        providerThread: resolved.providerThread,
-        server: resolved.app.server,
-        uri: input.uri,
-      })
+      .readResource({ ...resolved.target, uri: input.uri })
       .pipe(Effect.mapError(adapterFailure(input.threadId)));
   });
 

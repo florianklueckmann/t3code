@@ -7684,6 +7684,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       if (mcpApps === undefined) throw new Error("Claude runtime must expose MCP Apps.");
       const [tool, appOnlyTool] = yield* mcpApps.listTools({
         providerThread: harness.providerThread,
+        runtimePolicy: CLAUDE_TEST_RUNTIME_POLICY,
         server: "probe.server",
       });
       assert.deepInclude(tool, { name: "show_weather", inputSchema: { type: "object" } });
@@ -7693,6 +7694,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       });
       const result = yield* mcpApps.callTool({
         providerThread: harness.providerThread,
+        runtimePolicy: CLAUDE_TEST_RUNTIME_POLICY,
         server: "probe.server",
         tool: "refresh_weather",
         arguments: {},
@@ -7936,7 +7938,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             : Effect.succeed(testCase.rules),
       });
       const mcpApps = harness.runtime.mcpApps!;
-      const target = { providerThread: harness.providerThread, server };
+      const target = {
+        providerThread: harness.providerThread,
+        runtimePolicy: CLAUDE_TEST_RUNTIME_POLICY,
+        server,
+      };
       const [listed] = yield* mcpApps.listTools(target);
       assert.deepEqual(
         listed?.annotations,
@@ -7982,6 +7988,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       const exit = yield* Effect.exit(
         harness.runtime.mcpApps!.callTool({
           providerThread: harness.providerThread,
+          runtimePolicy: CLAUDE_TEST_RUNTIME_POLICY,
           server: PROBE_SERVER_STATUS.name,
           tool: "refresh_weather",
           arguments: {},
@@ -8030,6 +8037,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       const callExit = yield* Effect.exit(
         harness.runtime.mcpApps!.callTool({
           providerThread: harness.providerThread,
+          runtimePolicy: CLAUDE_TEST_RUNTIME_POLICY,
           server: "probe__server",
           tool: "refresh_weather",
           arguments: {},
@@ -8039,6 +8047,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       const readExit = yield* Effect.exit(
         harness.runtime.mcpApps!.readResource({
           providerThread: harness.providerThread,
+          runtimePolicy: CLAUDE_TEST_RUNTIME_POLICY,
           server: "probe",
           uri: "ui://probe/weather.html",
         }),
@@ -8075,6 +8084,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       const exit = yield* Effect.exit(
         harness.runtime.mcpApps!.callTool({
           providerThread: harness.providerThread,
+          runtimePolicy: CLAUDE_TEST_RUNTIME_POLICY,
           server: "probe.server",
           tool: "refresh_weather",
           arguments: {},
@@ -8130,6 +8140,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       const exit = yield* Effect.exit(
         harness.runtime.mcpApps!.callTool({
           providerThread: harness.providerThread,
+          runtimePolicy: CLAUDE_TEST_RUNTIME_POLICY,
           server: "probe.server",
           tool: "refresh_weather",
           arguments: {},

@@ -796,22 +796,26 @@ export interface ProviderAdapterV2McpCallToolResult {
   readonly _meta?: unknown;
 }
 
+interface ProviderAdapterV2McpAppTarget {
+  readonly providerThread: OrchestrationV2ProviderThread;
+  /** The thread's own policy, which a provider that must load the thread first loads it with. */
+  readonly runtimePolicy: ProviderAdapterV2RuntimePolicy;
+  readonly server: string;
+}
+
 export interface ProviderAdapterV2McpApps {
-  readonly listTools: (input: {
-    readonly providerThread: OrchestrationV2ProviderThread;
-    readonly server: string;
-  }) => Effect.Effect<ReadonlyArray<ProviderAdapterV2McpTool>, ProviderAdapterV2Error>;
-  readonly callTool: (input: {
-    readonly providerThread: OrchestrationV2ProviderThread;
-    readonly server: string;
-    readonly tool: string;
-    readonly arguments: Record<string, unknown>;
-  }) => Effect.Effect<ProviderAdapterV2McpCallToolResult, ProviderAdapterV2Error>;
-  readonly readResource: (input: {
-    readonly providerThread: OrchestrationV2ProviderThread;
-    readonly server: string;
-    readonly uri: string;
-  }) => Effect.Effect<{ readonly contents: ReadonlyArray<unknown> }, ProviderAdapterV2Error>;
+  readonly listTools: (
+    input: ProviderAdapterV2McpAppTarget,
+  ) => Effect.Effect<ReadonlyArray<ProviderAdapterV2McpTool>, ProviderAdapterV2Error>;
+  readonly callTool: (
+    input: ProviderAdapterV2McpAppTarget & {
+      readonly tool: string;
+      readonly arguments: Record<string, unknown>;
+    },
+  ) => Effect.Effect<ProviderAdapterV2McpCallToolResult, ProviderAdapterV2Error>;
+  readonly readResource: (
+    input: ProviderAdapterV2McpAppTarget & { readonly uri: string },
+  ) => Effect.Effect<{ readonly contents: ReadonlyArray<unknown> }, ProviderAdapterV2Error>;
 }
 
 export type ProviderAdapterV2SubagentOutcome = {
