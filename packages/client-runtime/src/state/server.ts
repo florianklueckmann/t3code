@@ -1572,11 +1572,22 @@ export function createServerEnvironmentAtoms<R, E>(
       (refresh) => refresh(query),
     );
   });
+  // The live list carries each Bot's alert counts, so an open view follows a send, hold or digest.
+  const botAlertCountsFamily = Atom.family((key: string) => {
+    const [environmentId, input] = JSON.parse(key) as [EnvironmentId, BotAttentionInput];
+    return Atom.make((get) => {
+      const list = AsyncResult.getOrElse(get(botsLive({ environmentId, input: {} })), () => null);
+      const alerts = list?.bots.find((bot) => bot.id === input.botId)?.alerts;
+      return alerts === undefined ? null : `${alerts.sentToday}:${alerts.held}`;
+    });
+  });
   const botAttentionQuery = createEnvironmentRpcQueryAtomFamily(runtime, {
     label: "environment-data:server:bots:botAttention",
     tag: WS_METHODS.botsGetAttention,
     staleTimeMs: 0,
     idleTtlMs: 0,
+    refreshTrigger: (target) =>
+      botAlertCountsFamily(JSON.stringify([target.environmentId, target.input])),
   });
   const botAttentionFamily = Atom.family((key: string) => {
     const [environmentId, input] = JSON.parse(key) as [EnvironmentId, BotAttentionInput];

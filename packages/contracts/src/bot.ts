@@ -269,6 +269,8 @@ export const BotSummary = Schema.Struct({
   projects: Schema.Array(BotProjectContextSummary),
   /** Learning revisions waiting for the user to adopt or reject them. */
   pendingLearning: NonNegativeInt,
+  /** Proactive alerts sent today and held for the digest; absent on servers without alerts. */
+  alerts: Schema.optionalKey(Schema.Struct({ sentToday: NonNegativeInt, held: NonNegativeInt })),
 });
 export type BotSummary = typeof BotSummary.Type;
 

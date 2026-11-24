@@ -11,6 +11,7 @@ import * as ServerConfig from "../config.ts";
 import * as Sqlite from "../persistence/Sqlite.ts";
 import * as BotAttention from "./BotAttention.ts";
 import * as BotStore from "./BotStore.ts";
+import * as BotDatabase from "./persistence/BotDatabase.ts";
 
 const botId = BotId.make("bot");
 const created = "2026-11-01T06:00:00.000Z";
@@ -40,13 +41,18 @@ const seed = Effect.gen(function* () {
 /** A fresh service over the same database, as a server restart builds it, in UTC. */
 const startService = BotAttention.make.pipe(Effect.provide(DateTime.layerCurrentZoneOffset(0)));
 
-const alert = (n: number, phase: "completed" | "failed" = "completed") => ({
+const alert = (
+  n: number,
+  phase: "completed" | "failed" = "completed",
+  endedAt: string | null = null,
+) => ({
   botId,
   taskId: `bot-task:${n}`,
   runId: `run-${n}`,
   workThreadId: `bot-work:${n}`,
   homeThreadId: "bot-home:bot:project",
   phase,
+  endedAt: endedAt === null ? null : DateTime.makeUnsafe(endedAt),
 });
 
 /** Decoded as the RPC decodes it, so the contract's bounds apply. */
@@ -194,5 +200,61 @@ it.effect(
         held: 1,
         digestAt: "2026-11-05T07:00:00.000Z",
       });
+    }).pipe(Effect.provide(services)),
+);
+
+it.effect(
+  "prunes decisions nothing reads any more and keeps a held alert until its digest went out",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const bots = yield* BotDatabase.BotDatabase;
+      const keys = bots<{ readonly alert_key: string }>`SELECT alert_key FROM bot_alerts
+        ORDER BY alert_key`.pipe(Effect.map((rows) => rows.map((row) => row.alert_key)));
+      yield* at("2026-11-02T12:00:00.000Z");
+      const attention = yield* startService;
+      yield* configure(attention, { dailyLimit: 1, quietHours: null });
+      assert.equal(
+        yield* attention.admit(alert(1, "completed", "2026-11-02T11:59:00.000Z")),
+        "send",
+      );
+      assert.equal(
+        yield* attention.admit(alert(2, "completed", "2026-11-02T11:59:00.000Z")),
+        "hold",
+      );
+      yield* at("2026-11-03T00:00:00.000Z");
+      const [digest] = yield* attention.claimDigests;
+      yield* attention.markDigestSent(digest!);
+      yield* at("2026-11-03T12:00:00.000Z");
+      assert.equal(
+        yield* attention.admit(alert(3, "completed", "2026-11-03T11:59:00.000Z")),
+        "send",
+      );
+      assert.equal(yield* attention.admit(alert(4, "failed", "2026-11-03T11:59:00.000Z")), "hold");
+
+      // Publishing was off for ten days, so the second digest never went out.
+      yield* at("2026-11-13T12:00:00.000Z");
+      assert.equal(
+        yield* attention.admit(alert(5, "completed", "2026-11-13T11:59:00.000Z")),
+        "send",
+      );
+      assert.deepEqual(yield* keys, ["bot-task:4:run-4", "bot-task:5:run-5"]);
+      assert.deepInclude(yield* attention.get(botId), { sentToday: 1, held: 1 });
+
+      // A repeated publish of a pruned run decides nothing anew: no count, no second digest.
+      assert.equal(
+        yield* attention.admit(alert(1, "completed", "2026-11-02T11:59:00.000Z")),
+        "send",
+      );
+      assert.equal(
+        yield* attention.admit(alert(2, "completed", "2026-11-02T11:59:00.000Z")),
+        "send",
+      );
+      // A kept decision still wins over the run's age.
+      assert.equal(yield* attention.admit(alert(4, "failed", "2026-11-03T11:59:00.000Z")), "hold");
+      assert.deepEqual(yield* keys, ["bot-task:4:run-4", "bot-task:5:run-5"]);
+      assert.deepInclude(yield* attention.get(botId), { sentToday: 1, held: 1 });
+      const [held] = yield* attention.claimDigests;
+      assert.deepInclude(held!, { held: 1, allFailed: true });
     }).pipe(Effect.provide(services)),
 );

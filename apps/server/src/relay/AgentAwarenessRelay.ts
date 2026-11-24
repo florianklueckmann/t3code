@@ -707,6 +707,7 @@ export const make = Effect.gen(function* () {
         (state?.phase !== "completed" && state?.phase !== "failed")
       )
         return state;
+      const endedAt = Option.isSome(thread) ? (thread.value.latestRunCompletedAt ?? null) : null;
       const decision = yield* attention.admit({
         botId: task.botId,
         taskId: task.taskId,
@@ -714,10 +715,14 @@ export const make = Effect.gen(function* () {
         workThreadId: task.workThreadId,
         homeThreadId: task.homeThreadId,
         phase: state.phase,
+        // A saved result alerts as of its save, which can come long after the run ended.
+        endedAt:
+          state.phase === "completed" && savedResultAt !== undefined
+            ? DateTime.makeUnsafe(savedResultAt)
+            : endedAt,
       });
       if (decision === "hold") return null;
       // Pinned to the run's end, as a saved result is, so a later rename cannot ring again.
-      const endedAt = Option.isSome(thread) ? thread.value.latestRunCompletedAt : null;
       return state.phase === "failed" && endedAt != null
         ? { ...state, updatedAt: DateTime.formatIso(endedAt) }
         : state;
