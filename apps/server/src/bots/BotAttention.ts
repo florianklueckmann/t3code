@@ -13,7 +13,10 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as PubSub from "effect/PubSub";
 import * as Schema from "effect/Schema";
+import type * as Scope from "effect/Scope";
+import * as Stream from "effect/Stream";
 import { nextScheduledRunAt } from "../scheduledTasks/Schedule.ts";
 import * as BotDatabase from "./persistence/BotDatabase.ts";
 
@@ -47,6 +50,12 @@ export interface BotAlert {
   readonly workThreadId: string;
   readonly homeThreadId: string;
   readonly phase: "completed" | "failed";
+  readonly endedAt: DateTime.DateTime | null;
+}
+
+export interface BotAlertCounts {
+  readonly sentToday: number;
+  readonly held: number;
 }
 
 /** One Bot's held alerts, claimed as a single push. */
@@ -83,8 +92,18 @@ export class BotAttention extends Context.Service<
     /** Unsent, young enough for the relay to ring, and outside the Bot's quiet hours now. */
     readonly canSendDigest: (digest: BotAlertDigest) => Effect.Effect<boolean, BotError>;
     readonly markDigestSent: (digest: BotAlertDigest) => Effect.Effect<void, BotError>;
+    /** Each Bot's alerts sent today and held; a Bot without any is absent. */
+    readonly counts: Effect.Effect<ReadonlyMap<string, BotAlertCounts>, BotError>;
+    /** Signals each new decision and each digest sent, the moments the counts move. */
+    readonly changes: Effect.Effect<Stream.Stream<void>, never, Scope.Scope>;
   }
 >()("t3/bots/BotAttention") {}
+
+/**
+ * How long a sent or digested decision is kept. Counts read only today's, which a time-zone change
+ * moves by a day at most; a repeated publish of a run this old is not decided anew (see `admit`).
+ */
+const DECISION_RETENTION_DAYS = 7;
 
 /** The relay rings for a completion at most this old; an older unsent claim gets a new identity. */
 const DIGEST_RECLAIM_MS = 2 * 60_000;
@@ -134,6 +153,9 @@ export const make = Effect.gen(function* () {
   const zone = yield* DateTime.CurrentTimeZone;
   const localNow = DateTime.now.pipe(Effect.map((now) => DateTime.setZone(now, zone)));
   const local = (iso: string) => DateTime.setZone(DateTime.makeUnsafe(iso), zone);
+  // Readers re-read the counts, so only the newest signal matters.
+  const changed = yield* PubSub.sliding<void>(1);
+  const notifyChanged = PubSub.publish(changed, undefined).pipe(Effect.asVoid);
 
   const settings = (botId: string) =>
     sql<SettingsRow>`SELECT revision, daily_limit, quiet_start, quiet_end, remit
@@ -200,14 +222,20 @@ export const make = Effect.gen(function* () {
 
   const admit = Effect.fn("BotAttention.admit")(function* (alert: BotAlert) {
     const key = `${alert.taskId}:${alert.runId}`;
-    return yield* sql.withTransaction(
+    const { decision, recorded } = yield* sql.withTransaction(
       Effect.gen(function* () {
         const [decided] = yield* sql<{
           readonly held: number;
         }>`SELECT held FROM bot_alerts WHERE alert_key = ${key}`;
-        if (decided !== undefined) return decided.held === 1 ? "hold" : "send";
-        const current = yield* settings(alert.botId);
+        if (decided !== undefined)
+          return { decision: decided.held === 1 ? "hold" : "send", recorded: false } as const;
         const now = yield* localNow;
+        const retained = DateTime.subtract(now, { days: DECISION_RETENTION_DAYS });
+        // Its decision may be pruned. The relay no longer rings for a run this old, and deciding
+        // again would count it today or hold it for another digest.
+        if (alert.endedAt !== null && DateTime.isLessThan(alert.endedAt, retained))
+          return { decision: "send", recorded: false } as const;
+        const current = yield* settings(alert.botId);
         const day = DateTime.formatIsoDate(now);
         const [sent] = yield* sql<{ readonly count: number }>`SELECT COUNT(*) AS count
           FROM bot_alerts WHERE bot_id = ${alert.botId} AND day = ${day} AND held = 0`;
@@ -216,9 +244,14 @@ export const make = Effect.gen(function* () {
         yield* sql`INSERT INTO bot_alerts (alert_key, bot_id, task_id, work_thread_id, home_thread_id, phase, day, decided_at, held)
           VALUES (${key}, ${alert.botId}, ${alert.taskId}, ${alert.workThreadId}, ${alert.homeThreadId},
             ${alert.phase}, ${day}, ${DateTime.formatIso(now)}, ${held ? 1 : 0})`;
-        return held ? ("hold" as const) : ("send" as const);
+        // A held alert stays until its digest went out.
+        yield* sql`DELETE FROM bot_alerts WHERE bot_id = ${alert.botId}
+          AND day < ${DateTime.formatIsoDate(retained)} AND (held = 0 OR digest_sent_at IS NOT NULL)`;
+        return { decision: held ? "hold" : "send", recorded: true } as const;
       }),
     );
+    if (recorded) yield* notifyChanged;
+    return decision;
   }, Effect.mapError(failure));
 
   /** Polled by the scheduler tick, so it opens no span. */
@@ -296,7 +329,22 @@ export const make = Effect.gen(function* () {
     const now = DateTime.formatIso(yield* DateTime.now);
     yield* sql`UPDATE bot_alerts SET digest_sent_at = ${now}
       WHERE bot_id = ${digest.botId} AND digest_at = ${digest.digestAt} AND digest_sent_at IS NULL`;
+    yield* notifyChanged;
   }, Effect.mapError(failure));
+
+  const counts = Effect.gen(function* () {
+    const today = DateTime.formatIsoDate(yield* localNow);
+    const rows = yield* sql<{
+      readonly bot_id: string;
+      readonly sent_today: number;
+      readonly held: number;
+    }>`SELECT bot_id, SUM(held = 0) AS sent_today, SUM(held = 1) AS held FROM bot_alerts
+      WHERE (day = ${today} AND held = 0) OR (held = 1 AND digest_sent_at IS NULL)
+      GROUP BY bot_id`;
+    return new Map(
+      rows.map((row) => [row.bot_id, { sentToday: row.sent_today, held: row.held }] as const),
+    );
+  }).pipe(Effect.mapError(failure), Effect.withSpan("BotAttention.counts"));
 
   return BotAttention.of({
     get,
@@ -306,6 +354,8 @@ export const make = Effect.gen(function* () {
     claimDigests,
     canSendDigest,
     markDigestSent,
+    counts,
+    changes: PubSub.subscribe(changed).pipe(Effect.map(Stream.fromSubscription)),
   });
 });
 

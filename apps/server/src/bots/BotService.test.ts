@@ -39,6 +39,7 @@ import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as BotAttention from "./BotAttention.ts";
 import * as BotProjectGuard from "./BotProjectGuard.ts";
 import * as BotService from "./BotService.ts";
 import * as BotDatabase from "./persistence/BotDatabase.ts";
@@ -184,6 +185,7 @@ const withServices = <A, E>(
     readonly turnContext: BotTurnContext.BotTurnContext["Service"];
     readonly continuation: BotContinuation.BotContinuation["Service"];
     readonly settings: ServerSettings.ServerSettingsService["Service"];
+    readonly attention: BotAttention.BotAttention["Service"];
   }) => Effect.Effect<A, E>,
 ) =>
   Effect.gen(function* () {
@@ -191,10 +193,17 @@ const withServices = <A, E>(
     const turnContext = yield* BotTurnContext.BotTurnContext;
     const continuation = yield* BotContinuation.BotContinuation;
     const settings = yield* ServerSettings.ServerSettingsService;
-    return yield* body({ bots, turnContext, continuation, settings });
+    const attention = yield* BotAttention.BotAttention;
+    return yield* body({ bots, turnContext, continuation, settings, attention });
   }).pipe(
     Effect.provide(
-      Layer.mergeAll(BotService.layer, BotTurnContext.layer, BotContinuation.layer).pipe(
+      // The same layer the server shares, so the list hears this instance's alert decisions.
+      Layer.mergeAll(
+        BotService.layer,
+        BotTurnContext.layer,
+        BotContinuation.layer,
+        BotAttention.layer,
+      ).pipe(
         Layer.provide(BotTaskService.layer),
         Layer.provideMerge(Layer.merge(threadLayer, layerSupport)),
       ),
@@ -479,30 +488,59 @@ it.effect(
     }).pipe(Effect.provide(layerDatabase)),
 );
 
-it.effect("pushes a rename to open Bot list subscriptions without renaming the conversation", () =>
-  Effect.gen(function* () {
-    yield* seedProjects;
-    const world = yield* makeThreadWorld;
-    yield* withServices(world.threadLayer, ({ bots }) =>
-      Effect.gen(function* () {
-        yield* createCampaignBot(bots);
-        yield* bots.attachProject({ botId, projectId: campaignA });
-        const pull = yield* Stream.toPull(bots.subscribeList());
-        assert.deepEqual(
-          (yield* pull).map(({ bots: list }) => list.map((bot) => bot.name)),
-          [["Faerun Companion"]],
-        );
+it.effect(
+  "pushes a rename and each move of the alert counts to open Bot list subscriptions without renaming the conversation",
+  () =>
+    Effect.gen(function* () {
+      yield* seedProjects;
+      const world = yield* makeThreadWorld;
+      yield* withServices(world.threadLayer, ({ bots, attention }) =>
+        Effect.gen(function* () {
+          yield* createCampaignBot(bots);
+          yield* bots.attachProject({ botId, projectId: campaignA });
+          const pull = yield* Stream.toPull(bots.subscribeList());
+          assert.deepEqual(
+            (yield* pull).map(({ bots: list }) => list.map((bot) => bot.name)),
+            [["Faerun Companion"]],
+          );
 
-        // Another client or the t3_bot tool renames it while this subscriber is open.
-        yield* bots.update({ botId, name: "Sword Coast Companion" });
-        assert.deepEqual(
-          (yield* pull).map(({ bots: list }) => list.map((bot) => bot.name)),
-          [["Sword Coast Companion"]],
-        );
-        assert.notInclude(yield* Ref.get(world.commands), "thread.metadata.update");
-      }).pipe(Effect.scoped),
-    );
-  }).pipe(Effect.provide(layerDatabase)),
+          // Another client or the t3_bot tool renames it while this subscriber is open.
+          yield* bots.update({ botId, name: "Sword Coast Companion" });
+          assert.deepEqual(
+            (yield* pull).map(({ bots: list }) => list.map((bot) => bot.name)),
+            [["Sword Coast Companion"]],
+          );
+          assert.notInclude(yield* Ref.get(world.commands), "thread.metadata.update");
+
+          // An open Alerts section follows a send, a hold and the digest without reopening.
+          const counts = Effect.map(pull, ({ 0: list }) => list?.bots.map((bot) => bot.alerts));
+          yield* attention.configure({
+            botId,
+            baseRevision: 0,
+            dailyLimit: 1,
+            quietHours: null,
+            remit: "",
+          });
+          const alert = (n: number) => ({
+            botId,
+            taskId: `bot-task:${n}`,
+            runId: `run-${n}`,
+            workThreadId: `bot-work:${n}`,
+            homeThreadId: "bot-home",
+            phase: "completed" as const,
+            endedAt: null,
+          });
+          assert.equal(yield* attention.admit(alert(1)), "send");
+          assert.deepEqual(yield* counts, [{ sentToday: 1, held: 0 }]);
+          assert.equal(yield* attention.admit(alert(2)), "hold");
+          assert.deepEqual(yield* counts, [{ sentToday: 1, held: 1 }]);
+          yield* TestClock.adjust("1 day");
+          const [digest] = yield* attention.claimDigests;
+          yield* attention.markDigestSent(digest!);
+          assert.deepEqual(yield* counts, [{ sentToday: 0, held: 0 }]);
+        }).pipe(Effect.scoped),
+      );
+    }).pipe(Effect.provide(layerDatabase)),
 );
 
 const privateMail = McpConnectionId.make("2a2a2a2a-0000-4000-8000-00000000002a");

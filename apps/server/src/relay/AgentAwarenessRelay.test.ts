@@ -401,6 +401,8 @@ const makeTestRelay = Effect.fnUntraced(function* (
           claimDigests: Effect.succeed([]),
           canSendDigest: unused,
           markDigestSent: unused,
+          counts: unused(),
+          changes: Effect.succeed(Stream.empty),
         }),
     ),
     Effect.provideService(

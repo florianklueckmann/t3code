@@ -54,6 +54,7 @@ import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as BotAttention from "./BotAttention.ts";
 import * as BotLearning from "./BotLearning.ts";
 import * as BotLearningNotices from "./BotLearningNotices.ts";
 import * as BotProjectGuard from "./BotProjectGuard.ts";
@@ -175,6 +176,7 @@ const make = Effect.gen(function* () {
   const scheduler = yield* Scheduler.Scheduler;
   const scheduledTasks = yield* ScheduledTaskService.ScheduledTaskService;
   const botTasks = yield* BotTaskService.BotTaskService;
+  const attention = yield* BotAttention.BotAttention;
   const turnContext = yield* BotTurnContext.BotTurnContext;
   const random = yield* SecureRandom.SecureRandom;
   const main = yield* SqlClient.SqlClient;
@@ -290,6 +292,7 @@ const make = Effect.gen(function* () {
     const bots = yield* store.listBots;
     const contexts = yield* store.listContexts();
     const pendingLearning = yield* store.pendingLearningCounts;
+    const alerts = yield* attention.counts;
     const grants = yield* store.listMcpGrants();
     const details = yield* Effect.forEach(bots, (bot) =>
       BotStore.toDetail(
@@ -304,6 +307,7 @@ const make = Effect.gen(function* () {
         ({ instructions: _instructions, learning: _learning, projects: botProjects, ...bot }) => ({
           ...bot,
           pendingLearning: pendingLearning.get(bot.id) ?? 0,
+          alerts: alerts.get(bot.id) ?? { sentToday: 0, held: 0 },
           projects: botProjects.map((project) => ({
             projectId: project.projectId,
             homeThreadId: project.homeThreadId,
@@ -1010,6 +1014,11 @@ const make = Effect.gen(function* () {
     Effect.forkScoped,
   );
   yield* scheduler.register("bot-task-learning", reconcileTaskLearning);
+  // The alert counts ride on the list, so an open Alerts section follows them.
+  yield* (yield* attention.changes).pipe(
+    Stream.runForEach(() => notifyChanged),
+    Effect.forkScoped,
+  );
 
   return BotService.of({
     list,
@@ -1040,5 +1049,5 @@ const make = Effect.gen(function* () {
 });
 
 export const layer = Layer.effect(BotService, make).pipe(
-  Layer.provide(Layer.merge(BotStore.layer, BotTurnContext.layer)),
+  Layer.provide(Layer.mergeAll(BotStore.layer, BotTurnContext.layer, BotAttention.layer)),
 );
