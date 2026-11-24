@@ -157,6 +157,12 @@ all, and your permission rules, skills and launch arguments can't give it more
 tools. It uses the provider account you selected for the Bot, including a
 ChatGPT sign-in. The task's result is saved as usual.
 
+On Claude, plugins and hooks your organization manages for Claude Code still
+run in No changes tasks and Home checks, because Claude has no switch to turn
+them off. The Bot can't add or change them. No changes limits what the Bot can
+do, not what your organization set up on that computer. If no organization
+manages your Claude Code, nothing extra runs.
+
 No changes currently works only on macOS, with Codex 0.166.0 or Claude Code
 2.1.326 or later. Anywhere else the routine's task fails with the
 reason instead of running with more access. Follow-up messages in a routine's task stay No changes, and its
