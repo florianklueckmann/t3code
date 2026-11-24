@@ -57,6 +57,12 @@ To stop a worktree's dev stack when its thread settles, import the **Dev** actio
 keybinding. Its `stopOnSettle` option lets T3 stop the terminal and its child processes.
 Running `vp run dev` through an agent's own shell tool does not attach it to this lifecycle.
 
+Before rebuilding a running desktop worktree, stop its dev stack and verify that the Electron
+supervisor and build watchers have exited. Check their PIDs and working directories as well as the
+listeners on the dev ports. An old watcher can restart Electron as soon as the new build writes
+an artifact, even after the ports become free. Stop only processes you have
+[verified belong to that dev stack](../../AGENTS.md#the-three-ways-to-hurt-yourself).
+
 ### State and ports
 
 Linked worktrees default to their own `.t3/userdata`, even when `T3CODE_HOME` is set.
@@ -260,8 +266,9 @@ tools. Only Settings runs `setup` and
   `timeZone`, an opaque `reference`, and a `revision`. Timed events use RFC 3339 timestamps with the host's
   offset at each boundary. All-day events use local dates with an exclusive end. For an event on
   November 18, those dates are `2026-11-18` and `2026-11-19`. Treat the reference as temporary.
-  It can change when an event moves or the calendar syncs. For a write, use
-  the latest reference, revision, and returned start.
+  It can change when an event moves or the calendar syncs. Sync can also change the revision
+  while the title and time stay the same. If an update or delete reports a stale event, list the
+  target again and use the latest reference, revision, and returned start.
 - `mutate-event` applies one create, update, or delete to an explicit calendar.
   The helper resolves update and delete targets within that calendar and checks
   the revision and writability before committing. T3 records the attempt before
@@ -270,6 +277,12 @@ tools. Only Settings runs `setup` and
 - Errors return `error.code` with `notAuthorized`, `invalidRequest`, `unknownCalendar`,
   `storeUnavailable`, or `timeout`. The helper validates the request before checking authorization.
   Reads require Full Access. An unknown calendar ID fails the entire request.
+
+For an end-to-end write test, update both T3 and the installed helper. Use a disposable Bot with
+one writable test calendar and synthetic events. To verify provider sync, check that the event
+appears, changes, and disappears in the provider's own calendar UI after each operation.
+An EventKit receipt confirms the local change. Clear the test grants and selection when you
+finish, then revoke any macOS access you granted for the test.
 
 ## Checks
 
