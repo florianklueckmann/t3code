@@ -194,8 +194,8 @@ per occasion. Each run checks the sources its brief names.
   [alert budget](#alerts-and-remit).
 - When nothing is new, you notice nothing: no card, no unread conversation, no
   alert. The run's thread is archived, and [maintenance](#learning) does not
-  learn from it. The same goes for a run skipped because the previous one was
-  still working.
+  learn from it. A scheduled run skipped because the previous one was still
+  working shows no card, unread mark or alert either.
 
 T3 Code records what a watch posted for each occasion, and a watch posts once
 per occasion: later runs on the same occasion stay quiet. To hear more about

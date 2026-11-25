@@ -842,12 +842,13 @@ const make = Effect.gen(function* () {
             WHERE scheduled_task_id = ${occurrence.scheduledTaskId} AND completed_at IS NULL
             LIMIT 1
           `;
-          const skipReason =
-            occurrence.sessionAt !== null && now >= occurrence.sessionAt
-              ? "The event had already started when this routine was due."
-              : open.length > 0
-                ? "The previous run of this routine was still working."
-                : undefined;
+          const missed = occurrence.sessionAt !== null && now >= occurrence.sessionAt;
+          const overlaps = !missed && open.length > 0;
+          const skipReason = missed
+            ? "The event had already started when this routine was due."
+            : overlaps
+              ? "The previous run of this routine was still working."
+              : undefined;
           const row = {
             ...newRow({
               taskId,
@@ -863,8 +864,8 @@ const make = Effect.gen(function* () {
               ...(skipReason === undefined ? {} : { skipReason }),
             }),
             by_hand: byHand ? 1 : 0,
-            // A skipped run has nothing new, so an unattended watch says nothing about it.
-            quiet: skipReason !== undefined && occurrence.watch === true && !byHand ? 1 : 0,
+            // The run still working will report; an unattended watch says nothing about the overlap.
+            quiet: overlaps && occurrence.watch === true && !byHand ? 1 : 0,
           };
           yield* insertTask(row);
           return { row, fresh: true } as const;
