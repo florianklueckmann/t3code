@@ -4723,7 +4723,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
       snoozedUntil = parsedSnoozedUntil.value;
     }
-    let markUnreadVisitedAt: DateTime.Utc | null = null;
+    let markUnread: {
+      readonly lastVisitedAt: DateTime.Utc;
+      readonly markedUnreadAt: DateTime.Utc | null;
+    } | null = null;
     if (command.type === "thread.mark-unread") {
       const shell = yield* projectionStore
         .getThreadShell(command.threadId)
@@ -4733,14 +4736,29 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ),
         );
       const latestRunCompletedAt = shell?.latestRunCompletedAt ?? null;
-      if (latestRunCompletedAt === null) {
+      if (shell === null || (shell.latestRunId !== null && latestRunCompletedAt === null)) {
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
           commandType: command.type,
-          cause: `Thread ${command.threadId} has no completed run to mark unread.`,
+          cause: `Thread ${command.threadId} has a run in progress and cannot be marked unread.`,
         });
       }
-      markUnreadVisitedAt = DateTime.subtract(latestRunCompletedAt, { milliseconds: 1 });
+      markUnread =
+        latestRunCompletedAt !== null &&
+        shell.status !== "interrupted" &&
+        shell.status !== "cancelled"
+          ? {
+              lastVisitedAt: DateTime.subtract(latestRunCompletedAt, { milliseconds: 1 }),
+              markedUnreadAt: null,
+            }
+          : // Clients never show a missing or stopped run as done, so unread anchors on the shell.
+            {
+              lastVisitedAt: DateTime.min(
+                thread.lastVisitedAt ?? shell.updatedAt,
+                DateTime.subtract(shell.updatedAt, { milliseconds: 1 }),
+              ),
+              markedUnreadAt: shell.updatedAt,
+            };
     }
     const updatedThread: OrchestrationV2AppThread = (() => {
       switch (command.type) {
@@ -4883,7 +4901,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             DateTime.toEpochMillis(thread.snoozedUntil) <= DateTime.toEpochMillis(now);
           return {
             ...thread,
-            lastVisitedAt: markUnreadVisitedAt,
+            lastVisitedAt: markUnread?.lastVisitedAt ?? thread.lastVisitedAt,
+            markedUnreadAt: markUnread?.markedUnreadAt ?? null,
             ...(snoozeExpired
               ? { snoozedUntil: null, snoozedAt: null, lastSnoozeWakeAt: thread.snoozedUntil }
               : {}),

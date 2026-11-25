@@ -500,8 +500,6 @@ const completeAndSnoozeThread = Effect.fn("test.completeAndSnoozeThread")(functi
     threadId,
     runId: (yield* projections.getThreadProjection(threadId)).runs[0]!.id,
   });
-  const completedAt = (yield* projections.getThreadProjection(threadId)).runs.at(-1)?.completedAt;
-  assert.ok(completedAt);
   yield* TestClock.adjust("1 second");
   const snoozedUntil = DateTime.add(yield* DateTime.now, { minutes: snoozeMinutes });
   yield* orchestrator.dispatch({
@@ -510,14 +508,16 @@ const completeAndSnoozeThread = Effect.fn("test.completeAndSnoozeThread")(functi
     threadId,
     snoozedUntil: DateTime.formatIso(snoozedUntil),
   });
-  return { threadId, completedAt, snoozedUntil };
+  // The run was stopped, so Mark unread anchors on the shell rather than on the run.
+  const markedUnreadAt = (yield* projections.getThreadShell(threadId))!.updatedAt;
+  return { threadId, markedUnreadAt, snoozedUntil };
 });
 
 it.effect("mark unread retires an expired snooze so a dismissed wake stays dismissed", () =>
   Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;
     const projections = yield* ProjectionStore.ProjectionStoreV2;
-    const { threadId, completedAt, snoozedUntil } = yield* completeAndSnoozeThread(
+    const { threadId, markedUnreadAt, snoozedUntil } = yield* completeAndSnoozeThread(
       "mark-unread-expired-snooze",
       1,
     );
@@ -538,7 +538,8 @@ it.effect("mark unread retires an expired snooze so a dismissed wake stays dismi
     });
     assert.deepEqual(yield* projections.getThread(threadId), {
       ...dismissed,
-      lastVisitedAt: DateTime.subtract(completedAt, { milliseconds: 1 }),
+      lastVisitedAt: DateTime.subtract(markedUnreadAt, { milliseconds: 1 }),
+      markedUnreadAt,
       snoozedUntil: null,
       snoozedAt: null,
       lastSnoozeWakeAt: snoozedUntil,
@@ -550,7 +551,7 @@ it.effect("mark unread leaves a future snooze untouched", () =>
   Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;
     const projections = yield* ProjectionStore.ProjectionStoreV2;
-    const { threadId, completedAt } = yield* completeAndSnoozeThread(
+    const { threadId, markedUnreadAt } = yield* completeAndSnoozeThread(
       "mark-unread-future-snooze",
       60,
     );
@@ -571,7 +572,8 @@ it.effect("mark unread leaves a future snooze untouched", () =>
     });
     assert.deepEqual(yield* projections.getThread(threadId), {
       ...visited,
-      lastVisitedAt: DateTime.subtract(completedAt, { milliseconds: 1 }),
+      lastVisitedAt: DateTime.subtract(markedUnreadAt, { milliseconds: 1 }),
+      markedUnreadAt,
     });
   }).pipe(Effect.provide(layerTest)),
 );

@@ -14,7 +14,11 @@ import {
   type ThreadMoveAvailability,
 } from "./threadOrder";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
-import { canSnooze, resolveSnoozePresets } from "@t3tools/client-runtime/state/thread-settled";
+import {
+  canSnooze,
+  hasUnseenCompletion,
+  resolveSnoozePresets,
+} from "@t3tools/client-runtime/state/thread-settled";
 import {
   CommandId,
   EnvironmentId,
@@ -47,7 +51,6 @@ import {
   threadListV2AttentionUrgency,
   threadListV2ListItemsAreEqual,
   threadListV2RowAccessibilityLabel,
-  threadHasUnseenCompletion,
   type ThreadListV2ListItem,
 } from "./threadListV2";
 
@@ -225,7 +228,7 @@ describe("resolveThreadListV2Status", () => {
       );
 
       expect(resolveThreadListV2Status(thread)).toBe(status);
-      expect(threadHasUnseenCompletion(thread)).toBe(true);
+      expect(hasUnseenCompletion(thread)).toBe(true);
     },
   );
 
@@ -276,23 +279,6 @@ describe("resolveThreadListV2Status", () => {
       expect(threadListV2AttentionUrgency(resolveThreadListV2Attention(thread))).toBe(urgency);
     }
   });
-
-  it.each(["interrupted", "cancelled"] as const)(
-    "does not present a %s run as an unseen completion",
-    (status) => {
-      const thread = presentThreadShell(
-        environmentId,
-        makeRawThreadShell({
-          latestRunId: RunId.make("run-stopped"),
-          status,
-          latestRunCompletedAt: DateTime.makeUnsafe(NOW),
-          lastVisitedAt: DateTime.makeUnsafe("2026-06-01T23:59:00.000Z"),
-        }),
-      );
-
-      expect(threadHasUnseenCompletion(thread)).toBe(false);
-    },
-  );
 });
 
 describe("threadListV2RowAccessibilityLabel", () => {

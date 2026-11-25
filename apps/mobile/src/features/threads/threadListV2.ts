@@ -9,6 +9,7 @@ import {
   threadWokeAt,
 } from "@t3tools/client-runtime/state/thread-settled";
 import {
+  hasUnseenCompletion,
   hasUnseenRunFailure,
   type SnoozePreset,
 } from "@t3tools/client-runtime/state/thread-settled";
@@ -233,21 +234,6 @@ export function threadListV2LayoutTime(input: {
 export const THREAD_LIST_V2_SETTLED_INITIAL_COUNT = 10;
 export const THREAD_LIST_V2_SETTLED_PAGE_COUNT = 25;
 
-export function threadHasUnseenCompletion(
-  thread: Pick<EnvironmentThreadShell, "latestRun" | "lastVisitedAt">,
-): boolean {
-  const completedAt = thread.latestRun?.completedAt;
-  if (!completedAt) return false;
-  const status = thread.latestRun?.status;
-  if (status === "interrupted" || status === "cancelled") return false;
-  const completedAtMs = Date.parse(completedAt);
-  if (Number.isNaN(completedAtMs)) return false;
-  if (!thread.lastVisitedAt) return false;
-  const lastVisitedAtMs = Date.parse(thread.lastVisitedAt);
-  if (Number.isNaN(lastVisitedAtMs)) return true;
-  return completedAtMs > lastVisitedAtMs;
-}
-
 export function resolveThreadListV2WokeAt(
   thread: EnvironmentThreadShell,
   options: { readonly now: string },
@@ -346,10 +332,10 @@ export type ThreadListV2Attention = Exclude<ThreadListV2Status, "waiting" | "rea
 
 export function resolveThreadListV2Attention(
   thread: Parameters<typeof resolveThreadListV2Status>[0] &
-    Parameters<typeof threadHasUnseenCompletion>[0],
+    Parameters<typeof hasUnseenCompletion>[0],
 ): ThreadListV2Attention | null {
   const status = resolveThreadListV2Status(thread);
-  if (status === "ready") return threadHasUnseenCompletion(thread) ? "done" : null;
+  if (status === "ready") return hasUnseenCompletion(thread) ? "done" : null;
   return status === "waiting" ? null : status;
 }
 
@@ -580,7 +566,7 @@ function resolveThreadListV2ItemTimeLabel(
     variant === "card" &&
     (resolveThreadListV2RowStatus(thread) !== "ready" ||
       item.wokeAt !== null ||
-      threadHasUnseenCompletion(thread))
+      hasUnseenCompletion(thread))
   )
     return "";
   const settledTimestamp =

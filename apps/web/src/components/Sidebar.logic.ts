@@ -28,6 +28,7 @@ import type { SidebarProjectSortOrder, SidebarThreadSortOrder } from "@t3tools/c
 import type { AsyncResult } from "effect/reactivity";
 import {
   effectiveSnoozed,
+  hasUnseenCompletion,
   hasUnseenRunFailure,
   type ThreadSnoozeShell,
 } from "@t3tools/client-runtime/state/thread-settled";
@@ -660,6 +661,7 @@ type ThreadStatusInput = Pick<
   | "pendingGuestMessageCount"
   | "interactionMode"
   | "latestRun"
+  | "markedUnreadAt"
   | "runtime"
 > & {
   lastVisitedAt?: string | null | undefined;
@@ -773,20 +775,6 @@ export function resolveThreadLastVisitedAt(
   // servers.
   if (serverLastVisitedAt === undefined) return localLastVisitedAt;
   return serverLastVisitedAt ?? undefined;
-}
-
-export function hasUnseenCompletion(thread: ThreadStatusInput): boolean {
-  if (!thread.latestRun?.completedAt) return false;
-  if (thread.latestRun.status === "interrupted" || thread.latestRun.status === "cancelled") {
-    return false;
-  }
-  const completedAt = Date.parse(thread.latestRun.completedAt);
-  if (Number.isNaN(completedAt)) return false;
-  if (!thread.lastVisitedAt) return false;
-
-  const lastVisitedAt = Date.parse(thread.lastVisitedAt);
-  if (Number.isNaN(lastVisitedAt)) return true;
-  return completedAt > lastVisitedAt;
 }
 
 // Suppress trailing double-click navigation; keyboard and synthetic clicks use detail 0.
