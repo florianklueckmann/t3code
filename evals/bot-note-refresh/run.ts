@@ -23,6 +23,7 @@ import * as Option from "effect/Option";
 import { NOTE_REFRESH_PROMPT } from "../../apps/server/src/bots/BotMaintenance.ts";
 import { resolveCliAuthConfig } from "../../apps/server/src/cli/config.ts";
 import {
+  type BotHome,
   createBotHome,
   files,
   homeIsEligible,
@@ -32,7 +33,6 @@ import {
   taskList,
 } from "../shared/botHome.ts";
 import {
-  type BotModelSelection,
   type Call,
   encodeJson,
   INSTANCE_FLAG,
@@ -65,6 +65,28 @@ interface Position {
   readonly runOrdinal: number;
   readonly ordinal: number;
 }
+
+interface Stopped {
+  readonly messageId: string;
+  readonly status: string;
+}
+
+/** One owed night in one Home; `skip` counts the refresh attempts of its earlier nights. */
+interface Night {
+  readonly home: string;
+  readonly stopped: readonly Stopped[];
+  readonly skip: number;
+}
+
+type Item = Effect.Success<ReturnType<typeof readItems>>[number];
+
+const refreshRunsOf = (messages: readonly Item[]) =>
+  messages
+    .filter(
+      (item) =>
+        item.type === "user_message" && item.messageId?.startsWith(REFRESH_MESSAGE) === true,
+    )
+    .map((item) => item.runId);
 
 /** Sends Home input and stops its turn at once, so no ordinary turn records it. */
 const sendUnrecorded = Effect.fn("botNoteRefreshEval.sendUnrecorded")(function* (
@@ -110,8 +132,15 @@ const databases = (statePath: string, botsPath: string) => {
     }
   };
   return {
-    /** Every Home input so far is the learning baseline, as `BotMaintenance.configure` records it. */
-    enable: (home: string, now: string, owedSince: string) => {
+    /**
+     * A first night enables maintenance with every Home input so far as the learning baseline, as
+     * `BotMaintenance.configure` records it; a later night only moves the last night back.
+     */
+    owe: (home: string, now: string, owedSince: string) => {
+      const later = bots
+        .prepare("UPDATE bot_maintenance SET nightly_at = ? WHERE home_thread_id = ?")
+        .run(owedSince, home);
+      if (later.changes > 0) return;
       const inputs = reading((db) =>
         db
           .prepare(
@@ -147,7 +176,7 @@ const databases = (statePath: string, botsPath: string) => {
         throw cause;
       }
     },
-    /** The night's note refresh attempts, as `note` or `note:reason`. */
+    /** Every note refresh attempt in the Home, as `note` or `note:reason`. */
     attempts: (home: string) =>
       bots
         .prepare(
@@ -191,22 +220,79 @@ const reaches = (frontier: Position | null, target: Position | null) =>
   (frontier.runOrdinal > target.runOrdinal ||
     (frontier.runOrdinal === target.runOrdinal && frontier.ordinal >= target.ordinal));
 
+/** Ordinary turns first, then input whose turns are stopped at once. */
+const sendInput = Effect.fn("botNoteRefreshEval.sendInput")(function* (
+  call: Call,
+  home: string,
+  input: Pick<NoteRefreshCase, "seed" | "unrecorded">,
+) {
+  for (const text of input.seed) yield* runTurn(call, home, text);
+  const stopped: Stopped[] = [];
+  for (const text of input.unrecorded) stopped.push(yield* sendUnrecorded(call, home, text));
+  return stopped;
+});
+
+/** The night is over once its last attempt did not refresh, or the note covers every input. */
+const nightOver = (db: Databases, night: Night) => {
+  const attempts = db.attempts(night.home).slice(night.skip);
+  const last = night.stopped.at(-1);
+  return (
+    attempts.length > 0 &&
+    db.eligible(night.home) &&
+    (attempts.at(-1) !== "refreshed" ||
+      attempts.length >= NIGHTLY_PAGES ||
+      (last !== undefined &&
+        reaches(db.frontier(night.home), db.position(night.home, last.messageId))))
+  );
+};
+
+/** Owes every Home a night and waits until the server's scheduler has run them all. */
+const runNights = Effect.fn("botNoteRefreshEval.runNights")(function* (
+  db: Databases,
+  nights: readonly Night[],
+) {
+  const now = yield* DateTime.now;
+  for (const night of nights)
+    db.owe(
+      night.home,
+      DateTime.formatIso(now),
+      DateTime.formatIso(DateTime.subtract(now, { days: 2 })),
+    );
+  for (let poll = 0; poll < POLLS; poll += 1) {
+    if (nights.every((night) => nightOver(db, night))) return;
+    yield* Effect.sleep(POLL);
+  }
+});
+
+/** What the earlier night left: its attempts and runs, which the graded night leaves out. */
+const earlierNightOf = Effect.fn("botNoteRefreshEval.earlierNightOf")(function* (
+  call: Call,
+  db: Databases,
+  night: Night,
+) {
+  const attempts = db.attempts(night.home);
+  return {
+    attempts,
+    refreshRuns: refreshRunsOf(yield* readItems(call, night.home, "messages")),
+  };
+});
+
 const setUp = Effect.fn("botNoteRefreshEval.setUp")(function* (
   call: Call,
-  testCase: NoteRefreshCase,
-  sample: number,
-  work: string,
-  modelSelection: BotModelSelection,
+  created: { readonly testCase: NoteRefreshCase; readonly sample: number; readonly home: BotHome },
+  earlier: Effect.Success<ReturnType<typeof earlierNightOf>> | null,
 ) {
-  const tag = `bnr-${testCase.id}-${sample}-${NodeCrypto.randomBytes(3).toString("hex")}`;
-  const home = yield* createBotHome(call, { tag, work, modelSelection });
-  for (const text of testCase.seed) yield* runTurn(call, home.homeThreadId, text);
-  const stopped: Array<{ readonly messageId: string; readonly status: string }> = [];
-  for (const text of testCase.unrecorded)
-    stopped.push(yield* sendUnrecorded(call, home.homeThreadId, text));
-  return { id: testCase.id, sample, home, stopped, filesBefore: files(home.root) };
+  const { testCase, sample, home } = created;
+  const stopped = yield* sendInput(call, home.homeThreadId, testCase);
+  return { id: testCase.id, sample, home, stopped, earlier, filesBefore: files(home.root) };
 });
 type Fixture = Effect.Success<ReturnType<typeof setUp>>;
+
+const nightOf = (fixture: Fixture): Night => ({
+  home: fixture.home.homeThreadId,
+  stopped: fixture.stopped,
+  skip: fixture.earlier?.attempts.length ?? 0,
+});
 
 const preconditions = (
   testCase: NoteRefreshCase,
@@ -218,6 +304,10 @@ const preconditions = (
   const items = NOTE_SECTIONS.flatMap((section) => note[section]);
   if (!db.eligible(fixture.home.homeThreadId))
     issues.push("the Home had no idle native conversation for a refresh");
+  if (fixture.earlier !== null && fixture.earlier.attempts[0] !== "refreshed")
+    issues.push(
+      `the earlier night did not refresh (${fixture.earlier.attempts.join(", ") || "no attempt"})`,
+    );
   if (testCase.needsExistingItems && items.length === 0)
     issues.push("the seed turn saved no note items to keep");
   for (const pattern of testCase.absentBefore)
@@ -229,20 +319,6 @@ const preconditions = (
   return issues;
 };
 
-/** The night is over once its last attempt did not refresh, or the note covers every input. */
-const nightOver = (db: Databases, fixture: Fixture) => {
-  const home = fixture.home.homeThreadId;
-  const attempts = db.attempts(home);
-  const last = fixture.stopped.at(-1);
-  return (
-    attempts.length > 0 &&
-    db.eligible(home) &&
-    (attempts.at(-1) !== "refreshed" ||
-      attempts.length >= NIGHTLY_PAGES ||
-      (last !== undefined && reaches(db.frontier(home), db.position(home, last.messageId))))
-  );
-};
-
 const observe = Effect.fn("botNoteRefreshEval.observe")(function* (
   call: Call,
   db: Databases,
@@ -251,19 +327,16 @@ const observe = Effect.fn("botNoteRefreshEval.observe")(function* (
 ) {
   const { home } = fixture;
   const messages = yield* readItems(call, home.homeThreadId, "messages");
-  const refreshRuns = messages
-    .filter(
-      (item) =>
-        item.type === "user_message" && item.messageId?.startsWith(REFRESH_MESSAGE) === true,
-    )
-    .map((item) => item.runId);
+  const refreshRuns = refreshRunsOf(messages).filter(
+    (runId) => fixture.earlier?.refreshRuns.includes(runId) !== true,
+  );
   const activity = (yield* readItems(call, home.homeThreadId, "activity")).filter((item) =>
     refreshRuns.includes(item.runId),
   );
   const last = fixture.stopped.at(-1);
   const testCase = CASES.find((candidate) => candidate.id === fixture.id)!;
   const run: Observation = {
-    attempts: db.attempts(home.homeThreadId),
+    attempts: db.attempts(home.homeThreadId).slice(nightOf(fixture).skip),
     covered:
       last !== undefined &&
       reaches(db.frontier(home.homeThreadId), db.position(home.homeThreadId, last.messageId)),
@@ -299,6 +372,7 @@ const observe = Effect.fn("botNoteRefreshEval.observe")(function* (
     checks,
     homeThreadId: home.homeThreadId,
     stopped: fixture.stopped,
+    earlierNight: fixture.earlier,
     refreshRuns,
     // The baseline arm runs a server whose refresh prompt differs from this checkout's.
     promptMatchesSource:
@@ -367,10 +441,33 @@ const main = Effect.gen(function* () {
         effort: values.effort,
       });
       const work = NodePath.resolve(values.work ?? NodePath.join(out, "work"));
-      const fixtures: Fixture[] = [];
+      const created: Array<{ testCase: NoteRefreshCase; sample: number; home: BotHome }> = [];
       for (const testCase of selected)
-        for (let sample = 0; sample < samples; sample += 1)
-          fixtures.push(yield* setUp(call, testCase, sample, work, modelSelection));
+        for (let sample = 0; sample < samples; sample += 1) {
+          const tag = `bnr-${testCase.id}-${sample}-${NodeCrypto.randomBytes(3).toString("hex")}`;
+          const home = yield* createBotHome(call, { tag, work, modelSelection });
+          created.push({ testCase, sample, home });
+        }
+      const earlierNights = new Map<string, Night>();
+      for (const { testCase, home } of created)
+        if (testCase.earlierNight !== undefined)
+          earlierNights.set(home.homeThreadId, {
+            home: home.homeThreadId,
+            stopped: yield* sendInput(call, home.homeThreadId, testCase.earlierNight),
+            skip: 0,
+          });
+      yield* runNights(db, [...earlierNights.values()]);
+      const fixtures: Fixture[] = [];
+      for (const entry of created) {
+        const earlier = earlierNights.get(entry.home.homeThreadId);
+        fixtures.push(
+          yield* setUp(
+            call,
+            entry,
+            earlier === undefined ? null : yield* earlierNightOf(call, db, earlier),
+          ),
+        );
+      }
 
       const before = new Map<Fixture, { note: ObservedNote; tasks: number; setup: string[] }>();
       for (const fixture of fixtures) {
@@ -382,17 +479,7 @@ const main = Effect.gen(function* () {
           setup: preconditions(testCase, fixture, note, db),
         });
       }
-      const now = yield* DateTime.now;
-      for (const fixture of fixtures)
-        db.enable(
-          fixture.home.homeThreadId,
-          DateTime.formatIso(now),
-          DateTime.formatIso(DateTime.subtract(now, { days: 2 })),
-        );
-      for (let poll = 0; poll < POLLS; poll += 1) {
-        if (fixtures.every((fixture) => nightOver(db, fixture))) break;
-        yield* Effect.sleep(POLL);
-      }
+      yield* runNights(db, fixtures.map(nightOf));
       for (const fixture of fixtures) {
         const row = yield* observe(call, db, fixture, before.get(fixture)!).pipe(
           Effect.catch((error: SampleError) =>
