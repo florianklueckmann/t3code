@@ -209,6 +209,25 @@ const databases = (statePath: string, botsPath: string) => {
           : ({ runOrdinal: Number(row.run_ordinal), ordinal: Number(row.ordinal) } as Position);
       }),
     eligible: (home: string) => reading((db) => homeIsEligible(db, home)),
+    running: (home: string) =>
+      bots
+        .prepare(
+          "SELECT COUNT(*) AS running FROM bot_maintenance_runs WHERE home_thread_id = ? AND status = 'running'",
+        )
+        .get(home)?.running,
+    /** The Home's provider thread and its native conversation, which a sealed turn resumes. */
+    conversation: (home: string) =>
+      reading((db) => {
+        const row = db
+          .prepare(
+            `SELECT t.active_provider_thread_id AS thread, json_extract(p.payload_json, '$.nativeThreadRef.nativeId') AS native
+            FROM orchestration_v2_projection_threads t
+            LEFT JOIN orchestration_v2_projection_provider_threads p ON p.provider_thread_id = t.active_provider_thread_id
+            WHERE t.thread_id = ?`,
+          )
+          .get(home);
+        return row === undefined ? null : `${row.thread}/${row.native}`;
+      }),
     close: () => bots.close(),
   };
 };
@@ -246,11 +265,16 @@ const nightOver = (db: Databases, night: Night) => {
   );
 };
 
-/** Owes every Home a night and waits until the server's scheduler has run them all. */
+/**
+ * Owes every Home a night and waits until the server's scheduler has run them all. A pass keeps
+ * going briefly after its last page (another page check, compaction) and records no end, so a
+ * night is over only once nothing changed for one more poll.
+ */
 const runNights = Effect.fn("botNoteRefreshEval.runNights")(function* (
   db: Databases,
   nights: readonly Night[],
 ) {
+  if (nights.length === 0) return;
   const now = yield* DateTime.now;
   for (const night of nights)
     db.owe(
@@ -258,8 +282,18 @@ const runNights = Effect.fn("botNoteRefreshEval.runNights")(function* (
       DateTime.formatIso(now),
       DateTime.formatIso(DateTime.subtract(now, { days: 2 })),
     );
+  let previous = "";
   for (let poll = 0; poll < POLLS; poll += 1) {
-    if (nights.every((night) => nightOver(db, night))) return;
+    const state = encodeJson(
+      nights.map((night) => [
+        db.attempts(night.home),
+        db.frontier(night.home),
+        db.running(night.home),
+        db.eligible(night.home),
+      ]),
+    );
+    if (state === previous && nights.every((night) => nightOver(db, night))) return;
+    previous = state;
     yield* Effect.sleep(POLL);
   }
 });
@@ -270,10 +304,10 @@ const earlierNightOf = Effect.fn("botNoteRefreshEval.earlierNightOf")(function* 
   db: Databases,
   night: Night,
 ) {
-  const attempts = db.attempts(night.home);
   return {
-    attempts,
+    attempts: db.attempts(night.home),
     refreshRuns: refreshRunsOf(yield* readItems(call, night.home, "messages")),
+    conversation: db.conversation(night.home),
   };
 });
 
@@ -362,7 +396,12 @@ const observe = Effect.fn("botNoteRefreshEval.observe")(function* (
     tasksBefore: before.tasks,
     tasksAfter: (yield* taskList(call, home.botId)).length,
     unchangedFiles: files(home.root) === fixture.filesBefore,
-    setup: before.setup,
+    // Only a resumed conversation reproduces a second sealed turn.
+    setup:
+      fixture.earlier === null ||
+      fixture.earlier.conversation === db.conversation(home.homeThreadId)
+        ? before.setup
+        : [...before.setup, "the second night ran in another native conversation"],
   };
   const checks = gradeSample(testCase, run);
   return {

@@ -6,11 +6,11 @@ The refresh prompt is `NOTE_REFRESH_PROMPT` in `apps/server/src/bots/BotMaintena
 
 ## How a night is started
 
-Seed turns run as ordinary Home turns. The case's other input is sent and its turn stopped at once, so no ordinary turn records it, as when a Bot forgot to. No client can start a night at once, so the eval then turns maintenance on in that server's `bots.sqlite` the way a first enable does, with every Home input so far as the learning baseline, and leaves a night owed. The server's scheduler, learning pass, refresh admission, scoped `botNote` Codex turn, save rules, per-part acks and outcome rows all run as they would for a user. The eval refuses `~/.t3`; point `--base-dir` only at a synthetic home.
+Seed turns run as ordinary Home turns. The case's other input is sent and its turn stopped at once, so no ordinary turn records it, as when a Bot forgot to. No client can start a night at once, so the eval then turns maintenance on in that server's `bots.sqlite` the way a first enable does, with every Home input so far as the learning baseline, and leaves a night owed. The server's scheduler, learning pass, refresh admission, scoped `botNote` turn, save rules, per-part acks and outcome rows all run as they would for a user. The eval refuses `~/.t3`; point `--base-dir` only at a synthetic home.
 
-A sample's night is over once its last refresh attempt did not refresh, the note's coverage reached the case's last input, or the server's three-page limit was used.
+A sample's night is over once its last refresh attempt did not refresh, the note's coverage reached the case's last input, or the server's three-page limit was used, and nothing changed for one more poll: a pass records no end, and it still checks for another page and for compaction after its last one.
 
-A case with an earlier night runs that night first in the same Home, then the case's own turns, then owes the Home another night by moving its last night back. Only the second night is graded; the first must have refreshed.
+A case with an earlier night runs that night first in the same Home, then the case's own turns, then owes the Home another night by moving its last night back. Only the second night is graded; the first must have refreshed, and both must run in the same native conversation.
 
 ## Run
 
