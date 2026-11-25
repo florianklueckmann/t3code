@@ -2106,6 +2106,14 @@ export const layer: Layer.Layer<
                     checkpointScope: input.checkpointScope,
                     providerThread,
                     attempt: input.attempt,
+                    // A steer superseded this attempt: its lost session still settles the thread.
+                    ...(input.shouldFinalizeRun === undefined ||
+                    input.settleStoppedProviderThread === undefined
+                      ? {}
+                      : {
+                          shouldFinalizeRun: input.shouldFinalizeRun,
+                          settleStoppedProviderThread: input.settleStoppedProviderThread,
+                        }),
                     writeIfRunCurrent: {
                       activeAttemptId: input.attempt.id,
                       expectedStatus: "running",
