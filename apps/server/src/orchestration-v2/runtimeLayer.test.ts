@@ -11273,14 +11273,18 @@ it.layer(layerSharedApplicationDataPlaneTest)("visited projection", (it) => {
       assert.equal(DateTime.formatIso(thread!.lastVisitedAt!), visitedAt);
       assert.deepEqual(thread!.updatedAt, createdUpdatedAt);
 
-      const markUnread = yield* orchestrator
-        .dispatch({
-          type: "thread.mark-unread",
-          commandId: CommandId.make("runtime-layer-visited-thread-mark-unread"),
-          threadId,
-        })
-        .pipe(Effect.flip);
-      assert.instanceOf(markUnread, Orchestrator.OrchestratorDispatchError);
+      // Without a run, Mark unread anchors on the shell the clients see.
+      yield* orchestrator.dispatch({
+        type: "thread.mark-unread",
+        commandId: CommandId.make("runtime-layer-visited-thread-mark-unread"),
+        threadId,
+      });
+      const marked = yield* orchestrator.getThreadShell(threadId);
+      assert.deepEqual(marked!.markedUnreadAt, createdUpdatedAt);
+      assert.deepEqual(
+        marked!.lastVisitedAt,
+        DateTime.subtract(createdUpdatedAt, { milliseconds: 1 }),
+      );
 
       yield* sql`INSERT INTO orchestration_v2_projection_turn_items (
         turn_item_id, thread_id, ordinal, type, status, updated_at, payload_json
@@ -11313,112 +11317,123 @@ it.layer(layerSharedApplicationDataPlaneTest)("visited projection", (it) => {
     }),
   );
 
-  it.effect("marks unread before the user's last turn when an automatic compaction followed", () =>
-    Effect.gen(function* () {
-      const orchestrator = yield* Orchestrator.OrchestratorV2;
-      const threadId = ThreadId.make("runtime-layer-mark-unread-compacted");
-      const turnCompletedAt = DateTime.makeUnsafe("2026-07-24T10:00:00.000Z");
-      yield* orchestrator.dispatch({
-        type: "thread.create",
-        createdBy: "user",
-        creationSource: "web",
-        commandId: CommandId.make(`${threadId}:create`),
-        threadId,
-        projectId: ProjectId.make(`${threadId}:project`),
-        title: "Compacted thread",
-        modelSelection,
-        runtimeMode: "full-access",
-        interactionMode: "default",
-        branch: null,
-        worktreePath: null,
-      });
-      const runs = [
-        { text: "Continue", at: turnCompletedAt },
-        {
-          text: "/compact",
-          idleCompaction: "beforeCacheExpires" as const,
-          at: DateTime.makeUnsafe("2026-07-24T11:00:00.000Z"),
-        },
-      ];
-      yield* (yield* EventSink.EventSinkV2).write({
-        commandId: CommandId.make(`${threadId}:seed`),
-        events: runs.flatMap(({ at, ...message }, index) => {
-          const runId = RunId.make(`${threadId}:run-${index}`);
-          const messageId = MessageId.make(`${threadId}:message-${index}`);
-          return [
-            {
-              id: EventId.make(`${messageId}:event`),
-              type: "message.updated" as const,
-              threadId,
-              occurredAt: at,
-              payload: {
-                ...message,
-                id: messageId,
+  it.effect.each([{ userRunStatus: "completed" }, { userRunStatus: "interrupted" }] as const)(
+    "marks unread after the user's last turn ($userRunStatus) when an automatic compaction followed",
+    ({ userRunStatus }) =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const threadId = ThreadId.make(`runtime-layer-mark-unread-compacted-${userRunStatus}`);
+        const turnCompletedAt = DateTime.makeUnsafe("2026-07-24T10:00:00.000Z");
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          createdBy: "user",
+          creationSource: "web",
+          commandId: CommandId.make(`${threadId}:create`),
+          threadId,
+          projectId: ProjectId.make(`${threadId}:project`),
+          title: "Compacted thread",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+        });
+        const runs = [
+          { text: "Continue", at: turnCompletedAt, status: userRunStatus },
+          {
+            text: "/compact",
+            idleCompaction: "beforeCacheExpires" as const,
+            at: DateTime.makeUnsafe("2026-07-24T11:00:00.000Z"),
+            status: "completed" as const,
+          },
+        ];
+        yield* (yield* EventSink.EventSinkV2).write({
+          commandId: CommandId.make(`${threadId}:seed`),
+          events: runs.flatMap(({ at, status, ...message }, index) => {
+            const runId = RunId.make(`${threadId}:run-${index}`);
+            const messageId = MessageId.make(`${threadId}:message-${index}`);
+            return [
+              {
+                id: EventId.make(`${messageId}:event`),
+                type: "message.updated" as const,
+                threadId,
+                occurredAt: at,
+                payload: {
+                  ...message,
+                  id: messageId,
+                  threadId,
+                  runId,
+                  nodeId: null,
+                  role: "user" as const,
+                  attachments: [],
+                  streaming: false,
+                  createdBy: "user" as const,
+                  creationSource: "web" as const,
+                  createdAt: at,
+                  updatedAt: at,
+                },
+              },
+              {
+                id: EventId.make(`${runId}:event`),
+                type: "run.created" as const,
                 threadId,
                 runId,
-                nodeId: null,
-                role: "user" as const,
-                attachments: [],
-                streaming: false,
-                createdBy: "user" as const,
-                creationSource: "web" as const,
-                createdAt: at,
-                updatedAt: at,
-              },
-            },
-            {
-              id: EventId.make(`${runId}:event`),
-              type: "run.created" as const,
-              threadId,
-              runId,
-              providerInstanceId: modelSelection.instanceId,
-              occurredAt: at,
-              payload: {
-                id: runId,
-                threadId,
-                ordinal: index + 1,
                 providerInstanceId: modelSelection.instanceId,
-                modelSelection,
-                providerThreadId: null,
-                userMessageId: messageId,
-                rootNodeId: null,
-                activeAttemptId: null,
-                status: "completed" as const,
-                queuePosition: null,
-                requestedAt: at,
-                startedAt: at,
-                completedAt: at,
-                checkpointId: null,
-                contextHandoffId: null,
+                occurredAt: at,
+                payload: {
+                  id: runId,
+                  threadId,
+                  ordinal: index + 1,
+                  providerInstanceId: modelSelection.instanceId,
+                  modelSelection,
+                  providerThreadId: null,
+                  userMessageId: messageId,
+                  rootNodeId: null,
+                  activeAttemptId: null,
+                  status,
+                  queuePosition: null,
+                  requestedAt: at,
+                  startedAt: at,
+                  completedAt: at,
+                  checkpointId: null,
+                  contextHandoffId: null,
+                },
               },
-            },
-          ];
-        }),
-      });
+            ];
+          }),
+        });
 
-      yield* orchestrator.dispatch({
-        type: "thread.mark-unread",
-        commandId: CommandId.make(`${threadId}:mark-unread`),
-        threadId,
-      });
-      const projection = yield* orchestrator.getThreadProjection(threadId);
-      assert.deepEqual(
-        projection.thread.lastVisitedAt,
-        DateTime.subtract(turnCompletedAt, { milliseconds: 1 }),
-      );
-      const shell = yield* orchestrator.getThreadShell(threadId);
-      assert.deepEqual(shell!.latestRunCompletedAt, turnCompletedAt);
-      assert.deepEqual(shell!.lastVisitedAt, projection.thread.lastVisitedAt);
+        const before = yield* orchestrator.getThreadShell(threadId);
+        yield* orchestrator.dispatch({
+          type: "thread.mark-unread",
+          commandId: CommandId.make(`${threadId}:mark-unread`),
+          threadId,
+        });
+        // Clients never show a stopped run as done, so its mark anchors on the shell instead.
+        const unreadAfter = userRunStatus === "completed" ? turnCompletedAt : before!.updatedAt;
+        const projection = yield* orchestrator.getThreadProjection(threadId);
+        assert.deepEqual(
+          projection.thread.lastVisitedAt,
+          DateTime.subtract(unreadAfter, { milliseconds: 1 }),
+        );
+        const shell = yield* orchestrator.getThreadShell(threadId);
+        assert.deepEqual(shell!.latestRunCompletedAt, turnCompletedAt);
+        assert.equal(shell!.status, userRunStatus);
+        assert.deepEqual(shell!.lastVisitedAt, projection.thread.lastVisitedAt);
+        assert.deepEqual(
+          shell!.markedUnreadAt,
+          userRunStatus === "completed" ? undefined : before!.updatedAt,
+        );
 
-      yield* orchestrator.dispatch({
-        type: "thread.visit",
-        commandId: CommandId.make(`${threadId}:visit`),
-        threadId,
-        visitedAt: DateTime.formatIso(turnCompletedAt),
-      });
-      const revisited = yield* orchestrator.getThreadShell(threadId);
-      assert.deepEqual(revisited!.lastVisitedAt, turnCompletedAt);
-    }),
+        yield* orchestrator.dispatch({
+          type: "thread.visit",
+          commandId: CommandId.make(`${threadId}:visit`),
+          threadId,
+          visitedAt: DateTime.formatIso(unreadAfter),
+        });
+        const revisited = yield* orchestrator.getThreadShell(threadId);
+        assert.deepEqual(revisited!.lastVisitedAt, unreadAfter);
+      }),
   );
 });
 

@@ -1,6 +1,7 @@
 import { presentThreadShell } from "@t3tools/client-runtime/state/models";
 import { threadKey } from "@t3tools/client-runtime/state/entities";
 import { isThreadWorking as isSidebarThreadWorking } from "@t3tools/client-runtime/state/thread-inbox";
+import { hasUnseenCompletion } from "@t3tools/client-runtime/state/thread-settled";
 import * as DateTime from "effect/DateTime";
 import { deriveActiveWorkStartedAt } from "../session-logic.ts";
 import { describe, expect, it } from "vite-plus/test";
@@ -11,7 +12,6 @@ import {
   deleteSelectedThreadEntries,
   filterSidebarV2VisibleThreads,
   getFallbackThreadIdAfterDelete,
-  hasUnseenCompletion,
   orderItemsByPreferredIds,
   pinOrderKeyBetween,
   resolveSidebarSweepKeys,

@@ -1,15 +1,23 @@
 // @effect-diagnostics globalDate:off -- Tests exercise local calendar snooze boundaries.
 import * as DateTime from "effect/DateTime";
-import { RunId, RuntimeRequestId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  RunId,
+  RuntimeRequestId,
+  type OrchestrationV2ThreadShell,
+} from "@t3tools/contracts";
 import { ThreadId } from "@t3tools/contracts";
 import { TurnId } from "@t3tools/contracts";
 import type { SnoozePresetSetting } from "@t3tools/contracts/settings";
 import { describe, expect, it } from "vite-plus/test";
 
+import { presentThreadShell } from "./models.ts";
+import { v2ThreadShell } from "./orchestrationV2TestFixtures.ts";
 import {
   canSnooze,
   effectiveSnoozed,
   hasQueuedTurnStart,
+  hasUnseenCompletion,
   hasUnseenRunFailure,
   pickSnoozePreset,
   resolveSnoozePresets,
@@ -238,6 +246,45 @@ describe("hasUnseenRunFailure", () => {
     expect(
       hasUnseenRunFailure({ latestRun: undated, lastVisitedAt: "2026-04-10T09:00:30.000Z" }),
     ).toBe(true);
+  });
+});
+
+describe("hasUnseenCompletion", () => {
+  const environmentId = EnvironmentId.make("environment-1");
+  const completedAt = DateTime.makeUnsafe("2026-06-20T00:10:00.000Z");
+  const before = DateTime.makeUnsafe("2026-06-20T00:09:00.000Z");
+  const after = DateTime.makeUnsafe("2026-06-20T00:11:00.000Z");
+  const shell = (
+    input: Partial<OrchestrationV2ThreadShell> & Pick<OrchestrationV2ThreadShell, "lastVisitedAt">,
+  ) => presentThreadShell(environmentId, { ...v2ThreadShell, updatedAt: completedAt, ...input });
+  const run = (status: OrchestrationV2ThreadShell["status"]) => ({
+    latestRunId: RunId.make("run-latest"),
+    status,
+    latestRunCompletedAt: completedAt,
+  });
+
+  it.each([
+    { name: "a finished run after the visit", input: run("completed"), unread: true },
+    {
+      name: "a finished run the user saw",
+      input: { ...run("completed"), lastVisitedAt: after },
+      unread: false,
+    },
+    { name: "an interrupted run", input: run("interrupted"), unread: false },
+    { name: "a cancelled run", input: run("cancelled"), unread: false },
+    {
+      name: "an interrupted run marked unread",
+      input: { ...run("interrupted"), markedUnreadAt: completedAt },
+      unread: true,
+    },
+    { name: "no run, marked unread", input: { markedUnreadAt: completedAt }, unread: true },
+    {
+      name: "a mark the user has since seen",
+      input: { markedUnreadAt: completedAt, lastVisitedAt: completedAt },
+      unread: false,
+    },
+  ])("$name: unread is $unread", ({ input, unread }) => {
+    expect(hasUnseenCompletion(shell({ lastVisitedAt: before, ...input }))).toBe(unread);
   });
 });
 

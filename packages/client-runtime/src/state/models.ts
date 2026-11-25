@@ -198,6 +198,8 @@ export interface EnvironmentThreadShell {
    * local visited state they keep.
    */
   readonly lastVisitedAt?: string | null;
+  /** Unread anchor from Mark unread when no finished run can carry it; see `hasUnseenCompletion`. */
+  readonly markedUnreadAt?: string | null;
   /** Server-tracked open history for search ranking. */
   readonly opens?: import("@t3tools/contracts").OrchestrationV2ThreadOpens | null;
   readonly titleRegeneration?: { readonly requestId: string; readonly startedAt: string } | null;
@@ -347,6 +349,7 @@ export function presentThreadShell(
     ...(thread.lastVisitedAt === undefined
       ? {}
       : { lastVisitedAt: nullableIso(thread.lastVisitedAt) }),
+    ...(thread.markedUnreadAt ? { markedUnreadAt: iso(thread.markedUnreadAt) } : {}),
     opens: thread.opens ?? null,
     titleRegeneration:
       thread.titleRegeneration == null

@@ -413,6 +413,27 @@ export function isThreadWokeUnseen(input: {
 }
 
 /**
+ * Whether the thread is unread: its latest run finished after the last visit, or Mark unread
+ * anchored it after that visit. A stopped run alone never reads as done.
+ */
+export function hasUnseenCompletion(
+  thread: Pick<EnvironmentThreadShell, "latestRun" | "markedUnreadAt"> & {
+    readonly lastVisitedAt?: string | null | undefined;
+  },
+): boolean {
+  if (!thread.lastVisitedAt) return false;
+  const lastVisitedAtMs = Date.parse(thread.lastVisitedAt);
+  const isAfterVisit = (at: string) => {
+    const atMs = Date.parse(at);
+    return !Number.isNaN(atMs) && (Number.isNaN(lastVisitedAtMs) || atMs > lastVisitedAtMs);
+  };
+  if (thread.markedUnreadAt && isAfterVisit(thread.markedUnreadAt)) return true;
+  const run = thread.latestRun;
+  if (!run?.completedAt || run.status === "interrupted" || run.status === "cancelled") return false;
+  return isAfterVisit(run.completedAt);
+}
+
+/**
  * Whether the latest run failed after the user last saw the thread. Only the run dates the
  * failure, since the shell's updatedAt also moves on renames. A failed run without a
  * completion time, from older data, is dated by its start.
