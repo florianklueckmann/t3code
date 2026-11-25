@@ -1,5 +1,7 @@
 import {
+  BOT_EARLY_HOME_CHECK_MESSAGE_ID_PREFIX,
   BOT_HOME_CHECK_DEFAULT_TIME,
+  BOT_HOME_CHECK_MESSAGE_ID_PREFIX,
   BOT_HOME_THREAD_ID_PREFIX,
   BotTaskId,
   type BotConfigureHomeCheckInput,
@@ -60,7 +62,7 @@ const EARLY_WINDOW_MS = 24 * 60 * 60_000;
 const EARLY_GAP_MS = 60 * 60_000;
 /** How many finished tasks a check names; the rest it reviews through t3_bot list_tasks. */
 const OUTCOMES_LISTED = 10;
-const EARLY_PREFIX = "bot-home-check-early:";
+const EARLY_PREFIX = BOT_EARLY_HOME_CHECK_MESSAGE_ID_PREFIX;
 const isEarly = (messageId: string) => messageId.startsWith(EARLY_PREFIX);
 
 interface Row {
@@ -381,7 +383,9 @@ export const make = Effect.gen(function* () {
     // A daily id derives from the owed slot, so a crash before the write below replays the same
     // start. Both claim their batch first, so a restart knows what the started turn was told.
     const messageId = MessageId.make(
-      early ? `${EARLY_PREFIX}${home}:${at}` : `bot-home-check:${home}:${row.done_through}`,
+      early
+        ? `${EARLY_PREFIX}${home}:${at}`
+        : `${BOT_HOME_CHECK_MESSAGE_ID_PREFIX}${home}:${row.done_through}`,
     );
     // A daily check that started with nothing claimed left no claim to recover; adopt it as is.
     if (!early && (yield* threads.hasReceipt(CommandId.make(messageId)))) {

@@ -287,9 +287,10 @@ function AutomationMessageRow({ row }: { row: Extract<TimelineRow, { kind: "mess
   const ctx = use(TimelineRowCtx);
   const [expanded, setExpanded] = useState(false);
   const revealRef = findRevealRef(() => setExpanded(true));
-  const { text, scheduledTaskId } = resolveUserMessagePresentation(row.message);
+  const { text, scheduledTaskId, title } = resolveUserMessagePresentation(row.message);
   const summary =
     useScheduledTaskTitle(ctx.activeThreadEnvironmentId, scheduledTaskId) ??
+    title ??
     text.trim().split(/\r?\n/, 1)[0] ??
     "";
 

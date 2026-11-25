@@ -1537,6 +1537,7 @@ function ThreadAutomationMessageRow(props: {
   readonly text: string;
   readonly context?: OrchestrationMessageContext;
   readonly scheduledTaskId: ScheduledTaskId | undefined;
+  readonly title: string | undefined;
   readonly timestampLabel: string;
   readonly expanded: boolean;
   readonly onToggle: () => void;
@@ -1557,7 +1558,7 @@ function ThreadAutomationMessageRow(props: {
       : null,
   );
   const taskTitle = tasks.data?.tasks.find((task) => task.id === props.scheduledTaskId)?.title;
-  const summary = taskTitle ?? props.text.trim().split(/\r?\n/, 1)[0] ?? "";
+  const summary = taskTitle ?? props.title ?? props.text.trim().split(/\r?\n/, 1)[0] ?? "";
 
   return (
     <View className="mb-5 items-end">
@@ -2047,6 +2048,7 @@ function renderFeedEntry(
           text={presentation.text}
           context={message.context}
           scheduledTaskId={presentation.scheduledTaskId}
+          title={presentation.title}
           timestampLabel={timestampLabel}
           expanded={props.expandedWorkRows[rowId] ?? false}
           onToggle={() => props.onToggleWorkRow(rowId, entry.id)}

@@ -646,6 +646,24 @@ export function idleCompactionOf(
 export const botMaintenanceCompactionId = (home: string, sequence: number) =>
   `bot-maintenance:compact:${home}:${sequence}`;
 
+export const BOT_HOME_CHECK_MESSAGE_ID_PREFIX = "bot-home-check:";
+export const BOT_EARLY_HOME_CHECK_MESSAGE_ID_PREFIX = "bot-home-check-early:";
+export const BOT_MAINTENANCE_NOTE_MESSAGE_ID_PREFIX = "bot-maintenance:note:";
+
+/** A prompt the server wrote to start the Bot's own unattended run in its Home. */
+export function botHomeRunOf(message: {
+  readonly id?: string | undefined;
+  readonly createdBy?: OrchestrationV2Actor | undefined;
+  readonly creationSource?: OrchestrationV2CreationSource | undefined;
+}): "homeCheck" | "earlyHomeCheck" | "noteRefresh" | undefined {
+  if (message.createdBy !== "agent" || message.creationSource !== "server") return undefined;
+  const id = message.id ?? "";
+  if (id.startsWith(BOT_HOME_CHECK_MESSAGE_ID_PREFIX)) return "homeCheck";
+  if (id.startsWith(BOT_EARLY_HOME_CHECK_MESSAGE_ID_PREFIX)) return "earlyHomeCheck";
+  if (id.startsWith(BOT_MAINTENANCE_NOTE_MESSAGE_ID_PREFIX)) return "noteRefresh";
+  return undefined;
+}
+
 /** Only the server authors `system` messages, so no client can send one of these. */
 export function isBotMaintenanceCompaction(
   message: (CompactionMessageFields & { readonly id: string }) | undefined,
