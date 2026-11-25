@@ -393,7 +393,8 @@ export const layer: Layer.Layer<
             );
             if (
               (options?.onlyWhileActiveProviderThread === true &&
-                thread.activeProviderThreadId !== input.providerThreadId) ||
+                (run.providerThreadId !== input.providerThreadId ||
+                  thread.activeProviderThreadId !== input.providerThreadId)) ||
               providerThread?.status !== "active" ||
               providerThread.lastRunOrdinal !== input.runOrdinal ||
               providerTurns.some(
