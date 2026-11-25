@@ -373,9 +373,19 @@ export const layer: Layer.Layer<
         settleStoppedProviderThread: Effect.fn(
           "ProviderTurnStartService.settleStoppedProviderThread",
         )(
-          function* (status: OrchestrationV2ProviderThread["status"]) {
+          function* (
+            status: OrchestrationV2ProviderThread["status"],
+            options?: { readonly onlyOnRunProviderThread?: boolean },
+          ) {
             const run = yield* projectionStore.getRun(input.threadId, input.runId);
-            if (run === undefined || !NON_COMPLETING_TERMINAL_RUN_STATUSES.has(run.status)) return;
+            if (
+              run === undefined ||
+              !NON_COMPLETING_TERMINAL_RUN_STATUSES.has(run.status) ||
+              (options?.onlyOnRunProviderThread === true &&
+                run.providerThreadId !== input.providerThreadId)
+            ) {
+              return;
+            }
             const { providerThreads, providerTurns } = yield* projectionStore.getThreadRecords(
               input.threadId,
               ["providerThreads", "providerTurns"],
