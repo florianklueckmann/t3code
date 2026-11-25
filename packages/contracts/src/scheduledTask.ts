@@ -231,7 +231,8 @@ export const ScheduledTaskBotTarget = Schema.Struct({
   }),
   /**
    * A standing watch: a run posts only what is new for the occasion it names and otherwise shows
-   * nothing. Applies to No changes runs only; a save that omits it keeps the stored choice.
+   * nothing. Applies to recurring No changes runs only; a one-time save refuses `true` and ends a
+   * kept one. Any other save that omits it keeps the stored choice.
    */
   watch: Schema.optional(Schema.Boolean),
   /** When the event starts. A one-time run still due after this is skipped. */

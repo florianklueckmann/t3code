@@ -12,6 +12,9 @@ import * as Effect from "effect/Effect";
 /** Routines run unattended, so they cannot wait on approvals nobody is there to give. */
 export const BOT_ROUTINE_RUNTIME_MODE: RuntimeMode = "full-access";
 
+export const WATCH_NEEDS_RECURRING =
+  "A watch needs a recurring schedule, so a one-time routine cannot be one. Give a recurring schedule, or drop watch.";
+
 export interface BotRoutineOccurrence {
   readonly scheduledTaskId: ScheduledTaskId;
   /** Stable for a scheduled occurrence, so a retry after a crash admits the same task. */

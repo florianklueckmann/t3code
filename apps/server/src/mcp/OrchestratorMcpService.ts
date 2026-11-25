@@ -121,7 +121,11 @@ import { isSnoozed } from "../orchestration-v2/ThreadSettlementService.ts";
 import { userFacingDispatchErrorMessage } from "../orchestration-v2/UserFacingErrors.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
-import { BOT_ROUTINE_RUNTIME_MODE, BotRoutineTarget } from "../scheduledTasks/BotRoutineTarget.ts";
+import {
+  BOT_ROUTINE_RUNTIME_MODE,
+  BotRoutineTarget,
+  WATCH_NEEDS_RECURRING,
+} from "../scheduledTasks/BotRoutineTarget.ts";
 import { isSameSchedule } from "../scheduledTasks/Schedule.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -2279,6 +2283,9 @@ const make = Effect.gen(function* () {
       if (input.watch === true && input.allowChanges === true) {
         return yield* failure("invalid_request", WATCH_NEEDS_NO_CHANGES);
       }
+      if (input.watch === true && input.schedule.type === "once") {
+        return yield* failure("invalid_request", WATCH_NEEDS_RECURRING);
+      }
       if (
         input.botId !== undefined &&
         (input.freshSession === true || input.bindToCurrentThread === true)
@@ -2432,6 +2439,9 @@ const make = Effect.gen(function* () {
         ) {
           return yield* failure("invalid_request", WATCH_NEEDS_NO_CHANGES);
         }
+        if (input.watch === true && (input.schedule ?? existing.schedule).type === "once") {
+          return yield* failure("invalid_request", WATCH_NEEDS_RECURRING);
+        }
         if (
           input.bindToCurrentThread === true &&
           (parent === undefined || parent.thread.projectId !== existing.projectId)
@@ -2495,10 +2505,12 @@ const make = Effect.gen(function* () {
           ...(existing.bot === undefined
             ? {}
             : {
+                // An omitted watch is left to the save, which ends it when the routine becomes one-time.
                 bot: {
-                  ...existing.bot,
+                  botId: existing.bot.botId,
+                  sessionAt: existing.bot.sessionAt ?? null,
                   allowChanges: input.allowChanges ?? existing.bot.allowChanges ?? false,
-                  watch: input.watch ?? existing.bot.watch ?? false,
+                  ...(input.watch === undefined ? {} : { watch: input.watch }),
                 },
               }),
         };
