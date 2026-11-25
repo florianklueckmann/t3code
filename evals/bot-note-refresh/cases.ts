@@ -7,6 +7,11 @@ export interface Expected {
 export interface NoteRefreshCase {
   readonly id: string;
   readonly source: string;
+  /** Input refreshed by an earlier night in the same Home, before `seed`; that night must refresh. */
+  readonly earlierNight?: {
+    readonly seed: readonly string[];
+    readonly unrecorded: readonly string[];
+  };
   /** Ordinary Home turns that complete before the night; the Bot may save its note in them. */
   readonly seed: readonly string[];
   /** Home input stopped as soon as it is sent, so no ordinary turn records it. */
@@ -104,6 +109,27 @@ export const CASES: readonly NoteRefreshCase[] = [
     absentBefore: ["email"],
     unchanged: false,
     gains: [],
+    never: [],
+    largeInput: null,
+  },
+  {
+    id: "second-night-uses-tools",
+    source:
+      "T3B-90 item 5 (PR #75): from the second sealed refresh after ordinary turns, Claude Haiku said the t3_bot tools were unavailable",
+    earlierNight: {
+      seed: [offsite],
+      unrecorded: [
+        "We decided: the offsite is in Lisbon, not Porto. I will send you the final headcount by Thursday.",
+      ],
+    },
+    seed: ["Which month is the offsite in? Answer in one short sentence."],
+    unrecorded: [
+      "Open question for you: does the Lisbon venue need a deposit before Friday? Find out when you can.",
+    ],
+    needsExistingItems: true,
+    absentBefore: ["deposit"],
+    unchanged: false,
+    gains: [{ name: "records the open question", pattern: "deposit" }],
     never: [],
     largeInput: null,
   },
