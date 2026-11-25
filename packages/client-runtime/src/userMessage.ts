@@ -1,4 +1,5 @@
 import {
+  botHomeRunOf,
   type ChatAttachment,
   type ChatFileAttachment,
   type GuestMessageAttribution,
@@ -74,6 +75,12 @@ export function resolveUserMessageFileCards(message: {
   return remaining.trim() === "" ? files : null;
 }
 
+const BOT_HOME_RUN_TITLES = {
+  homeCheck: "Home check",
+  earlyHomeCheck: "Early Home check",
+  noteRefresh: "Note refresh",
+} as const satisfies Record<NonNullable<ReturnType<typeof botHomeRunOf>>, string>;
+
 export function resolveUserMessagePresentation(message: {
   readonly id?: string;
   readonly role: string;
@@ -88,6 +95,8 @@ export function resolveUserMessagePresentation(message: {
   readonly scheduledTaskId: ScheduledTaskId | undefined;
   /** Set when `attribution` is "guest". */
   readonly guestName?: string;
+  /** Names an automation that has no scheduled task to take its title from. */
+  readonly title?: string;
 } {
   if (message.role !== "user") {
     return { text: message.text, attribution: null, scheduledTaskId: undefined };
@@ -118,6 +127,15 @@ export function resolveUserMessagePresentation(message: {
       text: message.text.slice(legacyPrefix[0].length),
       attribution: "automation",
       scheduledTaskId: legacyTaskId === undefined ? undefined : ScheduledTaskId.make(legacyTaskId),
+    };
+  }
+  const botHomeRun = botHomeRunOf(message);
+  if (botHomeRun !== undefined) {
+    return {
+      text: message.text,
+      attribution: "automation",
+      scheduledTaskId: undefined,
+      title: BOT_HOME_RUN_TITLES[botHomeRun],
     };
   }
   return {

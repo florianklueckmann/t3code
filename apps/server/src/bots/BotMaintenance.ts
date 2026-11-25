@@ -1,4 +1,5 @@
 import {
+  BOT_MAINTENANCE_NOTE_MESSAGE_ID_PREFIX,
   BOT_TASK_TERMINAL_STATUSES,
   botMaintenanceCompactionId,
   isBotMaintenanceCompaction,
@@ -1101,7 +1102,9 @@ export const make = Effect.gen(function* () {
     )
       return yield* deferred("unsupported");
 
-    const messageId = MessageId.make(`bot-maintenance:note:${home}:${sequence}`);
+    const messageId = MessageId.make(
+      `${BOT_MAINTENANCE_NOTE_MESSAGE_ID_PREFIX}${home}:${sequence}`,
+    );
     const started = yield* Effect.result(
       threads.dispatch({
         type: "restricted_run.start",

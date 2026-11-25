@@ -217,6 +217,29 @@ describe("resolveUserMessagePresentation", () => {
     }
   });
 
+  it("folds a Bot's own Home check and note refresh prompts instead of showing them as sent", () => {
+    const home = "bot-home:bot-1:project-1";
+    for (const [id, title] of [
+      [`bot-home-check:${home}:2026-11-24T21:40:00.000Z`, "Home check"],
+      [`bot-home-check-early:${home}:2026-11-24T10:14:00.000Z`, "Early Home check"],
+      [`bot-maintenance:note:${home}:7`, "Note refresh"],
+    ] as const) {
+      const text = "Daily Home check: decide whether anything here needs the user.";
+      expect(
+        resolveUserMessagePresentation({
+          id,
+          role: "user",
+          createdBy: "agent",
+          creationSource: "server",
+          text,
+        }),
+      ).toEqual({ text, attribution: "automation", scheduledTaskId: undefined, title });
+      expect(
+        resolveUserMessagePresentation({ id, role: "user", createdBy: "user", text }),
+      ).toMatchObject({ attribution: null });
+    }
+  });
+
   it("recovers the triggering automation from older scheduler message ids", () => {
     for (const trigger of ["scheduled", "manual"]) {
       expect(
