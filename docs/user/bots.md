@@ -193,7 +193,9 @@ per occasion. Each run checks the sources its brief names.
   conversation, which turns unread, with one alert under the Bot's
   [alert budget](#alerts-and-remit).
 - When nothing is new, you notice nothing: no card, no unread conversation, no
-  alert. The run's thread is archived.
+  alert. The run's thread is archived, and [maintenance](#learning) does not
+  learn from it. The same goes for a run skipped because the previous one was
+  still working.
 
 T3 Code records what a watch posted for each occasion, and a watch posts once
 per occasion: later runs on the same occasion stay quiet. To hear more about
@@ -203,10 +205,11 @@ A watch only reads. It is a No changes routine with the limits above: the
 project's files, web search, and the read-only tools of the MCP connections you
 granted the Bot. It works where No changes routines do, so not on a Pi Bot.
 
-To end a watch, pause or delete its routine in **Settings → Bots**, or ask the
-Bot. Switching the routine to **Changes allowed** turns it into an ordinary
-routine that reports every run. Only the Bot can set a watch up for now; the
-routine form does not show the setting.
+You can also set one up yourself: in the routine form in **Settings → Bots**,
+turn on **Watch** for a recurring No changes routine. The routine list marks it
+as a watch. To end a watch, turn **Watch** off, pause or delete the routine, or
+ask the Bot. Switching the routine to **Changes allowed** or to a single run
+before an event turns it into an ordinary routine that reports every run.
 
 ### Diagnose failed routines
 

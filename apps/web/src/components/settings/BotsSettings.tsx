@@ -3,6 +3,7 @@ import {
   BOT_LEARNING_KIND_LABELS,
   BOT_LEARNING_STATUS_LABELS,
   BOT_LEARNING_SUGGESTION_LABEL,
+  BOT_ROUTINE_WATCH_DESCRIPTION,
   BOT_TURN_LEARNING_EXPLANATION,
   botLearningOriginLabel,
   botLearningRevisionInput,
@@ -16,9 +17,11 @@ import {
   botRoutineNoChanges,
   botRoutinesFor,
   botRoutineUpsertInput,
+  botRoutineWatchUnavailableLabel,
   botTurnLearningView,
   describeBotRoutineTiming,
   emptyBotRoutineDraft,
+  isBotRoutineWatch,
   emptyBotSourceDraft,
   botModelCapabilities,
   type BotEditorSectionId,
@@ -1812,6 +1815,7 @@ function BotRoutineRow({
         <p className="text-muted-foreground">
           {describeBotRoutineTiming(task, formatInstant, timeZone)}
           {task.bot?.allowChanges ? " · Changes allowed" : " · No changes"}
+          {isBotRoutineWatch(task) ? " · Watch" : null}
         </p>
         {task.blockedByPolicy !== undefined ? (
           <p className="text-muted-foreground">{task.blockedByPolicy}</p>
@@ -1910,6 +1914,7 @@ function BotRoutineEditor({
     ),
   );
   const noChanges = botRoutineNoChanges(bot.capabilities, task);
+  const watchUnavailable = botRoutineWatchUnavailableLabel(form);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const canOperate = useAtomValue(
@@ -2061,6 +2066,21 @@ function BotRoutineEditor({
             </p>
           </div>
         )}
+      </div>
+      <div className="space-y-1">
+        <label className="flex items-center gap-2 text-sm">
+          <Checkbox
+            checked={watchUnavailable === null && form.watch}
+            disabled={watchUnavailable !== null}
+            onCheckedChange={(checked) => update({ watch: checked === true })}
+          />
+          Watch
+        </label>
+        <p className="text-xs text-muted-foreground">
+          {watchUnavailable === null
+            ? BOT_ROUTINE_WATCH_DESCRIPTION
+            : `${BOT_ROUTINE_WATCH_DESCRIPTION} ${watchUnavailable}`}
+        </p>
       </div>
       {error === null ? null : (
         <p role="alert" className="text-xs text-destructive">

@@ -5,6 +5,7 @@ import {
   botRoutineDraft,
   botRoutinesFor,
   describeBotRoutineTiming,
+  isBotRoutineWatch,
 } from "@t3tools/client-runtime/bots";
 import type {
   BotId,
@@ -145,6 +146,7 @@ export function BotRoutinesSection(props: {
                   <Text className="text-sm text-foreground-muted" numberOfLines={2}>
                     {describeBotRoutineTiming(task, formatBotInstant, props.timeZone)}
                     {task.bot?.allowChanges ? " · Changes allowed" : " · No changes"}
+                    {isBotRoutineWatch(task) ? " · Watch" : null}
                   </Text>
                   {status ? (
                     <Text className="text-sm text-foreground-muted" numberOfLines={1}>

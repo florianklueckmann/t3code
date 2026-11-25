@@ -553,7 +553,7 @@ const make = Effect.gen(function* () {
         scheduled_task_id, occurrence_key, occurrence_due_at, session_at, allow_changes, runtime_mode, status,
         detail, dispatched_at, cancel_requested_at, result_run_id, completed_at, notified_at,
         created_at, updated_at, return_home_run_id, return_home_message_id, return_finished_at,
-        model_selection_json, diagnoses_task_id, diagnoses_run_id, by_hand, watch
+        model_selection_json, diagnoses_task_id, diagnoses_run_id, by_hand, watch, quiet
       ) VALUES (
         ${row.task_id}, ${row.bot_id}, ${row.project_id}, ${row.home_thread_id},
         ${row.work_thread_id}, ${row.origin}, ${row.title}, ${row.prompt},
@@ -563,7 +563,7 @@ const make = Effect.gen(function* () {
         ${row.completed_at}, ${row.notified_at}, ${row.created_at}, ${row.updated_at},
         ${row.return_home_run_id}, ${row.return_home_message_id}, ${row.return_finished_at},
         ${row.model_selection_json}, ${row.diagnoses_task_id}, ${row.diagnoses_run_id},
-        ${row.by_hand}, ${row.watch}
+        ${row.by_hand}, ${row.watch}, ${row.quiet}
       )
       ON CONFLICT DO NOTHING
     `;
@@ -863,6 +863,8 @@ const make = Effect.gen(function* () {
               ...(skipReason === undefined ? {} : { skipReason }),
             }),
             by_hand: byHand ? 1 : 0,
+            // A skipped run has nothing new, so an unattended watch says nothing about it.
+            quiet: skipReason !== undefined && occurrence.watch === true && !byHand ? 1 : 0,
           };
           yield* insertTask(row);
           return { row, fresh: true } as const;

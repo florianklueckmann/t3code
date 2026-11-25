@@ -650,11 +650,17 @@ export const make = Effect.gen(function* () {
       if (row.kind !== "task-result") continue;
       const task = (yield* sql<{
         readonly status: string;
-      }>`SELECT status FROM bot_tasks WHERE home_thread_id = ${home} AND task_id = ${row.source_id}`)[0];
+        readonly quiet: number;
+      }>`SELECT status, quiet FROM bot_tasks WHERE home_thread_id = ${home} AND task_id = ${row.source_id}`)[0];
       const key = keyOf({ kind: "task-result", id: row.source_id });
       // Only a completed run's saved answer is evidence; any other ending proves nothing.
       if (task?.status !== "completed") {
         classified.set(key, { _tag: "excluded", reason: `task_${task?.status ?? "missing"}` });
+        continue;
+      }
+      // A watch run with nothing new showed the user nothing, so it is no finished work.
+      if (task.quiet === 1) {
+        classified.set(key, { _tag: "excluded", reason: "task_quiet" });
         continue;
       }
       const { result } = yield* tasks.getResult({ taskId: BotTaskId.make(row.source_id) });
