@@ -1519,6 +1519,32 @@ it.effect("a standing watch posts once per occasion and shows nothing when nothi
         assert.notInclude(changing.instructions, "standing watch");
         assert.deepInclude(changing, { constraint: "standard", quiet: false, unread: 4 });
 
+        // A watch repeats. Asking for a one-time watch is refused; an editor that keeps the flag
+        // while making the routine one-time saves a plain routine.
+        const once = {
+          ...routineInput({ type: "once", runAt: iso(START + 48 * HOUR) }),
+          id: routine.id,
+        };
+        const refused = yield* services.routines
+          .upsert({ ...once, bot: { botId, allowChanges: false, watch: true } })
+          .pipe(Effect.flip);
+        assert.include(refused.message, "A watch needs a recurring schedule");
+        const oneTime = yield* services.routines.upsert({
+          ...once,
+          bot: { botId, allowChanges: false },
+        });
+        assert.isUndefined(oneTime.task.bot?.watch);
+        const storedWatch = sql<{
+          readonly bot_watch: number;
+        }>`SELECT bot_watch FROM bot_routines WHERE task_id = ${routine.id}`;
+        assert.deepEqual(yield* storedWatch, [{ bot_watch: 0 }]);
+        // A one-time watch saved before the refusal reads and runs as a plain routine.
+        yield* sql`UPDATE bot_routines SET bot_watch = 1 WHERE task_id = ${routine.id}`;
+        assert.isUndefined((yield* services.routines.list()).tasks[0]?.bot?.watch);
+        const plain = yield* run(post(["Who hired Ilvara?"]));
+        assert.notInclude(plain.instructions, "standing watch");
+        assert.deepInclude(plain, { constraint: "no-changes", quiet: false, unread: 5 });
+
         yield* services.routines.delete({ id: routine.id });
         assert.lengthOf(yield* sql`SELECT task_id FROM bot_watch_posts`, 0);
       }),

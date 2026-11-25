@@ -67,6 +67,7 @@ import {
   BOT_ROUTINE_RUNTIME_MODE,
   type BotRoutineOccurrence,
   BotRoutineTarget,
+  WATCH_NEEDS_RECURRING,
 } from "./BotRoutineTarget.ts";
 import {
   isMissedFixedTimeRun,
@@ -463,7 +464,8 @@ const decodeRow = Effect.fnUntraced(
               botId: routine.bot_id,
               sessionAt: routine.bot_session_at,
               allowChanges: routine.bot_allow_changes === 1,
-              ...(routine.bot_watch === 1 ? { watch: true } : {}),
+              // Older servers saved one-time watches; those run as plain routines.
+              ...(routine.bot_watch === 1 && schedule.type !== "once" ? { watch: true } : {}),
             },
           }),
     });
@@ -1683,7 +1685,10 @@ export const layer = Layer.effect(
           : {
               botId: requestedBot.botId,
               allowChanges: requestedBot.allowChanges ?? existingTask?.bot?.allowChanges ?? false,
-              watch: requestedBot.watch ?? existingTask?.bot?.watch ?? false,
+              // A kept watch flag ends when the routine becomes one-time; asking for one is refused below.
+              watch:
+                input.schedule.type !== "once" &&
+                (requestedBot.watch ?? existingTask?.bot?.watch ?? false),
               sessionAt:
                 requestedBot.sessionAt == null
                   ? null
@@ -1697,6 +1702,9 @@ export const layer = Layer.effect(
           return yield* taskError("Bot routines run on a time schedule, not a webhook.", {
             taskId: id,
           });
+        }
+        if (input.bot?.watch === true && input.schedule.type === "once") {
+          return yield* taskError(WATCH_NEEDS_RECURRING, { taskId: id });
         }
         if (
           bot.sessionAt != null &&

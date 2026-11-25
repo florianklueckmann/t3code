@@ -3963,6 +3963,23 @@ describe("OrchestratorMcpService provider resolution", () => {
         for (const attempt of changingWatch) {
           assert.include((yield* attempt.pipe(Effect.flip)).message, "cannot have allowChanges");
         }
+        const savedBeforeOnceWatch = (yield* Ref.get(saved)).length;
+        const onceWatch = [
+          mcp.scheduleTask(fullScope, { ...routine, allowChanges: false, watch: true }),
+          mcp.updateScheduledTask(fullScope, {
+            scheduledTaskId: storedRoutine.id,
+            allowChanges: false,
+            watch: true,
+            schedule: routine.schedule,
+          }),
+        ];
+        for (const attempt of onceWatch) {
+          assert.include(
+            (yield* attempt.pipe(Effect.flip)).message,
+            "A watch needs a recurring schedule",
+          );
+        }
+        assert.lengthOf(yield* Ref.get(saved), savedBeforeOnceWatch);
         yield* mcp.updateScheduledTask(fullScope, {
           scheduledTaskId: storedRoutine.id,
           allowChanges: false,
