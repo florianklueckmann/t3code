@@ -375,29 +375,25 @@ export const layer: Layer.Layer<
         )(
           function* (
             status: OrchestrationV2ProviderThread["status"],
-            options?: { readonly onlyOnRunProviderThread?: boolean },
+            options?: { readonly onlyWhileActiveProviderThread?: boolean },
           ) {
             const run = yield* projectionStore.getRun(input.threadId, input.runId);
-            if (
-              run === undefined ||
-              !NON_COMPLETING_TERMINAL_RUN_STATUSES.has(run.status) ||
-              (options?.onlyOnRunProviderThread === true &&
-                run.providerThreadId !== input.providerThreadId)
-            ) {
-              return;
-            }
-            const { providerThreads, providerTurns } = yield* projectionStore.getThreadRecords(
-              input.threadId,
-              ["providerThreads", "providerTurns"],
-              {
-                providerThreadIds: [input.providerThreadId],
-                providerTurnThreadIds: [input.providerThreadId],
-              },
-            );
+            if (run === undefined || !NON_COMPLETING_TERMINAL_RUN_STATUSES.has(run.status)) return;
+            const { thread, providerThreads, providerTurns } =
+              yield* projectionStore.getThreadRecords(
+                input.threadId,
+                ["providerThreads", "providerTurns"],
+                {
+                  providerThreadIds: [input.providerThreadId],
+                  providerTurnThreadIds: [input.providerThreadId],
+                },
+              );
             const providerThread = providerThreads.find(
               (candidate) => candidate.id === input.providerThreadId,
             );
             if (
+              (options?.onlyWhileActiveProviderThread === true &&
+                thread.activeProviderThreadId !== input.providerThreadId) ||
               providerThread?.status !== "active" ||
               providerThread.lastRunOrdinal !== input.runOrdinal ||
               providerTurns.some(
