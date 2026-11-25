@@ -13607,12 +13607,46 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             (attempt) => attempt.id === candidate.runAttemptId && attempt.runId === run.id,
           ),
       );
+      const supersededOwner =
+        supersededTurn === undefined
+          ? undefined
+          : projection.providerThreads.find(
+              (candidate) => candidate.id === supersededTurn.providerThreadId,
+            );
+      const supersededSessionLive =
+        supersededOwner !== undefined &&
+        supersededOwner.providerSessionId !== null &&
+        Option.isSome(
+          yield* providerSessions
+            .get(supersededOwner.providerSessionId)
+            .pipe(Effect.orElseSucceed(() => Option.none())),
+        );
       // The start marks the thread active with the run, before the provider reports a turn.
+      // While active for the run it still names the session the superseded turn runs on; a
+      // restart that replaces the session leaves it not loaded.
+      const threadActiveForRun =
+        providerThread.status === "active" && providerThread.lastRunOrdinal === run.ordinal;
+      // A superseded turn whose session is gone never reports an end, so Stop ends it.
+      const supersededTurnLost =
+        threadActiveForRun &&
+        supersededTurn !== undefined &&
+        supersededTurn.providerThreadId === providerThread.id &&
+        !supersededSessionLive;
+      if (supersededTurn !== undefined && supersededTurnLost) {
+        yield* emitEvent({
+          type: "provider-turn.updated",
+          threadId: command.threadId,
+          runId: run.id,
+          nodeId: rootNode.id,
+          providerInstanceId: run.providerInstanceId,
+          occurredAt: now,
+          payload: { ...supersededTurn, status: "interrupted", completedAt: now },
+        });
+      }
       // A superseded turn still running on it settles the thread itself.
       if (
-        providerThread.status === "active" &&
-        providerThread.lastRunOrdinal === run.ordinal &&
-        supersededTurn?.providerThreadId !== providerThread.id
+        threadActiveForRun &&
+        (supersededTurn?.providerThreadId !== providerThread.id || supersededTurnLost)
       ) {
         yield* emitEvent({
           type: "provider-thread.updated",
@@ -13624,21 +13658,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           payload: { ...providerThread, status: "idle", updatedAt: now },
         });
       }
-      const supersededOwner =
-        supersededTurn === undefined
-          ? undefined
-          : projection.providerThreads.find(
-              (candidate) => candidate.id === supersededTurn.providerThreadId,
-            );
       if (
         supersededTurn !== undefined &&
         supersededOwner !== undefined &&
         supersededOwner.providerSessionId !== null &&
-        Option.isSome(
-          yield* providerSessions
-            .get(supersededOwner.providerSessionId)
-            .pipe(Effect.orElseSucceed(() => Option.none())),
-        )
+        supersededSessionLive
       ) {
         const id = `effect:${command.commandId}:provider-turn.interrupt:${supersededTurn.id}`;
         if (!otherProviderInterrupts.some((effect) => effect.id === id)) {

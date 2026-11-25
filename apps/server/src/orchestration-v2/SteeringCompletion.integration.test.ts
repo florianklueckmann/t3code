@@ -33,6 +33,7 @@ import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
+import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
@@ -2602,19 +2603,33 @@ it.effect.each([false, true])(
     }),
 );
 
-it.effect.each(["thread.stop", "run.interrupt"] as const)(
-  "%s during a steering restart returns the provider thread to idle once the superseded turn stops",
-  (type) =>
+it.effect.each(
+  (["thread.stop", "run.interrupt"] as const).flatMap((type) =>
+    (["alive", "lost before stop", "lost after stop"] as const).map((session) => ({
+      type,
+      session,
+    })),
+  ),
+)(
+  "$type during a steering restart returns the provider thread to idle once the superseded turn stops (session $session)",
+  ({ type, session }) =>
     Effect.gen(function* () {
       const { started, layer, startFirstTurn } = yield* nextTurnSelectionHarness(
-        `stop-during-restart-${type}`,
+        `stop-during-restart-${type}-${session.replaceAll(" ", "-")}`,
         true,
       );
       yield* Effect.gen(function* () {
         const orchestrator = yield* Orchestrator.OrchestratorV2;
         const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
         const threadId = yield* startFirstTurn;
         const first = started[0]!;
+        // The process exits before the superseded turn reports an end, so no terminal follows.
+        const loseSession = providerSessions.release({
+          providerSessionId: first.providerThread.providerSessionId!,
+          reason: "runtime_error",
+          detail: "Provider process exited.",
+        });
         yield* orchestrator.dispatch({
           type: "message.dispatch",
           commandId: CommandId.make("restart"),
@@ -2627,17 +2642,6 @@ it.effect.each(["thread.stop", "run.interrupt"] as const)(
           createdBy: "user",
           creationSource: "web",
         });
-        // Stop lands before the worker runs the restart, while the superseded turn still runs.
-        const stop = { commandId: CommandId.make("stop"), threadId };
-        yield* orchestrator.dispatch(
-          type === "run.interrupt" ? { ...stop, type, runId: first.runId } : { ...stop, type },
-        );
-        assert.deepEqual(
-          (yield* orchestrator.getThreadProjection(threadId)).providerThreads.map(
-            (providerThread) => providerThread.status,
-          ),
-          ["active"],
-        );
         const idle = yield* orchestrator.streamDomainEvents.pipe(
           Stream.filter(
             (event) => event.type === "provider-thread.updated" && event.payload.status === "idle",
@@ -2646,6 +2650,21 @@ it.effect.each(["thread.stop", "run.interrupt"] as const)(
           Stream.runDrain,
           Effect.forkScoped,
         );
+        if (session === "lost before stop") yield* loseSession;
+        // Stop lands before the worker runs the restart, while the superseded turn still runs.
+        const stop = { commandId: CommandId.make("stop"), threadId };
+        yield* orchestrator.dispatch(
+          type === "run.interrupt" ? { ...stop, type, runId: first.runId } : { ...stop, type },
+        );
+        if (session !== "lost before stop") {
+          assert.deepEqual(
+            (yield* orchestrator.getThreadProjection(threadId)).providerThreads.map(
+              (providerThread) => providerThread.status,
+            ),
+            ["active"],
+          );
+        }
+        if (session === "lost after stop") yield* loseSession;
         yield* worker.drain();
         yield* Fiber.join(idle);
 
@@ -2658,9 +2677,10 @@ it.effect.each(["thread.stop", "run.interrupt"] as const)(
           stopped.runs.map((run) => run.status),
           ["interrupted"],
         );
+        // A turn its lost session never ended is repaired by the thread's next start.
         assert.deepEqual(
           stopped.providerTurns.map((turn) => turn.status),
-          ["interrupted"],
+          [session === "lost after stop" ? "running" : "interrupted"],
         );
         assert.deepEqual(
           stopped.providerThreads.map((providerThread) => providerThread.status),

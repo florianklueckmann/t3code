@@ -660,6 +660,7 @@ export interface RunExecutionServiceV2StartRootRunInput {
   /** Runs when the root turn ends but `shouldFinalizeRun` refuses the write. */
   readonly settleStoppedProviderThread?: (
     status: OrchestrationV2ProviderThread["status"],
+    options?: { readonly onlyWhileActiveProviderThread?: boolean },
   ) => Effect.Effect<void>;
   readonly hasUnpairedRunInterruptRequest?: () => Effect.Effect<boolean, never>;
   readonly loadRunInterruptReason?: () => Effect.Effect<string | undefined, never>;
@@ -2100,12 +2101,23 @@ export const layer: Layer.Layer<
                       )
                     : [];
                   let nextRetryWarningAt = completedAt;
+                  const settleStopped = input.settleStoppedProviderThread;
                   yield* writeFinalRunEvents({
                     run: input.run,
                     rootNode: input.rootNode,
                     checkpointScope: input.checkpointScope,
                     providerThread,
                     attempt: input.attempt,
+                    // A steer superseded this attempt: its lost session still settles the thread,
+                    // unless another provider thread became current: the write would select it again.
+                    ...(input.shouldFinalizeRun === undefined || settleStopped === undefined
+                      ? {}
+                      : {
+                          shouldFinalizeRun: input.shouldFinalizeRun,
+                          settleStoppedProviderThread: (
+                            status: OrchestrationV2ProviderThread["status"],
+                          ) => settleStopped(status, { onlyWhileActiveProviderThread: true }),
+                        }),
                     writeIfRunCurrent: {
                       activeAttemptId: input.attempt.id,
                       expectedStatus: "running",
