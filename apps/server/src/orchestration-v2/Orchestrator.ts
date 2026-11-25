@@ -13621,8 +13621,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             .get(supersededOwner.providerSessionId)
             .pipe(Effect.orElseSucceed(() => Option.none())),
         );
+      // The start marks the thread active with the run, before the provider reports a turn.
+      // While active for the run it still names the session the superseded turn runs on; a
+      // restart that replaces the session leaves it not loaded.
+      const threadActiveForRun =
+        providerThread.status === "active" && providerThread.lastRunOrdinal === run.ordinal;
       // A superseded turn whose session is gone never reports an end, so Stop ends it.
-      if (supersededTurn !== undefined && !supersededSessionLive) {
+      const supersededTurnLost =
+        threadActiveForRun &&
+        supersededTurn !== undefined &&
+        supersededTurn.providerThreadId === providerThread.id &&
+        !supersededSessionLive;
+      if (supersededTurn !== undefined && supersededTurnLost) {
         yield* emitEvent({
           type: "provider-turn.updated",
           threadId: command.threadId,
@@ -13633,17 +13643,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           payload: { ...supersededTurn, status: "interrupted", completedAt: now },
         });
       }
-      // The start marks the thread active with the run, before the provider reports a turn.
-      // A superseded turn still running on a live session settles its thread itself.
-      for (const candidate of new Set([providerThread, supersededOwner])) {
-        if (
-          candidate === undefined ||
-          candidate.status !== "active" ||
-          candidate.lastRunOrdinal !== run.ordinal ||
-          (supersededSessionLive && candidate.id === supersededTurn?.providerThreadId)
-        ) {
-          continue;
-        }
+      // A superseded turn still running on it settles the thread itself.
+      if (
+        threadActiveForRun &&
+        (supersededTurn?.providerThreadId !== providerThread.id || supersededTurnLost)
+      ) {
         yield* emitEvent({
           type: "provider-thread.updated",
           threadId: command.threadId,
@@ -13651,7 +13655,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           nodeId: rootNode.id,
           providerInstanceId: run.providerInstanceId,
           occurredAt: now,
-          payload: { ...candidate, status: "idle", updatedAt: now },
+          payload: { ...providerThread, status: "idle", updatedAt: now },
         });
       }
       if (
