@@ -65,6 +65,7 @@ describe("withBotRoutineTiming", () => {
       title: session.title,
       prompt: "Recap",
       allowChanges: true,
+      watch: false,
       timing: "recurring",
       timeOfDay: "09:00",
       weekdays: [],

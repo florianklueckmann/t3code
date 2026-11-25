@@ -781,6 +781,8 @@ export type BotRoutineDraft = {
   readonly title: string;
   readonly prompt: string;
   readonly allowChanges: boolean;
+  /** Saved only while the draft can be a watch; see `botRoutineWatchUnavailableLabel`. */
+  readonly watch: boolean;
 } & (
   | {
       readonly timing: "session";
@@ -805,6 +807,7 @@ export function emptyBotRoutineDraft(capabilities: BotCapabilities | undefined):
     title: "",
     prompt: "",
     allowChanges: (capabilities?.noChangesRoutines ?? null) !== null,
+    watch: false,
     timing: "recurring",
     timeOfDay: "09:00",
     weekdays: [],
@@ -817,6 +820,7 @@ export function botRoutineDraft(task: ScheduledTask): BotRoutineDraft | null {
     title: task.title,
     prompt: task.prompt,
     allowChanges: task.bot?.allowChanges ?? false,
+    watch: isBotRoutineWatch(task),
   };
   if (task.schedule.type === "once" && task.bot?.sessionAt != null) {
     const sessionAtMs = Date.parse(task.bot.sessionAt);
@@ -847,6 +851,23 @@ export function botRoutineNoChanges(
     offered: unavailableLabel === null || (saved !== null && saved.bot?.allowChanges !== true),
     unavailableLabel,
   };
+}
+
+export const BOT_ROUTINE_WATCH_DESCRIPTION =
+  "Speaks up only when something is new. A run with nothing new shows nothing.";
+
+/** Why the draft cannot be a watch, or null when it can: a watch only reads, and it repeats. */
+export function botRoutineWatchUnavailableLabel(
+  draft: Pick<BotRoutineDraft, "allowChanges" | "timing">,
+): string | null {
+  if (draft.allowChanges) return "A watch only reads, so it needs No changes.";
+  if (draft.timing !== "recurring") return "A watch needs a recurring routine.";
+  return null;
+}
+
+/** Whether a saved routine runs as a watch; the server ignores the flag with changes allowed. */
+export function isBotRoutineWatch(task: Pick<ScheduledTask, "bot">): boolean {
+  return task.bot?.watch === true && task.bot.allowChanges !== true;
 }
 
 /**
@@ -894,7 +915,12 @@ export function botRoutineUpsertInput(
           timeOfDay: draft.timeOfDay.trim(),
           ...(draft.weekdays.length === 0 ? {} : { weekdays: [...draft.weekdays] }),
         },
-        bot: { botId: target.botId, sessionAt: null, allowChanges: draft.allowChanges },
+        bot: {
+          botId: target.botId,
+          sessionAt: null,
+          allowChanges: draft.allowChanges,
+          watch: draft.watch && botRoutineWatchUnavailableLabel(draft) === null,
+        },
       },
     };
   }
@@ -916,6 +942,7 @@ export function botRoutineUpsertInput(
         botId: target.botId,
         sessionAt: isoAt(draft.sessionAtMs),
         allowChanges: draft.allowChanges,
+        watch: false,
       },
     },
   };

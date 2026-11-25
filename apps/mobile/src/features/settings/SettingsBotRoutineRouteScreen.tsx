@@ -2,9 +2,11 @@ import { useAtomValue } from "@effect/atom-react";
 import { DateTimePicker } from "@expo/ui/community/datetime-picker";
 import { useNavigation, usePreventRemove, type StaticScreenProps } from "@react-navigation/native";
 import {
+  BOT_ROUTINE_WATCH_DESCRIPTION,
   botRoutineDraft,
   botRoutineNoChanges,
   botRoutineUpsertInput,
+  botRoutineWatchUnavailableLabel,
   emptyBotRoutineDraft,
   type BotRoutineDraft,
 } from "@t3tools/client-runtime/bots";
@@ -24,6 +26,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
 import * as Dialog from "../../components/ui/Dialog";
+import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
 import { SegmentedControl } from "../../components/ui/SegmentedControl";
 import { uuidv4 } from "../../lib/uuid";
@@ -166,6 +169,7 @@ function BotRoutineForm(props: {
   // picks, and No changes is never saved where it is not offered.
   const [accessChosen, setAccessChosen] = useState(task !== null);
   const allowChanges = !props.noChanges.offered || (accessChosen && draft.allowChanges);
+  const watchUnavailable = botRoutineWatchUnavailableLabel({ ...draft, allowChanges });
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [picker, setPicker] = useState<"date" | "time" | "timeOfDay" | null>(null);
@@ -453,6 +457,15 @@ function BotRoutineForm(props: {
               />
             </>
           )}
+        </SettingsSection>
+        <SettingsSection title="Watch" footer={watchUnavailable ?? undefined}>
+          <ListToggleRow
+            label="Watch"
+            description={BOT_ROUTINE_WATCH_DESCRIPTION}
+            value={watchUnavailable === null && draft.watch}
+            disabled={saving || watchUnavailable !== null}
+            onValueChange={(watch) => setDraft({ ...draft, watch })}
+          />
         </SettingsSection>
         <Text className="px-2 text-sm text-foreground-muted">
           Each run starts a task in a new work thread in this project, without approval prompts.

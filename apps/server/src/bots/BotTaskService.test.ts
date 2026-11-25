@@ -1469,6 +1469,19 @@ it.effect("a standing watch posts once per occasion and shows nothing when nothi
         const prepared = yield* run('Session 12 is prepared.\nT3_WATCH {"new": false}');
         assert.deepInclude(prepared, nothingShown);
 
+        // A run due while the previous one still works is skipped, and has nothing new either.
+        yield* TestClock.adjust("1 second");
+        const working = yield* services.routines.runNow({ id: routine.id }, { requestedIn: null });
+        yield* TestClock.adjust("1 second");
+        yield* services.routines.runNow({ id: routine.id }, { requestedIn: null });
+        yield* finishRun(world, working.threadId ?? assert.fail(), 'T3_WATCH {"new": false}');
+        yield* services.tasks.reconcile;
+        assert.deepEqual(
+          (yield* services.tasks.list({ botId })).tasks.map((task) => task.workThreadId),
+          [first.workThreadId],
+        );
+        assert.lengthOf(yield* world.commandsMatching("thread.mark-unread"), 1);
+
         // One post per occasion: other questions and another spelling of the session change nothing.
         const reworded = yield* run(post(["Is Toma fit to travel?"], "Session 12 (2026-11-06)"));
         assert.deepInclude(reworded, { ...nothingShown, archived: 1 });

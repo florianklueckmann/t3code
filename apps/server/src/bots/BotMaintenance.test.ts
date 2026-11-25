@@ -591,10 +591,14 @@ const deliver = Effect.fn("fixture.deliver")(function* (id: string, thread = hom
     VALUES (${`turn-${id}`}, ${thread}, ${`provider-thread-${id}`}, ${`node-${id}`}, 1, 'completed', '{}')`;
 });
 
-const finishedTask = Effect.fn("fixture.finishedTask")(function* (id: string, status: string) {
+const finishedTask = Effect.fn("fixture.finishedTask")(function* (
+  id: string,
+  status: string,
+  quiet = false,
+) {
   const bots = yield* BotDatabase.BotDatabase;
-  yield* bots`INSERT INTO bot_tasks (task_id, bot_id, project_id, home_thread_id, origin, title, prompt, runtime_mode, status, completed_at, created_at, updated_at)
-    VALUES (${id}, 'bot', 'project', ${home}, 'direct', 'Checklist', 'Read', 'full-access', ${status}, ${later(30)}, ${now}, ${now})`;
+  yield* bots`INSERT INTO bot_tasks (task_id, bot_id, project_id, home_thread_id, origin, title, prompt, runtime_mode, status, completed_at, created_at, updated_at, watch, quiet)
+    VALUES (${id}, 'bot', 'project', ${home}, 'direct', 'Checklist', 'Read', 'full-access', ${status}, ${later(30)}, ${now}, ${now}, ${quiet ? 1 : 0}, ${quiet ? 1 : 0})`;
 });
 
 const add = (
@@ -986,6 +990,7 @@ it.effect(
             yield* finishedTask("task-failed", "failed");
             yield* finishedTask("task-cancelled", "cancelled");
             yield* finishedTask("task-interrupted", "interrupted");
+            yield* finishedTask("task-quiet", "completed", true);
 
             const busy = yield* maintenance.runNow(scope);
             assert.deepEqual(busy.status === "deferred" && busy.reason, "home_active");
@@ -1022,6 +1027,7 @@ it.effect(
               "task-completed": "applied",
               "task-failed": "task_failed",
               "task-interrupted": "task_interrupted",
+              "task-quiet": "task_quiet",
             });
             assert.deepEqual(yield* maintenance.runNow(scope), { status: "idle" });
           }),
@@ -1029,6 +1035,8 @@ it.effect(
           "task-completed": "Moved the notes. The index lives in Index.md.",
           // A failed run can still leave a final answer behind; it is not evidence.
           "task-failed": "Ran the risky migration; it broke the vault.",
+          // A watch run with nothing new showed the user nothing; it is not evidence either.
+          "task-quiet": "Session 12 is prepared. The index lives in Prep.md.",
         },
       );
     }).pipe(Effect.provide(storeOnly)),

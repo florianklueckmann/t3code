@@ -40,6 +40,7 @@ import {
   botRoutineDraft,
   botRoutineNoChanges,
   botRoutineUpsertInput,
+  botRoutineWatchUnavailableLabel,
   emptyBotRoutineDraft,
   botSourceDrafts,
   botTaskCardKey,
@@ -479,6 +480,8 @@ describe("botRoutineUpsertInput", () => {
         title: " Session 12 ",
         prompt: "Prepare session 12.",
         allowChanges: false,
+        // A watch repeats; a single dated run is never saved as one.
+        watch: true,
         timing: "session",
         sessionAtMs,
         leadMinutes: 90,
@@ -493,12 +496,19 @@ describe("botRoutineUpsertInput", () => {
       botId: target.botId,
       sessionAt: "2026-11-06T19:00:00.000Z",
       allowChanges: false,
+      watch: false,
     });
     expect(result.input.runtimeMode).toBe("full-access");
     // Editing the saved routine starts from the same session and lead time.
     expect(
       botRoutineDraft({ ...result.input, bot: result.input.bot } as ScheduledTask),
-    ).toMatchObject({ timing: "session", sessionAtMs, leadMinutes: 90, allowChanges: false });
+    ).toMatchObject({
+      timing: "session",
+      sessionAtMs,
+      leadMinutes: 90,
+      allowChanges: false,
+      watch: false,
+    });
   });
 
   it("refuses a preparation time that has already passed", () => {
@@ -507,6 +517,7 @@ describe("botRoutineUpsertInput", () => {
         title: "Prep",
         prompt: "Prepare.",
         allowChanges: true,
+        watch: false,
         timing: "session",
         sessionAtMs,
         leadMinutes: 7 * 24 * 60,
@@ -523,6 +534,7 @@ describe("botRoutineUpsertInput", () => {
         title: "Weekly",
         prompt: "Prepare.",
         allowChanges: true,
+        watch: false,
         timing: "recurring",
         timeOfDay: "18:00",
         weekdays: [5],
@@ -533,9 +545,35 @@ describe("botRoutineUpsertInput", () => {
     expect(result).toMatchObject({
       input: {
         schedule: { type: "fixed_time", timeOfDay: "18:00", weekdays: [5] },
-        bot: { botId: target.botId, sessionAt: null, allowChanges: true },
+        bot: { botId: target.botId, sessionAt: null, allowChanges: true, watch: false },
       },
     });
+  });
+
+  it.each([
+    ["a recurring No changes routine", false, true, null],
+    ["a routine that allows changes", true, false, "A watch only reads, so it needs No changes."],
+  ] as const)("saves a watch only on %s", (_, allowChanges, watch, unavailableLabel) => {
+    const draft = {
+      title: "Session watch",
+      prompt: "Watch for upcoming sessions.",
+      allowChanges,
+      watch: true,
+      timing: "recurring",
+      timeOfDay: "08:00",
+      weekdays: [],
+    } as const;
+    expect(botRoutineWatchUnavailableLabel(draft)).toBe(unavailableLabel);
+    const result = botRoutineUpsertInput(draft, target, now);
+    if (!("input" in result)) throw new Error(result.error);
+    expect(result.input.bot?.watch).toBe(watch);
+    // Editing it shows what the server runs: a flag kept with changes allowed is no watch.
+    expect(
+      botRoutineDraft({
+        ...result.input,
+        bot: { ...result.input.bot, watch: true },
+      } as ScheduledTask)?.watch,
+    ).toBe(watch);
   });
 });
 

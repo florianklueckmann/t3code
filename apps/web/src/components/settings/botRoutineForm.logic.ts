@@ -7,6 +7,7 @@ export interface BotRoutineForm {
   readonly title: string;
   readonly prompt: string;
   readonly allowChanges: boolean;
+  readonly watch: boolean;
   readonly timing: BotRoutineDraft["timing"];
   /** A `datetime-local` value in the browser's time zone. */
   readonly sessionAt: string;
@@ -20,6 +21,7 @@ export function botRoutineForm(draft: BotRoutineDraft): BotRoutineForm {
     title: draft.title,
     prompt: draft.prompt,
     allowChanges: draft.allowChanges,
+    watch: draft.watch,
     sessionAt: "",
     leadHours: "24",
     timeOfDay: "09:00",
@@ -38,7 +40,12 @@ export function botRoutineForm(draft: BotRoutineDraft): BotRoutineForm {
 
 /** Unparseable session or lead fields become values the shared validation rejects. */
 export function botRoutineDraftFromForm(form: BotRoutineForm): BotRoutineDraft {
-  const base = { title: form.title, prompt: form.prompt, allowChanges: form.allowChanges };
+  const base = {
+    title: form.title,
+    prompt: form.prompt,
+    allowChanges: form.allowChanges,
+    watch: form.watch,
+  };
   if (form.timing === "recurring") {
     return { ...base, timing: "recurring", timeOfDay: form.timeOfDay, weekdays: form.weekdays };
   }
