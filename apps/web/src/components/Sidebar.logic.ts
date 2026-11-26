@@ -20,6 +20,7 @@ import {
 } from "@t3tools/client-runtime/state/thread-search";
 import { foldSearchQuery, rankSearchItems, scoreThreadSearch } from "@t3tools/shared/paletteSearch";
 import {
+  BOT_HOME_THREAD_ID_PREFIX,
   mayBeBotHomeThreadId,
   type ContextMenuItem,
   type EnvironmentId,
@@ -1011,8 +1012,8 @@ export function resolveSidebarFolderDot(
 
 /**
  * The dot on the filter button while an area hides part of the list: the most
- * urgent state among hidden threads and Bot homes. Settled, snoozed and working
- * threads stay quiet.
+ * urgent state among hidden threads and the homes of Bots the rail hides.
+ * Settled, snoozed and working threads stay quiet.
  */
 export function resolveOutOfScopeDot(input: {
   readonly threads: readonly EnvironmentThreadShell[];
@@ -1021,14 +1022,24 @@ export function resolveOutOfScopeDot(input: {
   readonly localLastVisitedAtById: Readonly<Record<string, string>>;
   readonly now: string;
 }): "attention" | "failed" | "unread" | null {
+  const inScope = (thread: EnvironmentThreadShell) =>
+    input.scopedProjectKeys.has(`${thread.environmentId}:${thread.projectId}`);
+  // Home ids are `bot-home:<botId>:<projectId>`. A Bot with a home in scope keeps its rail dot.
+  const botKey = (thread: EnvironmentThreadShell) =>
+    `${thread.environmentId}:${thread.id.slice(BOT_HOME_THREAD_ID_PREFIX.length).split(":")[0]}`;
+  const homes = input.threads.filter(
+    (thread) => thread.archivedAt === null && mayBeBotHomeThreadId(thread.id),
+  );
+  const shownBots = new Set(homes.filter(inScope).map(botKey));
   const hidden = input.threads.filter(
     (thread) =>
       thread.archivedAt === null &&
-      !input.scopedProjectKeys.has(`${thread.environmentId}:${thread.projectId}`) &&
+      !inScope(thread) &&
       thread.settledOverride !== "settled" &&
       !effectiveSnoozed(thread, { now: input.now }) &&
-      (mayBeBotHomeThreadId(thread.id) ||
-        filterSidebarV2VisibleThreads([thread], null, input.delegatedUnderParent).length === 1),
+      (mayBeBotHomeThreadId(thread.id)
+        ? !shownBots.has(botKey(thread))
+        : filterSidebarV2VisibleThreads([thread], null, input.delegatedUnderParent).length === 1),
   );
   const dot = resolveSidebarFolderDot(
     hidden.map((thread) => ({

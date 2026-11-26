@@ -63,7 +63,7 @@ export function parseProjectAreaInput(
 ): ProjectAreaInput {
   const area = text.trim();
   if (area.length === 0) return { ok: false, error: "Enter an area name." };
-  if (/[\r\n]/.test(area)) return { ok: false, error: "Use a single line." };
+  if (/[\r\n\u2028\u2029]/.test(area)) return { ok: false, error: "Use a single line." };
   if (area.length > PROJECT_AREA_MAX_LENGTH) {
     return { ok: false, error: `Use at most ${PROJECT_AREA_MAX_LENGTH} characters.` };
   }

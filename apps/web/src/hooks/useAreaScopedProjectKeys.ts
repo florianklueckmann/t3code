@@ -3,7 +3,7 @@ import {
   selectProjectGroupingSettings,
 } from "@t3tools/client-runtime/state/project-grouping";
 
-import { resolveAreaScopedProjectKeys } from "../projectAreas";
+import { listProjectAreas, resolveAreaScopedProjectKeys } from "../projectAreas";
 import { buildSidebarProjectSnapshots } from "../sidebarProjectGrouping";
 import { usePrimaryEnvironmentId } from "../state/environments";
 import { useProjects } from "../state/entities";
@@ -24,5 +24,8 @@ export function useAreaScopedProjectKeys(): ReadonlySet<string> | null {
     primaryEnvironmentId,
     resolveEnvironmentLabel: () => null,
   });
-  return resolveAreaScopedProjectKeys(pickableProjectGroups(groups), areaScope.area);
+  const pickable = pickableProjectGroups(groups);
+  // Like the sidebar: "No area" is offered only while an area exists.
+  if (areaScope.area === null && listProjectAreas(pickable).length === 0) return null;
+  return resolveAreaScopedProjectKeys(pickable, areaScope.area);
 }

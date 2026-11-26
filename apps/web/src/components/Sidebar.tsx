@@ -1126,7 +1126,11 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     persistedAreaScope === null
       ? []
       : scopeGroups.filter((project) => isProjectGroupInArea(project, persistedAreaScope.area));
-  const chosenAreaScope = chosenAreaGroups.length > 0 ? persistedAreaScope : null;
+  // "No area" is offered only while an area exists.
+  const chosenAreaScope =
+    chosenAreaGroups.length > 0 && (persistedAreaScope?.area != null || projectAreas.length > 0)
+      ? persistedAreaScope
+      : null;
   const chosenProjectScopeKeys =
     persistedAreaScope !== null
       ? []

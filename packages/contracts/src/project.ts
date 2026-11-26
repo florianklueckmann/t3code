@@ -25,7 +25,7 @@ export const PROJECT_AREA_MAX_LENGTH = 40;
 
 export const ProjectArea = TrimmedNonEmptyString.check(
   Schema.isMaxLength(PROJECT_AREA_MAX_LENGTH),
-  Schema.isPattern(/^[^\r\n]+$/),
+  Schema.isPattern(/^[^\r\n\u2028\u2029]+$/),
 );
 
 export const ProjectScriptIcon = Schema.Literals([

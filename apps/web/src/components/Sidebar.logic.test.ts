@@ -1717,9 +1717,15 @@ describe("resolveOutOfScopeDot", () => {
         }),
       ]),
     ).toBeNull();
+    const outsideHome = makeThread({ ...unread, id: ThreadId.make("bot-home:bot-1:outside") });
+    expect(resolve([outsideHome])).toBe("unread");
+    // A Bot with a home in the area stays in the rail, which badges its other homes.
     expect(
-      resolve([makeThread({ ...unread, id: ThreadId.make("bot-home:bot-1:project-outside") })]),
-    ).toBe("unread");
+      resolve([
+        outsideHome,
+        makeThread({ projectId: inArea, id: ThreadId.make("bot-home:bot-1:in-area") }),
+      ]),
+    ).toBeNull();
     expect(
       resolve([
         makeThread({

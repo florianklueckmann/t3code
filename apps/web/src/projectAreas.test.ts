@@ -66,6 +66,7 @@ describe("parseProjectAreaInput", () => {
     expect(parseProjectAreaInput("work", ["Work"])).toEqual({ ok: true, area: "Work" });
     expect(parseProjectAreaInput("   ", []).ok).toBe(false);
     expect(parseProjectAreaInput("a\nb", []).ok).toBe(false);
+    expect(parseProjectAreaInput("a\u2028b", []).ok).toBe(false);
     expect(parseProjectAreaInput("x".repeat(40), []).ok).toBe(true);
     expect(parseProjectAreaInput("x".repeat(41), []).ok).toBe(false);
   });
