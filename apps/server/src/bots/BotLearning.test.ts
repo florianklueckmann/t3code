@@ -430,6 +430,18 @@ it.effect.each([
   }).pipe(Effect.provide(storeLayer)),
 );
 
+it.effect("keeps a lesson from another agent's turn pending under automatic learning", () =>
+  Effect.gen(function* () {
+    const { learning } = yield* fixture;
+    expect((yield* learning.record(policy, correction)).status).toBe("active");
+    const fromAgent = yield* learning.record(policy, {
+      ...elsewhere,
+      awaitsUser: true,
+    });
+    expect(fromAgent.status).toBe("pending");
+  }).pipe(Effect.provide(storeLayer)),
+);
+
 it.effect("keeps a standing instruction when adopting a task's proposal to move it", () =>
   Effect.gen(function* () {
     const { learning, rows, taskStatus } = yield* fixture;
