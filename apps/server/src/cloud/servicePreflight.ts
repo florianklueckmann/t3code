@@ -1,6 +1,11 @@
 import { legacyBotMigrationHead } from "../bots/persistence/legacyBotHistory.ts";
 import packageJson from "../../package.json" with { type: "json" };
-import { BUILD_MIGRATION_HEAD, recordedMigrations } from "../persistence/databaseMigrationHead.ts";
+import {
+  BUILD_MIGRATION_HEAD,
+  recordedForkMigrations,
+  recordedMigrations,
+} from "../persistence/databaseMigrationHead.ts";
+import { unknownForkMigrations } from "../persistence/ForkMigrations.ts";
 import { skippedV2Migrations } from "../persistence/Migrations.ts";
 import { reconciledV2PreviewHistory } from "../persistence/reconcileV2PreviewMigration.ts";
 import {
@@ -45,11 +50,20 @@ export function runServicePreflight(input: {
   }
 
   const recorded = recordedMigrations(input.databasePath);
-  if (recorded === null) {
+  const recordedFork = recordedForkMigrations(input.databasePath);
+  if (recorded === null || recordedFork === null) {
     return {
       status: "blocked",
       version,
       reason: `Could not read this database to confirm t3@${version} supports it.`,
+    };
+  }
+  const unknownFork = unknownForkMigrations(recordedFork);
+  if (unknownFork.length > 0) {
+    return {
+      status: "blocked",
+      version,
+      reason: `This database has fork migrations that t3@${version} does not know: ${unknownFork.join(", ")}. A newer or different fork build wrote them, and running t3@${version} on this database is not safe. Stay on the build that wrote them.`,
     };
   }
   if (legacyBotMigrationHead(recorded) !== undefined) {

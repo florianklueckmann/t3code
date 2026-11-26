@@ -98,6 +98,24 @@ it.layer(NodeServices.layer)("service preflight database", (it) => {
         BUILD_MIGRATION_HEAD,
       );
 
+      // Startup moves this pre-ledger fork row out of the upstream ledger, even after upstream takes 97.
+      db.exec("DELETE FROM effect_sql_migrations WHERE migration_id >= 97");
+      insert.run(97, "ProjectionProjectsArea");
+      expect(preflight().status).toBe("ready");
+      expect(databaseMigrationHead(databasePath)).toBe(BUILD_MIGRATION_HEAD);
+      db.exec("DELETE FROM effect_sql_migrations WHERE migration_id = 97");
+      for (const [id, name] of migrationManifest.filter(([id]) => id >= 97)) insert.run(id, name);
+      db.exec("CREATE TABLE fork_sql_migrations (migration_id INTEGER PRIMARY KEY, name TEXT)");
+      db.exec("INSERT INTO fork_sql_migrations VALUES (1, 'ProjectionProjectsArea')");
+      expect(preflight().status).toBe("ready");
+      db.exec("INSERT INTO fork_sql_migrations VALUES (2, 'NewerForkMigration')");
+      const newerFork = preflight();
+      expect(newerFork.status).toBe("blocked");
+      expect(newerFork.status === "blocked" ? newerFork.reason : "").toContain(
+        "2_NewerForkMigration",
+      );
+      db.exec("DROP TABLE fork_sql_migrations");
+
       // Startup reconciles this V2 preview history, so it must not block an update.
       const preview = path.join(path.dirname(databasePath), "preview.sqlite");
       const previewDb = new NodeSqlite.DatabaseSync(preview);
