@@ -451,10 +451,9 @@ export const CASES: ReadonlyArray<PreparationCase> = [
     },
     // Held by the reached limit; the digest goes out as quiet hours end, at 05:45 local time.
     answerMust: ["limit", "held", "\\b0?5:45"],
-    answerMustNot: [
-      "limit (was|is|has)( not|n't)( been)? reached",
-      "held (by|during|for) quiet hours",
-    ],
+    // Regexes catch a denied limit, not every wrong cause; a quiet-hours pattern also rejects
+    // answers that rule quiet hours out.
+    answerMustNot: ["(not|n't)( yet)?( been)? reached"],
     routine: null,
     startsTask: false,
   },
