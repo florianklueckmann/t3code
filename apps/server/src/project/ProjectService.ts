@@ -49,6 +49,7 @@ export interface ProjectCreateInput extends ProjectCreatePayload {
 export interface ProjectUpdateInput extends ProjectUpdatePayload {
   readonly commandId: CommandId;
   readonly projectId: ProjectId;
+  readonly area?: string | null;
 }
 
 export interface ProjectBootstrapInput extends ProjectCreateInput {}
@@ -462,6 +463,7 @@ export const make = Effect.gen(function* () {
         ...(input.scripts === undefined ? {} : { scripts: input.scripts }),
         ...(input.pinned === undefined ? {} : { pinned: input.pinned }),
         ...(input.archived === undefined ? {} : { archived: input.archived }),
+        ...(input.area === undefined ? {} : { area: input.area }),
       });
       if (workspaceRoot !== previousRoot || input.faviconPath !== undefined) {
         yield* projectEnrichment.invalidate([previousRoot, workspaceRoot]);

@@ -280,6 +280,7 @@ function makeHarness(options: HarnessOptions = {}) {
               scripts: project.scripts,
               pinnedAt: null,
               archivedAt: null,
+              area: null,
               createdAt: project.createdAt,
               updatedAt: project.updatedAt,
               deletedAt: project.deletedAt,

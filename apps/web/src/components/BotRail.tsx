@@ -8,6 +8,8 @@ import { PlusIcon } from "lucide-react";
 import { Fragment, type MouseEvent } from "react";
 
 import { isElectron } from "../env";
+import { useAreaScopedProjectKeys } from "../hooks/useAreaScopedProjectKeys";
+import { isBotInProjectScope } from "../projectAreas";
 import { cn } from "../lib/utils";
 import { readLocalApi } from "../localApi";
 import { useEnvironment } from "../state/environments";
@@ -77,6 +79,7 @@ export function BotRail({
 }) {
   const navigate = useNavigate();
   const closeMobileSidebar = useCloseMobileSidebar();
+  const scopedProjectKeys = useAreaScopedProjectKeys();
   return (
     <nav
       aria-label="Bots"
@@ -98,6 +101,7 @@ export function BotRail({
             <BotRailEnvironment
               environmentId={environmentId}
               showEnvironment={environmentIds.length > 1}
+              scopedProjectKeys={scopedProjectKeys}
             />
           </Fragment>
         ))}
@@ -129,14 +133,25 @@ export function BotRail({
 function BotRailEnvironment({
   environmentId,
   showEnvironment,
+  scopedProjectKeys,
 }: {
   readonly environmentId: EnvironmentId;
   readonly showEnvironment: boolean;
+  readonly scopedProjectKeys: ReadonlySet<string> | null;
 }) {
   const botsQuery = useEnvironmentQuery(serverEnvironment.botsLive({ environmentId, input: {} }));
   const environmentLabel = useEnvironment(environmentId)?.label ?? null;
   const bots = (botsQuery.data?.bots ?? [])
-    .filter((bot) => bot.archivedAt === null)
+    .filter(
+      (bot) =>
+        bot.archivedAt === null &&
+        isBotInProjectScope(
+          bot.projects.flatMap((context) =>
+            context.detachedAt === null ? [`${environmentId}:${context.projectId}`] : [],
+          ),
+          scopedProjectKeys,
+        ),
+    )
     .toSorted((left, right) => left.name.localeCompare(right.name));
   return bots.map((bot) => (
     <BotRailItem

@@ -35,6 +35,7 @@ import {
   type SidebarSection,
   resolveSidebarDropVerb,
   groupSidebarThreadsByProject,
+  resolveOutOfScopeDot,
   resolveSidebarFolderDot,
   sidebarFolderExpansionKeys,
 } from "./Sidebar.logic";
@@ -1680,6 +1681,68 @@ describe("resolveSidebarFolderDot", () => {
     expect(resolveSidebarFolderDot([idle, working])).toBe("working");
     expect(resolveSidebarFolderDot([working, unread])).toBe("unread");
     expect(resolveSidebarFolderDot([unread, limited])).toBe("attention");
+  });
+});
+
+describe("resolveOutOfScopeDot", () => {
+  it("flags threads and Bot homes the area hides, but not settled, snoozed or working ones", () => {
+    const inArea = ProjectId.make("project-in-area");
+    const outside = ProjectId.make("project-outside");
+    const unread = {
+      projectId: outside,
+      latestRun: makeLatestRun(),
+      lastVisitedAt: "2026-03-09T10:04:00.000Z",
+    };
+    const resolve = (
+      threads: Thread[],
+      localLastVisitedAtById: Readonly<Record<string, string>> = {},
+    ) =>
+      resolveOutOfScopeDot({
+        threads,
+        scopedProjectKeys: new Set([`${localEnvironmentId}:${inArea}`]),
+        delegatedUnderParent: new Set(),
+        localLastVisitedAtById,
+        now: "2026-03-09T11:00:00.000Z",
+      });
+
+    expect(resolve([makeThread({ ...unread, projectId: inArea })])).toBeNull();
+    expect(resolve([makeThread(unread)])).toBe("unread");
+    expect(resolve([makeThread({ ...unread, settledOverride: "settled" })])).toBeNull();
+    expect(
+      resolve([
+        makeThread({
+          ...unread,
+          snoozedAt: "2026-03-09T10:30:00.000Z",
+          snoozedUntil: "2026-03-10T09:00:00.000Z",
+        }),
+      ]),
+    ).toBeNull();
+    expect(
+      resolve([makeThread({ ...unread, id: ThreadId.make("bot-home:bot-1:project-outside") })]),
+    ).toBe("unread");
+    expect(
+      resolve([
+        makeThread({
+          projectId: outside,
+          runtime: {
+            status: "running",
+            activeRunId: null,
+            providerInstanceId: ProviderInstanceId.make("codex"),
+            providerName: "Codex",
+            lastError: null,
+            updatedAt: "2026-03-09T10:00:00.000Z",
+          },
+        }),
+      ]),
+    ).toBeNull();
+    // Older servers keep no visit time, so a local visit marks the thread read.
+    const { lastVisitedAt: _serverVisit, ...withoutServerVisit } = unread;
+    expect(
+      resolve([makeThread(withoutServerVisit)], {
+        [scopedThreadKey(scopeThreadRef(localEnvironmentId, ThreadId.make("thread-1")))]:
+          "2026-03-09T10:06:00.000Z",
+      }),
+    ).toBeNull();
   });
 });
 

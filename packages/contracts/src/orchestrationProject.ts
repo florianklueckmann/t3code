@@ -23,6 +23,8 @@ export const OrchestrationProjectShell = Schema.Struct({
   // Pinned projects lead project pickers; archived ones leave them. Optional so older servers decode.
   pinnedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   archivedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+  /** Absent from older servers; read as no area. Looser than `ProjectArea` so a later limit still decodes. */
+  area: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });

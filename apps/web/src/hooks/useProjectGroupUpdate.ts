@@ -8,7 +8,9 @@ import {
 import { AsyncResult } from "effect/reactivity";
 import * as Cause from "effect/Cause";
 
+import { requestNewProjectArea } from "../components/ProjectAreaDialog";
 import { stackedThreadToast, toastManager } from "../components/ui/toast";
+import type { ProjectAreaChoice } from "../projectAreas";
 import type { SidebarProjectGroupMember } from "../sidebarProjectGrouping";
 import { useProjects, useServerConfigs } from "../state/entities";
 import { readEnvironment } from "../state/environments";
@@ -22,6 +24,7 @@ export type ProjectGroupUpdate = Partial<{
   projectIcon: ProjectIconOverride | null;
   pinned: boolean;
   archived: boolean;
+  area: string | null;
 }>;
 
 type ProjectGroupMember = Pick<
@@ -91,7 +94,42 @@ export function useProjectGroupUpdate() {
         true,
     );
 
-  return { updateProjectGroup, canOrganizeProjectGroup };
+  /** Older servers drop `area`, so their projects do not offer it. */
+  const canSetProjectGroupArea = (members: ReadonlyArray<ProjectGroupMember>) =>
+    members.every(
+      (member) =>
+        serverConfigs.get(member.environmentId)?.environment.capabilities.projectAreas === true &&
+        readEnvironmentScope(member.environmentId, AuthOrchestrationOperateScope),
+    );
+
+  return { updateProjectGroup, canOrganizeProjectGroup, canSetProjectGroupArea };
+}
+
+/** Moves every checkout of a project into an area, or out of all areas with `null`. */
+export function useProjectArea() {
+  const { updateProjectGroup, canSetProjectGroupArea } = useProjectGroupUpdate();
+  type AreaGroup = {
+    readonly displayName: string;
+    readonly memberProjects: ReadonlyArray<ProjectGroupMember>;
+  };
+  const chooseProjectGroupArea = async (
+    group: AreaGroup,
+    choice: ProjectAreaChoice,
+    existingAreas: readonly string[],
+  ) => {
+    const area =
+      choice.kind === "set"
+        ? choice.area
+        : choice.kind === "clear"
+          ? null
+          : await requestNewProjectArea({ projectName: group.displayName, existingAreas });
+    if (choice.kind === "new" && area === null) return;
+    await updateProjectGroup(group.memberProjects, { area }, "Failed to change project area");
+  };
+  return {
+    canSetProjectGroupArea: (group: AreaGroup) => canSetProjectGroupArea(group.memberProjects),
+    chooseProjectGroupArea,
+  };
 }
 
 /** Pin state for a project group, shared by every list that can pin or unpin a project. */

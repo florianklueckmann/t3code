@@ -1,6 +1,9 @@
 import type { EnvironmentServerConfig } from "@t3tools/client-runtime/connection";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
-import { resolveThreadWorkingStartedAt } from "@t3tools/client-runtime/state/models";
+import {
+  resolveThreadWorkingStartedAt,
+  type EnvironmentThreadShell,
+} from "@t3tools/client-runtime/state/models";
 import { isShownUnderParent } from "@t3tools/client-runtime/state/threads";
 import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { threadPullRequestSearchTerms } from "@t3tools/shared/threadPullRequests";
@@ -1004,6 +1007,41 @@ export function resolveSidebarFolderDot(
   if (hasUnread) return "unread";
   if (statuses.has("working") || statuses.has("preparing")) return "working";
   return null;
+}
+
+/**
+ * The dot on the filter button while an area hides part of the list: the most
+ * urgent state among hidden threads and Bot homes. Settled, snoozed and working
+ * threads stay quiet.
+ */
+export function resolveOutOfScopeDot(input: {
+  readonly threads: readonly EnvironmentThreadShell[];
+  readonly scopedProjectKeys: ReadonlySet<string>;
+  readonly delegatedUnderParent: ReadonlySet<string>;
+  readonly localLastVisitedAtById: Readonly<Record<string, string>>;
+  readonly now: string;
+}): "attention" | "failed" | "unread" | null {
+  const hidden = input.threads.filter(
+    (thread) =>
+      thread.archivedAt === null &&
+      !input.scopedProjectKeys.has(`${thread.environmentId}:${thread.projectId}`) &&
+      thread.settledOverride !== "settled" &&
+      !effectiveSnoozed(thread, { now: input.now }) &&
+      (mayBeBotHomeThreadId(thread.id) ||
+        filterSidebarV2VisibleThreads([thread], null, input.delegatedUnderParent).length === 1),
+  );
+  const dot = resolveSidebarFolderDot(
+    hidden.map((thread) => ({
+      ...thread,
+      lastVisitedAt: resolveThreadLastVisitedAt(
+        thread.lastVisitedAt,
+        input.localLastVisitedAtById[
+          scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id))
+        ],
+      ),
+    })),
+  );
+  return dot === "working" ? null : dot;
 }
 
 /**

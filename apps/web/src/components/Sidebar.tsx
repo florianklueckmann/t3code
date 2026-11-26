@@ -71,7 +71,14 @@ import {
   ListFilterIcon,
   PlusIcon,
   SettingsIcon,
+  TagIcon,
 } from "lucide-react";
+import {
+  buildProjectAreaMenu,
+  isProjectGroupInArea,
+  listProjectAreas,
+  projectGroupAreas,
+} from "../projectAreas";
 import {
   useEffect,
   useLayoutEffect,
@@ -127,7 +134,7 @@ import {
 } from "../hooks/useThreadActions";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { useOrderWhileOpen } from "../hooks/useOrderWhileOpen";
-import { useProjectPin } from "../hooks/useProjectGroupUpdate";
+import { useProjectArea, useProjectPin } from "../hooks/useProjectGroupUpdate";
 import { useSidebarProjectGroups } from "../hooks/useSidebarProjectGroups";
 import { isCommandPaletteOpen, openCommandPalette } from "../commandPaletteBus";
 import { registerSettleAndAdvance } from "../settleAndAdvance";
@@ -192,6 +199,7 @@ import {
   planSidebarThreadDrop,
   reduceSidebarProjectScopeMenuState,
   resolveAdjacentThreadId,
+  resolveOutOfScopeDot,
   resolveSidebarSweepKeys,
   resolveSidebarDropTarget,
   resolveSidebarDropVerb,
@@ -828,9 +836,15 @@ function useSidebarLookups() {
   const projectGroupByScopeKey = new Map(
     projectGroups.map((project) => [project.projectKey, project] as const),
   );
-  const projectScopeItems = [
+  const pickableGroups = pickableProjectGroups(projectGroups);
+  const projectAreas = listProjectAreas(pickableGroups);
+  const projectScopeItems: SidebarScopeItem[] = [
     { value: "all", label: "All projects" },
-    ...pickableProjectGroups(projectGroups).map((project) => ({
+    ...projectAreas.map((area) => ({ value: areaScopeItemValue(area), label: area, area })),
+    ...(projectAreas.length > 0
+      ? [{ value: areaScopeItemValue(null), label: "No area", area: null }]
+      : []),
+    ...pickableGroups.map((project) => ({
       value: project.projectKey,
       label: project.displayName,
     })),
@@ -844,9 +858,29 @@ function useSidebarLookups() {
     projectByKey,
     projectDisplayNameByKey,
     projectGroupByScopeKey,
+    projectAreas,
     projectScopeItems,
   };
 }
+
+/** A filter row: all projects, an area (`area` set, `null` for "No area"), or a project group. */
+interface SidebarScopeItem {
+  readonly value: string;
+  readonly label: string;
+  readonly area?: string | null;
+}
+
+// The NUL prefix keeps area rows from colliding with project keys.
+const areaScopeItemValue = (area: string | null) =>
+  area === null ? "\u0000no-area" : `\u0000area:${area}`;
+
+const EMPTY_LAST_VISITED: Readonly<Record<string, string>> = {};
+
+const OUT_OF_SCOPE_DOT_CLASS_NAME = {
+  attention: "bg-warning",
+  failed: "bg-error",
+  unread: "bg-success",
+} as const;
 
 function ProjectScopeRowIcon(props: { isSelected: boolean; children: ReactNode }) {
   return (
@@ -911,6 +945,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     projectByKey,
     projectDisplayNameByKey,
     projectGroupByScopeKey,
+    projectAreas,
     projectScopeItems: lookupProjectScopeItems,
   } = useSidebarLookups();
   const delegatedUnderParent = useDelegatedUnderParent();
@@ -1001,6 +1036,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   const projectGroupsRef = useRef(projectGroups);
   const persistedProjectScopeKeys = useUiStateStore((store) => store.sidebarProjectScopeKeys);
   const setPersistedProjectScopeKeys = useUiStateStore((store) => store.setSidebarProjectScopeKeys);
+  const persistedAreaScope = useUiStateStore((store) => store.sidebarAreaScope);
+  const setPersistedAreaScope = useUiStateStore((store) => store.setSidebarAreaScope);
   const [projectScopeMenuState, dispatchProjectScopeMenu] = useReducer(
     reduceSidebarProjectScopeMenuState,
     { open: false, query: "" },
@@ -1072,6 +1109,11 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     setPersistedProjectScopeKeys(keys);
     scrollSidebarToTop(sidebarContentRef.current);
   };
+  const setAreaScope = (area: string | null) => {
+    clearSelection();
+    setPersistedAreaScope({ area });
+    scrollSidebarToTop(sidebarContentRef.current);
+  };
   // A scope whose project is gone reads as all projects once every snapshot has
   // loaded. The stored keys are left alone, so the scope returns with its project.
   // An archived project's scope reads as all projects, matching the menu.
@@ -1079,15 +1121,25 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   const archivedProjectKeys = new Set(
     projectGroups.filter((project) => project.archived).map((project) => project.projectKey),
   );
-  const chosenProjectScopeKeys = resolveSidebarProjectScopeKeys({
-    groups: projectGroups,
-    keys: persistedProjectScopeKeys,
-    settings: projectGroupingSettings,
-    canClearMissingScope: allProjectSnapshotsReady && allProjectConfigsReady,
-  }).filter((key) => !archivedProjectKeys.has(key));
-  const chosenProjectGroups = scopeGroups.filter((project) =>
-    chosenProjectScopeKeys.includes(project.projectKey),
-  );
+  // Like a missing project, an area no open project carries any more reads as all projects.
+  const chosenAreaGroups =
+    persistedAreaScope === null
+      ? []
+      : scopeGroups.filter((project) => isProjectGroupInArea(project, persistedAreaScope.area));
+  const chosenAreaScope = chosenAreaGroups.length > 0 ? persistedAreaScope : null;
+  const chosenProjectScopeKeys =
+    persistedAreaScope !== null
+      ? []
+      : resolveSidebarProjectScopeKeys({
+          groups: projectGroups,
+          keys: persistedProjectScopeKeys,
+          settings: projectGroupingSettings,
+          canClearMissingScope: allProjectSnapshotsReady && allProjectConfigsReady,
+        }).filter((key) => !archivedProjectKeys.has(key));
+  const chosenProjectGroups =
+    chosenAreaScope !== null
+      ? chosenAreaGroups
+      : scopeGroups.filter((project) => chosenProjectScopeKeys.includes(project.projectKey));
   const chosenScopeProjectKeys =
     chosenProjectGroups.length === 0
       ? null
@@ -1127,7 +1179,13 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     findThread: (key) => threads.find((candidate) => threadShellKey(candidate) === key),
   });
   const projectScopeKeys = revealWidensScope ? [] : chosenProjectScopeKeys;
-  const projectScopeKey = projectScopeKeys.length === 0 ? null : projectScopeKeys.join("\n");
+  const areaScope = revealWidensScope ? null : chosenAreaScope;
+  const projectScopeKey =
+    areaScope !== null
+      ? areaScopeItemValue(areaScope.area)
+      : projectScopeKeys.length === 0
+        ? null
+        : projectScopeKeys.join("\n");
   const toggleProjectScopeKey = (key: string) =>
     setProjectScopeKeys(
       projectScopeKeys.includes(key)
@@ -1165,11 +1223,17 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     (item) => item.value,
     projectScopeMenuState.open,
   );
+  const selectedScopeValue =
+    areaScope !== null ? areaScopeItemValue(areaScope.area) : (projectScopeKeys[0] ?? "all");
   const selectedProjectScopeItem =
     projectScopeKeys.length > 1
       ? null
-      : (projectScopeItems.find((item) => item.value === (projectScopeKeys[0] ?? "all")) ??
+      : (projectScopeItems.find((item) => item.value === selectedScopeValue) ??
         projectScopeItems[0]!);
+  const areaScopeLabel = areaScope === null ? null : (areaScope.area ?? "No area");
+  const localLastVisitedAtById = useUiStateStore((store) =>
+    areaScope === null ? EMPTY_LAST_VISITED : store.threadLastVisitedAtById,
+  );
   const filteredProjectScopeItems = filterSidebarProjectScopeItems({
     items: projectScopeItems,
     query: projectScopeMenuState.query,
@@ -1242,6 +1306,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       openProjectSettings(projectGroup);
     },
   );
+  const { canSetProjectGroupArea, chooseProjectGroupArea } = useProjectArea();
   const startThreadInProjectFolder = useStableCallback((group: SidebarProjectSnapshot) => {
     if (isMobile) setOpenMobile(false);
     void handleNewThread(scopeProjectRef(group.environmentId, group.id));
@@ -1250,6 +1315,9 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     (group: SidebarProjectSnapshot, position: { x: number; y: number }) => {
       const api = readLocalApi();
       if (!api) return;
+      const areaMenu = canSetProjectGroupArea(group)
+        ? buildProjectAreaMenu({ areas: projectAreas, current: projectGroupAreas(group) })
+        : null;
       void (async () => {
         const clicked = await settlePromise(() =>
           api.contextMenu.show(
@@ -1263,12 +1331,18 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                       : { id: "pin", label: "Pin project", icon: "pin" },
                   ]
                 : []),
+              ...(areaMenu ? [areaMenu.item] : []),
               { id: "project-settings", label: "Project settings", icon: "settings" },
             ],
             position,
           ),
         );
-        if (clicked._tag === "Failure") return;
+        if (clicked._tag === "Failure" || clicked.value === null) return;
+        const areaChoice = areaMenu?.choiceFor(clicked.value) ?? null;
+        if (areaChoice) {
+          void chooseProjectGroupArea(group, areaChoice, projectAreas);
+          return;
+        }
         switch (clicked.value) {
           case "new-thread":
             startThreadInProjectFolder(group);
@@ -1342,6 +1416,16 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     keepEmptyFolders: (group) =>
       scopedProjectGroups.length > 0 || (group.pinned && !group.archived),
   });
+  const outOfScopeDot =
+    areaScope !== null && scopedProjectKeys !== null
+      ? resolveOutOfScopeDot({
+          threads,
+          scopedProjectKeys,
+          delegatedUnderParent,
+          localLastVisitedAtById,
+          now: snoozeNow,
+        })
+      : null;
 
   // Ranked across environments as the palette ranks them, so one
   // environment's list does not sit above another's better matches; rows
@@ -3001,6 +3085,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                     if (!item) return;
                     if (item.value === "all") {
                       setProjectScopeKeys([]);
+                    } else if (item.area !== undefined) {
+                      setAreaScope(item.area);
                     } else if (
                       eventDetails.event instanceof MouseEvent &&
                       eventDetails.event.shiftKey
@@ -3017,14 +3103,33 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                     render={
                       <SidebarHeaderIconButton
                         label={
-                          scopedProjectGroups.length > 0
-                            ? `Filter threads by project: ${scopedProjectGroups.map((project) => project.displayName).join(", ")}`
-                            : "Filter threads by project"
+                          areaScopeLabel !== null
+                            ? `Filter threads by area: ${areaScopeLabel}${outOfScopeDot ? ", something outside needs you" : ""}`
+                            : scopedProjectGroups.length > 0
+                              ? `Filter threads by project: ${scopedProjectGroups.map((project) => project.displayName).join(", ")}`
+                              : "Filter threads by project"
                         }
+                        {...(areaScopeLabel !== null
+                          ? { size: "sm" as const, className: "w-auto max-w-32" }
+                          : {})}
                       />
                     }
                   >
-                    {scopedProjectGroups.length > 1 ? (
+                    {areaScopeLabel !== null ? (
+                      <span className="flex min-w-0 items-center gap-1">
+                        <TagIcon className="size-3.5 shrink-0" />
+                        <span className="truncate text-xs">{areaScopeLabel}</span>
+                        {outOfScopeDot ? (
+                          <span
+                            aria-hidden
+                            className={cn(
+                              "absolute top-0.5 right-0.5 size-1.5 rounded-full ring-2 ring-sidebar",
+                              OUT_OF_SCOPE_DOT_CLASS_NAME[outOfScopeDot],
+                            )}
+                          />
+                        ) : null}
+                      </span>
+                    ) : scopedProjectGroups.length > 1 ? (
                       <span className="flex shrink-0">
                         {scopedProjectGroups.slice(0, 2).map((project, index) => (
                           <span
@@ -3105,9 +3210,12 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                     <ComboboxList aria-multiselectable>
                       {(item: (typeof projectScopeItems)[number]) => {
                         const project = projectGroupByScopeKey.get(item.value) ?? null;
-                        const isSelected = project
-                          ? projectScopeKeys.includes(item.value)
-                          : projectScopeKeys.length === 0;
+                        const isArea = item.area !== undefined;
+                        const isSelected = isArea
+                          ? areaScope !== null && areaScope.area === item.area
+                          : project
+                            ? projectScopeKeys.includes(item.value)
+                            : projectScopeKeys.length === 0 && areaScope === null;
                         return (
                           <ComboboxItem
                             key={item.value}
@@ -3123,6 +3231,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                             <ProjectScopeRowIcon isSelected={isSelected}>
                               {project ? (
                                 <ProjectFavicon project={project} className="size-4 shrink-0" />
+                              ) : isArea ? (
+                                <TagIcon className="size-4 shrink-0" />
                               ) : (
                                 <FolderIcon className="size-4 shrink-0" />
                               )}
