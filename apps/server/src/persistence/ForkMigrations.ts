@@ -37,15 +37,18 @@ const tableExists = Effect.fn("ForkMigrations.tableExists")(function* (name: str
   return rows.length > 0;
 });
 
-export const hasPendingForkMigrations = Effect.fn("ForkMigrations.hasPending")(function* () {
+const hasLegacyUpstreamRow = Effect.fn("ForkMigrations.hasLegacyUpstreamRow")(function* () {
   const sql = yield* SqlClient.SqlClient;
-  if (yield* tableExists("effect_sql_migrations")) {
-    const legacy = yield* sql`
-      SELECT 1 FROM effect_sql_migrations
-      WHERE migration_id = ${LEGACY_UPSTREAM_ROW.id} AND name = ${LEGACY_UPSTREAM_ROW.name}
-    `;
-    if (legacy.length > 0) return true;
-  }
+  if (!(yield* tableExists("effect_sql_migrations"))) return false;
+  const rows = yield* sql`
+    SELECT 1 FROM effect_sql_migrations
+    WHERE migration_id = ${LEGACY_UPSTREAM_ROW.id} AND name = ${LEGACY_UPSTREAM_ROW.name}
+  `;
+  return rows.length > 0;
+});
+
+const isForkLedgerBehind = Effect.fn("ForkMigrations.isLedgerBehind")(function* () {
+  const sql = yield* SqlClient.SqlClient;
   if (!(yield* tableExists(FORK_MIGRATIONS_TABLE))) return true;
   const [row] = yield* sql<{ readonly latestId: number | null }>`
     SELECT MAX(migration_id) AS latestId FROM ${sql(FORK_MIGRATIONS_TABLE)}
@@ -53,11 +56,15 @@ export const hasPendingForkMigrations = Effect.fn("ForkMigrations.hasPending")(f
   return (row?.latestId ?? 0) < latestForkMigrationId;
 });
 
+export const hasPendingForkMigrations = Effect.fn("ForkMigrations.hasPending")(function* () {
+  return (yield* hasLegacyUpstreamRow()) || (yield* isForkLedgerBehind());
+});
+
 /** Frees the upstream id an earlier fork build took. Must run before upstream history checks. */
 export const releaseLegacyUpstreamIds = Effect.fn("ForkMigrations.releaseLegacyUpstreamIds")(
   function* () {
     const sql = yield* SqlClient.SqlClient;
-    if (!(yield* tableExists("effect_sql_migrations"))) return;
+    if (!(yield* hasLegacyUpstreamRow())) return;
     // A crash before the fork ledger records 001 is safe: 001 keeps the existing column.
     yield* sql`
       DELETE FROM effect_sql_migrations
@@ -86,6 +93,8 @@ const run = Migrator.make({});
 
 /** Runs after the upstream migrations and `assertForkMigrationsCanRun`. */
 export const runForkMigrations = Effect.fn("ForkMigrations.run")(function* () {
+  // The migrator takes the write lock even with nothing to run.
+  if (!(yield* isForkLedgerBehind())) return [];
   return yield* run({
     table: FORK_MIGRATIONS_TABLE,
     loader: Migrator.fromRecord(

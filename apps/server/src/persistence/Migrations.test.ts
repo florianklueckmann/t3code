@@ -407,9 +407,14 @@ describe("fork migrations", () => {
       const sql = yield* SqlClient.SqlClient;
       yield* runMigrations();
       yield* sql`INSERT INTO fork_sql_migrations (migration_id, name) VALUES (2, 'NewerForkMigration')`;
+      // Validation runs before the legacy row is released, so a refused start changes nothing.
+      yield* sql`DELETE FROM effect_sql_migrations WHERE migration_id >= 97`;
+      yield* sql`INSERT INTO effect_sql_migrations (migration_id, name) VALUES (97, 'ProjectionProjectsArea')`;
+      const before = yield* history;
       const newer = yield* Effect.exit(runMigrations());
       assert.isTrue(Exit.isFailure(newer));
       assert.include(String(newer), "2_NewerForkMigration");
+      assert.deepStrictEqual(yield* history, before);
 
       yield* sql`DELETE FROM fork_sql_migrations`;
       yield* sql`INSERT INTO fork_sql_migrations (migration_id, name) VALUES (1, 'OtherForkMigration')`;

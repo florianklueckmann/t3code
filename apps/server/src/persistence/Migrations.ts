@@ -300,14 +300,16 @@ export const runMigrations = Effect.fn("runMigrations")(function* ({
   if (pendingAtStart) yield* Effect.log(DATABASE_MIGRATIONS_STARTED_MESSAGE);
   // Fork migrations expect the full upstream schema, so a partial run leaves them out.
   const includesFork = toMigrationInclusive === undefined;
-  if (includesFork) yield* ForkMigrations.releaseLegacyUpstreamIds();
+  if (includesFork) {
+    yield* ForkMigrations.assertForkMigrationsCanRun();
+    yield* ForkMigrations.releaseLegacyUpstreamIds();
+  }
   const includesV2 =
     toMigrationInclusive === undefined || toMigrationInclusive >= FIRST_V2_MIGRATION_ID;
   const previewMigrations = includesV2 ? yield* reconcileV2PreviewMigration() : [];
   if (includesV2) {
     yield* assertV2MigrationsCanRun(toMigrationInclusive);
   }
-  if (includesFork) yield* ForkMigrations.assertForkMigrationsCanRun();
   const sql = yield* SqlClient.SqlClient;
   const ledger = yield* sql`
     SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'effect_sql_migrations'
