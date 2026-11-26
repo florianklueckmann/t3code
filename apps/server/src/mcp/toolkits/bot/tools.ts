@@ -7,6 +7,7 @@ import {
 import * as BotContinuation from "../../../bots/BotContinuation.ts";
 import {
   BotAttachProjectInput,
+  BotAttentionView,
   BotDetail,
   BotLearningEntryId,
   BotLearningOrigin,
@@ -27,6 +28,7 @@ import {
 import * as Schema from "effect/Schema";
 import { McpSchema, Tool, Toolkit } from "effect/ai";
 
+import * as BotAttention from "../../../bots/BotAttention.ts";
 import * as BotHistory from "../../../bots/BotHistory.ts";
 import * as BotService from "../../../bots/BotService.ts";
 import * as ThreadSearch from "../../../orchestration-v2/ThreadSearch.ts";
@@ -112,6 +114,21 @@ export type BotToolInput = typeof BotToolParameters.Type;
 const { appearance: _summaryAppearance, ...botToolSummaryFields } = BotSummary.fields;
 const { appearance: _detailAppearance, ...botToolDetailFields } = BotDetail.fields;
 
+/** Read-only: only the user changes these, in Settings → Bots. */
+const BotToolAlerts = Schema.Struct({
+  dailyLimit: BotAttentionView.fields.dailyLimit,
+  quietHours: BotAttentionView.fields.quietHours,
+  remit: BotAttentionView.fields.remit.annotate({
+    description: "The user's guidance on what deserves a Waiting item; empty when unset.",
+  }),
+  sentToday: BotAttentionView.fields.sentToday,
+  held: BotAttentionView.fields.held,
+  digestAt: BotAttentionView.fields.digestAt,
+  timeZone: Schema.String,
+  quietNow: Schema.Boolean,
+  limitReached: Schema.Boolean,
+});
+
 const BotTool = Tool.make("t3_bot", {
   failure: OrchestratorMcpFailure,
   failureMode: "return" as const,
@@ -122,13 +139,15 @@ const BotTool = Tool.make("t3_bot", {
     BotService.BotService,
     BotContinuation.BotContinuation,
     BotTaskService.BotTaskService,
+    BotAttention.BotAttention,
   ],
   description:
-    "Bots: named identities with one home conversation per attached project. `update` with `projectId` sets that project's guidance and preferred sources (preferred, not exclusive); without it, the Bot. `guidance` and `sources` replace the stored values, so send the full list. `start_task` runs `task` in a new work thread of the Bot's project; its result shows as a card in the home conversation. For a different model or reasoning for one task, pass `modelSelection` to `start_task`, not `update`. `learn` (with `projectId`, `learning`) records a user's standing instruction or proposes a lesson from their correction. `adopt`, `reject` and `reinstate` (an earlier revision) take `entryId` and `revision`; `retire` takes `entryId`. `read_continuation` reads project working notes and active Bot tasks, not Home's delegated/background work; inspect Home activity with `t3_thread_read` for owned delegate references and await their completion without polling. `save_continuation` replaces the working notes from this active Home with `continuation` {baseRevision, updateId (stable retry id), note (requests/waiting/decided/context arrays of {text, quote?, taskIds?}), basis (copy exactly from instructions/read)}. On conflict reconcile with current; proposals stay waiting and a new decided item requires a genuine direct user quote.",
+    "Bots: named identities with one home conversation per attached project. `read` also returns `alerts` to explain a missing push: the user's daily alert limit, quiet hours and remit, today's sent and held alerts, and what holds one now. Only the user changes them, in Settings → Bots.`update` with `projectId` sets that project's guidance and preferred sources (preferred, not exclusive); without it, the Bot. `guidance` and `sources` replace the stored values, so send the full list. `start_task` runs `task` in a new work thread of the Bot's project; its result shows as a card in the home conversation. For a different model or reasoning for one task, pass `modelSelection` to `start_task`, not `update`. `learn` (with `projectId`, `learning`) records a user's standing instruction or proposes a lesson from their correction. `adopt`, `reject` and `reinstate` (an earlier revision) take `entryId` and `revision`; `retire` takes `entryId`. `read_continuation` reads project working notes and active Bot tasks, not Home's delegated/background work; inspect Home activity with `t3_thread_read` for owned delegate references and await their completion without polling. `save_continuation` replaces the working notes from this active Home with `continuation` {baseRevision, updateId (stable retry id), note (requests/waiting/decided/context arrays of {text, quote?, taskIds?}), basis (copy exactly from instructions/read)}. On conflict reconcile with current; proposals stay waiting and a new decided item requires a genuine direct user quote.",
   parameters: BotToolParameters,
   success: Schema.Struct({
     bots: Schema.optional(Schema.Array(Schema.Struct(botToolSummaryFields))),
     bot: Schema.optional(Schema.Struct(botToolDetailFields)),
+    alerts: Schema.optional(BotToolAlerts),
     continuation: Schema.optional(BotContinuationView),
     savedContinuation: Schema.optional(BotSaveContinuationResult),
     tasks: Schema.optional(Schema.Array(BotTaskSummary)),

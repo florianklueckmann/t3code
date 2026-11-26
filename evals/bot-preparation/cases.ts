@@ -120,6 +120,13 @@ export type PreparationCase =
       readonly taskEffort?: string;
       readonly expectedFiles?: Readonly<Record<string, string>>;
       readonly existingRoutine?: { readonly title: string; readonly allowChanges: boolean };
+      /** Alert settings the user saved, with today's sent and held alerts, written before the turn. */
+      readonly alerts?: {
+        readonly dailyLimit: number;
+        readonly quietHours: { readonly start: string; readonly end: string };
+        readonly sentToday: number;
+        readonly held: number;
+      };
       /**
        * The routine the turn should set up, or none. A plain reminder: its Berlin date or inclusive
        * date range, a regex for its title or brief, and whether only the last turn asks for it.
@@ -425,6 +432,26 @@ export const CASES: ReadonlyArray<PreparationCase> = [
     posts: 1,
     resultMust: ["Ilvara", "who hired"],
     neverMentions: ["private/", "diary", "Vey"],
+  },
+  // T3B-110: a Bot asked why a push never came could not see its alert limit or held alerts.
+  // The digest time follows from the saved quiet hours only, so a guess cannot name it.
+  {
+    id: "explains-held-alert",
+    kind: "new",
+    world: "with-records",
+    trigger: "home",
+    prompt:
+      "Your session preparation finished a while ago, but I never got a push notification about it. Why not?",
+    alerts: {
+      dailyLimit: 1,
+      quietHours: { start: "23:30", end: "05:45" },
+      sentToday: 1,
+      held: 1,
+    },
+    // The time in the server's zone, or its UTC equivalent in Berlin winter time.
+    answerMust: ["limit", "0?5:45|04:45"],
+    routine: null,
+    startsTask: false,
   },
   {
     id: "answers-inline",

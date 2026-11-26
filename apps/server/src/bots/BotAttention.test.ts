@@ -98,6 +98,11 @@ it.effect("caps proactive alerts per local day, deciding each run once across a 
       held: 2,
       digestAt: "2026-11-03T00:00:00.000Z",
     });
+    assert.deepInclude(yield* restarted.status(botId), {
+      ...view,
+      quietNow: false,
+      limitReached: true,
+    });
 
     // Without quiet hours the held alerts go out as the next local day starts, outside the cap.
     yield* at("2026-11-02T23:59:59.000Z");
@@ -144,8 +149,10 @@ it.effect("holds alerts through quiet hours across midnight and sends one digest
       quietHours: { start: "22:00", end: "07:00" },
     });
     yield* at("2026-11-02T21:59:00.000Z");
+    assert.deepInclude(yield* attention.status(botId), { quietNow: false, timeZone: "+00:00" });
     assert.equal(yield* attention.admit(alert(1)), "send");
     yield* at("2026-11-02T22:00:00.000Z");
+    assert.deepInclude(yield* attention.status(botId), { quietNow: true, limitReached: false });
     assert.equal(yield* attention.admit(alert(2, "failed")), "hold");
     yield* at("2026-11-03T06:59:00.000Z");
     assert.equal(yield* attention.admit(alert(3)), "hold");

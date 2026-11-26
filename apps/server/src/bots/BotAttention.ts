@@ -71,10 +71,19 @@ export interface BotAlertDigest {
   readonly digestAt: string;
 }
 
+/** The view plus what decides a new alert now, for the Bot's own read-only MCP view. */
+export interface BotAttentionStatus extends BotAttentionView {
+  /** The zone quiet hours and the day's limit are counted in. */
+  readonly timeZone: string;
+  readonly quietNow: boolean;
+  readonly limitReached: boolean;
+}
+
 export class BotAttention extends Context.Service<
   BotAttention,
   {
     readonly get: (botId: BotId) => Effect.Effect<BotAttentionView, BotError>;
+    readonly status: (botId: BotId) => Effect.Effect<BotAttentionStatus, BotError>;
     readonly configure: (
       input: BotConfigureAttentionInput,
     ) => Effect.Effect<BotConfigureAttentionResult, BotError>;
@@ -190,6 +199,16 @@ export const make = Effect.gen(function* () {
           : DateTime.formatIso(digestDueAt(local(held.oldest), current.quietHours)),
     } satisfies BotAttentionView;
   }, Effect.mapError(failure));
+
+  const status = Effect.fn("BotAttention.status")(function* (botId: BotId) {
+    const view = yield* get(botId);
+    return {
+      ...view,
+      timeZone: DateTime.zoneToString(zone),
+      quietNow: inQuietHours(yield* localNow, view.quietHours),
+      limitReached: view.sentToday >= view.dailyLimit,
+    } satisfies BotAttentionStatus;
+  });
 
   const configure = Effect.fn("BotAttention.configure")(function* (
     input: BotConfigureAttentionInput,
@@ -348,6 +367,7 @@ export const make = Effect.gen(function* () {
 
   return BotAttention.of({
     get,
+    status,
     configure,
     admit,
     hasHeldAlerts,

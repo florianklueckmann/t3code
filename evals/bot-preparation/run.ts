@@ -344,6 +344,52 @@ const enableDiagnosis = (baseDir: string, homeThreadId: string, now: string) => 
   }
 };
 
+/**
+ * Saves the user's alert settings and today's alert decisions. Neither has an MCP write, so the
+ * eval writes the rows the server reads. `day` is the server's local date, this machine's.
+ */
+const seedAlerts = (
+  baseDir: string,
+  botId: string,
+  homeThreadId: string,
+  alerts: NonNullable<Extract<PreparationCase, { trigger: "home" }>["alerts"]>,
+  now: Date,
+) => {
+  const db = new NodeSqlite.DatabaseSync(NodePath.join(baseDir, "userdata", "bots.sqlite"));
+  const iso = now.toISOString();
+  const day = new Intl.DateTimeFormat("en-CA").format(now);
+  try {
+    db.exec("PRAGMA busy_timeout = 5000");
+    db.prepare(
+      `INSERT INTO bot_attention (bot_id, revision, daily_limit, quiet_start, quiet_end, remit, updated_at)
+        VALUES (?, 1, ?, ?, ?, '', ?)`,
+    ).run(botId, alerts.dailyLimit, alerts.quietHours.start, alerts.quietHours.end, iso);
+    const decide = db.prepare(
+      `INSERT INTO bot_alerts (alert_key, bot_id, task_id, work_thread_id, home_thread_id, phase, day, decided_at, held)
+        VALUES (?, ?, ?, ?, ?, 'completed', ?, ?, ?)`,
+    );
+    const rows = [
+      ...Array.from({ length: alerts.sentToday }, () => 0),
+      ...Array.from({ length: alerts.held }, () => 1),
+    ];
+    for (const [index, held] of rows.entries()) {
+      const taskId = `bot-task:eval-${index}`;
+      decide.run(
+        `${taskId}:run`,
+        botId,
+        taskId,
+        `bot-work:eval-${index}`,
+        homeThreadId,
+        day,
+        iso,
+        held,
+      );
+    }
+  } finally {
+    db.close();
+  }
+};
+
 /** Waits for the routine's run to fail and its diagnosis to end. */
 const settledDiagnosis = Effect.fn("botPreparation.settledDiagnosis")(function* (
   call: Call,
@@ -521,6 +567,14 @@ const runSample = Effect.fn("botPreparation.runSample")(function* (
         OrchestratorMcpScheduleTaskResult,
       );
     }
+    if (testCase.alerts !== undefined)
+      seedAlerts(
+        options.baseDir,
+        botId,
+        home,
+        testCase.alerts,
+        DateTime.toDate(yield* DateTime.now),
+      );
     let runId = yield* runTurn(call, home, testCase.prompt);
     for (const [index, turn] of (testCase.laterTurns ?? []).entries()) {
       if (index === (testCase.laterTurns?.length ?? 0) - 1) {

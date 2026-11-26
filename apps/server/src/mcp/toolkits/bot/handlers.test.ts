@@ -18,6 +18,7 @@ import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 
+import * as BotAttention from "../../../bots/BotAttention.ts";
 import * as BotService from "../../../bots/BotService.ts";
 import * as BotTaskService from "../../../bots/BotTaskService.ts";
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
@@ -94,6 +95,21 @@ const continuationView = (input: { readonly botId: BotId; readonly projectId: Pr
   moreActiveTasks: 0,
 });
 
+const alertStatus = {
+  botId,
+  revision: 4,
+  dailyLimit: 0,
+  quietHours: { start: "21:00", end: "08:00" },
+  remit: "Only push about failed session prep.",
+  writable: true,
+  sentToday: 0,
+  held: 2,
+  digestAt: "2026-11-03T08:00:00.000Z",
+  timeZone: "Europe/Berlin",
+  quietNow: false,
+  limitReached: true,
+} satisfies BotAttention.BotAttentionStatus;
+
 const callTool = (
   params: BotToolInput,
   access: "read-only" | undefined,
@@ -163,6 +179,12 @@ const callTool = (
                     } as const),
                   ),
                 get: (input) => Effect.succeed(continuationView(input)),
+              }),
+              Layer.mock(BotAttention.BotAttention)({
+                status: (bot) =>
+                  Ref.update(calls, (current) => [...current, `alerts:${bot}`]).pipe(
+                    Effect.as({ ...alertStatus, botId: bot }),
+                  ),
               }),
               Layer.mock(BotService.BotService)({
                 list: Effect.succeed({ bots: [] }),
@@ -425,10 +447,13 @@ it.effect.each(
 it.effect("lets read-only clients read Bots but not change them", () =>
   Effect.gen(function* () {
     const read = yield* callTool({ action: "read", botId }, "read-only");
-    expect(read.calls).toEqual(["get"]);
+    expect(read.calls).toEqual(["get", `alerts:${botId}`]);
     // Appearance is client presentation; the agent's view of a Bot stays unchanged.
     expect(read.result).toMatchObject({ bot: { name: detail.name } });
     expect(read.result).not.toHaveProperty("bot.appearance");
+    // The editor's revision and `writable` stay with the user's settings.
+    const { botId: _botId, revision: _revision, writable: _writable, ...alerts } = alertStatus;
+    expect((read.result as { readonly alerts: unknown }).alerts).toEqual(alerts);
     const attach = yield* callTool({ action: "attach", botId, projectId: campaignA }, "read-only");
     expect(attach.result).toMatchObject({ code: "capability_denied" });
     expect(attach.calls).toEqual([]);
@@ -440,6 +465,26 @@ it.effect("lets read-only clients read Bots but not change them", () =>
     );
     expect(start.result).toMatchObject({ code: "capability_denied" });
     expect(start.calls).toEqual([]);
+  }),
+);
+
+it.effect("a Bot reads alert settings like the rest of a Bot and has no way to change them", () =>
+  Effect.gen(function* () {
+    const own = { botId, projectId: campaignA };
+    const fromHome = yield* callTool({ action: "read", botId }, undefined, own);
+    expect(fromHome.calls).toEqual(["get", `alerts:${botId}`]);
+    // `read` reaches any Bot, as before; alerts follow it.
+    const other = yield* callTool({ action: "read", botId: otherBot }, undefined, own);
+    expect(other.calls).toEqual(["get", `alerts:${otherBot}`]);
+    // Only `read` carries alerts.
+    const listed = yield* callTool({ action: "list" }, undefined, own);
+    expect(listed.calls).toEqual([]);
+    const { properties } = advertisedJsonSchema(BotToolkit.tools.t3_bot) as {
+      readonly properties: Record<string, unknown>;
+    };
+    for (const setting of ["dailyLimit", "quietHours", "remit", "alerts"]) {
+      expect(properties).not.toHaveProperty(setting);
+    }
   }),
 );
 
@@ -618,6 +663,7 @@ const searchHistory = (
               layerCallerChangesAllowed,
               Layer.mock(BotContinuation.BotContinuation)({}),
               Layer.mock(BotTaskService.BotTaskService)({}),
+              Layer.mock(BotAttention.BotAttention)({}),
               Layer.mock(BotService.BotService)({
                 scopeOfThread: () =>
                   Effect.succeed(
