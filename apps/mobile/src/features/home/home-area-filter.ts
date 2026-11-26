@@ -31,6 +31,13 @@ type ScopedBots = ReadonlyArray<{
   };
 }>;
 
+const isHomeOf = (
+  { environmentId, bot }: ScopedBots[number],
+  thread: Pick<EnvironmentThreadShell, "environmentId" | "id">,
+) =>
+  environmentId === thread.environmentId &&
+  bot.projects.some((context) => context.homeThreadId === thread.id);
+
 /**
  * The dot on the project filter while an area hides part of the list: the most urgent state among
  * hidden threads and the Homes of Bots the row hides. Settled, snoozed and working threads stay quiet.
@@ -51,7 +58,9 @@ export function resolveHomeAreaDot(input: {
   for (const thread of hidden) {
     const isHome = mayBeBotHomeThreadId(thread.id);
     // The Bot row spans every environment, so only list threads follow the environment filter.
+    // A Home counts only while its Bot is one the row could show, not a cached disconnected one.
     if (
+      (isHome && !input.bots.some((entry) => isHomeOf(entry, thread))) ||
       (!isHome && input.environmentId !== null && thread.environmentId !== input.environmentId) ||
       thread.settledOverride === "settled" ||
       effectiveSnoozed(thread, { now: input.now }) ||
@@ -84,11 +93,7 @@ export function opensOutsideHomeArea(input: {
   if (!mayBeBotHomeThreadId(thread.id)) {
     return !input.scopedProjectKeys.has(`${thread.environmentId}:${thread.projectId}`);
   }
-  const entry = input.bots.find(
-    ({ environmentId, bot }) =>
-      environmentId === thread.environmentId &&
-      bot.projects.some((context) => context.homeThreadId === thread.id),
-  );
+  const entry = input.bots.find((candidate) => isHomeOf(candidate, thread));
   if (entry === undefined) return null;
   return !isBotInProjectScope(
     botProjectKeys(entry.bot, entry.environmentId),

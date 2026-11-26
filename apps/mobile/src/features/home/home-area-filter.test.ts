@@ -130,6 +130,8 @@ describe("home area filter", () => {
       });
     expect(onlyOther([thread("out", "garden")])).toBeNull();
     expect(onlyOther([thread("bot-home:gardener:garden", "garden")])).toBe("approval");
+    // A cached Home whose Bot is not on any connected row stays quiet.
+    expect(resolve([thread("bot-home:offline:garden", "garden")])).toBeNull();
   });
 
   it("leaves the area for an outside thread or a hidden Bot's Home, and waits for unknown Homes", () => {
