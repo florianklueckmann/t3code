@@ -199,6 +199,7 @@ import {
   planSidebarThreadDrop,
   reduceSidebarProjectScopeMenuState,
   resolveAdjacentThreadId,
+  isBotHomeHiddenByScope,
   resolveOutOfScopeDot,
   resolveSidebarSweepKeys,
   resolveSidebarDropTarget,
@@ -238,6 +239,7 @@ import { ProjectFavicon } from "./ProjectFavicon";
 import { deriveProviderEntriesByEnvironment } from "../providerInstances";
 import { useStableCallback } from "../hooks/useStableCallback";
 import {
+  completeSidebarRouteReveal,
   resolveSidebarRouteReveal,
   type SidebarRouteReveal,
   useActiveRowReveal,
@@ -841,7 +843,9 @@ function useSidebarLookups() {
   const projectScopeItems: SidebarScopeItem[] = [
     { value: "all", label: "All projects" },
     ...projectAreas.map((area) => ({ value: areaScopeItemValue(area), label: area, area })),
-    ...(projectAreas.length > 0
+    // Offered only when it narrows the list: some project has an area and some has none.
+    ...(projectAreas.length > 0 &&
+    pickableGroups.some((group) => projectGroupAreas(group).length === 0)
       ? [{ value: areaScopeItemValue(null), label: "No area", area: null }]
       : []),
     ...pickableGroups.map((project) => ({
@@ -1174,14 +1178,27 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   // scrolled away; a remount starts at the top, so each mount scrolls to the open
   // thread once. Render decides the widening, so the first frame of the new route
   // already lists the row; the active row's ref callback scrolls to it.
-  const { widensScope: revealWidensScope } = resolveSidebarRouteReveal({
-    reveal: routeReveal,
-    routeKey: routeRowThreadKey,
-    isSearching: isSearchingThreads,
-    scopedProjectKeys: chosenScopeProjectKeys,
-    delegatedUnderParent,
-    findThread: (key) => threads.find((candidate) => threadShellKey(candidate) === key),
-  });
+  const { pendingKey: revealPendingKey, widensScope: revealWidensList } = resolveSidebarRouteReveal(
+    {
+      reveal: routeReveal,
+      routeKey: routeRowThreadKey,
+      isSearching: isSearchingThreads,
+      scopedProjectKeys: chosenScopeProjectKeys,
+      delegatedUnderParent,
+      findThread: (key) => threads.find((candidate) => threadShellKey(candidate) === key),
+    },
+  );
+  // A Home has no row, so the list reveal never widens for it. Opening the Home of a
+  // Bot the area hides from the rail leaves the area, like any other hidden thread.
+  const revealedHiddenBotHome =
+    chosenAreaScope !== null && chosenScopeProjectKeys !== null && revealPendingKey !== null
+      ? threads.find(
+          (thread) =>
+            threadShellKey(thread) === revealPendingKey &&
+            isBotHomeHiddenByScope(thread, threads, chosenScopeProjectKeys),
+        )
+      : undefined;
+  const revealWidensScope = revealWidensList || revealedHiddenBotHome !== undefined;
   const projectScopeKeys = revealWidensScope ? [] : chosenProjectScopeKeys;
   const areaScope = revealWidensScope ? null : chosenAreaScope;
   const projectScopeKey =
@@ -1205,7 +1222,15 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     if (!revealWidensScope) return;
     clearSelection();
     setPersistedProjectScopeKeys([]);
-  }, [clearSelection, revealWidensScope, setPersistedProjectScopeKeys]);
+    // No row will complete a Home's reveal; done here, so picking an area again sticks.
+    if (revealedHiddenBotHome !== undefined) completeSidebarRouteReveal(routeReveal);
+  }, [
+    clearSelection,
+    revealWidensScope,
+    revealedHiddenBotHome,
+    routeReveal,
+    setPersistedProjectScopeKeys,
+  ]);
   const revealActiveRow = useActiveRowReveal(routeReveal, routeRowThreadKey);
   const showProjectEnvironments = projectGroupsSpanEnvironments(projectGroups);
   const scratchMachineLabelFor = (
