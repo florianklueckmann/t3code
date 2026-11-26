@@ -7,7 +7,8 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { migrationManifest, runMigrations } from "./Migrations.ts";
+import { forkMigrationManifest } from "./ForkMigrations.ts";
+import { hasPendingMigrations, migrationManifest, runMigrations } from "./Migrations.ts";
 
 const v2Migrations = migrationManifest.filter(([id]) => id >= 55);
 const newerMigrationId = Math.max(...migrationManifest.map(([id]) => id)) + 1;
@@ -312,6 +313,114 @@ describe("runMigrations", () => {
       `;
 
       assert.deepStrictEqual(yield* runMigrations(), []);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+});
+
+describe("fork migrations", () => {
+  const forkHistory = Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const tables = yield* sql`SELECT 1 FROM sqlite_master WHERE name = 'fork_sql_migrations'`;
+    if (tables.length === 0) return undefined;
+    const rows = yield* sql<{ readonly migration_id: number; readonly name: string }>`
+      SELECT migration_id, name FROM fork_sql_migrations ORDER BY migration_id
+    `;
+    return rows.map((row) => [row.migration_id, row.name] as const);
+  });
+  const areas = Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    return yield* sql`SELECT project_id, area FROM projection_projects ORDER BY project_id`;
+  });
+  const insertProject = (projectId: string) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id, title, workspace_root, scripts_json, created_at, updated_at
+        ) VALUES (
+          ${projectId}, 'Project', '/tmp/project', '[]',
+          '2026-11-01T00:00:00.000Z', '2026-11-01T00:00:00.000Z'
+        )
+      `;
+    });
+
+  it.effect("keeps upstream ids upstream and records fork migrations in their own ledger", () =>
+    Effect.gen(function* () {
+      yield* runMigrations();
+      yield* insertProject("project-1");
+
+      assert.deepStrictEqual(yield* history, migrationManifest);
+      assert.deepStrictEqual(yield* forkHistory, forkMigrationManifest);
+      assert.deepStrictEqual(yield* areas, [{ project_id: "project-1", area: null }]);
+      assert.isFalse(yield* hasPendingMigrations());
+      assert.deepStrictEqual(yield* runMigrations(), []);
+      assert.deepStrictEqual(yield* forkHistory, forkMigrationManifest);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect("moves a pre-ledger fork row out of the upstream ledger and keeps areas", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      // What fork builds before the fork ledger left behind.
+      yield* runMigrations({ toMigrationInclusive: 96 });
+      yield* sql`ALTER TABLE projection_projects ADD COLUMN area TEXT`;
+      yield* sql`INSERT INTO effect_sql_migrations (migration_id, name) VALUES (97, 'ProjectionProjectsArea')`;
+      yield* insertProject("project-1");
+      yield* insertProject("project-2");
+      yield* sql`UPDATE projection_projects SET area = 'Work' WHERE project_id = 'project-1'`;
+      assert.isTrue(yield* hasPendingMigrations());
+
+      // Partial runs leave the fork ledger and the legacy row alone.
+      yield* runMigrations({ toMigrationInclusive: 96 });
+      assert.strictEqual(yield* forkHistory, undefined);
+      assert.deepStrictEqual((yield* history).at(-1), [97, "ProjectionProjectsArea"]);
+
+      yield* runMigrations();
+      assert.deepStrictEqual(yield* history, migrationManifest);
+      assert.deepStrictEqual(yield* forkHistory, forkMigrationManifest);
+      assert.deepStrictEqual(yield* areas, [
+        { project_id: "project-1", area: "Work" },
+        { project_id: "project-2", area: null },
+      ]);
+      assert.isFalse(yield* hasPendingMigrations());
+      assert.deepStrictEqual(yield* runMigrations(), []);
+      assert.deepStrictEqual(yield* history, migrationManifest);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect("never removes another migration recorded at the legacy fork id", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations({ toMigrationInclusive: 96 });
+      yield* sql`DELETE FROM effect_sql_migrations WHERE migration_id >= 97`;
+      yield* sql`INSERT INTO effect_sql_migrations (migration_id, name) VALUES (97, 'FutureUpstreamMigration')`;
+
+      yield* Effect.exit(runMigrations());
+
+      const recorded = yield* sql`SELECT name FROM effect_sql_migrations WHERE migration_id = 97`;
+      assert.deepStrictEqual(recorded, [{ name: "FutureUpstreamMigration" }]);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect("refuses fork history this build does not know", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations();
+      yield* sql`INSERT INTO fork_sql_migrations (migration_id, name) VALUES (2, 'NewerForkMigration')`;
+      // Validation runs before the legacy row is released, so a refused start changes nothing.
+      yield* sql`DELETE FROM effect_sql_migrations WHERE migration_id >= 97`;
+      yield* sql`INSERT INTO effect_sql_migrations (migration_id, name) VALUES (97, 'ProjectionProjectsArea')`;
+      const before = yield* history;
+      const newer = yield* Effect.exit(runMigrations());
+      assert.isTrue(Exit.isFailure(newer));
+      assert.include(String(newer), "2_NewerForkMigration");
+      assert.deepStrictEqual(yield* history, before);
+
+      yield* sql`DELETE FROM fork_sql_migrations`;
+      yield* sql`INSERT INTO fork_sql_migrations (migration_id, name) VALUES (1, 'OtherForkMigration')`;
+      const diverged = yield* Effect.exit(runMigrations());
+      assert.isTrue(Exit.isFailure(diverged));
+      assert.include(String(diverged), "1_OtherForkMigration");
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 });

@@ -4,7 +4,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 // Null means no area.
 export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  // A fork build may renumber this migration after an upstream sync; re-running must not fail.
+  // Databases that ran this as upstream-ledger migration 97 already have the column.
   const columns = yield* sql<{ readonly name: string }>`
     PRAGMA table_info(projection_projects)
   `;
