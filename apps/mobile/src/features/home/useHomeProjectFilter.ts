@@ -1,13 +1,12 @@
-import { newProjectAreaFor } from "@t3tools/client-runtime/state/project-areas";
 import { pickableProjectGroups } from "@t3tools/client-runtime/state/project-grouping";
 import type {
   EnvironmentProject,
   EnvironmentThreadShell,
 } from "@t3tools/client-runtime/state/shell";
-import type { EnvironmentId } from "@t3tools/contracts";
 import { useEffect, useMemo, useRef } from "react";
 
-import { useProjects, useServerConfigs } from "../../state/entities";
+import { useProjects } from "../../state/entities";
+import { ALL_ENVIRONMENTS } from "./use-new-project-area";
 import { useConnectedBots } from "../bots/bots-across-environments";
 import { useThreadListNow } from "../threads/use-thread-list-now";
 import { opensOutsideHomeArea, resolveHomeAreaDot } from "./home-area-filter";
@@ -102,35 +101,6 @@ export function useHomeProjectFilter(input: {
 }
 
 /**
- * The area a project added now starts in, for `project.create`: the thread list's selected area,
- * on servers that keep areas.
- */
-export function useNewProjectArea(): (environmentId: EnvironmentId) => string | undefined {
-  const projects = useProjects();
-  const serverConfigs = useServerConfigs();
-  const { options } = useHomeListOptions(NO_ENVIRONMENTS);
-  const areaFilter =
-    options.selectedArea === null
-      ? null
-      : resolveHomeAreaFilter(
-          buildHomeProjectScopes({
-            projects,
-            environmentId: null,
-            projectGroupingMode: options.projectGroupingMode,
-          }),
-          options.selectedArea,
-        );
-  const area = newProjectAreaFor(areaFilter?.scope ?? null);
-  return (environmentId) =>
-    serverConfigs.get(environmentId)?.environment.capabilities.projectAreas === true
-      ? area
-      : undefined;
-}
-
-// The area applies on every environment, so it is judged across all of them.
-const NO_ENVIRONMENTS: ReadonlySet<EnvironmentId> = new Set();
-
-/**
  * Opening a thread the area hides, or the Home of a Bot the Bot row hides, shows all projects
  * again. Judged once per opened thread, so an area picked while it stays open sticks.
  */
@@ -139,7 +109,7 @@ export function useLeaveAreaForOpenThread(
 ) {
   const projects = useProjects();
   const bots = useConnectedBots();
-  const { options, setSelectedProjectKey } = useHomeListOptions(NO_ENVIRONMENTS);
+  const { options, setSelectedProjectKey } = useHomeListOptions(ALL_ENVIRONMENTS);
   const judgedKey = useRef<string | null>(null);
   const threadKey = thread === null ? null : `${thread.environmentId}:${thread.id}`;
   const areaFilter =

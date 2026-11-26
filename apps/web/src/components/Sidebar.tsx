@@ -240,7 +240,6 @@ import {
   type SnoozePreset,
 } from "./Sidebar.snooze";
 import { ProjectFavicon } from "./ProjectFavicon";
-import { useBotEnvironmentIds } from "./BotRail";
 import { deriveProviderEntriesByEnvironment } from "../providerInstances";
 import { useStableCallback } from "../hooks/useStableCallback";
 import {
@@ -1487,9 +1486,16 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     keepEmptyFolders: (group) =>
       scopedProjectGroups.length > 0 || (group.pinned && !group.archived),
   });
-  const botEnvironmentIds = useBotEnvironmentIds();
+  const serverConfigsForBots = useServerConfigs();
+  // Only an area needs the rail's Bots, so other sidebars subscribe to nothing more.
   const railBots = useAtomValue(
-    serverEnvironment.botsAcrossEnvironments(areaScope === null ? [] : botEnvironmentIds),
+    serverEnvironment.botsAcrossEnvironments(
+      areaScope === null
+        ? []
+        : [...serverConfigsForBots].flatMap(([environmentId, config]) =>
+            config.environment.capabilities.bots === true ? [environmentId] : [],
+          ),
+    ),
   );
   const outOfScopeDot =
     areaScope !== null && scopedProjectKeys !== null
