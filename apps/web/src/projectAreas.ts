@@ -40,6 +40,18 @@ export function resolveAreaScopedProjectKeys(
   return keys.size === 0 ? null : keys;
 }
 
+/** `environmentId:projectId` keys of the projects a Bot is attached to. */
+export function botProjectKeys(
+  bot: {
+    readonly projects: ReadonlyArray<{ readonly projectId: string; readonly detachedAt: unknown }>;
+  },
+  environmentId: string,
+): string[] {
+  return bot.projects.flatMap((context) =>
+    context.detachedAt === null ? [`${environmentId}:${context.projectId}`] : [],
+  );
+}
+
 /** A Bot shows while any project it works in is listed. A Bot without a project always shows. */
 export function isBotInProjectScope(
   botProjectKeys: readonly string[],

@@ -55,10 +55,12 @@ import {
 } from "@t3tools/client-runtime/environment";
 import {
   AuthOrchestrationOperateScope,
+  mayBeBotHomeThreadId,
   ProjectId,
   type ScopedThreadRef,
   type ThreadId,
 } from "@t3tools/contracts";
+import { useEnvironmentQuery } from "../state/query";
 import {
   resolveListedAncestorThreadRef,
   type OlderSettledScope,
@@ -74,7 +76,9 @@ import {
   TagIcon,
 } from "lucide-react";
 import {
+  botProjectKeys,
   buildProjectAreaMenu,
+  isBotInProjectScope,
   isProjectGroupInArea,
   listProjectAreas,
   projectGroupAreas,
@@ -158,7 +162,7 @@ import {
   useQuietThreadShells,
 } from "../state/entities";
 import { environmentPresentations } from "../state/presentation";
-import { primaryServerKeybindingsAtom } from "../state/server";
+import { primaryServerKeybindingsAtom, serverEnvironment } from "../state/server";
 import { environmentProjects } from "../state/projects";
 import { threadEnvironment } from "../state/threads";
 import { useOlderSettledShelf, useOlderSettledShelfGrowth } from "../state/olderSettledShelf";
@@ -199,7 +203,6 @@ import {
   planSidebarThreadDrop,
   reduceSidebarProjectScopeMenuState,
   resolveAdjacentThreadId,
-  isBotHomeHiddenByScope,
   resolveOutOfScopeDot,
   resolveSidebarSweepKeys,
   resolveSidebarDropTarget,
@@ -1188,17 +1191,36 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       findThread: (key) => threads.find((candidate) => threadShellKey(candidate) === key),
     },
   );
-  // A Home has no row, so the list reveal never widens for it. Opening the Home of a
-  // Bot the area hides from the rail leaves the area, like any other hidden thread.
-  const revealedHiddenBotHome =
-    chosenAreaScope !== null && chosenScopeProjectKeys !== null && revealPendingKey !== null
-      ? threads.find(
-          (thread) =>
-            threadShellKey(thread) === revealPendingKey &&
-            isBotHomeHiddenByScope(thread, threads, chosenScopeProjectKeys),
-        )
-      : undefined;
-  const revealWidensScope = revealWidensList || revealedHiddenBotHome !== undefined;
+  // A Home has no row, so the list reveal never widens for it or completes. Opening
+  // the Home of a Bot the area hides from the rail leaves the area, judged by the
+  // rail's own rule once that environment's Bots have loaded.
+  const routeHomeRef =
+    routeThreadRef !== null &&
+    mayBeBotHomeThreadId(routeThreadRef.threadId) &&
+    revealPendingKey === scopedThreadKey(routeThreadRef)
+      ? routeThreadRef
+      : null;
+  const routeHomeBots =
+    useEnvironmentQuery(
+      routeHomeRef === null
+        ? null
+        : serverEnvironment.botsLive({ environmentId: routeHomeRef.environmentId, input: {} }),
+    ).data?.bots ?? null;
+  const routeHomeBot =
+    routeHomeRef === null
+      ? undefined
+      : routeHomeBots?.find((bot) =>
+          bot.projects.some((context) => context.homeThreadId === routeHomeRef.threadId),
+        );
+  const revealsHiddenBotHome =
+    routeHomeRef !== null &&
+    routeHomeBot !== undefined &&
+    chosenAreaScope !== null &&
+    !isBotInProjectScope(
+      botProjectKeys(routeHomeBot, routeHomeRef.environmentId),
+      chosenScopeProjectKeys,
+    );
+  const revealWidensScope = revealWidensList || revealsHiddenBotHome;
   const projectScopeKeys = revealWidensScope ? [] : chosenProjectScopeKeys;
   const areaScope = revealWidensScope ? null : chosenAreaScope;
   const projectScopeKey =
@@ -1213,21 +1235,23 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         ? projectScopeKeys.filter((candidate) => candidate !== key)
         : [...projectScopeKeys, key],
     );
+  const routeHomeRevealDecided = routeHomeRef !== null && routeHomeBots !== null;
   // The widened scope outlives the reveal, so it is written back to the persisted
   // scope. Route changes arrive from history, links and the palette, and only this
   // component holds the project groups that decide a widening, so no single
   // navigation handler can make the write.
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- writes a route reveal's widened project scope back to the persisted sidebar scope and clears selection
   useEffect(() => {
-    if (!revealWidensScope) return;
-    clearSelection();
-    setPersistedProjectScopeKeys([]);
-    // No row will complete a Home's reveal; done here, so picking an area again sticks.
-    if (revealedHiddenBotHome !== undefined) completeSidebarRouteReveal(routeReveal);
+    if (revealWidensScope) {
+      clearSelection();
+      setPersistedProjectScopeKeys([]);
+    }
+    // No row completes a Home's reveal, so an area picked later while it stays open sticks.
+    if (routeHomeRevealDecided) completeSidebarRouteReveal(routeReveal);
   }, [
     clearSelection,
     revealWidensScope,
-    revealedHiddenBotHome,
+    routeHomeRevealDecided,
     routeReveal,
     setPersistedProjectScopeKeys,
   ]);

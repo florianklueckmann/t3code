@@ -1023,29 +1023,10 @@ const botKeyOfHome = (thread: ScopedThread) =>
   `${thread.environmentId}:${thread.id.slice(BOT_HOME_THREAD_ID_PREFIX.length).split(":")[0]}`;
 
 /**
- * Whether `home` is the Home of a Bot the rail hides under this scope: no Home
- * of that Bot is in scope. A Bot with a Home in scope keeps its rail entry and dot.
- */
-export function isBotHomeHiddenByScope(
-  home: ScopedThread,
-  threads: readonly ScopedThread[],
-  scopedProjectKeys: ReadonlySet<string>,
-): boolean {
-  if (!mayBeBotHomeThreadId(home.id) || inProjectScope(home, scopedProjectKeys)) return false;
-  const botKey = botKeyOfHome(home);
-  return !threads.some(
-    (thread) =>
-      thread.archivedAt === null &&
-      mayBeBotHomeThreadId(thread.id) &&
-      inProjectScope(thread, scopedProjectKeys) &&
-      botKeyOfHome(thread) === botKey,
-  );
-}
-
-/**
  * The dot on the filter button while an area hides part of the list: the most
  * urgent state among hidden threads and the homes of Bots the rail hides.
- * Settled, snoozed and working threads stay quiet.
+ * A Bot with a loaded Home in scope keeps its rail entry and dot. Settled,
+ * snoozed and working threads stay quiet.
  */
 export function resolveOutOfScopeDot(input: {
   readonly threads: readonly EnvironmentThreadShell[];

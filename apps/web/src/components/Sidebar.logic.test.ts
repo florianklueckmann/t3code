@@ -35,7 +35,6 @@ import {
   type SidebarSection,
   resolveSidebarDropVerb,
   groupSidebarThreadsByProject,
-  isBotHomeHiddenByScope,
   resolveOutOfScopeDot,
   resolveSidebarFolderDot,
   sidebarFolderExpansionKeys,
@@ -1720,13 +1719,9 @@ describe("resolveOutOfScopeDot", () => {
     ).toBeNull();
     const outsideHome = makeThread({ ...unread, id: ThreadId.make("bot-home:bot-1:outside") });
     const inAreaHome = makeThread({ projectId: inArea, id: ThreadId.make("bot-home:bot-1:in") });
-    const scoped = new Set([`${localEnvironmentId}:${inArea}`]);
     expect(resolve([outsideHome])).toBe("unread");
-    expect(isBotHomeHiddenByScope(outsideHome, [outsideHome], scoped)).toBe(true);
     // A Bot with a home in the area stays in the rail, which badges its other homes.
     expect(resolve([outsideHome, inAreaHome])).toBeNull();
-    expect(isBotHomeHiddenByScope(outsideHome, [outsideHome, inAreaHome], scoped)).toBe(false);
-    expect(isBotHomeHiddenByScope(makeThread(unread), [], scoped)).toBe(false);
     expect(
       resolve([
         makeThread({

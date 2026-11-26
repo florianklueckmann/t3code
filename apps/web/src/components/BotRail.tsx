@@ -9,7 +9,7 @@ import { Fragment, type MouseEvent } from "react";
 
 import { isElectron } from "../env";
 import { useAreaScopedProjectKeys } from "../hooks/useAreaScopedProjectKeys";
-import { isBotInProjectScope } from "../projectAreas";
+import { botProjectKeys, isBotInProjectScope } from "../projectAreas";
 import { cn } from "../lib/utils";
 import { readLocalApi } from "../localApi";
 import { useEnvironment } from "../state/environments";
@@ -145,12 +145,7 @@ function BotRailEnvironment({
     .filter(
       (bot) =>
         bot.archivedAt === null &&
-        isBotInProjectScope(
-          bot.projects.flatMap((context) =>
-            context.detachedAt === null ? [`${environmentId}:${context.projectId}`] : [],
-          ),
-          scopedProjectKeys,
-        ),
+        isBotInProjectScope(botProjectKeys(bot, environmentId), scopedProjectKeys),
     )
     .toSorted((left, right) => left.name.localeCompare(right.name));
   return bots.map((bot) => (

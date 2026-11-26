@@ -2,6 +2,7 @@ import { EnvironmentId, ProjectId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  botProjectKeys,
   buildProjectAreaMenu,
   isBotInProjectScope,
   listProjectAreas,
@@ -54,6 +55,15 @@ describe("isBotInProjectScope", () => {
     expect(isBotInProjectScope([`${local}:garden`], scoped)).toBe(false);
     expect(isBotInProjectScope([], scoped)).toBe(true);
     expect(isBotInProjectScope([`${local}:garden`], null)).toBe(true);
+    // Only attached projects count; a Bot detached from the area's project is hidden.
+    const bot = {
+      projects: [
+        { projectId: "api", detachedAt: "2026-11-01T00:00:00.000Z" },
+        { projectId: "garden", detachedAt: null },
+      ],
+    };
+    expect(botProjectKeys(bot, local)).toEqual([`${local}:garden`]);
+    expect(isBotInProjectScope(botProjectKeys(bot, local), scoped)).toBe(false);
   });
 });
 
