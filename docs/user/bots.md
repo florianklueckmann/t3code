@@ -44,6 +44,8 @@ working notes, tasks and routines. Its threads load T3 Code's own tools and the
 [MCP connections](#mcp-connections) you grant it, and no other MCP server: your
 Claude MCP servers, claude.ai connectors and plugins stay out. Hooks, skills, permission rules and `CLAUDE.md` files still apply, as they
 do on Codex, and so do plugins and hooks your organization manages for Claude.
+Even with a separate Claude config directory, Claude Code still loads
+`CLAUDE.md` and `.claude/rules/` files from folders above the project.
 
 One feature needs a Codex model: **Use my own Codex MCP servers**. On a Claude
 Bot, **Settings → Bots** shows it as unavailable and says why.
