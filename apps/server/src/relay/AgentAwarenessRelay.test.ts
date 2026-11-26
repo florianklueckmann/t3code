@@ -400,6 +400,7 @@ const makeTestRelay = Effect.fnUntraced(function* (
       options.attention ??
         BotAttention.BotAttention.of({
           get: unused,
+          status: unused,
           configure: unused,
           admit: () => Effect.die("results of work the user started skip the budget"),
           hasHeldAlerts: Effect.succeed(false),

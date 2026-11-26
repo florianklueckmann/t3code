@@ -115,11 +115,19 @@ export type PreparationCase =
       /** Further Home turns, sent in order after `prompt`; the last answer is graded. */
       readonly laterTurns?: ReadonlyArray<string>;
       readonly answerMust: ReadonlyArray<string>;
+      readonly answerMustNot?: ReadonlyArray<string>;
       readonly returnToHome?: boolean;
       /** The reasoningEffort the started task must run at, on the Bot's model; the Bot keeps its own. */
       readonly taskEffort?: string;
       readonly expectedFiles?: Readonly<Record<string, string>>;
       readonly existingRoutine?: { readonly title: string; readonly allowChanges: boolean };
+      /** Alert settings the user saved, with today's sent and held alerts, written before the turn. */
+      readonly alerts?: {
+        readonly dailyLimit: number;
+        readonly quietHours: { readonly start: string; readonly end: string };
+        readonly sentToday: number;
+        readonly held: number;
+      };
       /**
        * The routine the turn should set up, or none. A plain reminder: its Berlin date or inclusive
        * date range, a regex for its title or brief, and whether only the last turn asks for it.
@@ -425,6 +433,29 @@ export const CASES: ReadonlyArray<PreparationCase> = [
     posts: 1,
     resultMust: ["Ilvara", "who hired"],
     neverMentions: ["private/", "diary", "Vey"],
+  },
+  // T3B-110: a Bot asked why a push never came could not see its alert limit or held alerts.
+  // The digest time follows from the saved quiet hours only, so a guess cannot name it.
+  {
+    id: "explains-held-alert",
+    kind: "new",
+    world: "with-records",
+    trigger: "home",
+    prompt:
+      "Your session preparation finished a while ago, but I never got a push notification about it. Why not?",
+    alerts: {
+      dailyLimit: 1,
+      quietHours: { start: "23:30", end: "05:45" },
+      sentToday: 1,
+      held: 1,
+    },
+    // Held by the reached limit; the digest goes out as quiet hours end, at 05:45 local time.
+    answerMust: ["limit", "held", "\\b0?5:45"],
+    // Regexes catch a denied limit, not every wrong cause; a quiet-hours pattern also rejects
+    // answers that rule quiet hours out.
+    answerMustNot: ["(not|n't)( yet)?( been)? reached"],
+    routine: null,
+    startsTask: false,
   },
   {
     id: "answers-inline",

@@ -72,3 +72,10 @@ without changes, not a routine per session.
 `reminder-after-agreement` is its control: the same first turn, then "Yes, please remind me."
 It grades that no routine exists before the agreement and that one reminder about the decision
 runs in the week before the Tuesday deadline.
+
+`explains-held-alert` covers T3B-110: asked why a push never came, the Bot must explain it from
+its own alert data. The eval writes the alert settings (a limit of one a day, quiet hours ending
+at 05:45) and today's alerts (one sent, one held) to the dev server's `bots.sqlite`, since they
+have no MCP write. The answer must name the limit and the 05:45 digest, which only `t3_bot read`
+reveals. Compare against the revision of `apps/server/src/mcp/toolkits/bot/tools.ts` and
+`handlers.ts` you change.

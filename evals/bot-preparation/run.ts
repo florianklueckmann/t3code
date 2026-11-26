@@ -116,6 +116,28 @@ const calledTool = (tools: ReadonlyArray<ToolActivity>, name: string, action?: s
     );
   });
 
+const decodeAlertsRead = Schema.decodeUnknownOption(
+  Schema.fromJsonString(
+    Schema.Struct({
+      toolName: Schema.String,
+      input: Schema.Struct({ action: Schema.Literal("read"), botId: Schema.String }),
+      output: Schema.Struct({ alerts: Schema.Unknown }),
+    }),
+  ),
+);
+
+/** A `t3_bot read` of this Bot that returned its alerts. */
+const readAlerts = (tools: ReadonlyArray<ToolActivity>, botId: string) =>
+  tools.some((tool) => {
+    const call = decodeAlertsRead(tool.text ?? "");
+    return (
+      Option.isSome(call) &&
+      call.value.toolName.endsWith("t3_bot") &&
+      call.value.input.botId === botId &&
+      call.value.output.alerts !== undefined
+    );
+  });
+
 const berlinDate = new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Berlin" });
 
 const reasoningEffort = (selection: ModelSelection | undefined) =>
@@ -191,6 +213,9 @@ export const gradeSample = (testCase: PreparationCase, run: SampleRun) => {
   }
   for (const p of testCase.answerMust)
     add(`answer must /${p}/i`, new RegExp(p, "i").test(run.text));
+  for (const p of testCase.answerMustNot ?? [])
+    add(`answer must not /${p}/i`, !new RegExp(p, "i").test(run.text));
+  if (testCase.alerts !== undefined) add("read the Bot's alerts", readAlerts(run.tools, run.botId));
   add(
     testCase.startsTask ? "started a task" : "no task started",
     calledTool(run.tools, "t3_bot", "start_task") === testCase.startsTask,
@@ -339,6 +364,52 @@ const enableDiagnosis = (baseDir: string, homeThreadId: string, now: string) => 
         (home_thread_id, settings_revision, enabled, brief, enabled_at, updated_at)
         VALUES (?, 1, 1, ?, ?, ?)`,
     ).run(homeThreadId, BOT_FAILURE_DIAGNOSIS_DEFAULT_BRIEF, now, now);
+  } finally {
+    db.close();
+  }
+};
+
+/**
+ * Saves the user's alert settings and today's alert decisions. Neither has an MCP write, so the
+ * eval writes the rows the server reads. `day` is the server's local date, this machine's.
+ */
+const seedAlerts = (
+  baseDir: string,
+  botId: string,
+  homeThreadId: string,
+  alerts: NonNullable<Extract<PreparationCase, { trigger: "home" }>["alerts"]>,
+  now: Date,
+) => {
+  const db = new NodeSqlite.DatabaseSync(NodePath.join(baseDir, "userdata", "bots.sqlite"));
+  const iso = now.toISOString();
+  const day = new Intl.DateTimeFormat("en-CA").format(now);
+  try {
+    db.exec("PRAGMA busy_timeout = 5000");
+    db.prepare(
+      `INSERT INTO bot_attention (bot_id, revision, daily_limit, quiet_start, quiet_end, remit, updated_at)
+        VALUES (?, 1, ?, ?, ?, '', ?)`,
+    ).run(botId, alerts.dailyLimit, alerts.quietHours.start, alerts.quietHours.end, iso);
+    const decide = db.prepare(
+      `INSERT INTO bot_alerts (alert_key, bot_id, task_id, work_thread_id, home_thread_id, phase, day, decided_at, held)
+        VALUES (?, ?, ?, ?, ?, 'completed', ?, ?, ?)`,
+    );
+    const rows = [
+      ...Array.from({ length: alerts.sentToday }, () => 0),
+      ...Array.from({ length: alerts.held }, () => 1),
+    ];
+    for (const [index, held] of rows.entries()) {
+      const taskId = `bot-task:${botId}-${index}`;
+      decide.run(
+        `${taskId}:run`,
+        botId,
+        taskId,
+        `bot-work:eval-${index}`,
+        homeThreadId,
+        day,
+        iso,
+        held,
+      );
+    }
   } finally {
     db.close();
   }
@@ -521,6 +592,14 @@ const runSample = Effect.fn("botPreparation.runSample")(function* (
         OrchestratorMcpScheduleTaskResult,
       );
     }
+    if (testCase.alerts !== undefined)
+      seedAlerts(
+        options.baseDir,
+        botId,
+        home,
+        testCase.alerts,
+        DateTime.toDate(yield* DateTime.now),
+      );
     let runId = yield* runTurn(call, home, testCase.prompt);
     for (const [index, turn] of (testCase.laterTurns ?? []).entries()) {
       if (index === (testCase.laterTurns?.length ?? 0) - 1) {

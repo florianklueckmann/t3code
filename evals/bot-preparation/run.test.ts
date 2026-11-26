@@ -219,6 +219,48 @@ it("keeps missing Home returns as failed checks with task and file evidence", ()
   expect(failed(gradeSample(testCase, { ...run, homeRuns: 3 }))).toContain("bounded Home turns");
 });
 
+it("requires a held-alert explanation read from the Bot's alerts", () => {
+  const testCase = byId("explains-held-alert");
+  const read = (input: object, output: object) => ({
+    type: "dynamic_tool",
+    title: "t3 bot",
+    text: JSON.stringify({ toolName: "t3-code.t3_bot", input, output }),
+  });
+  const ownRead = read({ action: "read", botId: base.botId }, { bot: {}, alerts: { held: 1 } });
+  const grounded =
+    "It was held: your daily limit of 1 alert was already reached. The digest goes out at 05:45.";
+  expect(failed(gradeSample(testCase, { ...base, text: grounded, tools: [ownRead] }))).toEqual([]);
+  const readFailures = [
+    [],
+    [read({ action: "read" }, { code: "invalid_request" })],
+    [read({ action: "read", botId: "other" }, { bot: {}, alerts: {} })],
+  ];
+  for (const tools of readFailures) {
+    expect(failed(gradeSample(testCase, { ...base, text: grounded, tools }))).toEqual([
+      "read the Bot's alerts",
+    ]);
+  }
+  const guessed = "The daily limit was not reached. Your push should have arrived at 15:45.";
+  expect(failed(gradeSample(testCase, { ...base, text: guessed, tools: [ownRead] }))).toEqual([
+    "answer must /held/i",
+    "answer must /\\b0?5:45/i",
+    "answer must not /(not|n't)( yet)?( been)? reached/i",
+  ]);
+  for (const deniedLimit of [
+    "An alert was held by quiet hours. The daily limit was not reached. The digest is at 05:45.",
+    "The daily limit hadn't been reached. Quiet hours held the alert. The digest is at 05:45.",
+  ]) {
+    expect(failed(gradeSample(testCase, { ...base, text: deniedLimit, tools: [ownRead] }))).toEqual(
+      ["answer must not /(not|n't)( yet)?( been)? reached/i"],
+    );
+  }
+  const quietRuledOut =
+    "It wasn't held for quiet hours: your daily limit of 1 was already reached, so the alert waits for the 05:45 digest.";
+  expect(failed(gradeSample(testCase, { ...base, text: quietRuledOut, tools: [ownRead] }))).toEqual(
+    [],
+  );
+});
+
 it("requires one task's reasoning without changing the Bot's", () => {
   const testCase = byId("task-with-own-reasoning");
   const selection = (effort: string) => ({

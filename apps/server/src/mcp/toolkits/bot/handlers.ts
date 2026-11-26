@@ -2,6 +2,7 @@ import * as BotContinuation from "../../../bots/BotContinuation.ts";
 import { type BotError, OrchestratorMcpFailure } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
+import * as BotAttention from "../../../bots/BotAttention.ts";
 import * as BotHistory from "../../../bots/BotHistory.ts";
 import * as BotService from "../../../bots/BotService.ts";
 import * as BotTaskService from "../../../bots/BotTaskService.ts";
@@ -63,7 +64,16 @@ const read = Effect.fn("mcp.bot.read")(function* (input: BotToolInput) {
     return { bots: (yield* bots.list.pipe(Effect.mapError(botFailure))).bots };
   }
   const botId = yield* requireBotId(input);
-  return { bot: yield* bots.get({ botId }).pipe(Effect.mapError(botFailure)) };
+  const bot = yield* bots.get({ botId }).pipe(Effect.mapError(botFailure));
+  const attention = yield* BotAttention.BotAttention;
+  // The settings revision and `writable` serve the user's editor, which a Bot never gets.
+  const {
+    botId: _botId,
+    revision: _revision,
+    writable: _writable,
+    ...alerts
+  } = yield* attention.status(botId).pipe(Effect.mapError(botFailure));
+  return { bot, alerts };
 });
 
 const invalid = (message: string) =>
