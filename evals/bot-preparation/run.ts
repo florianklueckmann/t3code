@@ -116,6 +116,28 @@ const calledTool = (tools: ReadonlyArray<ToolActivity>, name: string, action?: s
     );
   });
 
+const decodeAlertsRead = Schema.decodeUnknownOption(
+  Schema.fromJsonString(
+    Schema.Struct({
+      toolName: Schema.String,
+      input: Schema.Struct({ action: Schema.Literal("read"), botId: Schema.String }),
+      output: Schema.Struct({ alerts: Schema.Unknown }),
+    }),
+  ),
+);
+
+/** A `t3_bot read` of this Bot that returned its alerts. */
+const readAlerts = (tools: ReadonlyArray<ToolActivity>, botId: string) =>
+  tools.some((tool) => {
+    const call = decodeAlertsRead(tool.text ?? "");
+    return (
+      Option.isSome(call) &&
+      call.value.toolName.endsWith("t3_bot") &&
+      call.value.input.botId === botId &&
+      call.value.output.alerts !== undefined
+    );
+  });
+
 const berlinDate = new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Berlin" });
 
 const reasoningEffort = (selection: ModelSelection | undefined) =>
@@ -191,8 +213,9 @@ export const gradeSample = (testCase: PreparationCase, run: SampleRun) => {
   }
   for (const p of testCase.answerMust)
     add(`answer must /${p}/i`, new RegExp(p, "i").test(run.text));
-  if (testCase.alerts !== undefined)
-    add("read the Bot's alerts", calledTool(run.tools, "t3_bot", "read"));
+  for (const p of testCase.answerMustNot ?? [])
+    add(`answer must not /${p}/i`, !new RegExp(p, "i").test(run.text));
+  if (testCase.alerts !== undefined) add("read the Bot's alerts", readAlerts(run.tools, run.botId));
   add(
     testCase.startsTask ? "started a task" : "no task started",
     calledTool(run.tools, "t3_bot", "start_task") === testCase.startsTask,

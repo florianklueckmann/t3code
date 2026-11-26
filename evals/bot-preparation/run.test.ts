@@ -221,21 +221,36 @@ it("keeps missing Home returns as failed checks with task and file evidence", ()
 
 it("requires a held-alert explanation read from the Bot's alerts", () => {
   const testCase = byId("explains-held-alert");
-  const read = {
-    type: "tool_call",
-    title: null,
-    text: JSON.stringify({ toolName: "t3_bot", input: { action: "read" } }),
-  };
+  const read = (input: object, output: object) => ({
+    type: "dynamic_tool",
+    title: "t3 bot",
+    text: JSON.stringify({ toolName: "t3-code.t3_bot", input, output }),
+  });
+  const ownRead = read({ action: "read", botId: base.botId }, { bot: {}, alerts: { held: 1 } });
   const grounded =
     "It was held: your daily limit of 1 alert was already reached. The digest goes out at 05:45.";
-  expect(failed(gradeSample(testCase, { ...base, text: grounded, tools: [read] }))).toEqual([]);
-  expect(failed(gradeSample(testCase, { ...base, text: grounded }))).toEqual([
-    "read the Bot's alerts",
-  ]);
+  expect(failed(gradeSample(testCase, { ...base, text: grounded, tools: [ownRead] }))).toEqual([]);
+  const readFailures = [
+    [],
+    [read({ action: "read" }, { code: "invalid_request" })],
+    [read({ action: "read", botId: "other" }, { bot: {}, alerts: {} })],
+  ];
+  for (const tools of readFailures) {
+    expect(failed(gradeSample(testCase, { ...base, text: grounded, tools }))).toEqual([
+      "read the Bot's alerts",
+    ]);
+  }
   const guessed = "The daily limit was not reached. Your push should have arrived at 15:45.";
-  expect(failed(gradeSample(testCase, { ...base, text: guessed, tools: [read] }))).toEqual([
+  expect(failed(gradeSample(testCase, { ...base, text: guessed, tools: [ownRead] }))).toEqual([
     "answer must /held/i",
     "answer must /\\b0?5:45/i",
+    "answer must not /limit (was|is|has)( not|n't)( been)? reached/i",
+  ]);
+  const quiet =
+    "An alert was held by quiet hours. The daily limit was not reached. The digest is at 05:45.";
+  expect(failed(gradeSample(testCase, { ...base, text: quiet, tools: [ownRead] }))).toEqual([
+    "answer must not /limit (was|is|has)( not|n't)( been)? reached/i",
+    "answer must not /held (by|during|for) quiet hours/i",
   ]);
 });
 

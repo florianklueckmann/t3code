@@ -115,6 +115,7 @@ export type PreparationCase =
       /** Further Home turns, sent in order after `prompt`; the last answer is graded. */
       readonly laterTurns?: ReadonlyArray<string>;
       readonly answerMust: ReadonlyArray<string>;
+      readonly answerMustNot?: ReadonlyArray<string>;
       readonly returnToHome?: boolean;
       /** The reasoningEffort the started task must run at, on the Bot's model; the Bot keeps its own. */
       readonly taskEffort?: string;
@@ -450,6 +451,10 @@ export const CASES: ReadonlyArray<PreparationCase> = [
     },
     // Held by the reached limit; the digest goes out as quiet hours end, at 05:45 local time.
     answerMust: ["limit", "held", "\\b0?5:45"],
+    answerMustNot: [
+      "limit (was|is|has)( not|n't)( been)? reached",
+      "held (by|during|for) quiet hours",
+    ],
     routine: null,
     startsTask: false,
   },
