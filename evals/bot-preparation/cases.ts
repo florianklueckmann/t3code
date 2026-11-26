@@ -448,8 +448,8 @@ export const CASES: ReadonlyArray<PreparationCase> = [
       sentToday: 1,
       held: 1,
     },
-    // The digest goes out as quiet hours end, at 05:45 local time.
-    answerMust: ["limit", "0?5:45"],
+    // Held by the reached limit; the digest goes out as quiet hours end, at 05:45 local time.
+    answerMust: ["limit", "held", "\\b0?5:45"],
     routine: null,
     startsTask: false,
   },

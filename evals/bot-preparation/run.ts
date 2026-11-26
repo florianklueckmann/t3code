@@ -191,6 +191,8 @@ export const gradeSample = (testCase: PreparationCase, run: SampleRun) => {
   }
   for (const p of testCase.answerMust)
     add(`answer must /${p}/i`, new RegExp(p, "i").test(run.text));
+  if (testCase.alerts !== undefined)
+    add("read the Bot's alerts", calledTool(run.tools, "t3_bot", "read"));
   add(
     testCase.startsTask ? "started a task" : "no task started",
     calledTool(run.tools, "t3_bot", "start_task") === testCase.startsTask,

@@ -219,6 +219,26 @@ it("keeps missing Home returns as failed checks with task and file evidence", ()
   expect(failed(gradeSample(testCase, { ...run, homeRuns: 3 }))).toContain("bounded Home turns");
 });
 
+it("requires a held-alert explanation read from the Bot's alerts", () => {
+  const testCase = byId("explains-held-alert");
+  const read = {
+    type: "tool_call",
+    title: null,
+    text: JSON.stringify({ toolName: "t3_bot", input: { action: "read" } }),
+  };
+  const grounded =
+    "It was held: your daily limit of 1 alert was already reached. The digest goes out at 05:45.";
+  expect(failed(gradeSample(testCase, { ...base, text: grounded, tools: [read] }))).toEqual([]);
+  expect(failed(gradeSample(testCase, { ...base, text: grounded }))).toEqual([
+    "read the Bot's alerts",
+  ]);
+  const guessed = "The daily limit was not reached. Your push should have arrived at 15:45.";
+  expect(failed(gradeSample(testCase, { ...base, text: guessed, tools: [read] }))).toEqual([
+    "answer must /held/i",
+    "answer must /\\b0?5:45/i",
+  ]);
+});
+
 it("requires one task's reasoning without changing the Bot's", () => {
   const testCase = byId("task-with-own-reasoning");
   const selection = (effort: string) => ({
