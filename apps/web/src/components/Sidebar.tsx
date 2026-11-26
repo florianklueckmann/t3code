@@ -1118,6 +1118,14 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   };
   const setAreaScope = (area: string | null) => {
     clearSelection();
+    // A Home reveal still waiting on an offline machine must not undo this pick.
+    if (
+      routeThreadRef !== null &&
+      mayBeBotHomeThreadId(routeThreadRef.threadId) &&
+      routeReveal.pendingKey === scopedThreadKey(routeThreadRef)
+    ) {
+      completeSidebarRouteReveal(routeReveal);
+    }
     setPersistedAreaScope({ area });
     scrollSidebarToTop(sidebarContentRef.current);
   };
