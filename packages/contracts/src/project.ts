@@ -21,6 +21,12 @@ const PROJECT_SEARCH_CONTENTS_MAX_LIMIT = 500;
 export const PROJECT_SEARCH_CONTENTS_QUERY_MAX_LENGTH = 256;
 const PROJECT_WRITE_FILE_PATH_MAX_LENGTH = 512;
 const PROJECT_READ_FILE_PATH_MAX_LENGTH = 512;
+export const PROJECT_AREA_MAX_LENGTH = 40;
+
+export const ProjectArea = TrimmedNonEmptyString.check(
+  Schema.isMaxLength(PROJECT_AREA_MAX_LENGTH),
+  Schema.isPattern(/^[^\r\n\u2028\u2029]+$/),
+);
 
 export const ProjectScriptIcon = Schema.Literals([
   "play",
@@ -216,6 +222,8 @@ export const ProjectMutation = Schema.Union([
     commandId: CommandId,
     projectId: ProjectId,
     ...ProjectUpdatePayload.fields,
+    // Kept out of ProjectUpdatePayload so agent tools do not offer it yet. Null clears it.
+    area: Schema.optional(Schema.NullOr(ProjectArea)),
   }),
   Schema.Struct({
     type: Schema.Literal("project.delete"),

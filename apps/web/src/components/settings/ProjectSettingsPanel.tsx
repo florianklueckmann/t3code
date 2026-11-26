@@ -9,9 +9,13 @@ import { type EnvironmentId, type SidebarProjectGroupingMode } from "@t3tools/co
 import {
   checkProjectAccess,
   reportProjectFailure,
+  useProjectArea,
   useProjectGroupUpdate,
   type ProjectGroupUpdate,
 } from "../../hooks/useProjectGroupUpdate";
+import { listProjectAreas, projectGroupAreas } from "../../projectAreas";
+import { pickableProjectGroups } from "@t3tools/client-runtime/state/project-grouping";
+import { ProjectAreaMenu } from "./ProjectAreaMenu";
 import { Navigate, useLocation, useNavigate } from "@tanstack/react-router";
 import { InfoIcon, Trash2Icon } from "lucide-react";
 import { lazy, Suspense, useRef, useState, type ReactNode } from "react";
@@ -244,6 +248,7 @@ export function ProjectSettingsPanel({
       group={scopedGroup}
       allMembers={selected.memberProjects}
       hasOtherMembers={members.length < selected.memberProjects.length}
+      projectAreas={listProjectAreas(pickableProjectGroups(groups))}
     />
   );
 }
@@ -252,11 +257,13 @@ function ProjectDetail({
   group,
   allMembers,
   hasOtherMembers,
+  projectAreas,
 }: {
   group: SidebarProjectSnapshot;
-  /** Pin and archive belong to the whole project, even when one machine is picked. */
+  /** Pin, archive and area belong to the whole project, even when one machine is picked. */
   allMembers: ReadonlyArray<SidebarProjectGroupMember>;
   hasOtherMembers: boolean;
+  projectAreas: readonly string[];
 }) {
   const navigate = useNavigate({ from: "/settings" });
   const primaryEnvironmentId = usePrimaryEnvironmentId();
@@ -304,6 +311,11 @@ function ProjectDetail({
     await updateProjectGroup(allMembers, input, failureTitle);
     setIsOrganizing(false);
   };
+  const { canSetProjectGroupArea, chooseProjectGroupArea } = useProjectArea();
+  const areaGroup = { displayName: group.displayName, memberProjects: allMembers };
+  const canSetArea =
+    allMembers.every((member) => editableIds.has(member.environmentId)) &&
+    canSetProjectGroupArea(areaGroup);
 
   const renameGroup = async (nextTitle: string, wasEdited: boolean) => {
     const title = nextTitle.trim();
@@ -662,6 +674,25 @@ function ProjectDetail({
                 }
               />
             </>
+          ) : null}
+          {canSetArea ? (
+            <SettingsRow
+              title="Area"
+              description="Filter the sidebar to one area at a time."
+              control={
+                <ProjectAreaMenu
+                  areas={projectAreas}
+                  current={projectGroupAreas(areaGroup)}
+                  disabled={isOrganizing}
+                  onChoose={(choice) => {
+                    setIsOrganizing(true);
+                    void chooseProjectGroupArea(areaGroup, choice, projectAreas).finally(() =>
+                      setIsOrganizing(false),
+                    );
+                  }}
+                />
+              }
+            />
           ) : null}
         </SettingsSection>
         <ProjectDefaultsSettings category="project" />

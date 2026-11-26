@@ -39,6 +39,7 @@ export interface ProjectMetaUpdateCommand {
   readonly scripts?: ReadonlyArray<ProjectScript>;
   readonly pinned?: boolean;
   readonly archived?: boolean;
+  readonly area?: string | null;
 }
 
 export interface ProjectDeleteCommand {
@@ -217,6 +218,7 @@ export function planProjectCommand(input: {
           ...(command.archived === undefined
             ? {}
             : { archivedAt: command.archived ? (project.archivedAt ?? occurredAt) : null }),
+          ...(command.area === undefined ? {} : { area: command.area }),
           updatedAt: occurredAt,
         },
       });

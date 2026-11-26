@@ -26,6 +26,7 @@ const row = (overrides: Partial<ProjectRow> = {}): ProjectRow => ({
   scripts: [],
   pinnedAt: null,
   archivedAt: null,
+  area: null,
   createdAt: "2026-01-01T00:00:00.000Z",
   updatedAt: "2026-01-01T00:00:00.000Z",
   deletedAt: null,
@@ -80,9 +81,12 @@ describe("planProjectCommand", () => {
     );
   });
 
-  it("keeps the first pin and archive time, and clears both on undo", () => {
+  it("keeps the first pin and archive time, sets an area, and clears all three on undo", () => {
     const earlier = "2025-12-01T00:00:00.000Z";
-    const update = (project: ProjectRow, change: { pinned?: boolean; archived?: boolean }) =>
+    const update = (
+      project: ProjectRow,
+      change: { pinned?: boolean; archived?: boolean; area?: string | null },
+    ) =>
       payloadOf(
         plan(
           {
@@ -94,22 +98,25 @@ describe("planProjectCommand", () => {
           { project },
         ),
       );
-    assert.deepInclude(update(row(), { pinned: true, archived: true }), {
+    assert.deepInclude(update(row(), { pinned: true, archived: true, area: "Work" }), {
       pinnedAt: "2026-01-01T00:00:00.000Z",
       archivedAt: "2026-01-01T00:00:00.000Z",
+      area: "Work",
     });
-    const organized = row({ pinnedAt: earlier, archivedAt: earlier });
+    const organized = row({ pinnedAt: earlier, archivedAt: earlier, area: "Work" });
     assert.deepInclude(update(organized, { pinned: true, archived: true }), {
       pinnedAt: earlier,
       archivedAt: earlier,
     });
-    assert.deepInclude(update(organized, { pinned: false, archived: false }), {
+    assert.deepInclude(update(organized, { pinned: false, archived: false, area: null }), {
       pinnedAt: null,
       archivedAt: null,
+      area: null,
     });
     const untouched = update(organized, {});
     assert.notProperty(untouched, "pinnedAt");
     assert.notProperty(untouched, "archivedAt");
+    assert.notProperty(untouched, "area");
   });
 
   it("rejects a workspace root held by another active project", () => {

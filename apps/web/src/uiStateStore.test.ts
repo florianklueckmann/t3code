@@ -13,6 +13,7 @@ import {
   resolveProjectExpanded,
   setProjectExpanded,
   type UiState,
+  useUiStateStore,
 } from "./uiStateStore";
 
 function makeUiState(overrides: Partial<UiState> = {}): UiState {
@@ -20,6 +21,7 @@ function makeUiState(overrides: Partial<UiState> = {}): UiState {
     projectExpandedById: {},
     projectOrder: [],
     sidebarProjectScopeKeys: [],
+    sidebarAreaScope: null,
     threadLastVisitedAtById: {},
     threadChangedFilesExpandedById: {},
     defaultAdvertisedEndpointKey: null,
@@ -126,6 +128,7 @@ describe("parsePersistedState", () => {
       },
       defaultAdvertisedEndpointKey: "desktop-core:lan:http",
       sidebarProjectScopeKeys: [],
+      sidebarAreaScope: null,
       pullRequestMergeMethod: "merge",
       threadChangedFilesExpandedById: {
         "environment:thread-1": {
@@ -237,6 +240,7 @@ describe("uiStateStore persistence", () => {
       },
       defaultAdvertisedEndpointKey: "desktop-core:lan:http",
       sidebarProjectScopeKeys: [],
+      sidebarAreaScope: null,
       sidebarProjectScopeKey: null,
       threadChangedFilesExpansionVersion: 2,
       threadChangedFilesExpandedById: {
@@ -261,6 +265,30 @@ describe("uiStateStore persistence", () => {
     ) as PersistedUiState;
 
     expect(parsePersistedState(persisted).sidebarProjectScopeKeys).toEqual(keys);
+  });
+
+  it("restores an area scope across reloads, and a project scope replaces it", () => {
+    for (const scope of [{ area: "Work" }, { area: null }]) {
+      persistState(makeUiState({ sidebarAreaScope: scope }));
+      const persisted = JSON.parse(
+        localStorageStub.getItem(PERSISTED_STATE_KEY) ?? "{}",
+      ) as PersistedUiState;
+      expect(parsePersistedState(persisted).sidebarAreaScope).toEqual(scope);
+    }
+    expect(parsePersistedState({ sidebarAreaScope: { area: "" } }).sidebarAreaScope).toBeNull();
+
+    const store = useUiStateStore.getState();
+    store.setSidebarProjectScopeKeys(["github.com/pingdotgg/t3code"]);
+    store.setSidebarAreaScope({ area: "Work" });
+    expect(useUiStateStore.getState()).toMatchObject({
+      sidebarProjectScopeKeys: [],
+      sidebarAreaScope: { area: "Work" },
+    });
+    store.setSidebarProjectScopeKeys(["github.com/pingdotgg/t3code"]);
+    expect(useUiStateStore.getState()).toMatchObject({
+      sidebarProjectScopeKeys: ["github.com/pingdotgg/t3code"],
+      sidebarAreaScope: null,
+    });
   });
 
   it("keeps a single-project scope readable by older clients", () => {
