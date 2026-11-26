@@ -42,6 +42,8 @@ export interface AddProjectToMachineInput {
   readonly remoteUrl: string;
   readonly destinationPath: string;
   readonly files: ReadonlyArray<string>;
+  /** The source project's area, which the new checkout shares. Older targets drop it. */
+  readonly area?: string;
 }
 
 function failureMessage(result: Parameters<typeof squashAtomCommandFailure>[0]): string {
@@ -138,6 +140,7 @@ export async function addProjectToMachine(input: AddProjectToMachineInput): Prom
         createdAt: new Date().toISOString(),
         remoteUrl: input.remoteUrl,
         destinationPath: input.destinationPath,
+        ...(input.area === undefined ? {} : { area: input.area }),
       },
     },
     { label: "Add project to machine", reportFailure: false },

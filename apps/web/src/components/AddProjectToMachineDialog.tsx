@@ -227,6 +227,8 @@ function AddProjectToMachineDialog({ request }: { request: AddProjectToMachineRe
         remoteUrl,
         destinationPath: destinationPath.trim(),
         files: [...selectedFiles.keys()],
+        // An area belongs to the project on every machine; older targets drop it.
+        ...(project.area ? { area: project.area } : {}),
       });
       close();
       openClonedProject(scopeProjectRef(target.environmentId, projectId));

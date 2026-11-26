@@ -13,7 +13,7 @@ import {
   useProjectGroupUpdate,
   type ProjectGroupUpdate,
 } from "../../hooks/useProjectGroupUpdate";
-import { listProjectAreas, projectGroupAreas } from "../../projectAreas";
+import { listProjectAreas, projectGroupAreas } from "@t3tools/client-runtime/state/project-areas";
 import { pickableProjectGroups } from "@t3tools/client-runtime/state/project-grouping";
 import { ProjectAreaMenu } from "./ProjectAreaMenu";
 import { Navigate, useLocation, useNavigate } from "@tanstack/react-router";

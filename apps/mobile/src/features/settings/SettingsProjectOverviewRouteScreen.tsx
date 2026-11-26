@@ -3,7 +3,12 @@ import { AppText as Text, AppTextInput } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
 import { ProjectFavicon } from "../../components/ProjectFavicon";
 import * as Dialog from "../../components/ui/Dialog";
-import { AuthOrchestrationOperateScope } from "@t3tools/contracts";
+import { AuthOrchestrationOperateScope, PROJECT_AREA_MAX_LENGTH } from "@t3tools/contracts";
+import {
+  listProjectAreas,
+  parseProjectAreaInput,
+  projectGroupAreas,
+} from "@t3tools/client-runtime/state/project-areas";
 import { planProjectRemoval } from "@t3tools/client-runtime/state/projects";
 import {
   isAtomCommandInterrupted,
@@ -20,7 +25,9 @@ import { Platform, Pressable, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { projectEnvironment } from "../../state/projects";
-import { useThreadShells } from "../../state/entities";
+import { useProjects, useThreadShells } from "../../state/entities";
+import { Menu } from "../../components/ui/Menu";
+import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { appAtomRegistry } from "../../state/atom-registry";
 import {
   clearComposerDraft,
@@ -177,8 +184,27 @@ function ProjectOverviewContent(props: {
         target === undefined ||
         target.serverConfig.environment.capabilities.projectOrganization === true,
     );
+  // Older servers drop `area`, so their projects do not offer it.
+  const canSetArea =
+    allMembers.every(
+      (member, index) =>
+        memberTargets[index] === undefined || removableEnvironments.has(member.environmentId),
+    ) &&
+    memberTargets.every(
+      (target) =>
+        target === undefined || target.serverConfig.environment.capabilities.projectAreas === true,
+    );
+  const projects = useProjects();
+  const existingAreas = listProjectAreas(
+    projects.map((project) => ({ memberProjects: [project] })),
+  );
+  const currentAreas = projectGroupAreas({ memberProjects: allMembers });
   // One machine at a time, stopping at the first failure, as web does.
-  const organize = async (input: { readonly pinned?: boolean; readonly archived?: boolean }) => {
+  const organize = async (input: {
+    readonly pinned?: boolean;
+    readonly archived?: boolean;
+    readonly area?: string | null;
+  }) => {
     setIsOrganizing(true);
     for (const member of allMembers) {
       if (!readEnvironmentScope(member.environmentId, AuthOrchestrationOperateScope)) {
@@ -201,6 +227,26 @@ function ProjectOverviewContent(props: {
       }
     }
     setIsOrganizing(false);
+  };
+  const chooseArea = (id: string) => {
+    if (id === "area:none") {
+      void organize({ area: null });
+    } else if (id === "area:new") {
+      Dialog.prompt({
+        title: "New area",
+        message: `Move ${displayName} into a new area. One line, at most ${PROJECT_AREA_MAX_LENGTH} characters.`,
+        initialValue: "",
+        confirmText: "Move",
+        onConfirm: (text) => {
+          const parsed = parseProjectAreaInput(text, existingAreas);
+          if (parsed.ok) void organize({ area: parsed.area });
+          else Dialog.alert("Area not changed", parsed.error);
+        },
+      });
+    } else {
+      const area = existingAreas[Number(id.slice("area:".length))];
+      if (area !== undefined) void organize({ area });
+    }
   };
   const nextName = (draftName ?? displayName).trim();
   const canSave = !isSaving && nextName.length > 0 && nextName !== displayName;
@@ -348,31 +394,50 @@ function ProjectOverviewContent(props: {
         </View>
       </SettingsSection>
 
-      {canOrganize ? (
+      {canOrganize || canSetArea ? (
         <SettingsSection title="Organize">
-          <SettingsSwitchRow
-            icon="pin"
-            label="Pin"
-            subtitle={
-              offline
-                ? "Connect every machine with this project to change this."
-                : "Pinned projects come first in project pickers."
-            }
-            value={props.group.pinned}
-            disabled={isOrganizing || offline}
-            onValueChange={(pinned) => void organize({ pinned })}
-          />
-          <SettingsActionRow
-            icon="archivebox"
-            label={props.group.archived ? "Unarchive project" : "Archive project"}
-            description={
-              props.group.archived
-                ? "Hidden from project pickers. Threads and files are kept."
-                : "Hides the project from project pickers. Threads and files are kept."
-            }
-            disabled={isOrganizing || offline}
-            onPress={() => void organize({ archived: !props.group.archived })}
-          />
+          {canOrganize ? (
+            <>
+              <SettingsSwitchRow
+                icon="pin"
+                label="Pin"
+                subtitle={
+                  offline
+                    ? "Connect every machine with this project to change this."
+                    : "Pinned projects come first in project pickers."
+                }
+                value={props.group.pinned}
+                disabled={isOrganizing || offline}
+                onValueChange={(pinned) => void organize({ pinned })}
+              />
+              <SettingsActionRow
+                icon="archivebox"
+                label={props.group.archived ? "Unarchive project" : "Archive project"}
+                description={
+                  props.group.archived
+                    ? "Hidden from project pickers. Threads and files are kept."
+                    : "Hides the project from project pickers. Threads and files are kept."
+                }
+                disabled={isOrganizing || offline}
+                onPress={() => void organize({ archived: !props.group.archived })}
+              />
+            </>
+          ) : null}
+          {canSetArea ? (
+            <ProjectAreaRow
+              areas={existingAreas}
+              current={currentAreas}
+              disabled={isOrganizing || offline}
+              description={
+                offline
+                  ? "Connect every machine with this project to change this."
+                  : currentAreas.length === 0
+                    ? "No area. Areas group projects in the thread list filter."
+                    : currentAreas.join(", ")
+              }
+              onChoose={chooseArea}
+            />
+          ) : null}
         </SettingsSection>
       ) : null}
 
@@ -438,6 +503,49 @@ function ProjectOverviewContent(props: {
         />
       </SettingsSection>
     </>
+  );
+}
+
+/** Moves the project into an existing area, a new one, or none. */
+function ProjectAreaRow(props: {
+  readonly areas: readonly string[];
+  readonly current: readonly string[];
+  readonly description: string;
+  readonly disabled: boolean;
+  readonly onChoose: (id: string) => void;
+}) {
+  const row = <ListRowLayout icon="tag" label="Area" description={props.description} />;
+  if (props.disabled) {
+    return (
+      <View className="bg-grouped-card opacity-45" accessibilityLabel="Area">
+        {row}
+      </View>
+    );
+  }
+  const state = (on: boolean) => (on ? ("on" as const) : ("off" as const));
+  return (
+    <Menu
+      title="Area"
+      actions={[
+        ...props.areas.map((area, index) => ({
+          id: `area:${index}`,
+          title: area,
+          state: state(props.current.includes(area)),
+        })),
+        { id: "area:new", title: "New area…" },
+        { id: "area:none", title: "No area", state: state(props.current.length === 0) },
+      ]}
+      onPressAction={({ nativeEvent }) => props.onChoose(nativeEvent.event)}
+    >
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Area"
+        accessibilityHint={props.description}
+        className="bg-grouped-card"
+      >
+        {row}
+      </Pressable>
+    </Menu>
   );
 }
 

@@ -1696,10 +1696,12 @@ describe("resolveOutOfScopeDot", () => {
     const resolve = (
       threads: Thread[],
       localLastVisitedAtById: Readonly<Record<string, string>> = {},
+      railBotKeys: ReadonlySet<string> = new Set(),
     ) =>
       resolveOutOfScopeDot({
         threads,
         scopedProjectKeys: new Set([`${localEnvironmentId}:${inArea}`]),
+        railBotKeys,
         delegatedUnderParent: new Set(),
         localLastVisitedAtById,
         now: "2026-03-09T11:00:00.000Z",
@@ -1722,6 +1724,8 @@ describe("resolveOutOfScopeDot", () => {
     expect(resolve([outsideHome])).toBe("unread");
     // A Bot with a home in the area stays in the rail, which badges its other homes.
     expect(resolve([outsideHome, inAreaHome])).toBeNull();
+    // Also when that in-area Home was trimmed from the loaded threads.
+    expect(resolve([outsideHome], {}, new Set([`${localEnvironmentId}:bot-1`]))).toBeNull();
     expect(
       resolve([
         makeThread({

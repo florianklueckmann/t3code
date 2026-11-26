@@ -2,6 +2,7 @@ import type { MenuAction } from "@react-native-menu/menu";
 import { useNavigation } from "@react-navigation/native";
 import { resolveBotAppearance } from "@t3tools/client-runtime/bot-appearance";
 import { rankBotConversations } from "@t3tools/client-runtime/bots";
+import { botRailKeys } from "@t3tools/client-runtime/state/project-areas";
 import type {
   EnvironmentProject,
   EnvironmentThreadShell,
@@ -26,7 +27,7 @@ import { useSelectWorkspaceDetail } from "../layout/workspace/useSelectWorkspace
 import { useConnectedBots } from "./bots-across-environments";
 
 // Same colors as the thread row's status labels.
-const ATTENTION_DOT_CLASS = {
+export const ATTENTION_DOT_CLASS = {
   approval: "bg-warning-foreground",
   input: "bg-adaptive-indigo-600-300",
   request: "bg-adaptive-fuchsia-600-300",
@@ -54,8 +55,14 @@ export function BotRail(props: {
   readonly threads: ReadonlyArray<EnvironmentThreadShell>;
   readonly projects: ReadonlyArray<EnvironmentProject>;
   readonly pane: "screen" | "sidebar";
+  /** The thread list's area as `environmentId:projectId` keys; null shows every Bot. */
+  readonly scopedProjectKeys: ReadonlySet<string> | null;
 }) {
-  const bots = useConnectedBots().filter(({ bot }) => bot.archivedAt === null);
+  const connectedBots = useConnectedBots();
+  const railKeys = botRailKeys(connectedBots, props.scopedProjectKeys);
+  const bots = connectedBots.filter(({ environmentId, bot }) =>
+    railKeys.has(`${environmentId}:${bot.id}`),
+  );
   const navigation = useNavigation();
   const selectDetail = useSelectWorkspaceDetail();
   const { savedConnectionsById } = useSavedRemoteConnections();

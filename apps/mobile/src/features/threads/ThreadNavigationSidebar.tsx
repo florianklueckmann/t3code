@@ -1,7 +1,6 @@
 import { useActiveNewTask } from "../../state/active-new-task";
 import { ThreadUndoNotice } from "../home/ThreadUndoNotice";
 import { useAndroidControlSizing } from "../../components/ui/useAndroidControlSizing";
-import { pickableProjectGroups } from "@t3tools/client-runtime/state/project-grouping";
 import {
   useAppearancePreferences,
   useAndroidFloatingTabs,
@@ -49,11 +48,7 @@ import {
   buildHomeListFilterMenuItems,
   homeListFilterEnvironments,
 } from "../home/home-list-filter-menu";
-import {
-  buildHomeProjectScopes,
-  resolveHomeProjectFilterScope,
-  sortHomeProjectScopes,
-} from "../home/homeThreadList";
+import { useHomeProjectFilter } from "../home/useHomeProjectFilter";
 import { SwipeableScrollGateProvider, useSwipeableScrollGate } from "../home/thread-swipe-actions";
 import { usePendingTaskListActions } from "../home/usePendingTaskListActions";
 import { useThreadListActions } from "../home/useThreadListActions";
@@ -80,7 +75,7 @@ import {
 } from "./threadListV2";
 import { useSelectWorkspaceDetail } from "../layout/workspace/useSelectWorkspaceDetail";
 import { NativeScrollView } from "../../native/NativeScrollViewMarker";
-import { BotRail } from "../bots/BotRail";
+import { ATTENTION_DOT_CLASS, BotRail } from "../bots/BotRail";
 
 type SidebarListItem =
   | ThreadListV2ListItem
@@ -160,7 +155,7 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
   const availableEnvironmentIds = new Set(
     environments.map((environment) => environment.environmentId),
   );
-  const { options, setSelectedEnvironmentId, setSelectedProjectKey } =
+  const { options, setSelectedEnvironmentId, setSelectedProjectKey, setSelectedArea } =
     useHomeListOptions(availableEnvironmentIds);
   const searchEnvironmentIds =
     options.selectedEnvironmentId === null
@@ -174,26 +169,14 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
           )
         ? [options.selectedEnvironmentId]
         : [];
-  const projectScopes = useMemo(
-    () =>
-      buildHomeProjectScopes({
-        projects,
-        environmentId: options.selectedEnvironmentId,
-        projectGroupingMode: options.projectGroupingMode,
-      }),
-    [projects, options.selectedEnvironmentId, options.projectGroupingMode],
-  );
-  const projectFilterOptions = pickableProjectGroups(
-    sortHomeProjectScopes({
-      scopes: projectScopes,
-      threads,
-      pendingTasks: [],
-      projectSortOrder: "updated_at",
-    }),
-  ).map((scope) => ({
-    key: scope.key,
-    label: scope.title,
-  }));
+  const projectFilter = useHomeProjectFilter({
+    projects,
+    threads,
+    options,
+    setSelectedProjectKey,
+    setSelectedArea,
+  });
+  const { projectScopes } = projectFilter;
   const projectTitleByProjectKey = useMemo(
     () =>
       new Map(
@@ -209,18 +192,15 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
       ),
     [projectScopes],
   );
-  const selectedProjectScope = resolveHomeProjectFilterScope(projectScopes, projects, options);
+  const scopedProjectRefs = projectFilter.projectRefs;
   const threadSearch = useThreadSearch(
     searchEnvironmentIds,
     props.searchQuery,
-    selectedProjectScope === null
-      ? {}
-      : { projectIds: selectedProjectScope.projectRefs.map((ref) => ref.projectId) },
+    scopedProjectRefs === null ? {} : { projectIds: scopedProjectRefs.map((ref) => ref.projectId) },
   );
   // This map reaches LegendList's extraData, which re-renders every row whenever it changes
   // identity; the hook keeps it stable.
   const threadSearchMatchByKey = useThreadListSearchMatches(threads, threadSearch);
-  const selectedProjectKey = selectedProjectScope?.key ?? null;
   const projectByKey = useMemo(() => {
     const map = new Map<string, EnvironmentProject>();
     for (const project of projects) {
@@ -232,7 +212,7 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
   const [settledVisibleCount, setSettledVisibleCount] = useState(
     THREAD_LIST_V2_SETTLED_INITIAL_COUNT,
   );
-  const settledResetKey = `${options.selectedEnvironmentId ?? "all"}:${selectedProjectKey ?? "all"}:${props.searchQuery.trim()}`;
+  const settledResetKey = `${options.selectedEnvironmentId ?? "all"}:${JSON.stringify(projectFilter.menu.selected)}:${props.searchQuery.trim()}`;
   const [lastSettledResetKey, setLastSettledResetKey] = useState(settledResetKey);
   if (lastSettledResetKey !== settledResetKey) {
     setLastSettledResetKey(settledResetKey);
@@ -275,7 +255,7 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
     threads: launchingThreads,
     pendingTasks,
     environmentId: options.selectedEnvironmentId,
-    projectRefs: selectedProjectScope === null ? null : selectedProjectScope.projectRefs,
+    projectRefs: scopedProjectRefs,
     searchQuery: props.searchQuery,
     searchMatches: threadSearchMatchByKey,
     settlementEnvironmentIds,
@@ -541,14 +521,14 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
         accessibilityLabel: "Search threads",
       }}
       filter={{
-        customized: options.selectedEnvironmentId !== null || selectedProjectKey !== null,
+        customized: options.selectedEnvironmentId !== null || projectFilter.label !== null,
+        dotClassName: projectFilter.dot === null ? null : ATTENTION_DOT_CLASS[projectFilter.dot],
         items: buildHomeListFilterMenuItems({
           environments,
-          projects: projectFilterOptions,
+          projectFilter: projectFilter.menu,
           selectedEnvironmentId: options.selectedEnvironmentId,
-          selectedProjectKey,
           onEnvironmentChange: setSelectedEnvironmentId,
-          onProjectChange: setSelectedProjectKey,
+          onProjectFilterChange: projectFilter.choose,
         }),
       }}
       sidebar={{
@@ -562,7 +542,14 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
     !catalogState.isLoadingConnections &&
     !catalogState.hasReadyEnvironment &&
     !catalogState.hasConnectingEnvironment;
-  const botRail = <BotRail threads={threads} projects={projects} pane="sidebar" />;
+  const botRail = (
+    <BotRail
+      threads={threads}
+      projects={projects}
+      pane="sidebar"
+      scopedProjectKeys={projectFilter.areaFilter?.scopedProjectKeys ?? null}
+    />
+  );
   const listEmpty = (
     <View>
       <Text
@@ -580,8 +567,8 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
               ? threadSearch.isPending
                 ? "Searching thread messages…"
                 : "No matching threads"
-              : selectedProjectScope !== null
-                ? `No threads in ${selectedProjectScope.title}`
+              : projectFilter.label !== null
+                ? `No threads in ${projectFilter.label}`
                 : "No threads yet"}
       </Text>
       {showAddEnvironment ? (

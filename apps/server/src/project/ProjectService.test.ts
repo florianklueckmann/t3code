@@ -257,8 +257,10 @@ it.layer(layerTest)("ProjectService", (it) => {
             runOnWorktreeCreate: true,
           },
         ],
+        area: "Clients",
       });
       assert.equal(created.workspaceRoot, "/work/project");
+      assert.equal(created.area, "Clients");
       assert.isNull(created.repositoryIdentity);
       assert.isNull(created.faviconPath);
 
@@ -278,8 +280,10 @@ it.layer(layerTest)("ProjectService", (it) => {
         projectIcon: { kind: "emoji", emoji: "🦊" },
         faviconPath: "/work/project/custom.svg",
         defaultThreadEnvMode: "worktree",
+        area: "Work",
       });
       assert.equal(updated.title, "Renamed");
+      assert.equal(updated.area, "Work");
       assert.equal(updated.createdAt, created.createdAt);
       assert.isTrue(updated.autoPull);
       assert.deepEqual(updated.projectIcon, { kind: "emoji", emoji: "🦊" });
@@ -295,6 +299,7 @@ it.layer(layerTest)("ProjectService", (it) => {
       assert.deepEqual(Option.getOrThrow(byId).projectIcon, updated.projectIcon);
       assert.equal(Option.getOrThrow(byId).faviconPath, updated.faviconPath);
       assert.equal(Option.getOrThrow(byId).defaultThreadEnvMode, "worktree");
+      assert.equal(Option.getOrThrow(byId).area, "Work");
       const reset = yield* service.update({
         commandId: CommandId.make("command:project:reset-appearance"),
         projectId,
@@ -302,8 +307,10 @@ it.layer(layerTest)("ProjectService", (it) => {
         projectIcon: null,
         faviconPath: null,
         defaultThreadEnvMode: null,
+        area: null,
       });
       assert.isFalse(reset.autoPull);
+      assert.isNull(reset.area);
       assert.isNull(reset.projectIcon);
       assert.equal(
         (yield* waitForProject(

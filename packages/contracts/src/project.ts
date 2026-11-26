@@ -171,6 +171,8 @@ export const Project = Schema.Struct({
   scripts: Schema.Array(ProjectScript),
   pinnedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   archivedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+  /** Looser than `ProjectArea` so a later limit still decodes. */
+  area: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   deletedAt: Schema.NullOr(IsoDateTime),
@@ -189,6 +191,11 @@ export const ProjectCreatePayload = Schema.Struct({
   createWorkspaceRootIfMissing: Schema.optional(Schema.Boolean),
   defaultModelSelection: Schema.optional(Schema.NullOr(ModelSelection)),
   scripts: Schema.optional(Schema.Array(ProjectScript)),
+  area: Schema.optional(
+    Schema.NullOr(ProjectArea).annotate({
+      description: "Sidebar group for the project. One line, at most 40 characters.",
+    }),
+  ),
 });
 export type ProjectCreatePayload = typeof ProjectCreatePayload.Type;
 
@@ -207,6 +214,11 @@ export const ProjectUpdatePayload = Schema.Struct({
       description: "Threads and files are kept.",
     }),
   ),
+  area: Schema.optional(
+    Schema.NullOr(ProjectArea).annotate({
+      description: "Sidebar group for the project. One line, at most 40 characters. null clears.",
+    }),
+  ),
 });
 export type ProjectUpdatePayload = typeof ProjectUpdatePayload.Type;
 
@@ -222,8 +234,6 @@ export const ProjectMutation = Schema.Union([
     commandId: CommandId,
     projectId: ProjectId,
     ...ProjectUpdatePayload.fields,
-    // Kept out of ProjectUpdatePayload so agent tools do not offer it yet. Null clears it.
-    area: Schema.optional(Schema.NullOr(ProjectArea)),
   }),
   Schema.Struct({
     type: Schema.Literal("project.delete"),
@@ -540,6 +550,8 @@ export type ProjectEnsureScratchResult = typeof ProjectEnsureScratchResult.Type;
 
 export const ProjectCreateNewInput = Schema.Struct({
   name: TrimmedNonEmptyString.check(Schema.isMaxLength(200)),
+  /** Servers without the `projectAreas` capability drop it. */
+  area: Schema.optionalKey(ProjectArea),
 });
 export type ProjectCreateNewInput = typeof ProjectCreateNewInput.Type;
 

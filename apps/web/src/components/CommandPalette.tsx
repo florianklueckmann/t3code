@@ -99,6 +99,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { isDesktopLocalConnectionTarget } from "../connection/desktopLocal";
 import { useDesktopLocalBootstraps } from "../connection/useDesktopLocalBootstraps";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
+import { useNewProjectArea } from "../hooks/useAreaScopedProjectKeys";
 import { useOpenPanelPullRequestUrl } from "../hooks/useOpenPanelPullRequestUrl";
 import { copyThreadReference } from "../lib/copyThreadReference";
 import {
@@ -458,6 +459,7 @@ function OpenCommandPaletteDialog(props: {
   const createProject = useAtomCommand(projectEnvironment.create, {
     reportFailure: false,
   });
+  const newProjectArea = useNewProjectArea();
   const updateProject = useOrchestrationCommand(projectEnvironment.update, {
     label: "project unarchive",
   });
@@ -1986,6 +1988,7 @@ function OpenCommandPaletteDialog(props: {
       return;
     }
     const projectId = newProjectId();
+    const area = newProjectArea(input.environmentId);
     const createResult = await createProject({
       environmentId: input.environmentId,
       input: {
@@ -1994,6 +1997,7 @@ function OpenCommandPaletteDialog(props: {
         workspaceRoot: cwd,
         createWorkspaceRootIfMissing: true,
         defaultModelSelection: null,
+        ...(area === undefined ? {} : { area }),
       },
     });
     if (createResult._tag === "Failure") {
@@ -2238,6 +2242,7 @@ function OpenCommandPaletteDialog(props: {
     }
 
     setIsRemoteProjectCloning(true);
+    const cloneArea = newProjectArea(addProjectCloneFlow.environmentId);
     const startResult = await startProjectClone({
       environmentId: addProjectCloneFlow.environmentId,
       input: {
@@ -2247,6 +2252,7 @@ function OpenCommandPaletteDialog(props: {
         createdAt: new Date().toISOString(),
         remoteUrl: addProjectCloneFlow.remoteUrl,
         destinationPath,
+        ...(cloneArea === undefined ? {} : { area: cloneArea }),
       },
     });
     setIsRemoteProjectCloning(false);

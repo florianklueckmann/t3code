@@ -12,19 +12,10 @@ import {
   type EnvironmentProject,
   type EnvironmentThreadShell,
 } from "@t3tools/client-runtime/state/shell";
-import { pickableProjectGroups } from "@t3tools/client-runtime/state/project-grouping";
 import { threadSearchMatchKey } from "@t3tools/client-runtime/state/thread-search";
 import { type EnvironmentId, type SidebarProjectGroupingMode } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
-import {
-  use,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ComponentProps,
-} from "react";
+import { use, useEffect, useLayoutEffect, useRef, useState, type ComponentProps } from "react";
 import {
   Platform,
   ScrollView,
@@ -89,12 +80,8 @@ import {
 } from "../threads/threadListV2";
 import { useThreadListV2ShelfPreferences } from "../threads/use-thread-list-v2-shelf-preferences";
 import type { HomeListFilterMenuEnvironment } from "./home-list-filter-menu";
-import {
-  buildHomeProjectScopes,
-  findHomeProjectScope,
-  type HomeProjectSortOrder,
-  sortHomeProjectScopes,
-} from "./homeThreadList";
+import type { HomeProjectSortOrder } from "./homeThreadList";
+import type { useHomeProjectFilter } from "./useHomeProjectFilter";
 import { createSwipeRowActivation } from "./swipe-row-activation";
 import { SwipeableScrollGateProvider, useSwipeableScrollGate } from "./thread-swipe-actions";
 import { useFabScroll } from "./FabScrollContext";
@@ -102,7 +89,7 @@ import { holdLaunchSplashForHomeRows, settleLaunchSplashHomeRows } from "./home-
 import { useWorkspaceTabs } from "../layout/workspace/WorkspaceTabsContext";
 import { ThreadListFilters } from "./ThreadListFilters";
 import { deriveHomeEmptyState } from "./home-empty-state";
-import { BotRail } from "../bots/BotRail";
+import { ATTENTION_DOT_CLASS, BotRail } from "../bots/BotRail";
 
 interface HomeScreenProps {
   /** Whether this list is the one on screen; see `useHomeRouteVisible`. */
@@ -117,12 +104,11 @@ interface HomeScreenProps {
   >;
   readonly searchQuery: string;
   readonly selectedEnvironmentId: EnvironmentId | null;
-  readonly selectedProjectKey: string | null;
+  readonly projectFilter: ReturnType<typeof useHomeProjectFilter>;
   readonly projectSortOrder: HomeProjectSortOrder;
   readonly projectGroupingMode: SidebarProjectGroupingMode;
   readonly onSearchQueryChange: (query: string) => void;
   readonly onEnvironmentChange: (environmentId: EnvironmentId | null) => void;
-  readonly onProjectChange: (projectKey: string | null) => void;
   readonly onAddConnection: () => void;
   readonly onOpenSettings: () => void;
   readonly onStartNewTask: () => void;
@@ -318,16 +304,8 @@ export function HomeScreen(props: HomeScreenProps) {
     onScrollBeginDrag: handleScrollBeginDrag,
   });
 
-  const { projects, selectedEnvironmentId, projectGroupingMode } = props;
-  const projectScopes = useMemo(
-    () =>
-      buildHomeProjectScopes({
-        projects,
-        environmentId: selectedEnvironmentId,
-        projectGroupingMode,
-      }),
-    [projects, selectedEnvironmentId, projectGroupingMode],
-  );
+  const { projectFilter } = props;
+  const { projectScopes } = projectFilter;
   const hasSearchQuery = props.searchQuery.trim().length > 0;
   const projectByKey = (() => {
     const map = new Map<string, EnvironmentProject>();
@@ -337,18 +315,11 @@ export function HomeScreen(props: HomeScreenProps) {
     return map;
   })();
 
-  const v2ProjectScopeKey = props.selectedProjectKey;
-  // An archived project's filter reads as all projects, matching the filter menu.
-  const v2ScopedProjectGroup = findHomeProjectScope(
-    pickableProjectGroups(projectScopes),
-    v2ProjectScopeKey,
-  );
+  const scopedProjectRefs = projectFilter.projectRefs;
   const threadSearch = useThreadSearch(
     searchEnvironmentIds,
     props.searchQuery,
-    v2ScopedProjectGroup === null
-      ? {}
-      : { projectIds: v2ScopedProjectGroup.projectRefs.map((ref) => ref.projectId) },
+    scopedProjectRefs === null ? {} : { projectIds: scopedProjectRefs.map((ref) => ref.projectId) },
   );
   const threadSearchMatchByKey = useThreadListSearchMatches(props.threads, threadSearch);
   const v2ProjectTitleByProjectKey = new Map(
@@ -373,7 +344,7 @@ export function HomeScreen(props: HomeScreenProps) {
   const [settledVisibleCount, setSettledVisibleCount] = useState(
     THREAD_LIST_V2_SETTLED_INITIAL_COUNT,
   );
-  const settledResetKey = `${props.selectedEnvironmentId ?? "all"}:${v2ProjectScopeKey ?? "all"}:${props.searchQuery.trim()}`;
+  const settledResetKey = `${props.selectedEnvironmentId ?? "all"}:${JSON.stringify(projectFilter.menu.selected)}:${props.searchQuery.trim()}`;
   const [lastSettledResetKey, setLastSettledResetKey] = useState(settledResetKey);
   if (lastSettledResetKey !== settledResetKey) {
     setLastSettledResetKey(settledResetKey);
@@ -416,7 +387,7 @@ export function HomeScreen(props: HomeScreenProps) {
     threads: props.threads,
     pendingTasks: props.pendingTasks,
     environmentId: props.selectedEnvironmentId,
-    projectRefs: v2ScopedProjectGroup === null ? null : v2ScopedProjectGroup.projectRefs,
+    projectRefs: scopedProjectRefs,
     searchQuery: props.searchQuery,
     searchMatches: threadSearchMatchByKey,
     settlementEnvironmentIds,
@@ -678,6 +649,7 @@ export function HomeScreen(props: HomeScreenProps) {
       threads={props.threads}
       projects={props.projects}
       pane={primaryColumn ? "sidebar" : "screen"}
+      scopedProjectKeys={projectFilter.areaFilter?.scopedProjectKeys ?? null}
     />
   );
 
@@ -688,21 +660,14 @@ export function HomeScreen(props: HomeScreenProps) {
         <ThreadListFilters
           gutter={sidebarSurface ? 8 : 0}
           environments={props.environments}
-          projects={pickableProjectGroups(
-            sortHomeProjectScopes({
-              scopes: projectScopes,
-              threads: props.threads,
-              pendingTasks: [],
-              projectSortOrder: "updated_at",
-            }),
-          ).map((scope) => ({
-            key: scope.key,
-            label: scope.title,
-          }))}
+          projectFilter={projectFilter.menu}
+          projectFilterLabel={projectFilter.label}
+          projectFilterDotClassName={
+            projectFilter.dot === null ? null : ATTENTION_DOT_CLASS[projectFilter.dot]
+          }
           selectedEnvironmentId={props.selectedEnvironmentId}
-          selectedProjectKey={props.selectedProjectKey}
           onEnvironmentChange={props.onEnvironmentChange}
-          onProjectChange={props.onProjectChange}
+          onProjectFilterChange={projectFilter.choose}
         />
       ) : null}
       {botRail}
@@ -722,9 +687,9 @@ export function HomeScreen(props: HomeScreenProps) {
         detail={`No threads matching "${props.searchQuery}".`}
         variant={Platform.OS === "android" ? "plain" : undefined}
       />
-    ) : v2ScopedProjectGroup !== null ? (
+    ) : projectFilter.label !== null ? (
       <EmptyState
-        title={`No threads in ${v2ScopedProjectGroup.title}`}
+        title={`No threads in ${projectFilter.label}`}
         detail="Choose another project or create a new task."
         variant={Platform.OS === "android" ? "plain" : undefined}
       />

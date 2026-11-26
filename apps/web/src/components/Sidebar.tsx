@@ -77,12 +77,13 @@ import {
 } from "lucide-react";
 import {
   botProjectKeys,
-  buildProjectAreaMenu,
+  botRailKeys,
   isBotInProjectScope,
   isProjectGroupInArea,
   listProjectAreas,
   projectGroupAreas,
-} from "../projectAreas";
+} from "@t3tools/client-runtime/state/project-areas";
+import { buildProjectAreaMenu } from "../projectAreas";
 import {
   useEffect,
   useLayoutEffect,
@@ -1485,11 +1486,23 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     keepEmptyFolders: (group) =>
       scopedProjectGroups.length > 0 || (group.pinned && !group.archived),
   });
+  const serverConfigsForBots = useServerConfigs();
+  // Only an area needs the rail's Bots, so other sidebars subscribe to nothing more.
+  const railBots = useAtomValue(
+    serverEnvironment.botsAcrossEnvironments(
+      areaScope === null
+        ? []
+        : [...serverConfigsForBots].flatMap(([environmentId, config]) =>
+            config.environment.capabilities.bots === true ? [environmentId] : [],
+          ),
+    ),
+  );
   const outOfScopeDot =
     areaScope !== null && scopedProjectKeys !== null
       ? resolveOutOfScopeDot({
           threads,
           scopedProjectKeys,
+          railBotKeys: botRailKeys(railBots, scopedProjectKeys),
           delegatedUnderParent,
           localLastVisitedAtById,
           now: snoozeNow,

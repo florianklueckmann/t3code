@@ -14,6 +14,8 @@ export interface WorkspaceListHeaderProps {
   };
   readonly filter: {
     readonly customized: boolean;
+    /** Android: a status dot on the filter button, as a background color class. */
+    readonly dotClassName?: string | null;
     readonly items: ReadonlyArray<AppBarMenuItem>;
   };
   /** iOS: a settings button. Android reaches Settings from the workspace navigation. */

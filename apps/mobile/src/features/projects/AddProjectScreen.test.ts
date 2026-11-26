@@ -106,6 +106,7 @@ vi.mock("../../components/EnvironmentMachineSymbol", () => ({
 vi.mock("../../components/ui/ErrorBanner", () => ({ ErrorBanner: "ErrorBanner" }));
 vi.mock("./SourceControlIcon", () => ({ SourceControlIcon: "SourceControlIcon" }));
 vi.mock("../../lib/uuid", () => ({ uuidv4: () => "project" }));
+vi.mock("../home/use-new-project-area", () => ({ useNewProjectArea: () => () => undefined }));
 vi.mock("../../state/session", () => ({
   useEnvironmentScope: (_environmentId: string, scope: string) => state.scopes.has(scope),
   readEnvironmentScope: (_environmentId: string, scope: string) => state.scopes.has(scope),

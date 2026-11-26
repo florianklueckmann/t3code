@@ -7,7 +7,6 @@ import { useMemo, useState } from "react";
 import { Platform } from "react-native";
 
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
-import { pickableProjectGroups } from "@t3tools/client-runtime/state/project-grouping";
 
 import { useProjects } from "../../state/entities";
 import { steadyNavigationThreadShellsAtom } from "../../state/threads";
@@ -26,11 +25,8 @@ import {
   useAtomValueWhileVisible,
   useHomeRouteVisible,
 } from "./home-route-visibility";
-import {
-  buildHomeProjectScopes,
-  resolveHomeProjectFilterScope,
-  sortHomeProjectScopes,
-} from "./homeThreadList";
+import { useHomeProjectFilter } from "./useHomeProjectFilter";
+import { ATTENTION_DOT_CLASS } from "../bots/BotRail";
 import { usePendingTaskListActions } from "./usePendingTaskListActions";
 import { useThreadListActions } from "./useThreadListActions";
 import { useWorkspaceTabs } from "../layout/workspace/WorkspaceTabsContext";
@@ -115,34 +111,16 @@ export function HomeRouteScreen() {
     options: listOptions,
     setSelectedEnvironmentId,
     setSelectedProjectKey,
+    setSelectedArea,
   } = useHomeListOptions(availableEnvironmentIds);
   const selectedEnvironmentId = listOptions.selectedEnvironmentId;
-  const projectScopes = useMemo(
-    () =>
-      buildHomeProjectScopes({
-        projects,
-        environmentId: selectedEnvironmentId,
-        projectGroupingMode: listOptions.projectGroupingMode,
-      }),
-    [listOptions.projectGroupingMode, projects, selectedEnvironmentId],
-  );
-  const projectFilterOptions = useMemo(
-    () =>
-      pickableProjectGroups(
-        sortHomeProjectScopes({
-          scopes: projectScopes,
-          threads,
-          pendingTasks: [],
-          projectSortOrder: "updated_at",
-        }),
-      ).map((scope) => ({
-        key: scope.key,
-        label: scope.title,
-      })),
-    [projectScopes, threads],
-  );
-  const selectedProjectKey =
-    resolveHomeProjectFilterScope(projectScopes, projects, listOptions)?.key ?? null;
+  const projectFilter = useHomeProjectFilter({
+    projects,
+    threads,
+    options: listOptions,
+    setSelectedProjectKey,
+    setSelectedArea,
+  });
 
   if (layout.usesSplitView && !nativePrimaryColumn) {
     return (
@@ -167,14 +145,15 @@ export function HomeRouteScreen() {
             accessibilityLabel: "Search threads",
           }}
           filter={{
-            customized: selectedEnvironmentId !== null || selectedProjectKey !== null,
+            customized: selectedEnvironmentId !== null || projectFilter.label !== null,
+            dotClassName:
+              projectFilter.dot === null ? null : ATTENTION_DOT_CLASS[projectFilter.dot],
             items: buildHomeListFilterMenuItems({
               environments,
-              projects: projectFilterOptions,
+              projectFilter: projectFilter.menu,
               selectedEnvironmentId,
-              selectedProjectKey,
               onEnvironmentChange: setSelectedEnvironmentId,
-              onProjectChange: setSelectedProjectKey,
+              onProjectFilterChange: projectFilter.choose,
             }),
           }}
         />
@@ -196,7 +175,7 @@ export function HomeRouteScreen() {
           onRenameThread={renameThread}
           onRegenerateThreadTitle={regenerateThreadTitle}
           onEnvironmentChange={setSelectedEnvironmentId}
-          onProjectChange={setSelectedProjectKey}
+          projectFilter={projectFilter}
           onOpenSettings={() => selectTab("settings")}
           onSearchQueryChange={setSearchQuery}
           onSelectThread={handleSelectThread}
@@ -221,7 +200,6 @@ export function HomeRouteScreen() {
           savedConnectionsById={savedConnectionsById}
           searchQuery={searchQuery}
           selectedEnvironmentId={selectedEnvironmentId}
-          selectedProjectKey={selectedProjectKey}
           threads={threads}
           visible={visible}
         />
