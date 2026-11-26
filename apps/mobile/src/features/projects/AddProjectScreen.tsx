@@ -1440,6 +1440,7 @@ export function AddProjectDestinationScreen(props: {
   readonly prompt?: string | string[];
 }) {
   const openNewTaskDraft = useOpenNewTaskDraft();
+  const newProjectArea = useNewProjectArea();
   const startProjectClone = useAtomCommand(sourceControlEnvironment.startProjectClone, {
     reportFailure: false,
   });
@@ -1507,6 +1508,7 @@ export function AddProjectDestinationScreen(props: {
       return;
     }
     const title = inferProjectTitleFromPath(resolved.path);
+    const area = newProjectArea(environment.environmentId);
     const startResult = await startProjectClone({
       environmentId: environment.environmentId,
       input: {
@@ -1515,6 +1517,7 @@ export function AddProjectDestinationScreen(props: {
         createdAt: new Date().toISOString(),
         remoteUrl,
         destinationPath: resolved.path,
+        ...(area === undefined ? {} : { area }),
       },
     });
     if (AsyncResult.isFailure(startResult)) {

@@ -49,11 +49,13 @@ export function resolveHomeAreaDot(input: {
     botRailKeys(input.bots, input.scopedProjectKeys),
   );
   for (const thread of hidden) {
+    const isHome = mayBeBotHomeThreadId(thread.id);
+    // The Bot row spans every environment, so only list threads follow the environment filter.
     if (
-      (input.environmentId !== null && thread.environmentId !== input.environmentId) ||
+      (!isHome && input.environmentId !== null && thread.environmentId !== input.environmentId) ||
       thread.settledOverride === "settled" ||
       effectiveSnoozed(thread, { now: input.now }) ||
-      !(mayBeBotHomeThreadId(thread.id) || isListedThreadLineage(thread.lineage))
+      !(isHome || isListedThreadLineage(thread.lineage))
     ) {
       continue;
     }

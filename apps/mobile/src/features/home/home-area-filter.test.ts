@@ -119,6 +119,17 @@ describe("home area filter", () => {
     // The rail shows this Bot for `api`, though its `api` Home is not loaded.
     expect(resolve([thread("bot-home:both:garden", "garden")])).toBeNull();
     expect(resolve([thread("bot-home:gardener:garden", "garden")])).toBe("approval");
+    // Another environment's list threads follow the environment filter; the Bot row does not.
+    const onlyOther = (threads: EnvironmentThreadShell[]) =>
+      resolveHomeAreaDot({
+        threads,
+        scopedProjectKeys: work.scopedProjectKeys,
+        bots: [bot("gardener", ["garden"])],
+        environmentId: EnvironmentId.make("other"),
+        now,
+      });
+    expect(onlyOther([thread("out", "garden")])).toBeNull();
+    expect(onlyOther([thread("bot-home:gardener:garden", "garden")])).toBe("approval");
   });
 
   it("leaves the area for an outside thread or a hidden Bot's Home, and waits for unknown Homes", () => {

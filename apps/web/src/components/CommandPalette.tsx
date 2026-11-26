@@ -2242,6 +2242,7 @@ function OpenCommandPaletteDialog(props: {
     }
 
     setIsRemoteProjectCloning(true);
+    const cloneArea = newProjectArea(addProjectCloneFlow.environmentId);
     const startResult = await startProjectClone({
       environmentId: addProjectCloneFlow.environmentId,
       input: {
@@ -2251,6 +2252,7 @@ function OpenCommandPaletteDialog(props: {
         createdAt: new Date().toISOString(),
         remoteUrl: addProjectCloneFlow.remoteUrl,
         destinationPath,
+        ...(cloneArea === undefined ? {} : { area: cloneArea }),
       },
     });
     setIsRemoteProjectCloning(false);

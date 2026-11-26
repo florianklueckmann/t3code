@@ -5,13 +5,12 @@ import type {
 } from "@t3tools/client-runtime/state/shell";
 import { useEffect, useMemo, useRef } from "react";
 
-import { useProjects } from "../../state/entities";
-import { ALL_ENVIRONMENTS } from "./use-new-project-area";
+import { useHomeAreaFilter } from "./use-new-project-area";
 import { useConnectedBots } from "../bots/bots-across-environments";
 import { useThreadListNow } from "../threads/use-thread-list-now";
 import { opensOutsideHomeArea, resolveHomeAreaDot } from "./home-area-filter";
 import type { HomeProjectFilterChoice, HomeProjectFilterMenu } from "./home-list-filter-menu";
-import { useHomeListOptions, type ResolvedHomeListOptions } from "./home-list-options";
+import type { ResolvedHomeListOptions } from "./home-list-options";
 import {
   buildHomeProjectScopes,
   homeAreaFilterOptions,
@@ -107,22 +106,10 @@ export function useHomeProjectFilter(input: {
 export function useLeaveAreaForOpenThread(
   thread: Pick<EnvironmentThreadShell, "environmentId" | "id" | "projectId"> | null,
 ) {
-  const projects = useProjects();
   const bots = useConnectedBots();
-  const { options, setSelectedProjectKey } = useHomeListOptions(ALL_ENVIRONMENTS);
+  const { options, projects, areaFilter, setSelectedProjectKey } = useHomeAreaFilter();
   const judgedKey = useRef<string | null>(null);
   const threadKey = thread === null ? null : `${thread.environmentId}:${thread.id}`;
-  const areaFilter =
-    options.selectedArea === null || projects.length === 0
-      ? null
-      : resolveHomeAreaFilter(
-          buildHomeProjectScopes({
-            projects,
-            environmentId: null,
-            projectGroupingMode: options.projectGroupingMode,
-          }),
-          options.selectedArea,
-        );
   // Null waits: for the thread, for an area saved before the projects loaded, or for a Home's Bot.
   const leaves =
     thread === null
