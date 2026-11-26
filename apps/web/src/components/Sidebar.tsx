@@ -1235,7 +1235,13 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         ? projectScopeKeys.filter((candidate) => candidate !== key)
         : [...projectScopeKeys, key],
     );
-  const routeHomeRevealDecided = routeHomeRef !== null && routeHomeBots !== null;
+  // An area saved before the projects load cannot judge the Home yet.
+  const decidedHomeRevealKey =
+    routeHomeRef !== null &&
+    routeHomeBots !== null &&
+    (persistedAreaScope === null || (allProjectSnapshotsReady && allProjectConfigsReady))
+      ? scopedThreadKey(routeHomeRef)
+      : null;
   // The widened scope outlives the reveal, so it is written back to the persisted
   // scope. Route changes arrive from history, links and the palette, and only this
   // component holds the project groups that decide a widening, so no single
@@ -1247,11 +1253,13 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       setPersistedProjectScopeKeys([]);
     }
     // No row completes a Home's reveal, so an area picked later while it stays open sticks.
-    if (routeHomeRevealDecided) completeSidebarRouteReveal(routeReveal);
+    if (decidedHomeRevealKey !== null && routeReveal.pendingKey === decidedHomeRevealKey) {
+      completeSidebarRouteReveal(routeReveal);
+    }
   }, [
     clearSelection,
+    decidedHomeRevealKey,
     revealWidensScope,
-    routeHomeRevealDecided,
     routeReveal,
     setPersistedProjectScopeKeys,
   ]);
