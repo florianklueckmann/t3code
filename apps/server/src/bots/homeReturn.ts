@@ -21,6 +21,14 @@ export function isDirectHomeInput(message: OrchestrationV2ConversationMessage | 
   );
 }
 
+/**
+ * Input the user gave, typed or through their own MCP client such as `t3 thread send`. Never
+ * another thread's agent, nor an agent in a linked environment.
+ */
+export function isUserGivenHomeInput(message: OrchestrationV2ConversationMessage | undefined) {
+  return isDirectHomeInput(message) && message?.linkedSender === undefined;
+}
+
 /** A direct Home input the user typed, not one an agent sent over MCP. */
 export function isUserHomeInput(message: OrchestrationV2ConversationMessage | undefined) {
   return isDirectHomeInput(message) && message?.createdBy === "user";

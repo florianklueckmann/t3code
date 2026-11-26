@@ -3,6 +3,7 @@ import { projectComposerContextForProvider } from "@t3tools/shared/composerConte
 import {
   CommandId,
   latestProviderTurnForAttempt,
+  withMessageSenderNote,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ContextHandoff,
   type OrchestrationV2ExecutionNode,
@@ -82,6 +83,8 @@ import {
   knownProviderFailureMessage,
   makeProviderFailure,
 } from "@t3tools/provider-core/server/failure";
+import * as BotTurnContext from "../bots/BotTurnContext.ts";
+import { loadMessageSenderNames } from "./messageSenderNames.ts";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
@@ -217,6 +220,7 @@ export const layer: Layer.Layer<
   | ThreadCommandExecutor.ThreadCommandExecutor
   | TurnItemPositionStore.TurnItemPositionStoreV2
   | TextGeneration.TextGeneration
+  | BotTurnContext.BotTurnContext
 > = Layer.effect(
   ProviderTurnStartServiceV2,
   Effect.gen(function* () {
@@ -238,6 +242,7 @@ export const layer: Layer.Layer<
     const textGeneration = yield* TextGeneration.TextGeneration;
     const serverSettings = yield* ServerSettings.ServerSettingsService;
     const serverConfig = yield* ServerConfig.ServerConfig;
+    const botTurnContext = yield* BotTurnContext.BotTurnContext;
 
     /** Summarizes the older messages a fresh conversation would not hand over verbatim. */
     const summarizeFreshConversation = Effect.fn(
@@ -1079,10 +1084,17 @@ export const layer: Layer.Layer<
       });
       let effectiveHandoffs = handoffs;
       let resumeFellBack = false;
-      const userText = projectComposerContextForProvider({
-        text: providerMessage.text,
-        records: providerMessage.context?.records ?? [],
-      });
+      const userText = withMessageSenderNote(
+        providerMessage,
+        projectComposerContextForProvider({
+          text: providerMessage.text,
+          records: providerMessage.context?.records ?? [],
+        }),
+        yield* loadMessageSenderNames(
+          { projections: projectionStore, bots: botTurnContext },
+          providerMessage,
+        ),
+      );
       // Native goal commands go verbatim; handoff history waits a turn.
       const goalDriver =
         session.driver === "codex" ||

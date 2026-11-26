@@ -163,6 +163,7 @@ function startWithMissingWorktree(
   const createWorktree = vi.fn(() => Effect.succeed({} as never));
   const listLocalBranchNames = vi.fn(() => Effect.succeed(["feature/restore"]));
   const layer = ProviderTurnStart.layer.pipe(
+    Layer.provide(BotTurnContext.layerEmpty),
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({}),
@@ -1520,6 +1521,7 @@ function makeLocalCommandHarness(input: {
         }),
   );
   const layer = ProviderTurnStart.layer.pipe(
+    Layer.provide(BotTurnContext.layerEmpty),
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({
