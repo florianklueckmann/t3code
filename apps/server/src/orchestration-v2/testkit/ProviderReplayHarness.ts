@@ -457,12 +457,18 @@ export function layerWithRegistry<Error>(
         ThreadCommandExecutor.layer,
         // Replays never request a fresh conversation, so nothing is summarized.
         Layer.mock(TextGeneration.TextGeneration)({}),
+        BotTurnContext.layerEmpty,
       ),
     ),
   );
   const layerProviderTurnControlServiceProvided = ProviderTurnControlService.layer.pipe(
     Layer.provide(
-      Layer.mergeAll(layerEventSinkProvided, layerStores, layerProviderSessionManagerProvided),
+      Layer.mergeAll(
+        layerEventSinkProvided,
+        layerStores,
+        layerProviderSessionManagerProvided,
+        BotTurnContext.layerEmpty,
+      ),
     ),
   );
   const layerRuntimeRequestServiceProvided = RuntimeRequestService.layer.pipe(

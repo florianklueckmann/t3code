@@ -27,6 +27,8 @@ import * as BotStore from "./BotStore.ts";
 export interface RecordLearningInput extends BotRecordLearningInput {
   readonly origin: BotLearningOrigin;
   readonly source: BotLearningSource;
+  /** Waits for the user's adoption whatever the policy, as a lesson from another agent's message. */
+  readonly awaitsUser?: true;
 }
 
 export interface RecordLearningResult {
@@ -67,9 +69,11 @@ const initialStatus = (input: {
   readonly policy: BotLearningPolicy;
   /** A task's lesson waits until the server sees that task completed. */
   readonly fromTask: boolean;
+  readonly awaitsUser?: boolean | undefined;
 }): BotLearningStatus => {
   if (input.origin === "instruction") return "active";
-  if (input.fromTask || input.shared || input.conflictsWithInstruction) return "pending";
+  if (input.fromTask || input.awaitsUser || input.shared || input.conflictsWithInstruction)
+    return "pending";
   return input.policy === "automatic" ? "active" : "pending";
 };
 
@@ -246,6 +250,7 @@ export const make = (deps: {
             conflictsWithInstruction,
             policy,
             fromTask,
+            awaitsUser: input.awaitsUser,
           });
       const row: BotStore.BotLearningRow = {
         ...base,
@@ -293,6 +298,7 @@ export const make = (deps: {
       conflictsWithInstruction: false,
       policy,
       fromTask,
+      awaitsUser: input.awaitsUser,
     });
     const row: BotStore.BotLearningRow = {
       ...base,

@@ -200,13 +200,19 @@ const layerProviderTurnStartServiceProvided = ProviderTurnStartService.layer.pip
       TurnItemPositionStore.layer,
       ThreadCommandExecutor.layer,
       TextGeneration.layer.pipe(Layer.provide(ProviderInstallationGate.layer)),
+      BotTurnContext.layer,
     ),
   ),
 );
 
 const layerProviderTurnControlServiceProvided = ProviderTurnControlService.layer.pipe(
   Layer.provide(
-    Layer.mergeAll(layerEventSink, ProjectionStore.layer, layerProviderSessionManagerProvided),
+    Layer.mergeAll(
+      layerEventSink,
+      ProjectionStore.layer,
+      layerProviderSessionManagerProvided,
+      BotTurnContext.layer,
+    ),
   ),
 );
 const layerRuntimeRequestServiceProvided = RuntimeRequestService.layer.pipe(

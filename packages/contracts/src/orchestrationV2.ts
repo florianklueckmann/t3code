@@ -600,6 +600,48 @@ export function isCompactionCommandMessage(message: CompactionMessageFields): bo
   );
 }
 
+const LEADING_COMMAND = /^\s*(?:\/|\p{Sc}[a-zA-Z0-9:_-]*[a-zA-Z])/u;
+
+/** Names of the thread whose agent sent a message, looked up when its turn starts or steers. */
+export interface MessageSenderNames {
+  readonly threadTitle?: string | undefined;
+  /** The Bot whose Home or work thread it is. */
+  readonly botName?: string | undefined;
+}
+
+const quotedThread = (threadId: ThreadId, title: string | undefined) =>
+  title === undefined
+    ? `T3 thread ${JSON.stringify(threadId)}`
+    : `T3 thread ${JSON.stringify(title)} (threadId ${JSON.stringify(threadId)})`;
+
+/**
+ * Which agent sent a message, in a line the model reads before its text, or the text unchanged
+ * when no other thread's agent sent it. Providers parse slash commands and skill mentions such as
+ * `$deploy` from the start of a prompt, so those stay as sent.
+ */
+export function withMessageSenderNote(
+  message: {
+    readonly createdBy: OrchestrationV2Actor;
+    readonly senderThreadId?: ThreadId | undefined;
+    readonly linkedSender?: OrchestrationV2LinkedSender | undefined;
+  },
+  text: string,
+  names: MessageSenderNames = {},
+): string {
+  if (message.createdBy !== "agent") return text;
+  const sender =
+    message.linkedSender !== undefined
+      ? `the agent in ${quotedThread(message.linkedSender.threadId, message.linkedSender.title)} on linked environment ${JSON.stringify(message.linkedSender.environmentId)}`
+      : message.senderThreadId === undefined
+        ? undefined
+        : names.botName === undefined
+          ? `the agent in ${quotedThread(message.senderThreadId, names.threadTitle)}`
+          : `the Bot ${JSON.stringify(names.botName)}, from its ${quotedThread(message.senderThreadId, names.threadTitle)},`;
+  if (sender === undefined || LEADING_COMMAND.test(text)) return text;
+  const note = `[T3 Code: ${sender} sent this message, not the user.]`;
+  return text === "" ? note : `${note}\n\n${text}`;
+}
+
 export type OrchestrationV2GoalCommand =
   | { readonly type: "show" }
   | { readonly type: "clear" }

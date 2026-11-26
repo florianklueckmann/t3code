@@ -2116,6 +2116,7 @@ const executeSteer = Effect.fn("fixture.executeSteer")(function* (
   const run = { id: `run-${id}`, status: options.turnStatus };
   const control = ProviderTurnControlService.layer.pipe(
     Layer.provide(Layer.mock(EventSink.EventSinkV2)({})),
+    Layer.provide(BotTurnContext.layerEmpty),
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({

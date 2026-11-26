@@ -340,6 +340,100 @@ it.effect.each([
   }).pipe(Effect.provide(layerTest));
 });
 
+const botHome = ThreadId.make("bot-home:mail-bot:project");
+const otherBotHome = ThreadId.make("bot-home:news-bot:project");
+const queued = "queue_after_active";
+it.effect.each([
+  { label: "queues another Bot's auto send", mode: "auto", sender: otherBotHome, expected: queued },
+  { label: "queues another Bot's steer", mode: "steer", sender: otherBotHome, expected: queued },
+  {
+    label: "queues another Bot's restart",
+    mode: "restart",
+    sender: otherBotHome,
+    expected: queued,
+  },
+  {
+    label: "queues a linked environment's agent",
+    mode: "auto",
+    linkedSender: {
+      environmentId: EnvironmentId.make("environment:linked"),
+      threadId: ThreadId.make("thread:linked"),
+      title: "Linked",
+    },
+    expected: queued,
+  },
+  { label: "steers the Home's own send", mode: "steer", sender: botHome, expected: "steer_active" },
+  { label: "steers from the user's own MCP client", mode: "auto", expected: "steer_active" },
+  {
+    label: "steers an ordinary thread",
+    threadId: ThreadId.make("thread:ordinary"),
+    mode: "auto",
+    sender: otherBotHome,
+    expected: "steer_active",
+  },
+] as const)("sendToThread to a busy Bot Home $label", (row) => {
+  const input = { threadId: botHome, ...row };
+  const projectId = ProjectId.make("project:thread-management:bot-home");
+  const dispatched: Array<string> = [];
+  const layerTest = ThreadManagementService.layerWithLegacyImporter.pipe(
+    Layer.provide(Layer.succeed(ThreadWorktreeRestore, { restore: () => Effect.void })),
+    Layer.provide(
+      Layer.mock(LegacyV1ThreadImporter.LegacyV1ThreadImporter)({
+        ensureTranscript: () => Effect.succeed({ importedThreadCount: 0, importedMessageCount: 0 }),
+      }),
+    ),
+    Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
+    Layer.provide(
+      Layer.mock(Orchestrator.OrchestratorV2)({
+        getThreadRecords: () =>
+          Effect.succeed({
+            thread: {
+              id: input.threadId,
+              projectId,
+              deletedAt: null,
+              archivedAt: null,
+              worktreePath: null,
+              branch: null,
+              modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "test" },
+            },
+            runs: [{ id: RunId.make("run:user"), status: "running", activeAttemptId: "attempt" }],
+            providerTurns: [{ runAttemptId: "attempt", status: "running" }],
+            messages: [],
+            turnItems: [],
+          } as unknown as OrchestrationV2ThreadProjection),
+        dispatch: (command) =>
+          Effect.sync(() => {
+            if (command.type === "message.dispatch") dispatched.push(command.dispatchMode.type);
+            return { sequence: 1, storedEvents: [] } as never;
+          }),
+      }),
+    ),
+    Layer.provide(ServerSettings.layerTest()),
+    Layer.provideMerge(layerReceiptsTest),
+  );
+
+  return Effect.gen(function* () {
+    const threads = yield* ThreadManagementService.ThreadManagementService;
+    // The mock records no message, so the send ends in the projection read after dispatching.
+    yield* Effect.flip(
+      threads.sendToThread({
+        projectId,
+        threadId: input.threadId,
+        commandId: CommandId.make("command:thread-management:bot-home"),
+        messageId: MessageId.make("message:thread-management:bot-home"),
+        ...("sender" in input ? { senderThreadId: input.sender } : {}),
+        ...("linkedSender" in input ? { linkedSender: input.linkedSender } : {}),
+        text: "What is on today's agenda?",
+        attachments: [],
+        mode: input.mode,
+        createdBy: "agent",
+        creationSource: "mcp",
+      }),
+    );
+    expect(dispatched).toEqual([input.expected]);
+  }).pipe(Effect.provide(layerTest));
+});
+
 it.effect("waitForThread follows a restart continuation instead of the cut run", () =>
   Effect.gen(function* () {
     const projectId = ProjectId.make("project:thread-management:wait-restart");

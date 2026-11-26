@@ -583,6 +583,13 @@ changing a project's guidance and sources, need one of:
 
 This is also what lets a Bot record a preferred source from its own conversation.
 
+A Bot can ask another Bot by messaging its Home. A message from another
+thread's agent, Bot or linked environment always waits until the Home's
+running turn ends, so it never lands in a turn you started. The receiving Bot
+sees which Bot or thread sent it. Only you give standing instructions: a Bot
+never records one from another agent's message, and a lesson it proposes in
+such a turn waits for you to adopt it.
+
 In the app, changing Bots needs the `orchestration:operate` permission, the same
 one that starts and messages threads. See [Remote access](./remote-access.md)
 for choosing a client's permissions.

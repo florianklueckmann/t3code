@@ -14,6 +14,7 @@ import {
   CommandId,
   isDelegatedAppThread,
   isListedThreadLineage,
+  mayBeBotHomeThreadId,
   MessageId,
   OrchestrationV2StopWorkflowError,
   type OrchestrationV2StopWorkflowInput,
@@ -904,9 +905,14 @@ const make = Effect.gen(function* () {
       });
     }
     const steerableRun = latestSteerableRun(target);
-    // A fresh send never joins a running turn, so it needs none to steer or restart.
+    // A fresh send never joins a running turn, so it needs none to steer or restart. Another
+    // thread's agent waits its turn at a Bot Home: it never lands in the user's running turn.
+    const fromOtherThread =
+      (input.senderThreadId !== undefined && input.senderThreadId !== input.threadId) ||
+      input.linkedSender !== undefined;
     const mode =
-      input.freshContext && (input.mode === "steer" || input.mode === "restart")
+      (input.freshContext && (input.mode === "steer" || input.mode === "restart")) ||
+      (fromOtherThread && mayBeBotHomeThreadId(input.threadId))
         ? "queue"
         : input.mode;
     let dispatchMode: Extract<

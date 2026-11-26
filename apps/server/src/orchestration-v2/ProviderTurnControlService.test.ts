@@ -1,5 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import {
+  MessageId,
   type ModelSelection,
   NodeId,
   type OrchestrationV2ProviderThread,
@@ -22,6 +23,7 @@ import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 
+import * as BotTurnContext from "../bots/BotTurnContext.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as EventSink from "./EventSink.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
@@ -310,6 +312,7 @@ it.effect(
             layerProjection,
             layerSessionManager,
             Layer.mock(EventSink.EventSinkV2)({}),
+            BotTurnContext.layerEmpty,
           ),
         ),
       );
@@ -359,4 +362,70 @@ it.effect(
       assert.equal(interrupted?.id, providerThreadId);
       assert.equal(interrupted?.nativeThreadRef?.nativeId, "native-thread:restart-session");
     }),
+);
+
+it.effect("steers another Bot's message into a turn named by that Bot, not as the user", () =>
+  Effect.gen(function* () {
+    const threadId = ThreadId.make("thread:steer-sender");
+    const sender = ThreadId.make("bot-home:mail-bot:project");
+    const sessionId = ProviderSessionId.make("provider-session:steer-sender");
+    const providerTurnId = ProviderTurnId.make("provider-turn:steer-sender");
+    const steered: Array<ProviderAdapter.ProviderAdapterV2SteerInput> = [];
+    const layerControl = ProviderTurnControlService.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            getProviderControlContext: () =>
+              Effect.succeed({
+                providerThread: { id: "provider-thread", providerSessionId: sessionId },
+                providerTurn: {
+                  id: providerTurnId,
+                  providerThreadId: "provider-thread",
+                  status: "running",
+                },
+                run: { id: RunId.make("run:steer-sender"), status: "running" },
+                message: {
+                  id: "message:steer-sender",
+                  text: "What is on today's agenda?",
+                  attachments: [],
+                  createdBy: "agent",
+                  creationSource: "mcp",
+                  senderThreadId: sender,
+                },
+              } as never),
+            getThreadTitles: () => Effect.succeed({ [sender]: "Mail" }),
+          }),
+          Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
+            get: () =>
+              Effect.succeedSome({
+                steerTurn: (input: ProviderAdapter.ProviderAdapterV2SteerInput) =>
+                  Effect.sync(() => void steered.push(input)),
+              } as never),
+          }),
+          Layer.mock(EventSink.EventSinkV2)({}),
+          Layer.mock(BotTurnContext.BotTurnContext)({
+            botNameOfThread: (id) => Effect.succeed(id === sender ? "Mail Bot" : undefined),
+          }),
+        ),
+      ),
+    );
+
+    yield* Effect.gen(function* () {
+      const control = yield* ProviderTurnControlService.ProviderTurnControlServiceV2;
+      yield* control.steer({
+        threadId,
+        providerSessionId: sessionId,
+        providerThreadId: ProviderThreadId.make("provider-thread"),
+        providerTurnId,
+        messageId: MessageId.make("message:steer-sender"),
+      });
+    }).pipe(Effect.provide(layerControl));
+
+    assert.deepEqual(
+      steered.map((input) => input.message.text),
+      [
+        `[T3 Code: the Bot "Mail Bot", from its T3 thread "Mail" (threadId "${sender}"), sent this message, not the user.]\n\nWhat is on today's agenda?`,
+      ],
+    );
+  }),
 );

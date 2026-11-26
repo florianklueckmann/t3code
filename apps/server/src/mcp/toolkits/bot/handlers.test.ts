@@ -9,6 +9,7 @@ import {
   BotTaskId,
   EnvironmentId,
   MessageId,
+  type OrchestrationV2ConversationMessage,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
@@ -33,6 +34,7 @@ import { BotToolkit, type BotToolInput } from "./tools.ts";
 
 const environmentId = EnvironmentId.make("environment:bots");
 const threadId = ThreadId.make("thread:bots");
+const starterId = MessageId.make("message:turn-starter");
 const botId = BotId.make("faerun-companion");
 const campaignA = ProjectId.make("project-campaign-a");
 
@@ -104,6 +106,8 @@ const callTool = (
     readonly changes?: McpCallerChangesValue;
     readonly subagent?: boolean;
     readonly sealedLoad?: boolean;
+    /** Who started the Home's running turn; the user, typing, by default. */
+    readonly turnStarter?: Partial<OrchestrationV2ConversationMessage>;
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -146,6 +150,19 @@ const callTool = (
               }),
               Layer.mock(ThreadManagement.ThreadManagementService)({
                 getThreadShell: () => Effect.succeed(liveThreadShell(threadId)),
+                getThreadRecords: () =>
+                  Effect.succeed({
+                    runs: [{ status: "running", ordinal: 1, userMessageId: starterId }],
+                    messages: [
+                      {
+                        id: starterId,
+                        role: "user",
+                        createdBy: "user",
+                        creationSource: "web",
+                        ...caller.turnStarter,
+                      },
+                    ],
+                  } as never),
               }),
               Layer.mock(ThreadSearch.ThreadSearch)({}),
               caller.changes === undefined
@@ -189,7 +206,7 @@ const callTool = (
                   record(
                     `learn:${input.projectId}:${input.origin}:${
                       input.source.kind === "thread" ? input.source.threadId : input.source.kind
-                    }`,
+                    }${input.awaitsUser ? ":awaits-user" : ""}`,
                   ).pipe(
                     Effect.map((bot) => ({
                       bot,
@@ -278,6 +295,46 @@ it.effect(
       );
       expect(otherProject.result).toMatchObject({ code: "invalid_request" });
       expect(otherProject.calls).toEqual([]);
+
+      // Only the user gives standing instructions; another thread's agent or a linked
+      // environment's never does, and a lesson from its turn waits for the user.
+      const instruction = { ...learning, origin: "instruction" as const };
+      const fromUser = yield* callTool(
+        { action: "learn", botId, projectId: campaignA, learning: instruction },
+        undefined,
+        own,
+      );
+      expect(fromUser.calls).toEqual([`learn:${campaignA}:instruction:${threadId}`]);
+      for (const turnStarter of [
+        { createdBy: "agent", creationSource: "mcp", senderThreadId: ThreadId.make("bot-home:a") },
+        {
+          createdBy: "agent",
+          creationSource: "mcp",
+          linkedSender: {
+            environmentId: EnvironmentId.make("environment:linked"),
+            threadId: ThreadId.make("thread:linked"),
+            title: "Linked",
+          },
+        },
+      ] as const) {
+        const refused = yield* callTool(
+          { action: "learn", botId, projectId: campaignA, learning: instruction },
+          undefined,
+          own,
+          false,
+          { turnStarter },
+        );
+        expect(refused.result).toMatchObject({ code: "invalid_request" });
+        expect(refused.calls).toEqual([]);
+        const proposed = yield* callTool(
+          { action: "learn", botId, projectId: campaignA, learning },
+          undefined,
+          own,
+          false,
+          { turnStarter },
+        );
+        expect(proposed.calls).toEqual([`learn:${campaignA}:correction:${threadId}:awaits-user`]);
+      }
 
       // A work thread's lesson is attributed to its task, which the server resolved.
       const fromTask = yield* callTool(
