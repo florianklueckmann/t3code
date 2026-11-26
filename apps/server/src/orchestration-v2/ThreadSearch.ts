@@ -76,7 +76,8 @@ const SearchRequest = Schema.Struct({
   ),
   /** For each short word outside ASCII, the spellings a hit must contain one of. */
   shortSpellings: Schema.fromJsonString(Schema.Array(Schema.Array(Schema.String))),
-  projectId: Schema.NullOr(ProjectId),
+  /** Every project when null. */
+  projectIds: Schema.NullOr(TokenList),
   /** One thread only, for a caller already scoped to it. */
   threadId: Schema.NullOr(ThreadId),
   /** Threads the caller already lists, left out before the hit limit. */
@@ -229,7 +230,7 @@ export const messageHitsQuery = (
     match,
     substrings,
     shortSpellings,
-    projectId,
+    projectIds,
     threadId,
     excludedThreadIds,
   }: typeof SearchRequest.Encoded,
@@ -242,7 +243,8 @@ export const messageHitsQuery = (
       WHERE threads.deleted_at IS NULL
         AND threads.archived_at IS NULL
         AND projects.deleted_at IS NULL
-        AND (${projectId} IS NULL OR threads.project_id = ${projectId})
+        AND (${projectIds} IS NULL
+          OR threads.project_id IN (SELECT value FROM json_each(${projectIds})))
         AND (${threadId} IS NULL OR threads.thread_id = ${threadId})
         AND threads.thread_id NOT IN (SELECT value FROM json_each(${excludedThreadIds}))
         AND json_extract(threads.payload_json, '$.lineage.relationshipToParent')
@@ -382,7 +384,9 @@ export class ThreadSearch extends Context.Service<
   {
     /** Message text matches, for clients that rank their own thread list. */
     readonly search: (
-      input: OrchestrationSearchThreadsInput,
+      input: OrchestrationSearchThreadsInput & {
+        readonly projectIds?: ReadonlyArray<ProjectId> | undefined;
+      },
     ) => Effect.Effect<OrchestrationSearchThreadsResult, ThreadSearchError>;
     /**
      * Title, branch, pull request, and project matches ranked as the command
@@ -549,7 +553,7 @@ export const make = Effect.gen(function* () {
   /** The matching messages in scope, as they read; JS checks word starts. */
   const messageHits = (
     query: string,
-    scope: Pick<typeof SearchRequest.Type, "projectId" | "threadId" | "excludedThreadIds">,
+    scope: Pick<typeof SearchRequest.Type, "projectIds" | "threadId" | "excludedThreadIds">,
   ) =>
     read(
       Effect.gen(function* () {
@@ -574,7 +578,7 @@ export const make = Effect.gen(function* () {
   // cannot use up the limit.
   const searchMessages = Effect.fn("ThreadSearch.search")(function* (
     input: OrchestrationSearchThreadsInput & {
-      readonly projectId: ProjectId | null;
+      readonly projectIds: ReadonlyArray<ProjectId> | null;
       /** Threads the caller already lists, which must not use up the limit. */
       readonly excludedThreadIds?: ReadonlySet<ThreadId>;
       /** Off for an agent's search, which has no use for the user's picks. */
@@ -584,7 +588,7 @@ export const make = Effect.gen(function* () {
     // One message per thread, the best by `compareHits`.
     // Text relevance (bm25) would cost a pass over every hit in history.
     const hits = yield* messageHits(input.query, {
-      projectId: input.projectId,
+      projectIds: input.projectIds,
       threadId: null,
       excludedThreadIds: [...(input.excludedThreadIds ?? [])],
     });
@@ -645,7 +649,7 @@ export const make = Effect.gen(function* () {
   });
 
   const search: ThreadSearch["Service"]["search"] = (input) =>
-    searchMessages({ ...input, projectId: null });
+    searchMessages({ ...input, projectIds: input.projectIds ?? null });
 
   const searchThreads: ThreadSearch["Service"]["searchThreads"] = Effect.fn(
     "ThreadSearch.searchThreads",
@@ -691,7 +695,7 @@ export const make = Effect.gen(function* () {
     const { matches } = yield* searchMessages({
       query: input.query,
       limit: 50,
-      projectId: input.projectId ?? null,
+      projectIds: input.projectId === undefined ? null : [input.projectId],
       excludedThreadIds: shown,
       picks: false,
     });
@@ -770,7 +774,7 @@ export const make = Effect.gen(function* () {
         AND projects.deleted_at IS NULL
     `);
     if (searchable.length === 0) return null;
-    const hits = yield* messageHits(query, { projectId: null, threadId, excludedThreadIds: [] });
+    const hits = yield* messageHits(query, { projectIds: null, threadId, excludedThreadIds: [] });
     // A turn still in progress, such as the one asking, is not earlier conversation.
     const unfinished = new Set(
       (yield* read(sql<{ readonly messageId: string }>`
@@ -807,7 +811,7 @@ export const searchThreadsWithOlderSettledRows = Effect.fn(
 )(function* <E1, E2, E3, E4, E5>(input: {
   readonly request: OrchestrationV2SearchThreadsInput;
   readonly search: (
-    input: OrchestrationSearchThreadsInput,
+    input: OrchestrationSearchThreadsInput & { readonly projectIds?: ReadonlyArray<ProjectId> },
   ) => Effect.Effect<OrchestrationSearchThreadsResult, E1>;
   readonly searchOlderSettled: (
     input: Parameters<ThreadSearch["Service"]["searchOlderSettled"]>[0],
@@ -821,7 +825,9 @@ export const searchThreadsWithOlderSettledRows = Effect.fn(
   const { olderSettledBefore, projectIds, environmentLabel, titlesOnly, ...request } =
     input.request;
   const messages: OrchestrationV2SearchThreadsResult =
-    titlesOnly === true ? { matches: [] } : yield* input.search(request);
+    titlesOnly === true
+      ? { matches: [] }
+      : yield* input.search(projectIds === undefined ? request : { ...request, projectIds });
   if (olderSettledBefore === undefined) return messages;
   // Ranked before the rows' transaction, so scoring never holds the shared reader.
   const threadIds = yield* input.searchOlderSettled({

@@ -132,6 +132,7 @@ import { useStartSideChat } from "./useStartSideChat";
 import { useThreadStatusAnnouncements } from "./useThreadStatusAnnouncements";
 import type { ThreadInspectorMode, ThreadInspectorTarget } from "./thread-inspector-navigation";
 import { useSelectWorkspaceDetail } from "../layout/workspace/useSelectWorkspaceDetail";
+import { useLeaveAreaForOpenThread } from "../home/useHomeProjectFilter";
 
 function firstRouteParam(value: string | string[] | undefined): string | null {
   const first = Array.isArray(value) ? value[0] : value;
@@ -271,6 +272,7 @@ function LiveThreadRouteController(props: ThreadRouteScreenProps) {
     selectedThread === null
       ? null
       : scopedThreadKey(selectedThread.environmentId, selectedThread.id);
+  useLeaveAreaForOpenThread(selectedThreadKey === routeThreadKey ? selectedThread : null);
   const selectedThreadDetailState = useSelectedThreadDetailState();
   const detailError = selectedThreadDetailState.error;
   const [errorBeforeConnected, setErrorBeforeConnected] = useState(() =>

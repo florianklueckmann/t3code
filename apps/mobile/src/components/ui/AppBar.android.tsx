@@ -137,6 +137,7 @@ function AppBarView(props: AppBarProps & { readonly searchState?: SearchState })
             ? {
                 accessibilityLabel: menu.title,
                 customized: icon?.endsWith(".fill") === true,
+                ...(menu.dotClassName === undefined ? {} : { dotClassName: menu.dotClassName }),
                 actions: menuActionsFromAppBarItems(menu.items),
                 onSelect: (id) => selectMenuItem(menu.items, id),
               }

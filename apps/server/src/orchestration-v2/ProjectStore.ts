@@ -258,7 +258,7 @@ export const make = Effect.gen(function* () {
           scripts: payload.scripts,
           pinnedAt: null,
           archivedAt: null,
-          area: null,
+          area: payload.area ?? null,
           createdAt: payload.createdAt,
           updatedAt: payload.updatedAt,
           deletedAt: null,

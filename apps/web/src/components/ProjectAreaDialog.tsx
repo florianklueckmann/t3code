@@ -2,7 +2,7 @@ import { PROJECT_AREA_MAX_LENGTH } from "@t3tools/contracts";
 import { useEffect, useId, useState } from "react";
 import { create } from "zustand";
 
-import { parseProjectAreaInput } from "../projectAreas";
+import { parseProjectAreaInput } from "@t3tools/client-runtime/state/project-areas";
 import { Button } from "./ui/button";
 import {
   Dialog,

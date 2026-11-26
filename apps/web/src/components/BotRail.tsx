@@ -9,7 +9,7 @@ import { Fragment, type MouseEvent } from "react";
 
 import { isElectron } from "../env";
 import { useAreaScopedProjectKeys } from "../hooks/useAreaScopedProjectKeys";
-import { botProjectKeys, isBotInProjectScope } from "../projectAreas";
+import { botProjectKeys, isBotInProjectScope } from "@t3tools/client-runtime/state/project-areas";
 import { cn } from "../lib/utils";
 import { readLocalApi } from "../localApi";
 import { useEnvironment } from "../state/environments";

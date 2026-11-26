@@ -19,8 +19,8 @@ import {
   type ThreadSearchShell,
 } from "@t3tools/client-runtime/state/thread-search";
 import { foldSearchQuery, rankSearchItems, scoreThreadSearch } from "@t3tools/shared/paletteSearch";
+import { threadsHiddenByProjectScope } from "@t3tools/client-runtime/state/project-areas";
 import {
-  BOT_HOME_THREAD_ID_PREFIX,
   mayBeBotHomeThreadId,
   type ContextMenuItem,
   type EnvironmentId,
@@ -1010,50 +1010,30 @@ export function resolveSidebarFolderDot(
   return null;
 }
 
-type ScopedThread = Pick<
-  EnvironmentThreadShell,
-  "archivedAt" | "environmentId" | "id" | "projectId"
->;
-
-const inProjectScope = (thread: ScopedThread, scopedProjectKeys: ReadonlySet<string>) =>
-  scopedProjectKeys.has(`${thread.environmentId}:${thread.projectId}`);
-
-// Home ids are `bot-home:<botId>:<projectId>`.
-const botKeyOfHome = (thread: ScopedThread) =>
-  `${thread.environmentId}:${thread.id.slice(BOT_HOME_THREAD_ID_PREFIX.length).split(":")[0]}`;
-
 /**
  * The dot on the filter button while an area hides part of the list: the most
  * urgent state among hidden threads and the homes of Bots the rail hides.
- * A Bot with a loaded Home in scope keeps its rail entry and dot. Settled,
- * snoozed and working threads stay quiet.
+ * Settled, snoozed and working threads stay quiet.
  */
 export function resolveOutOfScopeDot(input: {
   readonly threads: readonly EnvironmentThreadShell[];
   readonly scopedProjectKeys: ReadonlySet<string>;
+  /** `environmentId:botId` of the Bots the rail shows, from `botRailKeys`. */
+  readonly railBotKeys: ReadonlySet<string>;
   readonly delegatedUnderParent: ReadonlySet<string>;
   readonly localLastVisitedAtById: Readonly<Record<string, string>>;
   readonly now: string;
 }): "attention" | "failed" | "unread" | null {
-  const shownBots = new Set(
-    input.threads
-      .filter(
-        (thread) =>
-          thread.archivedAt === null &&
-          mayBeBotHomeThreadId(thread.id) &&
-          inProjectScope(thread, input.scopedProjectKeys),
-      )
-      .map(botKeyOfHome),
-  );
-  const hidden = input.threads.filter(
+  const hidden = threadsHiddenByProjectScope(
+    input.threads,
+    input.scopedProjectKeys,
+    input.railBotKeys,
+  ).filter(
     (thread) =>
-      thread.archivedAt === null &&
-      !inProjectScope(thread, input.scopedProjectKeys) &&
       thread.settledOverride !== "settled" &&
       !effectiveSnoozed(thread, { now: input.now }) &&
-      (mayBeBotHomeThreadId(thread.id)
-        ? !shownBots.has(botKeyOfHome(thread))
-        : filterSidebarV2VisibleThreads([thread], null, input.delegatedUnderParent).length === 1),
+      (mayBeBotHomeThreadId(thread.id) ||
+        filterSidebarV2VisibleThreads([thread], null, input.delegatedUnderParent).length === 1),
   );
   const dot = resolveSidebarFolderDot(
     hidden.map((thread) => ({

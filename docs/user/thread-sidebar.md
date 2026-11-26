@@ -163,12 +163,14 @@ section is off. Each device keeps its own choice.
 ## Areas
 
 Put projects into areas, such as Work and Personal, to see one part of your work at a time. Set a
-project's area in **Settings → Projects → Area** on web and desktop, or right-click its folder in the
-grouped sidebar. Pick an existing area, choose **New area…** to name one, or choose **No area**. A
-project has one area, and it applies on every machine that has the project.
+project's area in **Settings → Projects → Area** on web, desktop and mobile, or right-click its
+folder in the grouped sidebar. Pick an existing area, choose **New area…** to name one, or choose
+**No area**. A project has one area, and it applies on every machine that has the project. A
+project you add while an area is selected starts in that area. Agents can read and set areas
+through the project tools.
 
-The sidebar's project filter lists your areas above the projects, plus **No area** for projects
-without one. Picking an area narrows the thread list, search, drafts, and the Bot rail to its
+The project filter in the sidebar and in the mobile thread list lists your areas above the
+projects, plus **No area** for projects without one. Picking an area narrows the thread list, search, drafts, and the Bot rail to its
 projects on every connected machine. A Bot shows while any of its projects is in the area, and a
 Bot without a project always shows. Picking a single project replaces the area, and opening a
 thread outside the area switches back to **All projects**. A dot on the filter button means

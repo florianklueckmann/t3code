@@ -77,12 +77,13 @@ import {
 } from "lucide-react";
 import {
   botProjectKeys,
-  buildProjectAreaMenu,
+  botRailKeys,
   isBotInProjectScope,
   isProjectGroupInArea,
   listProjectAreas,
   projectGroupAreas,
-} from "../projectAreas";
+} from "@t3tools/client-runtime/state/project-areas";
+import { buildProjectAreaMenu } from "../projectAreas";
 import {
   useEffect,
   useLayoutEffect,
@@ -239,6 +240,7 @@ import {
   type SnoozePreset,
 } from "./Sidebar.snooze";
 import { ProjectFavicon } from "./ProjectFavicon";
+import { useBotEnvironmentIds } from "./BotRail";
 import { deriveProviderEntriesByEnvironment } from "../providerInstances";
 import { useStableCallback } from "../hooks/useStableCallback";
 import {
@@ -1485,11 +1487,16 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     keepEmptyFolders: (group) =>
       scopedProjectGroups.length > 0 || (group.pinned && !group.archived),
   });
+  const botEnvironmentIds = useBotEnvironmentIds();
+  const railBots = useAtomValue(
+    serverEnvironment.botsAcrossEnvironments(areaScope === null ? [] : botEnvironmentIds),
+  );
   const outOfScopeDot =
     areaScope !== null && scopedProjectKeys !== null
       ? resolveOutOfScopeDot({
           threads,
           scopedProjectKeys,
+          railBotKeys: botRailKeys(railBots, scopedProjectKeys),
           delegatedUnderParent,
           localLastVisitedAtById,
           now: snoozeNow,

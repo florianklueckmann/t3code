@@ -11,6 +11,7 @@ import {
 } from "react";
 import { Pressable, View } from "react-native";
 
+import { cn } from "../../lib/cn";
 import { AndroidAnchoredMenu } from "./AndroidAnchoredMenu.android";
 import { AndroidHeaderIconButton } from "./AndroidScreenHeader.android";
 import { AppText } from "./AppText";
@@ -39,6 +40,8 @@ export interface WorkspaceAppBarProps {
   readonly filter?: {
     readonly accessibilityLabel: string;
     readonly customized: boolean;
+    /** A status dot on the button, as a background color class. */
+    readonly dotClassName?: string;
     readonly actions: MenuAction[];
     readonly onSelect: (id: string) => void;
   };
@@ -156,7 +159,17 @@ function WorkspaceAppBarView(props: WorkspaceAppBarProps) {
             android_ripple={{ borderless: true, radius: 20 }}
             onPress={open}
             style={{ width: ACTION_SIZE, height: ACTION_SIZE }}
-          />
+          >
+            {filter.dotClassName ? (
+              <View
+                pointerEvents="none"
+                className={cn(
+                  "absolute top-2 right-2 h-2.5 w-2.5 rounded-full border-2 border-header",
+                  filter.dotClassName,
+                )}
+              />
+            ) : null}
+          </Pressable>
         )
       }
     </AndroidAnchoredMenu>

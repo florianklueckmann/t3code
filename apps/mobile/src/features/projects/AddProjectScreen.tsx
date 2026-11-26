@@ -1,5 +1,6 @@
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { useSelectWorkspaceDetail } from "../layout/workspace/useSelectWorkspaceDetail";
+import { useNewProjectArea } from "../home/useHomeProjectFilter";
 import * as Dialog from "../../components/ui/Dialog";
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
 import { NavigationRow } from "../../components/ui/NavigationRow";
@@ -813,6 +814,7 @@ function useCreateProject(environment: EnvironmentOption | null) {
   const navigation = useNavigation();
   const createProject = useAtomCommand(projectEnvironment.create, { reportFailure: false });
   const openExistingProject = useOpenExistingProject(environment);
+  const newProjectArea = useNewProjectArea();
 
   return async (
     workspaceRoot: string,
@@ -841,9 +843,10 @@ function useCreateProject(environment: EnvironmentOption | null) {
       projectId,
       workspaceRoot,
     });
+    const area = newProjectArea(environment.environmentId);
     const result = await createProject({
       environmentId: environment.environmentId,
-      input: command,
+      input: area === undefined ? command : { ...command, area },
     });
     if (AsyncResult.isFailure(result)) {
       return result;
@@ -1102,6 +1105,7 @@ export function AddProjectNewScreen(props: { readonly environmentId?: string | s
   );
   const environment = resolveAddProjectEnvironment(environmentOptions, selectedEnvironmentId);
   const createNew = useAtomCommand(projectEnvironment.createNew, { reportFailure: false });
+  const newProjectArea = useNewProjectArea();
   const checkPublishedAppAccess = useAtomCommand(sourceControlEnvironment.checkAppAccess, {
     reportFailure: false,
     reportDefect: false,
@@ -1178,9 +1182,10 @@ export function AddProjectNewScreen(props: { readonly environmentId?: string | s
     submittingRef.current = true;
     setError(null);
     setIsSubmitting(true);
+    const area = newProjectArea(environment.environmentId);
     const result = await createNew({
       environmentId: environment.environmentId,
-      input: { name: trimmedName },
+      input: { name: trimmedName, ...(area === undefined ? {} : { area }) },
     });
     if (AsyncResult.isFailure(result)) {
       submittingRef.current = false;

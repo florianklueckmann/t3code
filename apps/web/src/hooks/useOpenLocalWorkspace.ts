@@ -14,6 +14,7 @@ import { useEnvironmentShellHasSnapshot } from "../state/shell";
 import { useAtomCommand } from "../state/use-atom-command";
 import { useOrchestrationCommand } from "../state/use-orchestration-command";
 import { reportProjectFailure } from "./useProjectGroupUpdate";
+import { useNewProjectArea } from "./useAreaScopedProjectKeys";
 import { useNewThreadHandler } from "./useHandleNewThread";
 
 /**
@@ -25,6 +26,7 @@ import { useNewThreadHandler } from "./useHandleNewThread";
 export function useOpenLocalWorkspace() {
   const primaryEnvironment = usePrimaryEnvironment();
   const createProject = useAtomCommand(projectEnvironment.create, { reportFailure: false });
+  const newProjectArea = useNewProjectArea();
   const updateProject = useOrchestrationCommand(projectEnvironment.update, {
     label: "project unarchive",
   });
@@ -58,6 +60,7 @@ export function useOpenLocalWorkspace() {
         ) ?? null,
       createProject: async (environmentId, workspaceRoot) => {
         const projectId = newProjectId();
+        const area = newProjectArea(environmentId);
         const result = await createProject({
           environmentId,
           input: {
@@ -66,6 +69,7 @@ export function useOpenLocalWorkspace() {
             workspaceRoot,
             createWorkspaceRootIfMissing: false,
             defaultModelSelection: null,
+            ...(area === undefined ? {} : { area }),
           },
         });
         if (result._tag === "Failure") {

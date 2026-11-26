@@ -1,4 +1,12 @@
 import {
+  isProjectGroupInArea,
+  listProjectAreas,
+  offersNoAreaFilter,
+  resolveAreaScopedProjectKeys,
+  resolveProjectAreaScope,
+  type ProjectAreaScope,
+} from "@t3tools/client-runtime/state/project-areas";
+import {
   buildProjectGroups,
   pickableProjectGroups,
   resolveScratchProjectScopeKey,
@@ -90,6 +98,43 @@ export function resolveHomeProjectFilterScope(
     sidebarProjectGroupingOverrides: {},
   });
   return pickableProjectGroups(scopes).find((scope) => scope.key === key) ?? null;
+}
+
+const areaGroup = (scope: HomeProjectScope) => ({
+  memberProjects: scope.projects,
+  memberProjectRefs: scope.projectRefs,
+});
+
+/** The filter's area rows: each area of the listed projects, then "No area" where it narrows. */
+export function homeAreaFilterOptions(scopes: ReadonlyArray<HomeProjectScope>): {
+  readonly areas: readonly string[];
+  readonly noArea: boolean;
+} {
+  const groups = pickableProjectGroups(scopes).map(areaGroup);
+  return { areas: listProjectAreas(groups), noArea: offersNoAreaFilter(groups) };
+}
+
+/** The saved area as it applies to the listed projects, and the projects it lists; null lists all. */
+export function resolveHomeAreaFilter(
+  scopes: ReadonlyArray<HomeProjectScope>,
+  saved: ProjectAreaScope | null,
+): {
+  readonly scope: ProjectAreaScope;
+  readonly projectRefs: ReadonlyArray<ScopedProjectRef>;
+  readonly scopedProjectKeys: ReadonlySet<string>;
+} | null {
+  const groups = pickableProjectGroups(scopes).map(areaGroup);
+  const scope = resolveProjectAreaScope(groups, saved);
+  const scopedProjectKeys =
+    scope === null ? null : resolveAreaScopedProjectKeys(groups, scope.area);
+  if (scope === null || scopedProjectKeys === null) return null;
+  return {
+    scope,
+    projectRefs: groups
+      .filter((group) => isProjectGroupInArea(group, scope.area))
+      .flatMap((group) => group.memberProjectRefs),
+    scopedProjectKeys,
+  };
 }
 
 export function findHomeProjectScope(

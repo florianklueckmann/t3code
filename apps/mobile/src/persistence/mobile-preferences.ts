@@ -42,6 +42,10 @@ export type PullRequestListControls = typeof PullRequestListControls.Type;
 const ThreadListFilters = Schema.Struct({
   environmentId: Schema.NullOr(EnvironmentId),
   projectKey: Schema.NullOr(Schema.String),
+  /** Exclusive with `projectKey`; `{ area: null }` lists projects without an area. */
+  areaScope: Schema.optionalKey(
+    Schema.NullOr(Schema.Struct({ area: Schema.NullOr(Schema.String) })),
+  ),
 });
 export type ThreadListFilters = typeof ThreadListFilters.Type;
 

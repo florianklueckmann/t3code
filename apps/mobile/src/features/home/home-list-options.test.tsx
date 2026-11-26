@@ -41,9 +41,30 @@ it("saves the scope from every update made in one event", async () => {
   });
 
   expect(harness.saved.at(-1)).toEqual({
-    threadListFilters: { environmentId: ENVIRONMENT, projectKey: "env-1:project-1" },
+    threadListFilters: {
+      environmentId: ENVIRONMENT,
+      projectKey: "env-1:project-1",
+      areaScope: null,
+    },
   });
   expect(controls!.options.selectedEnvironmentId).toBe(ENVIRONMENT);
   expect(controls!.options.selectedProjectKey).toBe("env-1:project-1");
+
+  // An area and a single project replace each other.
+  act(() => controls!.setSelectedArea("Work"));
+  expect(harness.saved.at(-1)).toEqual({
+    threadListFilters: {
+      environmentId: ENVIRONMENT,
+      projectKey: null,
+      areaScope: { area: "Work" },
+    },
+  });
+  act(() => controls!.setSelectedArea(null));
+  expect(controls!.options.selectedArea).toEqual({ area: null });
+  act(() => controls!.setSelectedProjectKey(null));
+  expect(controls!.options.selectedArea).toBeNull();
+  expect(harness.saved.at(-1)).toEqual({
+    threadListFilters: { environmentId: ENVIRONMENT, projectKey: null, areaScope: null },
+  });
   act(() => root.unmount());
 });

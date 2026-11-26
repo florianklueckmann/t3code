@@ -1,5 +1,6 @@
 import type { EnvironmentId, SidebarProjectGroupingMode } from "@t3tools/contracts";
 import { DEFAULT_SIDEBAR_PROJECT_SORT_ORDER } from "@t3tools/contracts";
+import type { ProjectAreaScope } from "@t3tools/client-runtime/state/project-areas";
 import { RegistryContext, useAtomSet, useAtomValue } from "@effect/atom-react";
 import { Atom } from "effect/reactivity";
 import { createContext, createElement, useContext, useState, type PropsWithChildren } from "react";
@@ -11,6 +12,8 @@ import type { HomeProjectSortOrder } from "./homeThreadList";
 export interface HomeListOptions {
   readonly selectedEnvironmentId: EnvironmentId | null;
   readonly selectedProjectKey: string | null;
+  /** Exclusive with `selectedProjectKey`: setting one clears the other. */
+  readonly selectedArea: ProjectAreaScope | null;
   readonly projectSortOrder: HomeProjectSortOrder;
 }
 
@@ -21,7 +24,8 @@ export interface ResolvedHomeListOptions extends HomeListOptions {
 function defaultHomeListOptions(filters?: ThreadListFilters): HomeListOptions {
   return {
     selectedEnvironmentId: filters?.environmentId ?? null,
-    selectedProjectKey: filters?.projectKey ?? null,
+    selectedProjectKey: filters?.areaScope ? null : (filters?.projectKey ?? null),
+    selectedArea: filters?.areaScope ?? null,
     projectSortOrder:
       DEFAULT_SIDEBAR_PROJECT_SORT_ORDER === "manual"
         ? "updated_at"
@@ -57,12 +61,14 @@ export function HomeListOptionsProvider({
     registry.set(optionsAtom, next);
     if (
       next.selectedEnvironmentId !== current.selectedEnvironmentId ||
-      next.selectedProjectKey !== current.selectedProjectKey
+      next.selectedProjectKey !== current.selectedProjectKey ||
+      JSON.stringify(next.selectedArea) !== JSON.stringify(current.selectedArea)
     ) {
       savePreferences({
         threadListFilters: {
           environmentId: next.selectedEnvironmentId,
           projectKey: next.selectedProjectKey,
+          areaScope: next.selectedArea,
         },
       });
     }
@@ -96,7 +102,10 @@ export function useHomeListOptions(availableEnvironmentIds: ReadonlySet<Environm
     updateOptions({ selectedEnvironmentId: value });
   };
   const setSelectedProjectKey = (value: string | null) => {
-    updateOptions({ selectedProjectKey: value });
+    updateOptions({ selectedProjectKey: value, selectedArea: null });
+  };
+  const setSelectedArea = (area: string | null) => {
+    updateOptions({ selectedProjectKey: null, selectedArea: { area } });
   };
   const setProjectSortOrder = (value: HomeProjectSortOrder) => {
     updateOptions({ projectSortOrder: value });
@@ -105,6 +114,7 @@ export function useHomeListOptions(availableEnvironmentIds: ReadonlySet<Environm
     options: resolvedOptions,
     setSelectedEnvironmentId,
     setSelectedProjectKey,
+    setSelectedArea,
     setProjectSortOrder,
   } as const;
 }

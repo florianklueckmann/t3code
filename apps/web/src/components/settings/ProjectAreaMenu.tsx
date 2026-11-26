@@ -1,6 +1,6 @@
 import { ChevronDownIcon, PlusIcon, TagIcon } from "lucide-react";
 
-import type { ProjectAreaChoice } from "../../projectAreas";
+import type { ProjectAreaChoice } from "@t3tools/client-runtime/state/project-areas";
 import { Button } from "../ui/button";
 import {
   Menu,

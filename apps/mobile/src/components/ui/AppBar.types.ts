@@ -45,6 +45,8 @@ export interface AppBarMenu {
   readonly icon: AppSymbolName;
   readonly status?: string;
   readonly separateBackground?: boolean;
+  /** Android workspace bar: a status dot on the button, as a background color class. */
+  readonly dotClassName?: string;
   readonly items: ReadonlyArray<AppBarMenuItem>;
 }
 

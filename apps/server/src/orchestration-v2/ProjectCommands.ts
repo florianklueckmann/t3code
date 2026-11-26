@@ -23,6 +23,7 @@ export interface ProjectCreateCommand {
   readonly title: string;
   readonly workspaceRoot: string;
   readonly scripts?: ReadonlyArray<ProjectScript>;
+  readonly area?: string | null;
 }
 
 export interface ProjectMetaUpdateCommand {
@@ -164,6 +165,7 @@ export function planProjectCommand(input: {
           faviconPath: null,
           projectIcon: null,
           scripts: command.scripts ?? [],
+          ...(command.area == null ? {} : { area: command.area }),
           createdAt: occurredAt,
           updatedAt: occurredAt,
         },

@@ -43,6 +43,8 @@ import * as SourceControlProviderRegistry from "../../../sourceControl/SourceCon
 import * as Repositories from "../../../sourceControl/SourceControlRepositoryService.ts";
 import * as GitVcsDriver from "../../../vcs/GitVcsDriver.ts";
 import * as VcsProcess from "../../../vcs/VcsProcess.ts";
+import * as McpCallerChanges from "../../McpCallerChanges.ts";
+import type { McpCallerChangesValue } from "../../McpCallerChanges.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { layerCallerChangesAllowed, liveThreadShell } from "../../McpToolAccess.testkit.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
@@ -1073,23 +1075,26 @@ it.effect.each(["invalid-input", "attached-bot"] as const)(
 
 const callProjectMutation = Effect.fn("test.callProjectMutation")(function* (
   name: "t3_project_update" | "t3_project_delete",
+  updateFields: Record<string, unknown> = { title: "Renamed" },
+  callerChanges: McpCallerChangesValue = "allowed",
 ) {
   const projectId = ProjectId.make("project:target");
   const threadId = ThreadId.make("thread:caller");
-  const reached = yield* Ref.make<ReadonlyArray<string>>([]);
-  const reach = (method: string) =>
-    Ref.update(reached, (current) => [...current, method]).pipe(
+  const reached = yield* Ref.make<ReadonlyArray<unknown>>([]);
+  const reach = (method: string, input?: unknown) =>
+    Ref.update(reached, (current) => [...current, input === undefined ? method : input]).pipe(
       Effect.andThen(Effect.fail(new Project.ProjectInvalidError({ projectId, detail: method }))),
     );
   const result = yield* Effect.gen(function* () {
     const toolkit = yield* ProjectToolkit;
     const results = yield* toolkit
-      .handle(name, {
-        projectId,
-        ...(name === "t3_project_update" ? { title: "Renamed" } : { force: true }),
-      })
-      .pipe(Stream.unwrap, Stream.runCollect);
-    return results.at(-1)?.result;
+      .handle(
+        name,
+        // Rows also pass input the tool schema must refuse.
+        { projectId, ...(name === "t3_project_update" ? updateFields : { force: true }) } as never,
+      )
+      .pipe(Stream.unwrap, Stream.runCollect, Effect.exit);
+    return Exit.isSuccess(results) ? results.value.at(-1)?.result : "refused";
   }).pipe(
     Effect.provide(
       McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(
@@ -1114,9 +1119,12 @@ const callProjectMutation = Effect.fn("test.callProjectMutation")(function* (
               namedProjectsRoot: "/projects",
               isScratchProject: () => Effect.succeed(false),
             }),
-            layerCallerChangesAllowed,
+            Layer.succeed(McpCallerChanges.McpCallerChanges, {
+              forThread: () => Effect.succeed(callerChanges),
+            }),
             Layer.mock(Project.ProjectService)({
-              update: () => reach("update"),
+              update: (input) =>
+                reach("update", "area" in updateFields ? { area: input.area } : undefined),
               delete: () => reach("delete"),
             }),
             Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({}),
@@ -1137,4 +1145,27 @@ it.effect.each(["t3_project_update", "t3_project_delete"] as const)(
         expect(reached).toEqual([name === "t3_project_update" ? "update" : "delete"]);
       }),
     ),
+);
+
+it.effect.each([
+  { area: "  Work  ", reached: [{ area: "Work" }] },
+  { area: null, reached: [{ area: null }] },
+  { area: "x".repeat(41), reached: [] },
+  { area: "Two\nlines", reached: [] },
+  { area: "   ", reached: [] },
+])("t3_project_update sets or clears an area: $area", ({ area, reached: expected }) =>
+  callProjectMutation("t3_project_update", { area }).pipe(
+    Effect.map(({ reached }) => {
+      expect(reached).toEqual(expected);
+    }),
+  ),
+);
+
+it.effect("a Bot maintenance turn cannot change a project's area", () =>
+  callProjectMutation("t3_project_update", { area: "Work" }, "botNote").pipe(
+    Effect.map(({ result, reached }) => {
+      expect(reached).toEqual([]);
+      expect(result).toMatchObject({ code: "capability_denied" });
+    }),
+  ),
 );

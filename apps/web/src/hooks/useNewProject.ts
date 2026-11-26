@@ -15,6 +15,7 @@ import { projectEnvironment } from "~/state/projects";
 import { sourceControlEnvironment } from "~/state/sourceControl";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { useNewThreadHandler } from "./useHandleNewThread";
+import { useNewProjectArea } from "./useAreaScopedProjectKeys";
 import { suggestAppAccessForRemote } from "../components/sourceControlAppAccessToast";
 
 function errorMessage(error: unknown): string {
@@ -29,6 +30,7 @@ export function useNewProject() {
     reportFailure: false,
   });
   const handleNewThread = useNewThreadHandler();
+  const newProjectArea = useNewProjectArea();
 
   const publishNewRepository = async (input: {
     readonly environmentId: EnvironmentId;
@@ -72,9 +74,10 @@ export function useNewProject() {
     readonly name: string;
     readonly publishTo: NewProjectPublishTarget | null;
   }): Promise<boolean> => {
+    const area = newProjectArea(input.environmentId);
     const result = await createNew({
       environmentId: input.environmentId,
-      input: { name: input.name },
+      input: { name: input.name, ...(area === undefined ? {} : { area }) },
     });
     if (result._tag === "Failure") {
       if (!isAtomCommandInterrupted(result)) {

@@ -1398,6 +1398,16 @@ export function createServerEnvironmentAtoms<R, E>(
     label: "environment-data:server:bots:live",
     tag: WS_METHODS.botsSubscribe,
   });
+  /** Bot summaries of the environments in the JSON key, archived ones included; one subscription each. */
+  const botsAcrossEnvironmentsFamily = Atom.family((environmentIdsJson: string) =>
+    Atom.make((get) =>
+      (JSON.parse(environmentIdsJson) as EnvironmentId[]).flatMap((environmentId) =>
+        (
+          AsyncResult.getOrElse(get(botsLive({ environmentId, input: {} })), () => null)?.bots ?? []
+        ).map((bot) => ({ environmentId, bot })),
+      ),
+    ).pipe(Atom.withLabel(`environment-data:server:bots:across:${environmentIdsJson}`)),
+  );
   const botTasksLive = createEnvironmentRpcSubscriptionAtomFamily(runtime, {
     label: "environment-data:server:bots:tasks:live",
     tag: WS_METHODS.botsSubscribeTasks,
@@ -1851,6 +1861,8 @@ export function createServerEnvironmentAtoms<R, E>(
     }),
     // Summaries only; instructions and guidance load per Bot through botDetail.
     botsLive,
+    botsAcrossEnvironments: (environmentIds: ReadonlyArray<EnvironmentId>) =>
+      botsAcrossEnvironmentsFamily(JSON.stringify(environmentIds)),
     // The 50 newest tasks for the filter; statuses update as their work threads run.
     botTasksLive,
     // One Home's learning notices; only an open Home subscribes, so learning text stays there.

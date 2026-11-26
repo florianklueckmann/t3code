@@ -60,6 +60,8 @@ export interface CreateProjectInput extends CommandMetadata {
   readonly createWorkspaceRootIfMissing?: boolean;
   readonly defaultModelSelection?: ModelSelection | null;
   readonly scripts?: ReadonlyArray<ProjectScript>;
+  /** Only for servers with the `projectAreas` capability; older ones drop it. */
+  readonly area?: string | null;
 }
 
 export interface UpdateProjectInput extends CommandMetadata {
@@ -433,6 +435,7 @@ export const createProject = Effect.fn("EnvironmentCommands.createProject")(func
       ? {}
       : { defaultModelSelection: input.defaultModelSelection }),
     ...(input.scripts === undefined ? {} : { scripts: input.scripts }),
+    ...(input.area == null ? {} : { area: input.area }),
   });
 });
 

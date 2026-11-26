@@ -10,7 +10,7 @@ import * as Cause from "effect/Cause";
 
 import { requestNewProjectArea } from "../components/ProjectAreaDialog";
 import { stackedThreadToast, toastManager } from "../components/ui/toast";
-import type { ProjectAreaChoice } from "../projectAreas";
+import type { ProjectAreaChoice } from "@t3tools/client-runtime/state/project-areas";
 import type { SidebarProjectGroupMember } from "../sidebarProjectGrouping";
 import { useProjects, useServerConfigs } from "../state/entities";
 import { readEnvironment } from "../state/environments";
