@@ -373,7 +373,7 @@ const seedAlerts = (
       ...Array.from({ length: alerts.held }, () => 1),
     ];
     for (const [index, held] of rows.entries()) {
-      const taskId = `bot-task:eval-${index}`;
+      const taskId = `bot-task:${botId}-${index}`;
       decide.run(
         `${taskId}:run`,
         botId,

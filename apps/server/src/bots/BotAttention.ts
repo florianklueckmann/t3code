@@ -71,7 +71,10 @@ export interface BotAlertDigest {
   readonly digestAt: string;
 }
 
-/** The view plus what decides a new alert now, for the Bot's own read-only MCP view. */
+/**
+ * The view plus what decides a new alert now, for the Bot's read-only MCP view. `digestAt` carries
+ * the local offset.
+ */
 export interface BotAttentionStatus extends BotAttentionView {
   /** The zone quiet hours and the day's limit are counted in. */
   readonly timeZone: string;
@@ -204,6 +207,8 @@ export const make = Effect.gen(function* () {
     const view = yield* get(botId);
     return {
       ...view,
+      // With the local offset: models read a UTC time as the quiet hours' local time.
+      digestAt: view.digestAt === null ? null : DateTime.formatIsoOffset(local(view.digestAt)),
       timeZone: DateTime.zoneToString(zone),
       quietNow: inQuietHours(yield* localNow, view.quietHours),
       limitReached: view.sentToday >= view.dailyLimit,

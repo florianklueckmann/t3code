@@ -104,7 +104,7 @@ const alertStatus = {
   writable: true,
   sentToday: 0,
   held: 2,
-  digestAt: "2026-11-03T08:00:00.000Z",
+  digestAt: "2026-11-03T08:00:00.000+01:00",
   timeZone: "Europe/Berlin",
   quietNow: false,
   limitReached: true,

@@ -99,7 +99,9 @@ it.effect("caps proactive alerts per local day, deciding each run once across a 
       digestAt: "2026-11-03T00:00:00.000Z",
     });
     assert.deepInclude(yield* restarted.status(botId), {
-      ...view,
+      sentToday: 3,
+      held: 2,
+      digestAt: "2026-11-03T00:00:00.000+00:00",
       quietNow: false,
       limitReached: true,
     });

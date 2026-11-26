@@ -448,8 +448,8 @@ export const CASES: ReadonlyArray<PreparationCase> = [
       sentToday: 1,
       held: 1,
     },
-    // The time in the server's zone, or its UTC equivalent in Berlin winter time.
-    answerMust: ["limit", "0?5:45|04:45"],
+    // The digest goes out as quiet hours end, at 05:45 local time.
+    answerMust: ["limit", "0?5:45"],
     routine: null,
     startsTask: false,
   },
