@@ -28,7 +28,7 @@ const driverOf = (providerInstances: ProviderInstances, instanceId: ProviderInst
 
 /**
  * Why a sealed Bot run cannot be enforced on this instance here, or undefined. Codex and Claude
- * seal both modes, each only where that was verified natively; Pi seals neither.
+ * seal every mode, each only where that was verified natively; Pi seals none.
  */
 export const restrictionUnenforceable = Effect.fn("BotRuntimePolicy.restrictionUnenforceable")(
   function* (
@@ -38,7 +38,7 @@ export const restrictionUnenforceable = Effect.fn("BotRuntimePolicy.restrictionU
   ) {
     const driver = yield* driverOf(providerInstances, instanceId);
     const support = BotProviderSupport.botDriverSupport(driver);
-    if (!(seal === "readOnly" ? support.readOnlySeal : support.homeSeal))
+    if (!(seal === "t3BotOnly" ? support.homeSeal : support.readOnlySeal))
       return BotProviderSupport.unsupportedReason(driver);
     const platform = yield* HostProcess.Platform;
     const measured =
@@ -52,7 +52,8 @@ export const restrictionUnenforceable = Effect.fn("BotRuntimePolicy.restrictionU
 /**
  * A Bot's whole lineage runs without provider memory and with only its granted MCP connections
  * (plus the user's own Codex servers when switched on). Codex, Claude and Pi enforce grants; any
- * other provider is refused. No changes tasks also run restricted.
+ * other provider is refused. No changes tasks and the Bot-level Home with read access also run
+ * restricted.
  */
 export const layer: Layer.Layer<
   RuntimePolicy.RuntimePolicyV2,
@@ -120,14 +121,22 @@ export const layer: Layer.Layer<
         const constraint = yield* executionConstraint
           .forThread(input.thread.id)
           .pipe(Effect.mapError(resolveError));
-        const noChanges = constraint === "no-changes";
-        if (noChanges) {
-          const reason = yield* sealUnenforceable("readOnly");
+        // The Bot-level Home with read access reads like No changes and changes only through tasks.
+        const readSeal =
+          constraint === "no-changes"
+            ? ("readOnly" as const)
+            : constraint === "home-read"
+              ? ("readOnlyT3Bot" as const)
+              : undefined;
+        const noChanges = readSeal !== undefined;
+        if (readSeal !== undefined) {
+          const reason = yield* sealUnenforceable(readSeal);
           if (reason !== undefined) {
             return yield* new RuntimePolicy.RuntimePolicyUnsupportedError({
               threadId: input.thread.id,
               providerInstanceId: input.modelSelection.instanceId,
               reason,
+              ...(readSeal === "readOnlyT3Bot" ? { botHomeAccess: "read" as const } : {}),
             });
           }
         }
@@ -135,11 +144,11 @@ export const layer: Layer.Layer<
           .mcpAccessForThread(input.thread)
           .pipe(Effect.mapError(resolveError));
         if (access._tag === "none") {
-          return noChanges
+          return readSeal !== undefined
             ? ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
                 ...policy,
                 nativeMemory: "disabled",
-                nativeTools: "readOnly",
+                nativeTools: readSeal,
               })
             : policy;
         }
@@ -207,7 +216,7 @@ export const layer: Layer.Layer<
         return ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
           ...policy,
           nativeMemory: "disabled",
-          ...(noChanges ? { nativeTools: "readOnly" as const } : {}),
+          ...(readSeal === undefined ? {} : { nativeTools: readSeal }),
           ...(grantsPlatform ? { mcpConnections, ...userMcpServers } : {}),
           ...(grantsPlatform &&
           !noChanges &&

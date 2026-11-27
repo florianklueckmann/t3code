@@ -46,6 +46,8 @@ const orphanedNoChangesSubagentThreadId = ThreadId.make("thread:orphaned-no-chan
 const orphanedPlainSubagentThreadId = ThreadId.make("thread:orphaned-plain-subagent");
 const botHomeThreadId = ThreadId.make("bot-home:mail-bot:project");
 const botSubagentThreadId = ThreadId.make("thread:mail-bot-subagent");
+const readHomeThreadId = ThreadId.make("bot-home:mail-bot:bot-home-mail-bot");
+const readHomeSubagentThreadId = ThreadId.make("thread:mail-bot-read-home-subagent");
 
 const subagentShell = (threadId: ThreadId, parentThreadId: ThreadId) => {
   const shell = liveThreadShell(threadId);
@@ -100,6 +102,8 @@ const shells = new Map([
   ],
   [botHomeThreadId, liveThreadShell(botHomeThreadId)],
   [botSubagentThreadId, subagentShell(botSubagentThreadId, botHomeThreadId)],
+  [readHomeThreadId, liveThreadShell(readHomeThreadId)],
+  [readHomeSubagentThreadId, subagentShell(readHomeSubagentThreadId, readHomeThreadId)],
 ]);
 
 /** Stands in for the Bot task lookup; an unreadable task answers "none", as the live port does. */
@@ -110,7 +114,9 @@ const layerCallerChanges = Layer.succeed(McpCallerChanges.McpCallerChanges, {
         threadId === unreadableTaskThreadId ||
         threadId === missingNoChangesParentId
         ? "none"
-        : "allowed",
+        : threadId === readHomeThreadId
+          ? "botTasks"
+          : "allowed",
     ),
 });
 
@@ -185,6 +191,7 @@ const ProbeToolkit = Toolkit.make(
     }),
   }),
   Tool.make("writes_environment", probe),
+  Tool.make("writes_bot_tasks", probe),
 );
 const ran = Effect.succeed({ ran: "ran" });
 const probeHandlers: McpToolAccess.Handlers<typeof ProbeToolkit.tools> = {
@@ -203,6 +210,7 @@ const probeHandlers: McpToolAccess.Handlers<typeof ProbeToolkit.tools> = {
     "stamped",
   ),
   writes_environment: McpToolAccess.writesEnvironment(() => ran),
+  writes_bot_tasks: McpToolAccess.writesBotTasks(() => ran),
 };
 const layerProbeHandlers = McpToolAccess.toLayer(ProbeToolkit, probeHandlers);
 
@@ -242,6 +250,7 @@ export const refusedAtCompileTime = () => {
       writes_threads: unchecked,
       starts_threads: unchecked,
       writes_environment: unchecked,
+      writes_bot_tasks: unchecked,
     }),
   );
 };
@@ -306,6 +315,8 @@ const unreadableTask = threadCaller(unreadableTaskThreadId);
 const plainSubagent = threadCaller(plainSubagentThreadId);
 const botHome = threadCaller(botHomeThreadId);
 const botSubagent = threadCaller(botSubagentThreadId);
+const readHome = threadCaller(readHomeThreadId);
+const readHomeSubagent = threadCaller(readHomeSubagentThreadId);
 const orphanedNoChangesSubagent = threadCaller(orphanedNoChangesSubagentThreadId);
 const orphanedPlainSubagent = threadCaller(orphanedPlainSubagentThreadId);
 
@@ -411,6 +422,24 @@ it.effect.each([
   ["writes_threads", sealedLoad, {}, "capability_denied"],
   ["starts_threads", sealedLoad, {}, "capability_denied"],
   ["writes_environment", sealedLoad, {}, "capability_denied"],
+  // The Bot-level Home with read access reads and changes things only through its Bot's tasks.
+  ["reads", readHome, {}, "ran"],
+  ["reads_as_caller", readHome, {}, "ran"],
+  ["acts_as_caller", readHome, {}, "capability_denied"],
+  ["writes", readHome, {}, "capability_denied"],
+  ["writes_with_capability", readHome, {}, "capability_denied"],
+  ["writes_threads", readHome, {}, "capability_denied"],
+  ["starts_threads", readHome, {}, "capability_denied"],
+  ["writes_environment", readHome, {}, "capability_denied"],
+  ["writes_bot_tasks", readHome, {}, "ran"],
+  ["writes", readHomeSubagent, {}, "capability_denied"],
+  ["writes_bot_tasks", readHomeSubagent, {}, "ran"],
+  // Bot task writes keep every other check of an environment write.
+  ["writes_bot_tasks", fullAccess, {}, "ran"],
+  ["writes_bot_tasks", supervised, {}, "capability_denied"],
+  ["writes_bot_tasks", noChanges, {}, "capability_denied"],
+  ["writes_bot_tasks", sealedLoad, {}, "capability_denied"],
+  ["writes_bot_tasks", readOnlyClient, {}, "capability_denied"],
   // Others are unchanged.
   ["writes", plainSubagent, {}, "ran"],
   ["writes_environment", fullAccess, {}, "ran"],

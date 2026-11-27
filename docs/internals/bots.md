@@ -51,8 +51,11 @@ off native memory for Bot threads.
 The [execution constraint](../../apps/server/src/bots/BotExecutionConstraint.ts)
 for a **No changes** routine comes from the admitted task. Editing the routine
 or following up in its work thread cannot widen the thread's access. T3 MCP
-tools that change state check the same constraint. If an adapter cannot enforce a required restriction,
-the server refuses the turn. See [Adding a provider](./adding-a-provider.md)
+tools that change state check the same constraint. The Bot-level Home with read
+access gets the same read-only load and changes things only through its Bot:
+T3 MCP tools let it start and cancel tasks, record learning and save its notes,
+and refuse every other change. With full access it runs as a project Home does.
+If an adapter cannot enforce a required restriction, the server refuses the turn. See [Adding a provider](./adding-a-provider.md)
 for the adapter contract.
 
 ## Tasks and results

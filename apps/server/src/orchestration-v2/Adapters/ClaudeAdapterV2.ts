@@ -2430,6 +2430,7 @@ type ClaudeSeal = NonNullable<ProviderAdapter.ProviderAdapterV2RuntimePolicy["na
  */
 const CLAUDE_SEAL_MIN_VERSION: Record<ClaudeSeal, string> = {
   readOnly: "2.1.326",
+  readOnlyT3Bot: "2.1.332",
   t3BotOnly: "2.1.327",
 };
 const claudeSealVersionSupported = (seal: ClaudeSeal, version: string | undefined) =>
@@ -2559,6 +2560,7 @@ function claudeSealedToolAllowed(
 }
 
 const CLAUDE_T3_MCP_TOOL_PREFIX = "mcp__t3-code__";
+const CLAUDE_T3_BOT_TOOL = `${CLAUDE_T3_MCP_TOOL_PREFIX}t3_bot`;
 
 /**
  * As on Codex, a No changes load calls another server's tool only when that server marks it
@@ -2589,7 +2591,9 @@ function claudeSealedToolHook(guard: ClaudeSealedToolGuard): HookCallback {
         permissionDecision: readOnly ? "allow" : "deny",
         permissionDecisionReason: readOnly
           ? "Its server marks this tool read-only."
-          : "This task is set to No changes, and this tool's server does not mark it read-only, so it is refused. Report what you found, or describe the change you propose, in your result.",
+          : guard.seal === "readOnlyT3Bot"
+            ? "This Bot's Home has read access, and this tool's server does not mark it read-only, so it is refused. Start a task with `t3_bot` action `start_task` for the change."
+            : "This task is set to No changes, and this tool's server does not mark it read-only, so it is refused. Report what you found, or describe the change you propose, in your result.",
       },
     };
   };
@@ -3853,6 +3857,14 @@ export function claudeRuntimeQueryPolicyForRuntimePolicy(
       permissionMode: "dontAsk",
       tools: CLAUDE_SEALED_TOOLS,
       allowedTools: CLAUDE_SEALED_TOOLS,
+      installPermissionCallback: false,
+    };
+  // T3 Code's server decides which of t3_bot's writes the read Home may make.
+  if (runtimePolicy.nativeTools === "readOnlyT3Bot")
+    return {
+      permissionMode: "dontAsk",
+      tools: CLAUDE_SEALED_TOOLS,
+      allowedTools: [...CLAUDE_SEALED_TOOLS, CLAUDE_T3_BOT_TOOL],
       installPermissionCallback: false,
     };
   // No built-in tool at all: no shell, files, web, subagents or skills.
@@ -12643,7 +12655,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               message:
                 context.input.runtimePolicy.nativeTools === "readOnly"
                   ? "This task is set to No changes, so tools that change things are refused. Report what you found, or describe the change you propose, in your result."
-                  : "This Bot Home turn may only read T3 Code and use the t3_bot tool, so this tool is refused.",
+                  : context.input.runtimePolicy.nativeTools === "readOnlyT3Bot"
+                    ? "This Bot's Home has read access, so tools that change things are refused. Start a task with `t3_bot` action `start_task` for the change."
+                    : "This Bot Home turn may only read T3 Code and use the t3_bot tool, so this tool is refused.",
               toolUseID: callbackOptions.toolUseID,
             } satisfies PermissionResult;
           }
@@ -14844,10 +14858,16 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   detail: `This Bot Home turn may only read T3 Code and use the t3_bot tool, so app calls to ${tool} are refused.`,
                 });
               }
-              if (liveQuery.seal === "readOnly" && !tool.startsWith(CLAUDE_T3_MCP_TOOL_PREFIX)) {
+              if (
+                (liveQuery.seal === "readOnly" || liveQuery.seal === "readOnlyT3Bot") &&
+                !tool.startsWith(CLAUDE_T3_MCP_TOOL_PREFIX)
+              ) {
                 return yield* new ProviderAdapter.ProviderAdapterProtocolError({
                   driver: CLAUDE_PROVIDER,
-                  detail: `This task is set to No changes, so app calls to ${tool} are refused.`,
+                  detail:
+                    liveQuery.seal === "readOnly"
+                      ? `This task is set to No changes, so app calls to ${tool} are refused.`
+                      : `This Bot's Home has read access, so app calls to ${tool} are refused.`,
                 });
               }
               // mcp_call skips Claude's permission check, so its deny rules are applied here.

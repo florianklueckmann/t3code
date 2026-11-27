@@ -1177,11 +1177,13 @@ it.effect.each([
   ),
 );
 
-it.effect("a Bot maintenance turn cannot change a project's area", () =>
-  callProjectMutation("t3_project_update", { area: "Work" }, "botNote").pipe(
-    Effect.map(({ result, reached }) => {
-      expect(reached).toEqual([]);
-      expect(result).toMatchObject({ code: "capability_denied" });
-    }),
-  ),
+it.effect.each(["botNote", "botTasks"] as const)(
+  "a restricted Bot turn cannot change a project's area: %s",
+  (changes) =>
+    callProjectMutation("t3_project_update", { area: "Work" }, changes).pipe(
+      Effect.map(({ result, reached }) => {
+        expect(reached).toEqual([]);
+        expect(result).toMatchObject({ code: "capability_denied" });
+      }),
+    ),
 );

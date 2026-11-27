@@ -1632,6 +1632,7 @@ const CODEX_SEAL_THREAD_CONFIG = {
   },
   // The shell stays for reading; the read-only, no-network turn sandbox bounds it.
   readOnly: codexFeaturesOff(CODEX_SEALED_FEATURES),
+  readOnlyT3Bot: codexFeaturesOff(CODEX_SEALED_FEATURES),
 } satisfies Record<CodexSeal, Readonly<Record<string, Schema.Json>>>;
 const CODEX_HOME_SEAL_T3_TOOLS = [...McpInvocationContext.SEALED_LOAD_TOOLS];
 
@@ -1781,21 +1782,31 @@ function codexThreadRuntimeParams(input: {
           ...granted,
           ...(seal === "readOnly" || t3Server === undefined
             ? t3Servers
-            : {
-                "t3-code": {
-                  ...t3Server,
-                  http_headers: {
-                    ...t3Server.http_headers,
-                    [McpInvocationContext.SEALED_LOAD_HEADER]: "1",
+            : seal === "readOnlyT3Bot"
+              ? {
+                  ...t3Servers,
+                  "t3-code": {
+                    ...t3Server,
+                    disabled_tools: CODEX_DIRECT_ONLY_T3_TOOLS,
+                    // As below: approval "never" would refuse t3_bot's writes before T3 sees them.
+                    tools: { t3_bot: { approval_mode: "approve" } },
                   },
-                  enabled_tools: CODEX_HOME_SEAL_T3_TOOLS,
-                  // Approval "never" in a read-only sandbox refuses an MCP write Codex can't see
-                  // is safe.
-                  tools: Object.fromEntries(
-                    CODEX_HOME_SEAL_T3_TOOLS.map((name) => [name, { approval_mode: "approve" }]),
-                  ),
-                },
-              }),
+                }
+              : {
+                  "t3-code": {
+                    ...t3Server,
+                    http_headers: {
+                      ...t3Server.http_headers,
+                      [McpInvocationContext.SEALED_LOAD_HEADER]: "1",
+                    },
+                    enabled_tools: CODEX_HOME_SEAL_T3_TOOLS,
+                    // Approval "never" in a read-only sandbox refuses an MCP write Codex can't see
+                    // is safe.
+                    tools: Object.fromEntries(
+                      CODEX_HOME_SEAL_T3_TOOLS.map((name) => [name, { approval_mode: "approve" }]),
+                    ),
+                  },
+                }),
         },
       },
     };
@@ -2631,7 +2642,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           const seal = codexThreadSealOf(turnInput.runtimePolicy);
           // An ordinary turn is refused in the words of the seal its thread is held in.
           const held =
-            seal !== "ordinary" ? seal : loadedSeal === "readOnly" ? "readOnly" : "t3BotOnly";
+            seal !== "ordinary"
+              ? seal
+              : loadedSeal === "readOnly" || loadedSeal === "readOnlyT3Bot"
+                ? loadedSeal
+                : "t3BotOnly";
           if ((loadedSeal ?? "ordinary") !== seal) return yield* refuseSeal(held, "seal");
           const loadedMcp = loaded === undefined || loaded === "unknown" ? null : loaded.mcp;
           const wanted =

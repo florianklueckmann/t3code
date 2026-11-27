@@ -48,7 +48,7 @@ import type {
   ProviderSelectionTransitionPlan,
 } from "./selectionTransition.ts";
 
-const ProviderAdapterNativeTools = Schema.Literals(["t3BotOnly", "readOnly"]);
+const ProviderAdapterNativeTools = Schema.Literals(["t3BotOnly", "readOnly", "readOnlyT3Bot"]);
 
 export const ProviderAdapterV2RuntimePolicy = Schema.Struct({
   runtimeMode: RuntimeMode,
@@ -67,10 +67,10 @@ export const ProviderAdapterV2RuntimePolicy = Schema.Struct({
    */
   nativeMemory: Schema.optional(Schema.Literal("disabled")),
   /**
-   * Both mean a read-only, approval-never turn with no user MCP servers, hooks or notify.
-   * "t3BotOnly" also removes every native side-effect tool and keeps only T3 Code's `t3_bot`.
-   * "readOnly" keeps the shell for reading, without network, and T3 Code's tools, whose writes
-   * the caller's task refuses. An adapter enforces it or refuses the run, and never widens it.
+   * Read-only, approval-never turns without user MCP servers, hooks or notify; enforced or refused.
+   * "t3BotOnly" keeps no native side-effect tool and only T3 Code's `t3_bot`. "readOnly" keeps a
+   * no-network shell for reading and T3 Code's tools, whose writes the server refuses.
+   * "readOnlyT3Bot" is "readOnly" with `t3_bot` callable without approval; the server judges it.
    */
   nativeTools: Schema.optional(ProviderAdapterNativeTools),
   /**
@@ -281,9 +281,14 @@ export class ProviderAdapterSealRefusedError extends Schema.TaggedError<Provider
 ) {
   override get message(): string {
     const because = sealRefusalText(this.driver)[this.reason];
-    return this.seal === "readOnly"
-      ? `This routine task is set to No changes, which its provider can't enforce here because ${because}, so nothing ran. Start a new routine task once that is fixed, or ask the Bot directly.`
-      : `This Bot maintenance turn can't be restricted here because ${because}, so nothing ran.`;
+    switch (this.seal) {
+      case "readOnly":
+        return `This routine task is set to No changes, which its provider can't enforce here because ${because}, so nothing ran. Start a new routine task once that is fixed, or ask the Bot directly.`;
+      case "readOnlyT3Bot":
+        return `This Bot's Home has read access, which its provider can't enforce here because ${because}, so nothing ran. Switch the Home to full access in Settings → Bots, or fix that first.`;
+      case "t3BotOnly":
+        return `This Bot maintenance turn can't be restricted here because ${because}, so nothing ran.`;
+    }
   }
 }
 

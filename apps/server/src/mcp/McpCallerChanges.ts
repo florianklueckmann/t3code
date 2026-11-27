@@ -3,11 +3,11 @@ import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 
 /**
- * Whether a calling thread may change anything through T3 Code's tools: everything, nothing, or
- * only its Home's own working note ("botNote", "botWaiting") from a restricted run. Implementations
- * answer "none" when they cannot tell. There is no default: every server that serves tools provides one.
+ * What a calling thread may change through T3 Code's tools: everything, nothing, its Home's working
+ * note from a restricted run ("botNote", "botWaiting"), or its Bot's tasks, learning and note
+ * ("botTasks": the Bot-level Home with read access). "none" when unknown; every server provides one.
  */
-export type McpCallerChangesValue = "allowed" | "none" | OrchestrationV2RunRestriction;
+export type McpCallerChangesValue = "allowed" | "none" | "botTasks" | OrchestrationV2RunRestriction;
 
 export class McpCallerChanges extends Context.Service<
   McpCallerChanges,

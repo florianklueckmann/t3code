@@ -147,6 +147,12 @@ const endedRestrictedRunRefusal = new OrchestratorMcpFailure({
     "This call comes from a Bot maintenance turn that has ended, so tools that change things are refused.",
 });
 
+const botHomeReadRefusal = new OrchestratorMcpFailure({
+  code: "capability_denied",
+  message:
+    "This Bot's Home has read access, so it changes nothing itself. Start a task with `t3_bot` action `start_task` for the change.",
+});
+
 const missingAncestorRefusal = new OrchestratorMcpFailure({
   code: "capability_denied",
   message:
@@ -159,6 +165,7 @@ const missingAncestorRefusal = new OrchestratorMcpFailure({
  */
 const refuseRestrictedCaller = Effect.fn("McpToolAccess.refuseRestrictedCaller")(function* (
   caller: Caller,
+  botTasks: "allowed" | "refused" = "refused",
 ) {
   if (caller.caller === undefined) return;
   // A sealed load serves only a restricted run, which these tools refuse whatever its state.
@@ -170,7 +177,8 @@ const refuseRestrictedCaller = Effect.fn("McpToolAccess.refuseRestrictedCaller")
     if (depth >= MAX_SUBAGENT_DEPTH) return yield* noChangesRefusal;
     const answer = yield* changes.forThread(shell.id);
     if (answer === "none") return yield* noChangesRefusal;
-    if (answer !== "allowed") return yield* restrictedRunRefusal;
+    if (answer === "botTasks" && botTasks === "refused") return yield* botHomeReadRefusal;
+    if (answer !== "allowed" && answer !== "botTasks") return yield* restrictedRunRefusal;
     const parentId =
       shell.lineage.relationshipToParent === "subagent" ? shell.lineage.parentThreadId : null;
     if (parentId === null) return;
@@ -185,13 +193,13 @@ const refuseRestrictedCaller = Effect.fn("McpToolAccess.refuseRestrictedCaller")
 const writingCaller = refuseReadOnlyClient.pipe(
   Effect.andThen(loadCaller()),
   Effect.tap(assertLiveCaller),
-  Effect.tap(refuseRestrictedCaller),
+  Effect.tap((caller) => refuseRestrictedCaller(caller)),
 );
 
 const orchestratingCaller = refuseReadOnlyClient.pipe(
   Effect.andThen(readCaller()),
   Effect.tap(assertLiveCaller),
-  Effect.tap(refuseRestrictedCaller),
+  Effect.tap((caller) => refuseRestrictedCaller(caller)),
 );
 
 const requireThreadCaller = McpInvocationContext.McpInvocationContext.pipe(
@@ -433,6 +441,28 @@ export const writesOwnHomeNote = <P, A, E, R>(handle: (params: P) => Effect.Effe
       return yield* endedRestrictedRunRefusal;
   });
   return declare((params: P) => check.pipe(Effect.flatMap(() => handle(params))), undefined);
+};
+
+/**
+ * Starts or cancels a Bot's task or records its learning: `writesEnvironment`'s checks, except that
+ * the Bot-level Home with read access may pass, as it changes things only through tasks.
+ */
+export const writesBotTasks = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>) => {
+  const check = refuseReadOnlyClient.pipe(
+    Effect.andThen(readCaller()),
+    Effect.tap(assertLiveCaller),
+    Effect.tap((caller) => refuseRestrictedCaller(caller, "allowed")),
+    Effect.tap((caller) => assertNotLinked(caller, "change projects or environment settings")),
+    Effect.tap((caller) => assertFullAccess(caller, fullAccessRequired)),
+  );
+  return declare(
+    (params: P) => check.pipe(Effect.flatMap(() => handle(params))),
+    // A linked environment cannot tell whose Home this is, so the read Home stays local.
+    () =>
+      orchestratingCaller.pipe(
+        Effect.tap((caller) => assertFullAccess(caller, fullAccessRequired)),
+      ),
+  );
 };
 
 type CheckServices = Effect.Services<typeof orchestratingCaller>;
