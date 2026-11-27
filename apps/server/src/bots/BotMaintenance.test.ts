@@ -69,6 +69,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as BotContinuation from "./BotContinuation.ts";
 import * as BotHomes from "./BotHomes.ts";
+import * as BotHomeFolders from "./BotHomeFolders.ts";
 import * as BotProjectGuard from "./BotProjectGuard.ts";
 import * as BotDatabase from "./persistence/BotDatabase.ts";
 import * as BotMigrations from "./persistence/Migrations.ts";
@@ -148,6 +149,7 @@ const context = (detachedAt: string | null): BotStore.BotContextRow => ({
   home_thread_id: home,
   bot_id: "bot",
   project_id: "project",
+  kind: "project",
   guidance: "",
   sources_json: "[]",
   revision: 1,
@@ -427,6 +429,9 @@ it.effect(
     Effect.gen(function* () {
       yield* seed;
       const bots = yield* BotDatabase.BotDatabase;
+      yield* bots`DROP INDEX idx_bot_project_contexts_one_home`;
+      yield* bots`ALTER TABLE bot_project_contexts DROP COLUMN kind`;
+      yield* bots`ALTER TABLE bots DROP COLUMN home_access`;
       yield* bots`DROP TABLE bot_worktrees`;
       yield* bots`DROP INDEX idx_bot_tasks_worktree`;
       for (const column of [
@@ -470,7 +475,7 @@ it.effect(
         readonly migration_id: number;
         readonly name: string;
       }>`SELECT migration_id, name FROM effect_sql_migrations ORDER BY migration_id`;
-      assert.deepEqual(history.slice(-18), [
+      assert.deepEqual(history.slice(-19), [
         { migration_id: 11, name: "BotMaintenance" },
         { migration_id: 12, name: "BotMaintenanceReceipts" },
         { migration_id: 13, name: "BotMaintenanceNightly" },
@@ -489,6 +494,7 @@ it.effect(
         { migration_id: 26, name: "BotWatch" },
         { migration_id: 27, name: "BotWorktrees" },
         { migration_id: 28, name: "BotLearningReinforced" },
+        { migration_id: 29, name: "BotHome" },
       ]);
       const maintenance = yield* BotMaintenance.BotMaintenance;
       const view = yield* maintenance.get(scope);
@@ -840,6 +846,7 @@ const withEngine = <A, E, R>(
             }),
             Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
             BotProjectGuard.layer,
+            Layer.mock(BotHomeFolders.BotHomeFolders)({ root: "/bots" }),
             // A real Scheduler would replay every 5-second tick when a test moves the clock days ahead.
             Layer.mock(Scheduler.Scheduler)({ register: () => Effect.void }),
             ServerSettings.layerTest(),

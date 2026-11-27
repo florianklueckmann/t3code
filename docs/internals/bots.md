@@ -23,6 +23,16 @@ between those writes, a retry can adopt the existing thread. Reattaching a
 project reuses its Home. A detached project or archived Bot keeps its thread
 history, but the server refuses new Bot turns.
 
+A Bot can also have one Home above its projects. It is an ordinary Home thread
+in a hidden project that the server owns, with the fixed id `bot-home-<botId>`,
+rooted at `<T3 home>/bots/<botId>`. A real thread without a project would have
+changed most of the upstream thread model and broken older clients, so project
+lists leave this project out while a lookup by id still finds it. The folder is
+its own Git repository. Otherwise a T3 home inside a checkout, such as `.t3` in
+every dev worktree, would put the Home's checkpoints on that checkout. Queries
+about attached projects skip its binding (`kind = 'bot'`), and no task or
+routine runs in it.
+
 ## Context and permissions at turn start
 
 [BotTurnContext](../../apps/server/src/bots/BotTurnContext.ts) resolves Home and

@@ -1,4 +1,10 @@
-import { EnvironmentId, ProjectId, type ServerConfig } from "@t3tools/contracts";
+import {
+  BotId,
+  botHomeProjectId,
+  EnvironmentId,
+  ProjectId,
+  type ServerConfig,
+} from "@t3tools/contracts";
 import { Atom, AtomRegistry } from "effect/reactivity";
 import * as Option from "effect/Option";
 import { describe, expect, it } from "vite-plus/test";
@@ -116,6 +122,28 @@ describe("project scratch identity", () => {
 
       registry.set(configAtom(environmentId), null);
       expect(registry.get(projects.projectsAtom).every((project) => !project.isScratch)).toBe(true);
+    } finally {
+      registry.dispose();
+    }
+  });
+});
+
+describe("a Bot's hidden Home project", () => {
+  it("stays out of the project list while its id still resolves", () => {
+    const { registry, projects, snapshotAtom } = makeHarness();
+    try {
+      const hidden = botHomeProjectId(BotId.make("companion"));
+      const snapshot = registry.get(snapshotAtom(environmentId));
+      registry.set(snapshotAtom(environmentId), {
+        ...snapshot,
+        projects: [...snapshot.projects, { ...v2Project, id: hidden, workspaceRoot: "/bots/b" }],
+      });
+      const listed = registry.get(projects.projectsAtom).map((project) => project.id);
+      expect(listed).not.toContain(hidden);
+      expect(listed).toContain(ProjectId.make("ordinary"));
+      expect(registry.get(projects.projectAtom({ environmentId, projectId: hidden }))?.id).toBe(
+        hidden,
+      );
     } finally {
       registry.dispose();
     }

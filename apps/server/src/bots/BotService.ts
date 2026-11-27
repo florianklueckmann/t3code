@@ -18,6 +18,8 @@ import {
   BotLearningPolicy,
   type BotLearningSource,
   type BotListResult,
+  type BotOpenHomeInput,
+  type BotRemoveHomeInput,
   type BotRestoreLearningInput,
   type BotRetireLearningInput,
   type BotSetArchivedInput,
@@ -27,6 +29,7 @@ import {
   type BotUpdateProjectContextInput,
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
+  isBotHomeProjectId,
   MAC_CALENDAR_CONNECTION_ID,
   MAC_CALENDAR_LABEL,
   type McpConnectionId,
@@ -59,6 +62,7 @@ import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as BotAttention from "./BotAttention.ts";
 import * as BotContinuation from "./BotContinuation.ts";
+import * as BotHomeFolders from "./BotHomeFolders.ts";
 import * as BotLearning from "./BotLearning.ts";
 import * as BotLearningNotices from "./BotLearningNotices.ts";
 import * as BotProjectGuard from "./BotProjectGuard.ts";
@@ -98,6 +102,10 @@ export class BotService extends Context.Service<
       input: BotUpdateProjectContextInput,
     ) => Effect.Effect<BotDetail, BotError>;
     readonly detachProject: (input: BotDetachProjectInput) => Effect.Effect<BotDetail, BotError>;
+    /** Opens the Bot-level Home in the Bot's hidden project, or reopens a removed one. */
+    readonly openHome: (input: BotOpenHomeInput) => Effect.Effect<BotDetail, BotError>;
+    /** Archives the Bot-level Home and stops the tasks it started, until `openHome` restores it. */
+    readonly removeHome: (input: BotRemoveHomeInput) => Effect.Effect<BotDetail, BotError>;
     /**
      * The Bot, project and task whose conversation or work thread a thread is; "inactive"
      * while that Bot is archived or the project detached.
@@ -184,6 +192,7 @@ const make = Effect.gen(function* () {
   const sql = yield* BotDatabase.BotDatabase;
   const store = yield* BotStore.BotStore;
   const guard = yield* BotProjectGuard.BotProjectGuard;
+  const homeFolders = yield* BotHomeFolders.BotHomeFolders;
   const projects = yield* ProjectService.ProjectService;
   const threadLaunch = yield* ThreadLaunchService.ThreadLaunchService;
   const threads = yield* ThreadManagementService.ThreadManagementService;
@@ -212,12 +221,13 @@ const make = Effect.gen(function* () {
     const bot = yield* store.getBot(botId).pipe(Effect.mapError(storeError(botId)));
     if (bot === undefined) return yield* botError("Bot not found.", botId)();
     const contexts = yield* store.listContexts(botId).pipe(Effect.mapError(storeError(botId)));
+    const [home] = yield* store.listHomes(botId).pipe(Effect.mapError(storeError(botId)));
     const learning = yield* store.listLearning(botId).pipe(Effect.mapError(storeError(botId)));
     const grants = yield* store.listMcpGrants(botId).pipe(Effect.mapError(storeError(botId)));
     const suggestions = yield* store
       .listLearningSuggestions(botId)
       .pipe(Effect.mapError(storeError(botId)));
-    const detail = yield* BotStore.toDetail(bot, contexts, learning, grants.get(botId)).pipe(
+    const detail = yield* BotStore.toDetail(bot, contexts, learning, grants.get(botId), home).pipe(
       Effect.mapError(storeError(botId)),
     );
     const instance = yield* providerInstances.getInstance(detail.modelSelection.instanceId);
@@ -321,6 +331,7 @@ const make = Effect.gen(function* () {
   const list: BotService["Service"]["list"] = Effect.gen(function* () {
     const bots = yield* store.listBots;
     const contexts = yield* store.listContexts();
+    const homes = yield* store.listHomes();
     const pendingLearning = yield* store.pendingLearningCounts;
     const alerts = yield* attention.counts;
     const notesRevisions = yield* continuation.latestRevisions;
@@ -331,11 +342,18 @@ const make = Effect.gen(function* () {
         contexts.filter((context) => context.bot_id === bot.bot_id),
         [],
         grants.get(bot.bot_id),
+        homes.find((home) => home.bot_id === bot.bot_id),
       ),
     );
     return {
       bots: details.map(
-        ({ instructions: _instructions, learning: _learning, projects: botProjects, ...bot }) => ({
+        ({
+          instructions: _instructions,
+          learning: _learning,
+          projects: botProjects,
+          home,
+          ...bot
+        }) => ({
           ...bot,
           pendingLearning: pendingLearning.get(bot.id) ?? 0,
           alerts: alerts.get(bot.id) ?? { sentToday: 0, held: 0 },
@@ -346,6 +364,10 @@ const make = Effect.gen(function* () {
             detachedAt: project.detachedAt,
             notesRevision: notesRevisions.get(project.homeThreadId) ?? null,
           })),
+          home:
+            home == null
+              ? null
+              : { ...home, notesRevision: notesRevisions.get(home.homeThreadId) ?? null },
         }),
       ),
     };
@@ -485,14 +507,16 @@ const make = Effect.gen(function* () {
       const commandSuffix = yield* random
         .uuidV4()
         .pipe(Effect.mapError(botError("Failed to allocate a command id.", input.botId)));
-      const attached = current.projects.filter((project) => project.detachedAt === null);
+      const attached = [...current.projects, ...(current.home == null ? [] : [current.home])]
+        .filter((home) => home.detachedAt === null)
+        .map((home) => home.homeThreadId);
       yield* Effect.forEach(
         attached,
-        (project) =>
+        (homeThreadId) =>
           threads.dispatch({
             type: "thread.model-selection.set",
-            commandId: CommandId.make(`bot-model:${commandSuffix}:${project.homeThreadId}`),
-            threadId: project.homeThreadId,
+            commandId: CommandId.make(`bot-model:${commandSuffix}:${homeThreadId}`),
+            threadId: homeThreadId,
             modelSelection,
           }),
         { discard: true },
@@ -538,9 +562,10 @@ const make = Effect.gen(function* () {
       const attached = yield* sql
         .withTransaction(
           Effect.gen(function* () {
-            const contexts = (yield* store.listContexts(input.botId)).filter(
-              (context) => context.detached_at === null,
-            );
+            const contexts = [
+              ...(yield* store.listContexts(input.botId)),
+              ...(yield* store.listHomes(input.botId)),
+            ].filter((context) => context.detached_at === null);
             if (input.archived) yield* revokeHomeReturns(input.botId);
             if (!changed) return contexts;
             yield* store.updateBot({
@@ -679,6 +704,34 @@ const make = Effect.gen(function* () {
   const attachProject: BotService["Service"]["attachProject"] = Effect.fn(
     "BotService.attachProject",
   )(function* (input) {
+    if (isBotHomeProjectId(input.projectId)) {
+      return yield* botError(
+        "This project holds a Bot's own Home. Attach the Bot to one of your projects instead.",
+        input.botId,
+      )();
+    }
+    return yield* attachContext({ ...input, kind: "project" });
+  });
+
+  const openHome: BotService["Service"]["openHome"] = Effect.fn("BotService.openHome")(
+    function* (input) {
+      yield* requireActiveBot(input.botId);
+      const { projectId } = yield* homeFolders
+        .ensureProject(input.botId)
+        .pipe(Effect.mapError((cause) => botError(cause.message, input.botId)(cause)));
+      if (input.access !== undefined) {
+        yield* store
+          .setHomeAccess(input.botId, input.access)
+          .pipe(Effect.mapError(storeError(input.botId)));
+      }
+      return yield* attachContext({ botId: input.botId, projectId, kind: "bot" });
+    },
+  );
+
+  /** Attaches a project Home or the Bot-level Home, or reattaches a detached one. */
+  const attachContext = Effect.fn("BotService.attachContext")(function* (
+    input: BotAttachProjectInput & { readonly kind: BotStore.BotContextKind },
+  ) {
     const result = yield* guard.withProjectLock(
       input.projectId,
       Effect.gen(function* () {
@@ -730,6 +783,7 @@ const make = Effect.gen(function* () {
               home_thread_id: homeThreadId,
               bot_id: input.botId,
               project_id: input.projectId,
+              kind: input.kind,
               guidance: input.guidance ?? "",
               sources_json: BotStore.encodeSources(input.sources ?? []),
               revision: 0,
@@ -809,7 +863,7 @@ const make = Effect.gen(function* () {
     const existing = yield* store
       .getContext(input.botId, input.projectId)
       .pipe(Effect.mapError(storeError(input.botId)));
-    if (existing === undefined || existing.detached_at !== null) {
+    if (existing === undefined || existing.detached_at !== null || existing.kind === "bot") {
       return yield* botError("The Bot is not attached to this project.", input.botId)();
     }
     yield* store
@@ -836,6 +890,42 @@ const make = Effect.gen(function* () {
     if (existing === undefined) {
       return yield* botError("The Bot is not attached to this project.", input.botId)();
     }
+    if (existing.kind === "bot") {
+      return yield* botError(
+        "This project holds the Bot's own Home. Remove the Home instead.",
+        input.botId,
+      )();
+    }
+    return yield* detachContext(existing, stopWork(input.botId, input.projectId));
+  });
+
+  const removeHome: BotService["Service"]["removeHome"] = Effect.fn("BotService.removeHome")(
+    function* (input) {
+      const [existing] = yield* store
+        .listHomes(input.botId)
+        .pipe(Effect.mapError(storeError(input.botId)));
+      if (existing === undefined) {
+        return yield* botError("This Bot has no Home of its own.", input.botId)();
+      }
+      return yield* detachContext(
+        existing,
+        botTasks.cancelForContext({
+          botId: input.botId,
+          homeThreadId: ThreadId.make(existing.home_thread_id),
+        }),
+      );
+    },
+  );
+
+  /** Detaches a Home, runs `stop` for the work it owns and archives its thread. */
+  const detachContext = Effect.fn("BotService.detachContext")(function* (
+    existing: BotStore.BotContextRow,
+    stop: Effect.Effect<void, BotError>,
+  ) {
+    const input = {
+      botId: BotId.make(existing.bot_id),
+      projectId: ProjectId.make(existing.project_id),
+    };
     const now = yield* nowIso;
     const next: BotStore.BotContextRow =
       existing.detached_at !== null
@@ -859,7 +949,7 @@ const make = Effect.gen(function* () {
       yield* notifyChanged;
       yield* PubSub.publish(learningChanges, input.botId);
     }
-    yield* stopWork(input.botId, input.projectId);
+    yield* stop;
     yield* syncThreads(input.botId, [next]);
     return yield* readDetail(input.botId);
   });
@@ -867,6 +957,12 @@ const make = Effect.gen(function* () {
   const resolveProject: BotService["Service"]["resolveProject"] = Effect.fn(
     "BotService.resolveProject",
   )(function* (input) {
+    if (input.projectId !== undefined && isBotHomeProjectId(input.projectId)) {
+      return yield* botError(
+        "Tasks run in one of the Bot's attached projects, never in its own Home's project.",
+        input.botId,
+      )();
+    }
     const detail = yield* readDetail(input.botId);
     const attached = detail.projects.filter((project) => project.detachedAt === null);
     if (input.projectId !== undefined) {
@@ -1098,6 +1194,8 @@ const make = Effect.gen(function* () {
     attachProject,
     updateProjectContext,
     detachProject,
+    openHome,
+    removeHome,
     resolveProject,
     scopeOfThread,
     recordLearning,

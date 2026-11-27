@@ -9,6 +9,7 @@ import * as BotHomeCheck from "../bots/BotHomeCheck.ts";
 import * as BotFailureDiagnosis from "../bots/BotFailureDiagnosis.ts";
 import * as BotMaintenance from "../bots/BotMaintenance.ts";
 import * as BotExecutionConstraint from "../bots/BotExecutionConstraint.ts";
+import * as BotHomeFolders from "../bots/BotHomeFolders.ts";
 import * as BotHomes from "../bots/BotHomes.ts";
 import * as BotService from "../bots/BotService.ts";
 import * as BotRuntimePolicy from "../bots/BotRuntimePolicy.ts";
@@ -347,10 +348,12 @@ const layerScheduledTaskProvided = ScheduledTaskService.layer.pipe(
     ),
   ),
 );
+const layerBotHomeFoldersProvided = BotHomeFolders.layer.pipe(Layer.provide(layerProjectService));
 const layerBotServiceProvided = BotService.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
       BotProjectGuard.layer,
+      layerBotHomeFoldersProvided,
       layerThreadLaunchProvided,
       layerThreadManagementProvided,
       layerScheduledTaskProvided,
@@ -449,6 +452,7 @@ export const layerProduction = Layer.mergeAll(
   layerThreadLaunchProvided,
   layerScheduledTaskProvided,
   layerBotServiceProvided,
+  layerBotHomeFoldersProvided,
   BotContinuation.layer,
   // The Orchestrator's executor reference, so the baseline snapshot takes the same Home lock.
   BotMaintenance.layer.pipe(

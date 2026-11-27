@@ -5,6 +5,7 @@ import {
   BOT_WORK_THREAD_ID_PREFIX,
   type BotError,
   BotId,
+  botHomeProjectId,
   BotTaskId,
   BotTaskListInput,
   type BotTaskStatus,
@@ -66,6 +67,7 @@ import { ServerActivation } from "../serverActivation.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as BotExecutionConstraint from "./BotExecutionConstraint.ts";
 import * as BotFailureDiagnosis from "./BotFailureDiagnosis.ts";
+import * as BotHomeFolders from "./BotHomeFolders.ts";
 import * as BotProjectGuard from "./BotProjectGuard.ts";
 import * as BotService from "./BotService.ts";
 import * as BotTaskService from "./BotTaskService.ts";
@@ -192,6 +194,8 @@ const makeThreadWorld = Effect.gen(function* () {
     readonly stage: "before-thread" | "before-message";
     readonly entered: Deferred.Deferred<void>;
     readonly release: Deferred.Deferred<void>;
+    /** Only this thread's launch; absent takes the next launch with a message. */
+    readonly threadId?: ThreadId;
   } | null>(null);
   const receipts = yield* Ref.make(new Set<string>());
   const disposeReturn = yield* Ref.make(false);
@@ -318,7 +322,8 @@ const makeThreadWorld = Effect.gen(function* () {
     input: ThreadLaunchService.ThreadLaunchInput,
   ) {
     const threadId = input.threadId ?? ThreadId.make("unexpected");
-    const gate = input.initialMessage === undefined ? null : yield* Ref.get(launchGate);
+    const pending = input.initialMessage === undefined ? null : yield* Ref.get(launchGate);
+    const gate = pending?.threadId === undefined || pending.threadId === threadId ? pending : null;
     if (gate !== null) yield* Ref.set(launchGate, null);
     const pause = Effect.gen(function* () {
       if (gate === null) return;
@@ -460,6 +465,11 @@ const layerSupport = Layer.mergeAll(
   Layer.mock(SecretRequests.SecretRequests)({}),
   ManagedPolicy.layerTest(),
   BotProjectGuard.layer,
+  Layer.mock(BotHomeFolders.BotHomeFolders)({
+    root: "/bots",
+    ensureProject: (id) =>
+      Effect.succeed({ projectId: botHomeProjectId(id), workspaceRoot: `/bots/${id}` }),
+  }),
   Scheduler.layer,
   ServerSettings.layerTest(),
 );
@@ -1229,6 +1239,51 @@ it.effect.each([
 );
 
 it.effect(
+  "runs no task in a Bot's own Home project, and removing that Home stops only the tasks it started",
+  () =>
+    Effect.gen(function* () {
+      yield* seedProject;
+      const world = yield* makeThreadWorld;
+      const sql = yield* BotDatabase.BotDatabase;
+      yield* withServices(world, (services) =>
+        Effect.gen(function* () {
+          yield* attachBot(services);
+          const home = (yield* services.bots.openHome({ botId })).home ?? assert.fail("no Home");
+          for (const refused of [
+            Effect.asVoid(
+              services.tasks.start({ botId, projectId: home.projectId, prompt: "Distribute." }),
+            ),
+            Effect.asVoid(services.tasks.requireRunnable({ botId, projectId: home.projectId })),
+          ]) {
+            const error = yield* Effect.flip(refused);
+            assert.include(error.message, "never in its own Home's project");
+          }
+
+          const own = yield* services.tasks.start({ botId, projectId: campaign, prompt: "A." });
+          const started = yield* services.tasks.start({
+            botId,
+            projectId: campaign,
+            prompt: "B.",
+          });
+          // Stands in for routing from the Bot-level Home, which starts tasks in attached projects.
+          yield* sql`UPDATE bot_tasks SET home_thread_id = ${home.homeThreadId}
+            WHERE task_id = ${started.id}`;
+          yield* services.bots.removeHome({ botId });
+          const rows = yield* sql<{
+            readonly task_id: string;
+            readonly cancel_requested_at: string | null;
+            readonly detail: string | null;
+          }>`SELECT task_id, cancel_requested_at, detail FROM bot_tasks ORDER BY task_id`;
+          const byId = new Map(rows.map((row) => [row.task_id, row]));
+          assert.isNull(byId.get(own.id)?.cancel_requested_at);
+          assert.isNotNull(byId.get(started.id)?.cancel_requested_at);
+          assert.equal(byId.get(started.id)?.detail, "Stopped because the Bot's Home was removed.");
+        }),
+      );
+    }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect(
   "refuses a second pending Home return before launch and allows replacing a revoked one",
   () =>
     Effect.gen(function* () {
@@ -1849,6 +1904,8 @@ it.effect("keeps each task's model when a restart comes before its launch", () =
           stage: "before-thread" as const,
           entered: yield* Deferred.make<void>(),
           release: yield* Deferred.make<void>(),
+          // The startup reconcile may launch the older task first.
+          threadId: ThreadId.make(`${BOT_WORK_THREAD_ID_PREFIX}${taskId}`),
         };
         yield* Ref.set(world.launchGate, gate);
         yield* Effect.forkScoped(
@@ -2991,6 +3048,7 @@ it.effect("runs a Bot on Claude with what Claude can enforce, No changes include
           null,
           null,
           null,
+          null,
         ]);
         // Granted connections switch along: Claude enforces them.
         yield* sql`INSERT INTO bot_mcp_grants (bot_id, connection_id) VALUES (${botId}, ${MAIL})`;
@@ -3004,6 +3062,7 @@ it.effect("runs a Bot on Claude with what Claude can enforce, No changes include
           maintenance: null,
           homeCheck: null,
           failureDiagnosis: null,
+          home: null,
         });
         const task = yield* services.tasks.start({ botId, projectId: campaign, prompt: "Recap." });
         assert.deepEqual(yield* launchedSelection(world, task.workThreadId), claude);

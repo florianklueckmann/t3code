@@ -247,10 +247,12 @@ export class BotTaskService extends Context.Service<
     readonly list: (input: BotTaskListInput) => Effect.Effect<BotTaskListResult, BotError>;
     readonly subscribeList: (input: BotTaskListInput) => Stream.Stream<BotTaskListResult, BotError>;
     readonly cancel: (input: BotCancelTaskInput) => Effect.Effect<BotTaskSummary, BotError>;
-    /** Stops unfinished work when the Bot is archived or a project detached. */
+    /** Stops unfinished work when the Bot is archived, a project detached or a Home removed. */
     readonly cancelForContext: (input: {
       readonly botId: BotId;
       readonly projectId?: ProjectId | undefined;
+      /** Only the tasks this Home started. */
+      readonly homeThreadId?: ThreadId | undefined;
     }) => Effect.Effect<void, BotError>;
     /**
      * Starts admitted work a crash left or a wait held back, records status changes, publishes
@@ -325,7 +327,8 @@ const make = Effect.gen(function* () {
     sql<{ readonly count: number }>`
       SELECT COUNT(*) AS count FROM ${sql(table)} AS feature
       JOIN bot_project_contexts AS context ON context.home_thread_id = feature.home_thread_id
-      WHERE context.bot_id = ${botId} AND context.detached_at IS NULL AND feature.enabled = 1
+      WHERE context.bot_id = ${botId} AND context.kind = 'project'
+        AND context.detached_at IS NULL AND feature.enabled = 1
     `.pipe(Effect.map((rows) => (rows[0]?.count ?? 0) > 0));
 
   /**
@@ -481,6 +484,12 @@ const make = Effect.gen(function* () {
       return { _tag: "inactive", reason: `${bot.name} is archived.` } as const;
     }
     const context = yield* store.getContext(botId, projectId);
+    if (context?.kind === "bot") {
+      return {
+        _tag: "inactive",
+        reason: `${bot.name}'s tasks and routines run in its attached projects, never in its own Home's project.`,
+      } as const;
+    }
     if (context === undefined || context.detached_at !== null) {
       return {
         _tag: "inactive",
@@ -1290,20 +1299,26 @@ const make = Effect.gen(function* () {
   const cancelForContext: BotTaskService["Service"]["cancelForContext"] = Effect.fn(
     "BotTaskService.cancelForContext",
   )(function* (input) {
+    const projectId = input.projectId ?? null;
+    const homeThreadId = input.homeThreadId ?? null;
     yield* sql`UPDATE bot_tasks SET return_home_run_id = NULL
       WHERE bot_id = ${input.botId} AND return_finished_at IS NULL
-        AND (${input.projectId ?? null} IS NULL OR project_id = ${input.projectId ?? null})`.pipe(
+        AND (${projectId} IS NULL OR project_id = ${projectId})
+        AND (${homeThreadId} IS NULL OR home_thread_id = ${homeThreadId})`.pipe(
       Effect.mapError(storageError),
     );
     const rows = yield* sql<BotTaskRow>`
       SELECT * FROM bot_tasks
       WHERE bot_id = ${input.botId} AND completed_at IS NULL
-        AND (${input.projectId ?? null} IS NULL OR project_id = ${input.projectId ?? null})
+        AND (${projectId} IS NULL OR project_id = ${projectId})
+        AND (${homeThreadId} IS NULL OR home_thread_id = ${homeThreadId})
     `.pipe(Effect.mapError(storageError));
     const reason =
-      input.projectId === undefined
-        ? "Stopped because the Bot was archived."
-        : "Stopped because the Bot was detached from this project.";
+      homeThreadId !== null
+        ? "Stopped because the Bot's Home was removed."
+        : projectId === null
+          ? "Stopped because the Bot was archived."
+          : "Stopped because the Bot was detached from this project.";
     yield* Effect.forEach(rows, (row) => requestCancel(row, reason), { discard: true });
   });
 

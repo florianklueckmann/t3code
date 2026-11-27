@@ -1,5 +1,6 @@
 import {
   CommandId,
+  isBotHomeProjectId,
   MessageId,
   ThreadId,
   OrchestratorMcpFailure,
@@ -17,7 +18,10 @@ import * as ThreadMessageIntake from "../../../orchestration-v2/ThreadMessageInt
 import * as Claims from "../../../orchestration-v2/AttachmentClaims.ts";
 import * as Project from "../../../project/ProjectService.ts";
 import * as ProjectCloneTracker from "../../../project/ProjectCloneTracker.ts";
-import { mutateProjectWithClone } from "../../../project/ProjectMutation.ts";
+import {
+  BOT_HOME_PROJECT_REFUSAL,
+  mutateProjectWithClone,
+} from "../../../project/ProjectMutation.ts";
 import * as ManagedProjectFolders from "../../../project/ManagedProjectFolders.ts";
 import * as Repositories from "../../../sourceControl/SourceControlRepositoryService.ts";
 import * as GitVcsDriver from "../../../vcs/GitVcsDriver.ts";
@@ -402,6 +406,11 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
   ),
   t3_project_update: McpToolAccess.writesEnvironment((input) =>
     Effect.gen(function* () {
+      if (isBotHomeProjectId(input.projectId))
+        return yield* new OrchestratorMcpFailure({
+          code: "invalid_request",
+          message: BOT_HOME_PROJECT_REFUSAL,
+        });
       const projects = yield* Project.ProjectService;
       return yield* projects
         .update({ ...input, commandId: yield* newCommandId() })

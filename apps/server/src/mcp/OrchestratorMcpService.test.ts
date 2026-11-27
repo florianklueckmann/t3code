@@ -3,6 +3,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
   BotId,
+  botHomeProjectId,
   CommandId,
   ContextTransferId,
   EnvironmentId,
@@ -3910,6 +3911,13 @@ describe("OrchestratorMcpService provider resolution", () => {
         const refused = yield* mcp.scheduleTask(client, routine).pipe(Effect.flip);
         assert.include(refused.message, "full access");
         const fullAccess = { ...client, client: { ...client.client!, access: "full-access" } };
+        const inHome = yield* mcp
+          .scheduleTask(fullAccess as McpInvocationScope, {
+            ...routine,
+            projectId: botHomeProjectId(routine.botId),
+          })
+          .pipe(Effect.flip);
+        assert.include(inHome.message, "Bot's own Home");
         yield* mcp.scheduleTask(fullAccess as McpInvocationScope, routine);
         const [input] = yield* Ref.get(saved);
         assert.deepEqual(input?.modelSelection, botModel);

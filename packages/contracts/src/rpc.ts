@@ -422,6 +422,8 @@ import {
   BotDetachProjectInput,
   BotDetail,
   BotError,
+  BotOpenHomeInput,
+  BotRemoveHomeInput,
   BotDecideLearningSuggestionInput,
   BotGetInput,
   BotListInput,
@@ -668,6 +670,8 @@ export const WS_METHODS = {
   botsAttachProject: "bots.attachProject",
   botsUpdateProjectContext: "bots.updateProjectContext",
   botsDetachProject: "bots.detachProject",
+  botsOpenHome: "bots.openHome",
+  botsRemoveHome: "bots.removeHome",
   botsSubscribeTasks: "bots.subscribeTasks",
   botsGetTaskResult: "bots.getTaskResult",
   botsStartTask: "bots.startTask",
@@ -2341,6 +2345,18 @@ const WsBotsDetachProjectRpc = Rpc.make(WS_METHODS.botsDetachProject, {
   error: BotRpcError,
 });
 
+const WsBotsOpenHomeRpc = Rpc.make(WS_METHODS.botsOpenHome, {
+  payload: BotOpenHomeInput,
+  success: BotDetail,
+  error: BotRpcError,
+});
+
+const WsBotsRemoveHomeRpc = Rpc.make(WS_METHODS.botsRemoveHome, {
+  payload: BotRemoveHomeInput,
+  success: BotDetail,
+  error: BotRpcError,
+});
+
 const WsBotsSubscribeTasksRpc = Rpc.make(WS_METHODS.botsSubscribeTasks, {
   payload: BotTaskListInput,
   success: BotTaskListResult,
@@ -2601,6 +2617,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsBotsAttachProjectRpc,
   WsBotsUpdateProjectContextRpc,
   WsBotsDetachProjectRpc,
+  WsBotsOpenHomeRpc,
+  WsBotsRemoveHomeRpc,
   WsBotsSubscribeTasksRpc,
   WsBotsGetTaskResultRpc,
   WsBotsStartTaskRpc,

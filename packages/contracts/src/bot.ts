@@ -38,6 +38,20 @@ export function mayBeBotHomeThreadId(threadId: string): boolean {
   return threadId.startsWith(BOT_HOME_THREAD_ID_PREFIX);
 }
 
+const BOT_HOME_PROJECT_ID_PREFIX = "bot-home-";
+
+/**
+ * The server-owned project that holds a Bot's own Home, above its attached projects. It is
+ * hidden: project lists leave it out, while a lookup by id still finds it.
+ */
+export function botHomeProjectId(botId: BotId): ProjectId {
+  return ProjectId.make(`${BOT_HOME_PROJECT_ID_PREFIX}${botId}`);
+}
+
+export function isBotHomeProjectId(projectId: string): boolean {
+  return projectId.startsWith(BOT_HOME_PROJECT_ID_PREFIX);
+}
+
 export const BOT_WORK_THREAD_ID_PREFIX = "bot-work:";
 
 /** Like `mayBeBotHomeThreadId`: only the Bot's task list proves which Bot it belongs to. */
@@ -120,6 +134,19 @@ export const BotProjectContextSummary = Schema.Struct({
   detachedAt: Schema.NullOr(IsoDateTime),
 });
 export type BotProjectContextSummary = typeof BotProjectContextSummary.Type;
+
+/** read: the Bot-level Home reads its Bot's projects and changes nothing. full: as a project Home. */
+export const BotHomeAccess = Schema.Literals(["read", "full"]);
+export type BotHomeAccess = typeof BotHomeAccess.Type;
+
+/** The Bot's own Home, in its hidden project. `detachedAt` is set while it is removed. */
+export const BotHome = Schema.Struct({
+  ...BotProjectContextSummary.fields,
+  access: BotHomeAccess,
+  /** The newest working-notes revision, null before the first save. */
+  notesRevision: Schema.optionalKey(Schema.NullOr(NonNegativeInt)),
+});
+export type BotHome = typeof BotHome.Type;
 
 export const BotLearningEntryId = TrimmedNonEmptyString.check(
   Schema.isMaxLength(64),
@@ -305,6 +332,8 @@ export const BotSummary = Schema.Struct({
       notesRevision: Schema.optionalKey(Schema.NullOr(NonNegativeInt)),
     }),
   ),
+  /** Null until the Bot-level Home is first opened; absent on servers without it. */
+  home: Schema.optionalKey(Schema.NullOr(BotHome)),
   /** Learning revisions waiting for the user to adopt or reject them. */
   pendingLearning: NonNegativeInt,
   /** Proactive alerts sent today and held for the digest; absent on servers without alerts. */
@@ -325,6 +354,8 @@ export const BotCapabilities = Schema.Struct({
   maintenance: BotCapability,
   homeCheck: BotCapability,
   failureDiagnosis: BotCapability,
+  /** The Bot-level Home with read access; full access runs on every Bot model. Absent on older servers. */
+  home: Schema.optionalKey(BotCapability),
 });
 export type BotCapabilities = typeof BotCapabilities.Type;
 
@@ -423,6 +454,17 @@ export const BotDetachProjectInput = Schema.Struct({
   projectId: ProjectId,
 });
 export type BotDetachProjectInput = typeof BotDetachProjectInput.Type;
+
+/** Opens the Bot-level Home, or reopens a removed one with its earlier conversation. */
+export const BotOpenHomeInput = Schema.Struct({
+  botId: BotId,
+  /** Absent keeps the saved access: read until it is set. */
+  access: Schema.optional(BotHomeAccess),
+});
+export type BotOpenHomeInput = typeof BotOpenHomeInput.Type;
+
+export const BotRemoveHomeInput = Schema.Struct({ botId: BotId });
+export type BotRemoveHomeInput = typeof BotRemoveHomeInput.Type;
 
 /** A standing instruction the user records directly; it is active at once. */
 export const BotRecordLearningInput = Schema.Struct({
