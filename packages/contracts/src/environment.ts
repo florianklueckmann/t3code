@@ -237,6 +237,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   botFailureDiagnosis: Schema.optionalKey(Schema.Boolean),
   /** Server answers bots.subscribeLearningNotices. */
   botLearningNotices: Schema.optionalKey(Schema.Boolean),
+  /** Server runs writing Bot tasks in pooled worktrees and answers bots.getWorktreePool and bots.clearWorktreePool. */
+  botWorktreePool: Schema.optionalKey(Schema.Boolean),
 });
 export type ExecutionEnvironmentCapabilities = typeof ExecutionEnvironmentCapabilities.Type;
 

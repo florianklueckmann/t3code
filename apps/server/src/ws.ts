@@ -2357,6 +2357,8 @@ export const layerWsRpc = (
         [WS_METHODS.botsGetTaskResult]: (input) => botTasks.getResult(input),
         [WS_METHODS.botsStartTask]: (input) => botTasks.start(input),
         [WS_METHODS.botsCancelTask]: (input) => botTasks.cancel(input),
+        [WS_METHODS.botsGetWorktreePool]: (input) => botTasks.worktreePool(input.projectId),
+        [WS_METHODS.botsClearWorktreePool]: (input) => botTasks.clearWorktreePool(input.projectId),
         // The app's user records directly, so it is a standing instruction.
         [WS_METHODS.botsRecordLearning]: (input) =>
           bots

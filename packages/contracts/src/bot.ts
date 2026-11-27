@@ -607,6 +607,12 @@ export const BotTaskSummary = Schema.Struct({
       workThreadId: ThreadId,
     }),
   ),
+  /** The branch a task that may write works on, in a worktree of its own. */
+  branch: Schema.optional(TrimmedNonEmptyString),
+  /** The branch the task's branch started from, when one was named. */
+  baseBranch: Schema.optional(TrimmedNonEmptyString),
+  /** The work thread left uncommitted changes, saved as a WIP commit on `branch`. */
+  unfinishedWork: Schema.optional(Schema.Literal(true)),
 });
 export type BotTaskSummary = typeof BotTaskSummary.Type;
 
@@ -629,10 +635,33 @@ export const BotStartTaskInput = Schema.Struct({
   title: Schema.optional(BotName),
   /** Runs only this task on that model and options; omitted follows the Bot. */
   modelSelection: Schema.optional(ModelSelectionInput),
+  /** Starts the task's branch from this branch instead of the default branch. */
+  baseBranch: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(255))),
   /** Makes a retried start return the same task. */
   commandId: Schema.optional(CommandId),
 });
 export type BotStartTaskInput = typeof BotStartTaskInput.Type;
+
+export const BotWorktreePoolInput = Schema.Struct({ projectId: ProjectId });
+export type BotWorktreePoolInput = typeof BotWorktreePoolInput.Type;
+
+/** The worktrees Bot tasks of one project keep for reuse. */
+export const BotWorktreePool = Schema.Struct({
+  projectId: ProjectId,
+  /** Free worktrees waiting for the next task. */
+  parked: NonNegativeInt,
+  /** Worktrees a task or a follow-up works in now. */
+  inUse: NonNegativeInt,
+  /** Disk use of all of them; null when it could not be measured. */
+  bytes: Schema.NullOr(NonNegativeInt),
+});
+export type BotWorktreePool = typeof BotWorktreePool.Type;
+
+export const BotClearWorktreePoolResult = Schema.Struct({
+  removed: NonNegativeInt,
+  pool: BotWorktreePool,
+});
+export type BotClearWorktreePoolResult = typeof BotClearWorktreePoolResult.Type;
 
 export const BotCancelTaskInput = Schema.Struct({ taskId: BotTaskId });
 export type BotCancelTaskInput = typeof BotCancelTaskInput.Type;

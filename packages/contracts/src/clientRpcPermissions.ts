@@ -78,6 +78,8 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.botsDetachProject]: AuthOrchestrationOperateScope,
   [WS_METHODS.botsStartTask]: AuthOrchestrationOperateScope,
   [WS_METHODS.botsCancelTask]: AuthOrchestrationOperateScope,
+  // Clearing removes worktrees, as removing one by hand does.
+  [WS_METHODS.botsClearWorktreePool]: AuthSourceControlWriteScope,
   [WS_METHODS.botsRecordLearning]: AuthOrchestrationOperateScope,
   [WS_METHODS.botsDecideLearning]: AuthOrchestrationOperateScope,
   [WS_METHODS.botsRetireLearning]: AuthOrchestrationOperateScope,

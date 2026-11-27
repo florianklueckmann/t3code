@@ -8,6 +8,8 @@ import {
   type BotAttentionInput,
   type BotAttentionView,
   type BotFailureDiagnosisView,
+  type BotWorktreePool,
+  type BotWorktreePoolInput,
   type BotId,
   type EnvironmentId,
   type BotSummary,
@@ -1666,6 +1668,44 @@ export function createServerEnvironmentAtoms<R, E>(
       (refresh) => refresh(query),
     );
   });
+  /** Changes when a task with a worktree starts or ends, which takes or frees one. */
+  const botWorktreeTasksSignalFamily = Atom.family((key: string) => {
+    const [environmentId, input] = JSON.parse(key) as [EnvironmentId, BotWorktreePoolInput];
+    return Atom.make((get) => {
+      const tasks = AsyncResult.getOrElse(
+        get(botTasksLive({ environmentId, input: { projectId: input.projectId } })),
+        () => null,
+      );
+      return tasks === null
+        ? null
+        : tasks.tasks
+            .filter((task) => task.branch !== undefined)
+            .map((task) => `${task.id}:${task.status}`)
+            .join(",");
+    });
+  });
+  const botWorktreePoolQuery = createEnvironmentRpcQueryAtomFamily(runtime, {
+    label: "environment-data:server:bots:worktreePool",
+    tag: WS_METHODS.botsGetWorktreePool,
+    staleTimeMs: 0,
+    idleTtlMs: 0,
+    refreshTrigger: (target) =>
+      botWorktreeTasksSignalFamily(JSON.stringify([target.environmentId, target.input])),
+  });
+  const botWorktreePoolFamily = Atom.family((key: string) => {
+    const [environmentId, input] = JSON.parse(key) as [EnvironmentId, BotWorktreePoolInput];
+    const query = botWorktreePoolQuery({ environmentId, input });
+    return Atom.readable(
+      (get): AsyncResult.AsyncResult<BotWorktreePool | null, unknown> => {
+        const config = get(configValueAtom(environmentId));
+        if (config === null) return AsyncResult.initial(true);
+        if (config.environment.capabilities.botWorktreePool !== true)
+          return AsyncResult.success(null);
+        return get(query);
+      },
+      (refresh) => refresh(query),
+    );
+  });
   const workThreadBotFamily = Atom.family((key: string) => {
     const [environmentId, threadId] = JSON.parse(key) as [EnvironmentId, string];
     return Atom.make((get): BotSummary | null => {
@@ -1965,6 +2005,11 @@ export function createServerEnvironmentAtoms<R, E>(
       readonly environmentId: EnvironmentId;
       readonly input: BotContinuationScope;
     }) => botFailureDiagnosisFamily(JSON.stringify([target.environmentId, target.input])),
+    /** Null when the server keeps no worktrees for Bot tasks. */
+    botWorktreePool: (target: {
+      readonly environmentId: EnvironmentId;
+      readonly input: BotWorktreePoolInput;
+    }) => botWorktreePoolFamily(JSON.stringify([target.environmentId, target.input])),
     botDetail: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:server:bots:detail",
       tag: WS_METHODS.botsGet,
@@ -2317,6 +2362,11 @@ export function createServerEnvironmentAtoms<R, E>(
     cancelBotTask: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:bots:cancel-task",
       tag: WS_METHODS.botsCancelTask,
+    }),
+    // Off the config lane: removing worktrees can take a while.
+    clearBotWorktreePool: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bots:clear-worktree-pool",
+      tag: WS_METHODS.botsClearWorktreePool,
     }),
     saveBotContinuation: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:bots:save-continuation",

@@ -138,6 +138,35 @@ applies only to that work. If a requested model or option is unavailable, or the
 provider can't run the task with your Bot's settings, the Bot tells you why.
 Routine runs use the Bot's current model.
 
+### Where a task works
+
+A direct task and a **Changes allowed** routine work in a Git worktree of their
+own, on their own branch, so two tasks never edit the same files and neither
+touches your project checkout. The branch starts from the default branch on the
+remote (`origin`), or from the local default branch when there is no remote. Ask
+the Bot to start from another branch and it names that base for the task. The
+task's card shows its branch. **No changes** routines, watches, the Daily Home
+check, maintenance and diagnoses only read, so they stay in the project folder.
+
+Finished worktrees are reused rather than deleted. When a task ends, its
+worktree is reset: tracked files go back to the last commit, untracked files are
+removed, and ignored files such as installed dependencies and build caches stay
+for the next task, which switches the worktree to its own branch. The project's
+setup script runs again only when a lockfile changed. Each project keeps at most
+five Bot worktrees, in use and free; a sixth task waits until one is free. A free
+worktree unused for 7 days is removed. **Settings → Bots** shows each project's
+task worktrees and their disk use; **Clear free worktrees** removes the free ones
+now, for example when a stale build cache causes trouble.
+
+A task that fails or is cancelled with uncommitted changes keeps them as a WIP
+commit on its branch, and its card says the branch holds unfinished work. Nothing
+is pushed. A message in a finished task's thread takes a worktree again, on the
+task's branch, and gives it back when that turn ends. Its setup script does not
+run again for the follow-up.
+
+A project folder without Git has no worktrees: its tasks run in the folder, one
+task that may change files at a time, and the next one waits.
+
 A **routine** runs a task on a schedule. In **Settings → Bots**, edit
 the Bot and choose **Add routine** under the project. Describe what the Bot should do,
 then pick a timing:

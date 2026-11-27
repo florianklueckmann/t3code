@@ -61,6 +61,20 @@ automatic Home follow-up, [orchestration](../../apps/server/src/orchestration-v2
 admits the result only while the original Home input is still current. The
 server submits the result to Home under the thread's existing permissions.
 
+## Task worktrees
+
+A task that may write launches into a worktree from
+[BotWorktreePool](../../apps/server/src/bots/BotWorktreePool.ts). Each work thread
+keeps one worktree path for its whole life. Releasing the worktree moves it out of
+that path into the pool, so a finished task's thread points at a missing worktree.
+That is the state storage cleanup already leaves behind, and turn start already
+restores it: [restoreMissingWorktree](../../apps/server/src/workspace/restoreMissingWorktree.ts)
+first asks the pool to move a free worktree back to the path. Release and turn start
+both run under the path's workspace lease, and release checks that the thread is idle
+inside the lease. A follow-up therefore never runs in a worktree another task holds,
+and never in the project checkout. A terminal does not take a pooled worktree: it can
+stay open after the turn that would give the worktree back.
+
 ## Persistence and recovery
 
 The server opens [two sibling databases](../../apps/server/src/persistence/Sqlite.ts).

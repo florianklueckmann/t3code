@@ -1,5 +1,9 @@
 import { useAtomValue } from "@effect/atom-react";
-import { botTaskDiagnosisLabel, isBotTaskOpen } from "@t3tools/client-runtime/bots";
+import {
+  botTaskBranchLabel,
+  botTaskDiagnosisLabel,
+  isBotTaskOpen,
+} from "@t3tools/client-runtime/bots";
 import type { BotTaskSummary, EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { useState } from "react";
 import { View } from "react-native";
@@ -38,6 +42,7 @@ export function BotTaskRow(props: {
   const onHide = props.onHide;
   const failedRun = task.diagnosis;
   const diagnosisLabel = botTaskDiagnosisLabel(task);
+  const branchLabel = botTaskBranchLabel(task);
   const hasActions =
     canView ||
     workThreadId !== null ||
@@ -78,6 +83,11 @@ export function BotTaskRow(props: {
       {diagnosisLabel === null ? null : (
         <Text className="text-xs text-foreground-muted" numberOfLines={2}>
           {diagnosisLabel}
+        </Text>
+      )}
+      {branchLabel === null ? null : (
+        <Text className="text-xs text-foreground-muted" numberOfLines={2}>
+          {branchLabel}
         </Text>
       )}
       {props.showDetail && task.detail ? (

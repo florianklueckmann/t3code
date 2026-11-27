@@ -252,6 +252,7 @@ const write = Effect.fn("mcp.bot.write")(function* (input: BotToolInput) {
         prompt: input.task,
         ...(input.title === undefined ? {} : { title: input.title }),
         ...(input.modelSelection === undefined ? {} : { modelSelection: input.modelSelection }),
+        ...(input.baseBranch === undefined ? {} : { baseBranch: input.baseBranch }),
       },
       {
         requestedIn: caller.thread?.threadId ?? null,

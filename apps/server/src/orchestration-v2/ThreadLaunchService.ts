@@ -93,6 +93,8 @@ export interface ThreadLaunchInput {
   readonly runtimeMode: RuntimeMode;
   readonly interactionMode: ProviderInteractionMode;
   readonly workspaceStrategy: ThreadLaunchWorkspaceStrategy;
+  /** "skip" leaves out the project's setup script: the worktree already has what it installs. */
+  readonly setupScript?: "skip";
   readonly initialMessage?: ThreadLaunchInitialMessage;
   readonly importedNativeThread?: {
     readonly ref: {
@@ -114,7 +116,7 @@ export interface ThreadLaunchInput {
 
 type PreparationInput = Pick<
   ThreadLaunchInput,
-  "commandId" | "projectId" | "workspaceStrategy" | "initialMessage"
+  "commandId" | "projectId" | "workspaceStrategy" | "initialMessage" | "setupScript"
 > & {
   readonly reusedWorktree?: { readonly baseRef: string };
 };
@@ -910,7 +912,7 @@ const make = Effect.gen(function* () {
       }
       yield* setupTracker.stageStatus(threadId, "setup-script", "running");
       const setup =
-        worktreePath === null
+        worktreePath === null || input.setupScript === "skip"
           ? ({ status: "no-script" } as const)
           : yield* setupScripts
               .runForThread({

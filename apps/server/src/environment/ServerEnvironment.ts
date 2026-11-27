@@ -293,6 +293,7 @@ export const make = Effect.gen(function* () {
       botAttention: true,
       botFailureDiagnosis: true,
       botLearningNotices: true,
+      botWorktreePool: true,
       botProviders: BOT_DRIVERS,
       botAppearance: true,
       botRoutines: true,

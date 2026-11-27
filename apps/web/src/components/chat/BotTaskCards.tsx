@@ -1,6 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
   botConversationForThread,
+  botTaskBranchLabel,
   botTaskCardKey,
   botTaskDiagnosisLabel,
   HiddenBotTaskCards,
@@ -58,6 +59,7 @@ export function BotTaskRow({
   const workThreadId = task.workThreadId;
   const when = formatInstant(task.completedAt ?? task.occurrenceDueAt ?? task.createdAt);
   const diagnosisLabel = botTaskDiagnosisLabel(task);
+  const branchLabel = botTaskBranchLabel(task);
   const failedRun = task.diagnosis;
   const navigateToThread = (threadId: ThreadId) =>
     void navigate({
@@ -95,6 +97,9 @@ export function BotTaskRow({
         </div>
         {diagnosisLabel === null ? null : (
           <p className="text-muted-foreground wrap-anywhere">{diagnosisLabel}</p>
+        )}
+        {branchLabel === null ? null : (
+          <p className="text-muted-foreground wrap-anywhere">{branchLabel}</p>
         )}
         {task.detail === null ? null : (
           <p className="text-muted-foreground wrap-anywhere">{task.detail}</p>

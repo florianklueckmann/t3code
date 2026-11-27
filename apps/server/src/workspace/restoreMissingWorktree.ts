@@ -7,6 +7,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
+import * as BotWorktreePool from "../bots/BotWorktreePool.ts";
 import * as ServerConfig from "../config.ts";
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
 import { scratchFolderRoot } from "../project/ManagedProjectFolders.ts";
@@ -165,10 +166,24 @@ export const makeRestoreMissingWorktree = Effect.gen(function* () {
     });
   });
 
-  return Effect.fn("restoreMissingWorktree")(function* (thread: WorktreeThread) {
+  const botWorktrees = yield* Effect.serviceOption(BotWorktreePool.BotWorktreePool);
+
+  return Effect.fn("restoreMissingWorktree")(function* (
+    thread: WorktreeThread,
+    // A terminal can outlive the turn; a pooled worktree goes back to the pool when the turn ends.
+    options?: { readonly pooled: false },
+  ) {
     const { worktreePath, branch } = thread;
     if (worktreePath === null) return;
     if (branch === null) return yield* recreateScratchFolder(thread, worktreePath);
+    if (Option.isSome(botWorktrees) && options?.pooled !== false) {
+      const restored = yield* botWorktrees.value
+        .restore(thread)
+        .pipe(
+          Effect.mapError((cause) => new WorktreeRecreateError({ worktreePath, branch, cause })),
+        );
+      if (restored) return;
+    }
     const exists = yield* fileSystem.exists(worktreePath).pipe(Effect.orElseSucceed(() => true));
     const leftover = exists && (yield* isLeftoverFolder(worktreePath));
     if ((exists && !leftover) || !(yield* isManagedWorktreePath(worktreePath))) return;
@@ -246,7 +261,7 @@ export const makePrepareTerminalLaunch = Effect.fn(
       return { input, recover: TerminalCwdRecovery.defaultValue() };
     }
     const recover = (error: TerminalCwdNotFoundError) =>
-      restoreMissingWorktree(thread).pipe(
+      restoreMissingWorktree(thread, { pooled: false }).pipe(
         Effect.catch((cause) =>
           Effect.logWarning("failed to recreate missing worktree", {
             threadId: thread.id,
