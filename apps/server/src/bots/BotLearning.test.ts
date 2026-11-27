@@ -500,9 +500,13 @@ it.effect("ranks a lesson the user repeats like a newer one, not one another age
       (all) => BotLearning.turnLearning(all, projectA).summary.selected,
     );
 
-    const fromAgent = yield* learning.record(policy, { ...correction, awaitsUser: true });
-    expect(fromAgent.duplicate).toBe(true);
-    expect(yield* selected).toEqual([newer.entryId, old.entryId]);
+    for (const repeat of [
+      { ...correction, awaitsUser: true },
+      { ...correction, source: { kind: "agent", label: "Bot maintenance" } },
+    ] as const) {
+      expect((yield* learning.record(policy, repeat)).duplicate).toBe(true);
+      expect(yield* selected).toEqual([newer.entryId, old.entryId]);
+    }
 
     const fromUser = yield* learning.record(policy, correction);
     expect(fromUser.duplicate).toBe(true);

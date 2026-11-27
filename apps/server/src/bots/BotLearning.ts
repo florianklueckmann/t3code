@@ -280,13 +280,11 @@ export const make = (deps: {
 
     const shared = input.scope === "bot";
     const projectId = shared ? null : input.projectId;
-    const duplicate = rows.find(
-      (row) =>
-        row.project_id === projectId &&
-        row.kind === input.kind &&
-        ((row.status === "active" && row.normalized_text === normalized) ||
-          repeats(input, normalized, row)),
-    );
+    const sameScope = rows.filter((row) => row.project_id === projectId && row.kind === input.kind);
+    // The lesson in use first: an older rejected copy must not hide that it came up again.
+    const duplicate =
+      sameScope.find((row) => row.status === "active" && row.normalized_text === normalized) ??
+      sameScope.find((row) => repeats(input, normalized, row));
     if (duplicate !== undefined) {
       if (confirmsInference(input, duplicate)) {
         return yield* record(policy, {
@@ -297,8 +295,10 @@ export const make = (deps: {
           },
         });
       }
-      // Only the person saying it again counts: an agent restating what it was given proves nothing.
-      if (duplicate.status === "active" && !fromTask && !input.awaitsUser) {
+      // Only the person saying it again counts: an agent restating what it was given proves
+      // nothing, and maintenance reinforces through its own verified operation.
+      const fromPerson = input.source.kind === "user" || input.source.kind === "thread";
+      if (duplicate.status === "active" && fromPerson && !input.awaitsUser) {
         yield* reinforce(refOf(duplicate));
       }
       return duplicateOf(duplicate);
