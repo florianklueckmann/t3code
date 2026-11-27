@@ -164,8 +164,10 @@ is pushed. A message in a finished task's thread takes a worktree again, on the
 task's branch, and gives it back when that turn ends. Its setup script does not
 run again for the follow-up.
 
-A project folder without Git has no worktrees: its tasks run in the folder, one
-task that may change files at a time, and the next one waits.
+A project folder without Git, or a repository without a commit yet, has no
+worktrees: its tasks run in the folder, one task that may change files at a
+time, and the next one waits. A base branch that does not exist stops the task
+before it starts and its card says why.
 
 A **routine** runs a task on a schedule. In **Settings → Bots**, edit
 the Bot and choose **Add routine** under the project. Describe what the Bot should do,

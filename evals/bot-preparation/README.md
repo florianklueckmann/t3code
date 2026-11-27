@@ -50,6 +50,12 @@ the Bot must pass that selection to `start_task`, not `update` itself. It grades
 the task's recorded selection against the Bot's model and checks the Bot's
 selection afterwards. Run it at the default `high` effort so the two differ.
 
+`task-from-named-base` covers T3B-120: asked to start a task's branch from
+`release`, the Bot must pass `baseBranch` to `start_task`. It grades the task's
+recorded base. The world has no `release` branch, so the task stops before it
+starts; that is expected. Every other case that starts a task checks that the
+Bot names no base the user did not ask for.
+
 `reminder-set-once` covers T3B-62: a Home set a reminder, then set it again on the
 next, unrelated message. It sends three turns: a dated matter with no request, a
 large reference paste carrying one reminder request, and another paste with a

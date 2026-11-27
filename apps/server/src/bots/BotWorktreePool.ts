@@ -59,6 +59,7 @@ export type BotWorktreeClaim =
   | { readonly _tag: "pooled"; readonly worktreePath: string; readonly setupNeeded: boolean }
   | { readonly _tag: "create"; readonly baseRef: string }
   | { readonly _tag: "full" }
+  /** A folder without Git, or a repository without a commit yet: the task runs in the folder. */
   | { readonly _tag: "no-git" };
 
 interface WorktreeRow {
@@ -305,7 +306,14 @@ const make = Effect.gen(function* () {
   const take: BotWorktreePool["Service"]["take"] = Effect.fn("BotWorktreePool.take")(
     function* (input) {
       const root = yield* repositoryOf(input.projectId);
-      if (root === null) return { _tag: "no-git" } as const;
+      // A repository without a commit has nothing to branch from, like a folder without Git.
+      if (
+        root === null ||
+        !(yield* gitWorkflow
+          .hasCommit({ cwd: root, refName: "HEAD" })
+          .pipe(Effect.orElseSucceed(() => false)))
+      )
+        return { _tag: "no-git" } as const;
       while (true) {
         const decided = yield* sql
           .withTransaction(

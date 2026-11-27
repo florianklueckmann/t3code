@@ -299,6 +299,22 @@ it.effect("keeps a new task waiting while the pool is full", () =>
   ),
 );
 
+it.effect("leaves a repository without a commit to the project folder", () =>
+  withRepository((world) =>
+    Effect.gen(function* () {
+      // HEAD names a branch that has no commit yet, as right after `git init`.
+      yield* world.git(world.root, "symbolic-ref", "HEAD", "refs/heads/unborn");
+      const claim = yield* world.pool.take({
+        projectId,
+        workThreadId: ThreadId.make(`${BOT_WORK_THREAD_ID_PREFIX}fresh`),
+        branch: "bot/fresh",
+        baseBranch: null,
+      });
+      assert.equal(claim._tag, "no-git");
+    }),
+  ),
+);
+
 it.effect("puts a released task's worktree back on its branch for a follow-up", () =>
   withRepository((world) =>
     Effect.gen(function* () {

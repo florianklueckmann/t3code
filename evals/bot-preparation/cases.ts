@@ -119,6 +119,8 @@ export type PreparationCase =
       readonly returnToHome?: boolean;
       /** The reasoningEffort the started task must run at, on the Bot's model; the Bot keeps its own. */
       readonly taskEffort?: string;
+      /** The branch the started task must start from; without it, a started task names none. */
+      readonly taskBaseBranch?: string;
       readonly expectedFiles?: Readonly<Record<string, string>>;
       readonly existingRoutine?: { readonly title: string; readonly allowChanges: boolean };
       /** Alert settings the user saved, with today's sent and held alerts, written before the turn. */
@@ -223,6 +225,20 @@ export const CASES: ReadonlyArray<PreparationCase> = [
     startsTask: true,
     returnToHome: false,
     taskEffort: "low",
+  },
+  // T3B-120: a task that may write starts on its own branch; the user can name the base.
+  {
+    id: "task-from-named-base",
+    kind: "new",
+    world: "with-records",
+    trigger: "home",
+    prompt:
+      "Use t3_bot start_task once to start a separate Bot task that adds the line 'Checked.' to world/notes.md. Start its branch from the release branch, not from the default branch. End your turn after starting it; I will check the result myself. Do not wait, poll, use external services, or create schedules.",
+    answerMust: [],
+    routine: null,
+    startsTask: true,
+    // The world has no release branch, so the task stops before it starts; the call is graded.
+    taskBaseBranch: "release",
   },
 
   {

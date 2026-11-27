@@ -71,6 +71,10 @@ it.effect.each([78, 79, 80, 81, 82, 83])(
                     by_hand: 0,
                     watch: 0,
                     quiet: 0,
+                    branch: null,
+                    base_branch: null,
+                    worktree_state: null,
+                    unfinished_work: 0,
                   }
                 : {}),
               ...(table === "bot_learning_revisions"
