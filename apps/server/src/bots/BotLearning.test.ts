@@ -514,6 +514,24 @@ it.effect("ranks a lesson the user repeats like a newer one, not one another age
   }).pipe(Effect.provide(storeLayer)),
 );
 
+it.effect("reinforces the lesson in use when an older rejected copy says the same", () =>
+  Effect.gen(function* () {
+    const { learning, rows } = yield* fixture;
+    const proposed = yield* learning.record("after_adoption", correction);
+    yield* learning.decide({ botId, ...proposed, decision: "reject" });
+    const kept = yield* learning.record(policy, { ...correction, ...user });
+    yield* TestClock.adjust("1 minute");
+
+    expect(yield* learning.record(policy, correction)).toMatchObject({
+      entryId: kept.entryId,
+      duplicate: true,
+    });
+    expect((yield* rows).find((row) => row.entry_id === kept.entryId)?.reinforced_at).toBe(
+      "1970-01-01T00:01:00.000Z",
+    );
+  }).pipe(Effect.provide(storeLayer)),
+);
+
 it.effect("keeps a moved lesson behind newer lessons of the same origin", () =>
   Effect.gen(function* () {
     const { learning, rows } = yield* fixture;
