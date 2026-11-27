@@ -59,7 +59,12 @@ it.effect.each([78, 79, 80, 81, 82, 83])(
               ...row,
               ...(table === "bots" && head === 78 ? { appearance_json: null } : {}),
               ...(table === "bots"
-                ? { mcp_grant_revision: 0, mcp_own_codex_servers: 0, home_access: "read" }
+                ? {
+                    mcp_grant_revision: 0,
+                    mcp_own_codex_servers: 0,
+                    home_access: "read",
+                    task_limit: 5,
+                  }
                 : {}),
               ...(table === "bot_project_contexts" ? { kind: "project" } : {}),
               ...(table === "bot_tasks" && head < 83 ? { allow_changes: 0 } : {}),
@@ -79,6 +84,7 @@ it.effect.each([78, 79, 80, 81, 82, 83])(
                     worktree_state: null,
                     unfinished_work: 0,
                     setup_signature: null,
+                    acceptance_json: null,
                   }
                 : {}),
               ...(table === "bot_learning_revisions"
@@ -231,7 +237,7 @@ it.effect.each([
         yield* main`UPDATE effect_sql_migrations SET name = 'Unknown' WHERE migration_id = 80`;
       if (fault === "schema") yield* main`ALTER TABLE bot_tasks ADD COLUMN unknown_data TEXT`;
       if (fault === "target")
-        yield* bots`INSERT INTO bots SELECT 'bot', 'Conflicting', '', '{}', 'automatic', 'created', 'updated', NULL, NULL, 0, 0, 'read'`;
+        yield* bots`INSERT INTO bots SELECT 'bot', 'Conflicting', '', '{}', 'automatic', 'created', 'updated', NULL, NULL, 0, 0, 'read', 5`;
       if (fault === "unknown-suffix")
         yield* main`INSERT INTO effect_sql_migrations (migration_id, name) VALUES (84, 'Unknown')`;
       if (fault === "task-mode") yield* main`UPDATE bot_tasks SET allow_changes = 2`;

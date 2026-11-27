@@ -5,8 +5,10 @@ import {
   BOT_LEARNING_STATUS_LABELS,
   BOT_LEARNING_SUGGESTION_LABEL,
   BOT_ROUTINE_WATCH_DESCRIPTION,
+  BOT_TASK_LIMIT_DESCRIPTION,
   BOT_TURN_LEARNING_EXPLANATION,
   botLearningConfirmedLabel,
+  parseBotTaskLimit,
   botLearningOriginLabel,
   botLearningRevisionInput,
   botLearningScopeChange,
@@ -42,6 +44,7 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import {
+  BOT_TASK_LIMIT_MAX,
   BotId,
   CommandId,
   type BotAppearance,
@@ -535,6 +538,8 @@ interface BotDraft {
   readonly learningPolicy: BotLearningPolicy | null;
   /** Null keeps the default look derived from the Bot id. */
   readonly appearance: BotAppearance | null;
+  /** As typed; empty on servers without a task limit. */
+  readonly taskLimit: string;
 }
 
 function Field({
@@ -598,7 +603,9 @@ function BotEditorForm({
     modelSelection: null,
     learningPolicy: saved?.learningPolicy ?? null,
     appearance: savedAppearance,
+    taskLimit: saved?.taskLimit === undefined ? "" : String(saved.taskLimit),
   }));
+  const taskLimit = saved?.taskLimit === undefined ? undefined : parseBotTaskLimit(draft.taskLimit);
   const appearanceChanged =
     appearanceSupported && !sameBotAppearance(draft.appearance, savedAppearance);
   const [contextDrafts, setContextDrafts] = useState<
@@ -668,13 +675,22 @@ function BotEditorForm({
         return;
       }
     }
+    if (taskLimit === null) {
+      toastError(
+        "Could not save Bot",
+        `Tasks at once must be a whole number from 1 to ${BOT_TASK_LIMIT_MAX}.`,
+      );
+      return;
+    }
+    const taskLimitChanged = taskLimit !== undefined && taskLimit !== bot.taskLimit;
     setSaving(true);
     const botChanged =
       name !== bot.name ||
       instructions !== bot.instructions ||
       draft.modelSelection !== null ||
       draft.learningPolicy !== bot.learningPolicy ||
-      appearanceChanged;
+      appearanceChanged ||
+      taskLimitChanged;
     if (botChanged) {
       const result = await updateBot({
         environmentId,
@@ -687,6 +703,7 @@ function BotEditorForm({
             ? { learningPolicy: draft.learningPolicy }
             : {}),
           ...(appearanceChanged ? { appearance: draft.appearance } : {}),
+          ...(taskLimitChanged ? { taskLimit } : {}),
         },
       });
       // The server checks a new model before anything else, so a refusal then is about the model.
@@ -854,6 +871,30 @@ function BotEditorForm({
               ))}
             </RadioGroup>
           </div>
+          {saved?.taskLimit === undefined ? null : (
+            <div className="space-y-1.5">
+              <Label htmlFor="bot-task-limit">Tasks at once</Label>
+              <p id="bot-task-limit-note" className="text-sm text-muted-foreground">
+                {BOT_TASK_LIMIT_DESCRIPTION}
+              </p>
+              <Input
+                id="bot-task-limit"
+                type="number"
+                inputMode="numeric"
+                nativeInput
+                min={1}
+                max={BOT_TASK_LIMIT_MAX}
+                step={1}
+                className="w-24"
+                aria-describedby="bot-task-limit-note"
+                aria-invalid={taskLimit === null}
+                value={draft.taskLimit}
+                onChange={(event) =>
+                  setDraft((prev) => ({ ...prev, taskLimit: event.target.value }))
+                }
+              />
+            </div>
+          )}
           {current !== null ? (
             <BotMcpGrantsSetting
               ref={sectionRef("mcp")}

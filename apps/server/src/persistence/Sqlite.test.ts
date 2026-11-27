@@ -210,6 +210,7 @@ it.effect.each(
             [27, "BotWorktrees"],
             [28, "BotLearningReinforced"],
             [29, "BotHome"],
+            [30, "BotTaskLimit"],
           ],
         );
         return { ...current, botHistory };

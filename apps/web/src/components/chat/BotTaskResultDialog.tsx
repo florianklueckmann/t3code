@@ -1,4 +1,9 @@
-import { BOT_TASK_RESULT_UNSUPPORTED, botTaskResultNotice } from "@t3tools/client-runtime/bots";
+import {
+  BOT_TASK_RESULT_UNSUPPORTED,
+  botTaskAcceptanceLines,
+  botTaskResultNotice,
+  isBotTaskWaitingOnYou,
+} from "@t3tools/client-runtime/bots";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { BotTaskSummary, EnvironmentId } from "@t3tools/contracts";
 import { FileTextIcon, InfoIcon, MessageSquareIcon, TriangleAlertIcon } from "lucide-react";
@@ -91,7 +96,10 @@ function BotTaskResultContent(props: {
       <DialogHeader>
         <DialogTitle>{props.task.title}</DialogTitle>
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-          <BotTaskStatusBadge status={data?.task.status ?? props.task.status} />
+          <BotTaskStatusBadge
+            status={data?.task.status ?? props.task.status}
+            needsYou={isBotTaskWaitingOnYou(data?.task ?? props.task)}
+          />
           <DialogDescription>Final response of this run · {props.when}</DialogDescription>
         </div>
       </DialogHeader>
@@ -99,6 +107,11 @@ function BotTaskResultContent(props: {
         {data?.task.detail ? (
           <p className="text-sm text-muted-foreground wrap-anywhere">{data.task.detail}</p>
         ) : null}
+        {botTaskAcceptanceLines(data?.task ?? props.task).map((line) => (
+          <p key={line} className="text-sm text-muted-foreground wrap-anywhere">
+            {line}
+          </p>
+        ))}
         {query.error !== null ? (
           <Alert variant="error">
             <TriangleAlertIcon aria-hidden />

@@ -1,6 +1,8 @@
 import {
+  BOT_TASK_LIMIT_DEFAULT,
   BOT_TASK_TERMINAL_STATUSES,
   BOT_WORK_THREAD_ID_PREFIX,
+  BotTaskAcceptance,
   type BotCancelTaskInput,
   type BotClearWorktreePoolResult,
   BotError,
@@ -33,6 +35,7 @@ import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Predicate from "effect/Predicate";
 import * as PubSub from "effect/PubSub";
@@ -56,7 +59,9 @@ import {
   type BotRoutineTargetShape,
 } from "../scheduledTasks/BotRoutineTarget.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
+import * as BotContinuation from "./BotContinuation.ts";
 import { isNoChangesTask } from "./BotExecutionConstraint.ts";
+import * as Acceptance from "./BotTaskAcceptance.ts";
 import * as FailureDiagnosis from "./BotFailureDiagnosis.ts";
 import * as BotProviderSupport from "./BotProviderSupport.ts";
 import * as BotStore from "./BotStore.ts";
@@ -113,6 +118,8 @@ interface BotTaskRow {
   readonly worktree_state: "root" | "held" | "released" | null;
   /** 1 once uncommitted work in the worktree was saved as a commit on the branch. */
   readonly unfinished_work: number;
+  /** A completed direct task's BotTaskAcceptance; null for other tasks. */
+  readonly acceptance_json: string | null;
   readonly created_at: string;
   readonly updated_at: string;
 }
@@ -130,8 +137,21 @@ const decodeSummary = Schema.decodeUnknownEffect(
   Schema.Struct({
     ...BotTaskSummary.fields,
     modelSelection: Schema.optional(Schema.fromJsonString(ModelSelection)),
+    acceptance: Schema.optional(Schema.fromJsonString(BotTaskAcceptance)),
   }),
 );
+const encodeAcceptance = Schema.encodeSync(Schema.fromJsonString(BotTaskAcceptance));
+const decodeAcceptance = Schema.decodeUnknownOption(Schema.fromJsonString(BotTaskAcceptance));
+/** The result check of a completed direct task, when it waits for the user. */
+const acceptanceNeedingYou = (row: Pick<BotTaskRow, "acceptance_json">) =>
+  row.acceptance_json === null
+    ? undefined
+    : Option.filter(
+        decodeAcceptance(row.acceptance_json),
+        (acceptance) => acceptance.state === "needs_you",
+      ).pipe(Option.getOrUndefined);
+const needsYou = (row: Pick<BotTaskRow, "acceptance_json">) =>
+  acceptanceNeedingYou(row) !== undefined;
 const isBotError = Schema.is(BotError);
 
 const isTerminal = (status: BotTaskStatus) => BOT_TASK_TERMINAL_STATUSES.has(status);
@@ -202,6 +222,8 @@ export interface BotTaskAwareness {
   readonly byHand: boolean;
   /** A watch run that ended with nothing new; it never alerts. */
   readonly quiet: boolean;
+  /** A result that waits for the user; its alert is gathered with others under the alert budget. */
+  readonly needsYou: boolean;
   readonly workThreadId: ThreadId;
   readonly status: BotTaskStatus;
   readonly resultRunId: RunId | null;
@@ -310,6 +332,8 @@ const make = Effect.gen(function* () {
   const scheduler = yield* Scheduler.Scheduler;
   const random = yield* SecureRandom.SecureRandom;
   const worktrees = yield* BotWorktreePool.BotWorktreePool;
+  const evidence = yield* Acceptance.BotTaskEvidence;
+  const continuation = yield* BotContinuation.BotContinuation;
   const path = yield* Path.Path;
   const dispatching = yield* Ref.make<ReadonlySet<string>>(new Set());
   const changes = yield* PubSub.sliding<{
@@ -415,7 +439,8 @@ const make = Effect.gen(function* () {
       botId: row.bot_id,
       projectId: row.project_id,
       homeThreadId: row.home_thread_id,
-      workThreadId: row.work_thread_id,
+      // A task waiting to start, or cancelled before it did, has no thread to open yet.
+      workThreadId: row.dispatched_at === null ? null : row.work_thread_id,
       origin: row.origin === "diagnostic" ? "routine" : row.origin,
       title: row.title,
       scheduledTaskId: row.scheduled_task_id,
@@ -454,6 +479,7 @@ const make = Effect.gen(function* () {
       ...(row.branch === null ? {} : { branch: row.branch }),
       ...(row.base_branch === null ? {} : { baseBranch: row.base_branch }),
       ...(row.unfinished_work === 1 ? { unfinishedWork: true } : {}),
+      ...(row.acceptance_json === null ? {} : { acceptance: row.acceptance_json }),
     }).pipe(Effect.mapError(storageError));
 
   const summaryRows = sql`
@@ -623,6 +649,23 @@ const make = Effect.gen(function* () {
   });
 
   /**
+   * Unfinished direct tasks holding a slot before this one: every started one, and every one
+   * admitted earlier, cancelled or not. Slots go oldest first, so two launches deciding at once
+   * cannot both take the last. Insert order, which reconcile follows too: timestamps can tie.
+   */
+  const directTasksAhead = (row: BotTaskRow) =>
+    sql<{ readonly count: number }>`
+      SELECT COUNT(*) AS count FROM bot_tasks
+      WHERE bot_id = ${row.bot_id} AND origin = 'direct' AND completed_at IS NULL
+        AND task_id <> ${row.task_id}
+        AND (dispatched_at IS NOT NULL
+          OR rowid < (SELECT rowid FROM bot_tasks WHERE task_id = ${row.task_id}))
+    `.pipe(
+      Effect.map((rows) => rows[0]?.count ?? 0),
+      Effect.mapError(storageError),
+    );
+
+  /**
    * Launches the work thread. The same ids make a retried launch replay instead of duplicating.
    * A cancel can land while the launch runs, so the cancel flag is checked again after it.
    */
@@ -655,6 +698,16 @@ const make = Effect.gen(function* () {
       return;
     const bot = yield* store.getBot(row.bot_id).pipe(Effect.mapError(storageError));
     if (bot === undefined || row.work_thread_id === null) return;
+    if (row.origin === "direct") {
+      const limit = bot.task_limit ?? BOT_TASK_LIMIT_DEFAULT;
+      if ((yield* directTasksAhead(row)) >= limit) {
+        yield* waitFor(
+          row,
+          `Waiting for a free slot: ${bot.name} runs at most ${limit} ${limit === 1 ? "task" : "tasks"} at once.`,
+        );
+        return;
+      }
+    }
     const modelSelection =
       row.model_selection_json === null
         ? (yield* BotStore.toDetail(bot, [], []).pipe(Effect.mapError(storageError))).modelSelection
@@ -783,6 +836,7 @@ const make = Effect.gen(function* () {
     base_branch: null,
     worktree_state: null,
     unfinished_work: 0,
+    acceptance_json: null,
     created_at: input.now,
     updated_at: input.now,
   });
@@ -1079,10 +1133,10 @@ const make = Effect.gen(function* () {
         | "status"
         | "result_run_id"
         | "completed_at"
-      >
+      > & { readonly acceptance_state: string | null }
     >`
       SELECT task_id, bot_id, project_id, home_thread_id, work_thread_id, by_hand, quiet, status,
-        result_run_id, completed_at
+        result_run_id, completed_at, json_extract(acceptance_json, '$.state') AS acceptance_state
       FROM bot_tasks WHERE work_thread_id IS NOT NULL
         AND ${
           workThreadId === undefined
@@ -1101,6 +1155,7 @@ const make = Effect.gen(function* () {
               homeThreadId: ThreadId.make(row.home_thread_id),
               byHand: row.by_hand === 1,
               quiet: row.quiet === 1,
+              needsYou: row.acceptance_state === "needs_you",
               workThreadId: ThreadId.make(row.work_thread_id),
               status: row.status as BotTaskStatus,
               resultRunId: row.result_run_id === null ? null : RunId.make(row.result_run_id),
@@ -1198,9 +1253,14 @@ const make = Effect.gen(function* () {
         { projectId: task.projectId, workThreadId: task.workThreadId },
         runId,
       );
-      if (row.watch !== 1 || result.state !== "available") return { task, result };
+      if (result.state !== "available") return { task, result };
       // The report line is for the server, not part of what the user reads.
-      const { text } = BotWatch.readWatchReport(result.text);
+      const { text } =
+        row.watch === 1
+          ? BotWatch.readWatchReport(result.text)
+          : row.acceptance_json !== null
+            ? Acceptance.readResultReport(result.text)
+            : result;
       return {
         task,
         result: text === "" ? { state: "empty", runId } : { state: "available", runId, text },
@@ -1259,6 +1319,9 @@ const make = Effect.gen(function* () {
     `.pipe(Effect.mapError(storageError));
     const row = yield* readRow(stale.task_id);
     if (row === undefined || row.completed_at !== null) return;
+    // A launch under way sees the flag when it returns and stops the thread it made; until a
+    // later pass finishes the cancel, the task keeps its slot. Checked before the thread is read.
+    if ((yield* Ref.get(dispatching)).has(row.task_id)) return yield* publish(row);
     // A launch that went through before a restart has a thread but no dispatched_at.
     const workThreadId = row.work_thread_id;
     const launched =
@@ -1274,10 +1337,12 @@ const make = Effect.gen(function* () {
       `.pipe(Effect.mapError(storageError));
       yield* stopWorkThread(row, workThreadId);
     } else {
+      // What it waited for is moot. A launch that recorded itself meanwhile settles by its thread.
       yield* sql`
         UPDATE bot_tasks
-        SET status = 'cancelled', completed_at = ${now}, notified_at = ${now}, updated_at = ${now}
-        WHERE task_id = ${row.task_id} AND completed_at IS NULL
+        SET status = 'cancelled', completed_at = ${now}, notified_at = ${now}, updated_at = ${now},
+          detail = ${reason}
+        WHERE task_id = ${row.task_id} AND completed_at IS NULL AND dispatched_at IS NULL
       `.pipe(Effect.mapError(storageError));
     }
     yield* publish(row);
@@ -1373,8 +1438,10 @@ const make = Effect.gen(function* () {
       Effect.mapError(storageError),
     );
     const context = yield* activeContext(row.bot_id as BotId, row.project_id as ProjectId);
+    // A result that is not done waits for the user, so Home does not continue on it.
     if (
       row.status !== "completed" ||
+      needsYou(row) ||
       row.result_run_id === null ||
       row.work_thread_id === null ||
       context._tag === "inactive" ||
@@ -1599,6 +1666,48 @@ const make = Effect.gen(function* () {
     );
   });
 
+  /** The report a finished direct task's result ends with, and whether its evidence exists. */
+  const checkResult = Effect.fn("BotTaskService.checkResult")(function* (
+    row: BotTaskRow,
+    runId: RunId,
+    worktreePath: string | null,
+  ) {
+    if (row.work_thread_id === null) return null;
+    const projectId = ProjectId.make(row.project_id);
+    const saved = yield* readSavedResult(
+      { projectId, workThreadId: ThreadId.make(row.work_thread_id) },
+      runId,
+    );
+    const { report } =
+      saved.state === "available" ? Acceptance.readResultReport(saved.text) : { report: null };
+    const checks =
+      report === null
+        ? []
+        : yield* evidence.check({
+            projectId,
+            worktreePath,
+            items: report.evidence.map(Acceptance.classifyEvidence),
+          });
+    return Acceptance.decideAcceptance(report, checks);
+  });
+
+  /** A result that is not done, or that asks the user something, goes under Waiting on you. */
+  // A failed write fails the pass, which retries; a note without room keeps the card's line only.
+  const fileWaiting = Effect.fn("BotTaskService.fileWaiting")(function* (row: BotTaskRow) {
+    const acceptance = acceptanceNeedingYou(row);
+    if (acceptance === undefined || row.work_thread_id === null || row.result_run_id === null)
+      return;
+    yield* continuation.addTaskWaiting({
+      scope: { botId: row.bot_id as BotId, projectId: ProjectId.make(row.project_id) },
+      taskId: BotTaskId.make(row.task_id),
+      text: Acceptance.waitingText(row.title, acceptance),
+      writer: {
+        threadId: ThreadId.make(row.work_thread_id),
+        runId: RunId.make(row.result_run_id),
+      },
+    });
+  });
+
   /** One step of the reconcile loop for one task; failures stay with that task. */
   const reconcileTask = Effect.fn("BotTaskService.reconcileTask")(function* (row: BotTaskRow) {
     if (row.completed_at === null) {
@@ -1631,6 +1740,10 @@ const make = Effect.gen(function* () {
         status === "completed" && row.watch === 1 && shell?.latestRunId != null
           ? yield* decideWatch(row, shell.latestRunId)
           : null;
+      const acceptance =
+        status === "completed" && row.origin === "direct" && shell?.latestRunId != null
+          ? yield* checkResult(row, shell.latestRunId, shell.worktreePath ?? null)
+          : null;
       // Saved with the completion, so no reader sees a finished watch run before its decision.
       yield* sql
         .withTransaction(
@@ -1641,6 +1754,7 @@ const make = Effect.gen(function* () {
                   result_run_id = ${terminal ? (shell?.latestRunId ?? null) : row.result_run_id},
                   completed_at = ${terminal ? now : null},
                   quiet = ${watch?._tag === "quiet" && row.by_hand === 0 ? 1 : 0},
+                  acceptance_json = ${acceptance === null ? null : encodeAcceptance(acceptance)},
                   updated_at = ${now}
               WHERE task_id = ${row.task_id} AND completed_at IS NULL
               RETURNING task_id
@@ -1673,6 +1787,7 @@ const make = Effect.gen(function* () {
     }
     // Before the notification, which is retried until it lands, so a crash cannot skip it.
     yield* admitDiagnosis(current);
+    yield* fileWaiting(current);
     if (current.quiet === 1) {
       // Nothing new means nothing to notice: the run's thread leaves the thread list too. Not
       // one the user has since written in: archiving would end their follow-up.
@@ -1884,7 +1999,7 @@ const make = Effect.gen(function* () {
     const open = yield* sql<BotTaskRow>`
       SELECT * FROM bot_tasks WHERE completed_at IS NULL OR notified_at IS NULL
         OR (return_home_run_id IS NOT NULL AND return_finished_at IS NULL)
-      ORDER BY created_at, task_id
+      ORDER BY rowid
     `.pipe(Effect.mapError(storageError));
     yield* Effect.forEach(
       open,
@@ -1926,7 +2041,9 @@ const make = Effect.gen(function* () {
   });
 });
 
-export const layer = Layer.effect(BotTaskService, make).pipe(Layer.provide(BotStore.layer));
+export const layer = Layer.effect(BotTaskService, make).pipe(
+  Layer.provide(Layer.merge(BotStore.layer, BotContinuation.layer)),
+);
 
 /** Routes scheduled routines into the same admission as direct requests. */
 export const layerRoutineTarget = Layer.effect(

@@ -1,20 +1,25 @@
 import { sameBotAppearance, savedBotAppearance } from "@t3tools/client-runtime/bot-appearance";
-import { botModelCapabilities, botProviderDrivers } from "@t3tools/client-runtime/bots";
-import type {
-  BotAppearance,
-  BotAttachProjectInput,
-  BotCreateInput,
-  BotDetachProjectInput,
-  BotDetail,
-  BotId,
-  BotLearningPolicy,
-  BotSourcePreference,
-  BotUpdateInput,
-  BotUpdateProjectContextInput,
-  ModelCapabilities,
-  ModelSelection,
-  ProjectId,
-  ServerConfig,
+import {
+  botModelCapabilities,
+  botProviderDrivers,
+  parseBotTaskLimit,
+} from "@t3tools/client-runtime/bots";
+import {
+  BOT_TASK_LIMIT_MAX,
+  type BotAppearance,
+  type BotAttachProjectInput,
+  type BotCreateInput,
+  type BotDetachProjectInput,
+  type BotDetail,
+  type BotId,
+  type BotLearningPolicy,
+  type BotSourcePreference,
+  type BotUpdateInput,
+  type BotUpdateProjectContextInput,
+  type ModelCapabilities,
+  type ModelSelection,
+  type ProjectId,
+  type ServerConfig,
 } from "@t3tools/contracts";
 
 import { buildModelOptions, type ModelOption } from "../../lib/modelOptions";
@@ -52,6 +57,8 @@ export type BotDraft = {
   readonly learningPolicy: BotLearningPolicy | null;
   /** Null keeps the default look derived from the Bot id. */
   readonly appearance: BotAppearance | null;
+  /** As typed; empty for a new Bot and on servers without a task limit. */
+  readonly taskLimit: string;
   readonly projects: ReadonlyArray<BotProjectDraft>;
 };
 
@@ -88,6 +95,7 @@ export function newBotDraft(botId: BotId, modelSelection: ModelSelection | null)
     modelSelection,
     learningPolicy: null,
     appearance: null,
+    taskLimit: "",
     projects: [],
   };
 }
@@ -102,6 +110,7 @@ export function botDraftFromDetail(detail: BotDetail): BotDraft {
     modelSelection: detail.modelSelection,
     learningPolicy: detail.learningPolicy,
     appearance: savedBotAppearance(detail),
+    taskLimit: detail.taskLimit === undefined ? "" : String(detail.taskLimit),
     projects: detail.projects.map((project) => ({
       projectId: project.projectId,
       attached: project.detachedAt === null,
@@ -199,6 +208,7 @@ export function hasBotDraftChanges(baseline: BotDraft, draft: BotDraft): boolean
     baseline.name.trim() !== draft.name.trim() ||
     baseline.instructions.trim() !== draft.instructions.trim() ||
     baseline.learningPolicy !== draft.learningPolicy ||
+    baseline.taskLimit.trim() !== draft.taskLimit.trim() ||
     !sameModel(baseline.modelSelection, draft.modelSelection) ||
     !sameBotAppearance(baseline.appearance, draft.appearance)
   ) {
@@ -252,7 +262,12 @@ export function planBotSave(
       },
     });
   } else {
+    const taskLimitChanged = draft.taskLimit.trim() !== baseline.taskLimit.trim();
+    const taskLimit = taskLimitChanged ? parseBotTaskLimit(draft.taskLimit) : null;
+    if (taskLimitChanged && taskLimit === null)
+      return { error: `Tasks at once must be a whole number from 1 to ${BOT_TASK_LIMIT_MAX}.` };
     const changes = {
+      ...(taskLimit === null ? {} : { taskLimit }),
       ...(name === baseline.name.trim() ? {} : { name }),
       ...(instructions === baseline.instructions.trim() ? {} : { instructions }),
       ...(sameModel(baseline.modelSelection, draft.modelSelection)

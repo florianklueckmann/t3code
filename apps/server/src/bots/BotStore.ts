@@ -1,4 +1,5 @@
 import {
+  BOT_TASK_LIMIT_DEFAULT,
   BotAppearance,
   BotDetail,
   type BotHomeAccess,
@@ -37,6 +38,8 @@ export interface BotRow {
   readonly learning_policy: string;
   /** Null keeps the Bot on the default look derived from its id. */
   readonly appearance_json: string | null;
+  /** Read from every stored Bot; absent on rows built before they are saved, which keep the stored one. */
+  readonly task_limit?: number;
   readonly created_at: string;
   readonly updated_at: string;
   readonly archived_at: string | null;
@@ -304,6 +307,7 @@ export const toDetail = Effect.fn("BotStore.toDetail")(function* (
     instructions: bot.instructions,
     modelSelection: yield* decodeModelSelection(bot.model_selection_json),
     learningPolicy: bot.learning_policy,
+    taskLimit: bot.task_limit ?? BOT_TASK_LIMIT_DEFAULT,
     appearance: bot.appearance_json === null ? null : yield* decodeAppearance(bot.appearance_json),
     ...(mcpGrants === undefined ? {} : { mcpGrants }),
     createdAt: bot.created_at,
@@ -331,6 +335,7 @@ export function botRow(input: {
   readonly instructions: string;
   readonly modelSelection: ModelSelection;
   readonly learningPolicy: BotLearningPolicy;
+  readonly taskLimit?: number;
   readonly appearanceJson: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
@@ -342,6 +347,7 @@ export function botRow(input: {
     instructions: input.instructions,
     model_selection_json: encodeModelSelection(input.modelSelection),
     learning_policy: input.learningPolicy,
+    ...(input.taskLimit === undefined ? {} : { task_limit: input.taskLimit }),
     appearance_json: input.appearanceJson,
     created_at: input.createdAt,
     updated_at: input.updatedAt,
@@ -433,6 +439,7 @@ export const layer = Layer.effect(
           instructions = ${row.instructions},
           model_selection_json = ${row.model_selection_json},
           learning_policy = ${row.learning_policy},
+          task_limit = COALESCE(${row.task_limit ?? null}, task_limit),
           appearance_json = ${row.appearance_json},
           updated_at = ${row.updated_at},
           archived_at = ${row.archived_at}

@@ -15,7 +15,7 @@ Like [bot-sources](../bot-sources/), nothing is replayed and it calls no model A
 
 3. Then the full set: `pnpm bot-preparation --base-dir ../.t3 --out runs/<name>`.
 
-Flags: `--model` (default `gpt-6.1-terra`), `--effort` (default `high`), `--samples` (default 3), `--concurrency` (default 2), `--case <id>` (repeatable), `--work <dir>` for the synthetic project folders (default `<out>/work`). The run stops when the server's Codex catalog does not offer the model with that effort; it never falls back to another model. `--instance` (default `codex`) names a Codex or Claude instance; both enforce the No changes its routines and diagnoses run in, Claude only on a macOS server.
+Flags: `--model` (default `gpt-6.1-terra`), `--effort` (default `high`), `--samples` (default 3), `--concurrency` (default 2), `--case <id>` (repeatable), `--work <dir>` for the synthetic project folders (default a new temporary folder; keep it outside any Git repository, or tasks that may write get a worktree of that repository). The run stops when the server's Codex catalog does not offer the model with that effort; it never falls back to another model. `--instance` (default `codex`) names a Codex or Claude instance; both enforce the No changes its routines and diagnoses run in, Claude only on a macOS server.
 
 Routine cases create the routine through `schedule_task` with a `botId` and start it with `run_scheduled_task_now`, so they test the work thread's context, not the timing; the scheduler's timing is covered by the server tests. Each sample creates its own project and Bot.
 
@@ -55,6 +55,15 @@ selection afterwards. Run it at the default `high` effort so the two differ.
 recorded base. The world has no `release` branch, so the task stops before it
 starts; that is expected. Every other case that starts a task checks that the
 Bot names no base the user did not ask for.
+
+`task-reports-evidence` covers T3B-122: a direct task's work thread must end with
+a `T3_RESULT` report whose evidence the server finds, so the task's result check
+reads `done`. On the old text the work thread wrote no report and the check
+reads `needs_you`. `returns-task-and-continues` now also needs a `done` check,
+since only such a result comes back to Home, and `returns-incomplete-task-honestly`
+needs `needs_you` and no second Home turn: the result waits for the user instead.
+Compare against the revision of `BotTaskAcceptance.ts` and `BotTurnContext.ts`
+you change.
 
 `reminder-set-once` covers T3B-62: a Home set a reminder, then set it again on the
 next, unrelated message. It sends three turns: a dated matter with no request, a

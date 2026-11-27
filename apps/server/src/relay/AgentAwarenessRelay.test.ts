@@ -192,10 +192,11 @@ const seedBot = Effect.gen(function* () {
 /** A task the user started unless `byHand` says otherwise, so the alert budget stays out. */
 type TestTask = Omit<
   BotTaskService.BotTaskAwareness,
-  "botId" | "homeThreadId" | "byHand" | "quiet"
+  "botId" | "homeThreadId" | "byHand" | "quiet" | "needsYou"
 > & {
   byHand?: boolean;
   quiet?: boolean;
+  needsYou?: boolean;
 };
 const HOME_THREAD_ID = ThreadId.make("bot-home:bot:relay-project");
 
@@ -394,6 +395,7 @@ const makeTestRelay = Effect.fnUntraced(function* (
               homeThreadId: HOME_THREAD_ID,
               byHand: task.byHand ?? true,
               quiet: task.quiet ?? false,
+              needsYou: task.needsYou ?? false,
             })),
         ),
     }),
@@ -1511,13 +1513,15 @@ describe("AgentAwarenessRelay", () => {
   );
 
   it.effect.each([
-    { byHand: false, quiet: false, alerts: 0, held: 1 },
-    { byHand: true, quiet: false, alerts: 1, held: 0 },
+    { byHand: false, quiet: false, needsYou: false, alerts: 0, held: 1 },
+    { byHand: true, quiet: false, needsYou: false, alerts: 1, held: 0 },
+    // A result that waits for the user goes through the budget even when the user started it.
+    { byHand: true, quiet: false, needsYou: true, alerts: 0, held: 1 },
     // A watch run with nothing new is no alert at all: not sent, not held, not in a digest.
-    { byHand: false, quiet: true, alerts: 0, held: 0 },
+    { byHand: false, quiet: true, needsYou: false, alerts: 0, held: 0 },
   ])(
-    "holds a proactive Bot result in quiet hours and over the limit and sends one digest as they end (by hand: $byHand, quiet: $quiet)",
-    ({ byHand, quiet, alerts, held }) =>
+    "holds a proactive Bot result in quiet hours and over the limit and sends one digest as they end (by hand: $byHand, quiet: $quiet, needs you: $needsYou)",
+    ({ byHand, quiet, needsYou, alerts, held }) =>
       Effect.gen(function* () {
         yield* seedBot;
         yield* TestClock.setTime(DateTime.toEpochMillis(DateTime.makeUnsafe(QUIET_NIGHT)));
@@ -1562,6 +1566,7 @@ describe("AgentAwarenessRelay", () => {
           resultRunId: RunId.make("saved"),
           completedAt: QUIET_NIGHT,
           quiet,
+          needsYou,
         });
         yield* relay.publishThread(THREAD_ID);
         yield* TestClock.adjust("5 seconds");
@@ -1569,7 +1574,7 @@ describe("AgentAwarenessRelay", () => {
         const completed = (all: typeof publications) =>
           all.filter((p) => p.state?.phase === "completed");
         assert.lengthOf(completed(publications), alerts);
-        if (!byHand) assert.isNull(publications.at(-1)?.state ?? null);
+        if (held > 0) assert.isNull(publications.at(-1)?.state ?? null);
 
         // A restart forgets what was published but not what was decided.
         const restarted = yield* makeTestRelay({

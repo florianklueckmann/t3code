@@ -21,6 +21,7 @@ import * as BotDatabase from "./persistence/BotDatabase.ts";
 
 import * as BotLearning from "./BotLearning.ts";
 import * as BotStore from "./BotStore.ts";
+import * as BotTaskAcceptance from "./BotTaskAcceptance.ts";
 import * as BotWatch from "./BotWatch.ts";
 
 /** Which Bot, project and conversation a thread belongs to, for home and work threads alike. */
@@ -245,6 +246,7 @@ function workTaskSection(task: WorkTask): string {
       "This task:",
       "- The user asked for it; the first message describes it. Work on it here.",
       `- ${result}`,
+      ...BotTaskAcceptance.resultInstructions,
     ].join("\n");
   }
   return [

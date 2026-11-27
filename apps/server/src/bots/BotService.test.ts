@@ -45,6 +45,7 @@ import * as BotHomeFolders from "./BotHomeFolders.ts";
 import * as BotProjectGuard from "./BotProjectGuard.ts";
 import * as BotService from "./BotService.ts";
 import * as BotDatabase from "./persistence/BotDatabase.ts";
+import * as BotTaskAcceptance from "./BotTaskAcceptance.ts";
 import * as BotTaskService from "./BotTaskService.ts";
 import * as BotWorktreePool from "./BotWorktreePool.ts";
 import * as BotTurnContext from "./BotTurnContext.ts";
@@ -173,6 +174,8 @@ const layerSupport = Layer.mergeAll(
     claimedPath: () => Effect.succeed(null),
     expire: Effect.void,
   }),
+  // The result check is covered in BotTaskService.test.ts and BotTaskAcceptance.test.ts.
+  Layer.mock(BotTaskAcceptance.BotTaskEvidence)({}),
 );
 
 const layerDatabase = SqlitePersistence.layerMemory.pipe(

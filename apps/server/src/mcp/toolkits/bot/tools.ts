@@ -64,12 +64,13 @@ const BotToolParameters = Schema.Struct({
   botId: Schema.optional(BotUpdateInput.fields.botId),
   projectId: Schema.optional(BotAttachProjectInput.fields.projectId),
   task: Schema.optional(BotStartTaskInput.fields.prompt).annotate({
-    description: "`start_task`: what the task should do, as the first message of its work thread.",
+    description:
+      "`start_task`: what the task should do and what counts as done, as the first message of its work thread. Say what result, branch, commit or file shows that it is done.",
   }),
   title: BotStartTaskInput.fields.title,
   returnToHome: Schema.optional(Schema.Boolean).annotate({
     description:
-      "`start_task`: opt in to one automatic successful-result turn in this project's Home, to reconcile and continue already authorized work. Default false. Only from that Home during a direct UI or external MCP input turn, never an automatic result turn. At most one pending return per Home input turn; a second opt-in is refused before launch. Newer direct Home input expires a pending return. A completed run does not prove fulfillment or grant new permissions. `cancel_task` also revokes a pending return.",
+      "`start_task`: opt in to one automatic successful-result turn in this project's Home, to reconcile and continue already authorized work. Default false. Only from that Home during a direct UI or external MCP input turn, never an automatic result turn. At most one pending return per Home input turn; a second opt-in is refused before launch. Newer direct Home input expires a pending return. A completed run does not prove fulfillment or grant new permissions. A result that waits for the user is not returned: one not done by its own report or the server's evidence check, or one with open questions. `cancel_task` also revokes a pending return.",
   }),
   baseBranch: BotStartTaskInput.fields.baseBranch.annotate({
     description:

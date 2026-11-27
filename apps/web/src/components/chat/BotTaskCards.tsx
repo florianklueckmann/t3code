@@ -1,6 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
   botConversationForThread,
+  botTaskAcceptanceLines,
   botTaskBranchLabel,
   botTaskCardKey,
   botTaskDiagnosisLabel,
@@ -8,6 +9,7 @@ import {
   hideBotTaskCard,
   homeBotTaskCards,
   isBotTaskOpen,
+  isBotTaskWaitingOnYou,
   showBotTaskCards,
 } from "@t3tools/client-runtime/bots";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
@@ -89,7 +91,7 @@ export function BotTaskRow({
       <div className="min-w-0 flex-1 basis-48 space-y-0.5">
         <p className="font-medium wrap-anywhere">{task.title}</p>
         <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-muted-foreground">
-          <BotTaskStatusBadge status={task.status} />
+          <BotTaskStatusBadge status={task.status} needsYou={isBotTaskWaitingOnYou(task)} />
           <span>
             {when}
             {task.sessionAt === null ? null : ` · session ${formatInstant(task.sessionAt)}`}
@@ -104,6 +106,11 @@ export function BotTaskRow({
         {task.detail === null ? null : (
           <p className="text-muted-foreground wrap-anywhere">{task.detail}</p>
         )}
+        {botTaskAcceptanceLines(task).map((line) => (
+          <p key={line} className="text-muted-foreground wrap-anywhere">
+            {line}
+          </p>
+        ))}
       </div>
       <div className="flex flex-wrap items-center gap-1">
         {failedRun === undefined ? null : (

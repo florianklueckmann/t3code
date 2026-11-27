@@ -71,6 +71,21 @@ automatic Home follow-up, [orchestration](../../apps/server/src/orchestration-v2
 admits the result only while the original Home input is still current. The
 server submits the result to Home under the thread's existing permissions.
 
+The Bot's task limit is checked when a direct task launches, not at admission, so
+a waiting task is an ordinary admitted row that a reconcile pass starts later and
+that survives a restart. A waiting task counts against younger ones: the order is
+fixed by `created_at`, and two launches deciding at once cannot both take the last
+slot without a lock. Routines, watches and diagnoses bypass the limit.
+
+A completed direct task's result is checked once, in the transaction that records
+its completion, by [BotTaskAcceptance](../../apps/server/src/bots/BotTaskAcceptance.ts):
+the report line its work thread ends with, and whether the branches, commits and
+files it names exist. The outcome is stored on the task, so the Home return, the
+Waiting item and the relay's alert all read the same decision. A result that waits
+for the user is never returned to Home, and its alert is held and gathered by
+[BotAttention](../../apps/server/src/bots/BotAttention.ts) even when the user
+started the task.
+
 ## Task worktrees
 
 A task that may write launches into a worktree from

@@ -1,4 +1,4 @@
-import { BOT_TASK_STATUS_LABELS } from "@t3tools/client-runtime/bots";
+import { BOT_TASK_NEEDS_YOU_LABEL, BOT_TASK_STATUS_LABELS } from "@t3tools/client-runtime/bots";
 import type { BotTaskStatus } from "@t3tools/contracts";
 import { Pressable } from "react-native";
 
@@ -11,6 +11,8 @@ export function BotTaskStatusLine(props: {
   readonly status: BotTaskStatus;
   readonly trailing: string;
   readonly numberOfLines?: number;
+  /** A completed result the result check did not accept as done. */
+  readonly needsYou?: boolean;
 }) {
   return (
     <Text className="text-xs text-foreground-muted" numberOfLines={props.numberOfLines}>
@@ -19,12 +21,12 @@ export function BotTaskStatusLine(props: {
           "font-t3-semibold",
           props.status === "failed"
             ? "text-danger-foreground"
-            : props.status === "waiting"
+            : props.status === "waiting" || props.needsYou === true
               ? "text-warning-foreground"
               : "text-foreground",
         )}
       >
-        {BOT_TASK_STATUS_LABELS[props.status]}
+        {props.needsYou === true ? BOT_TASK_NEEDS_YOU_LABEL : BOT_TASK_STATUS_LABELS[props.status]}
       </Text>
       {` · ${props.trailing}`}
     </Text>

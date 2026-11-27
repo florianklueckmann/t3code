@@ -3,10 +3,11 @@ import { useNavigation, usePreventRemove } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import type { AtomCommandResult } from "@t3tools/client-runtime/state/runtime";
 import { defaultBotAppearance, resolveBotAppearance } from "@t3tools/client-runtime/bot-appearance";
+import { BOT_TASK_LIMIT_DESCRIPTION } from "@t3tools/client-runtime/bots";
 import { BotId, resolveEnvironmentMachineKind } from "@t3tools/contracts";
 import type { BotDetail, BotSummary, EnvironmentId, ProjectId } from "@t3tools/contracts";
 import { Fragment, useRef, useState } from "react";
-import { Platform, Pressable, View } from "react-native";
+import { Platform, Pressable, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { BotAvatar } from "../../components/BotAvatar";
@@ -626,6 +627,25 @@ function BotForm({
             </Pressable>
           ))}
         </SettingsSection>
+        {baseline.created && baseline.taskLimit !== "" ? (
+          <SettingsSection title="Tasks at once" footer={BOT_TASK_LIMIT_DESCRIPTION}>
+            <View className="min-h-14 flex-row items-center gap-3 px-4 py-3">
+              <Text textRole="body" className="min-w-0 flex-1 text-foreground">
+                Tasks at once
+              </Text>
+              <TextInput
+                accessibilityLabel="Tasks at once"
+                value={draft.taskLimit}
+                onChangeText={(taskLimit) => setDraft((current) => ({ ...current, taskLimit }))}
+                readOnly={readOnly}
+                keyboardType="number-pad"
+                returnKeyType="done"
+                selectTextOnFocus
+                className="min-w-12 text-right font-sans text-base text-foreground"
+              />
+            </View>
+          </SettingsSection>
+        ) : null}
         {baseline.created ? (
           <BotMcpGrantsSection
             environmentId={environmentId}

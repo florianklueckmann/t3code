@@ -31,6 +31,7 @@ import Watch from "./Migrations/026_BotWatch.ts";
 import Worktrees from "./Migrations/027_BotWorktrees.ts";
 import LearningReinforced from "./Migrations/028_BotLearningReinforced.ts";
 import Home from "./Migrations/029_BotHome.ts";
+import TaskLimit from "./Migrations/030_BotTaskLimit.ts";
 
 const routines = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -83,6 +84,7 @@ const entries = [
   [27, "BotWorktrees", Worktrees],
   [28, "BotLearningReinforced", LearningReinforced],
   [29, "BotHome", Home],
+  [30, "BotTaskLimit", TaskLimit],
 ] as const;
 const run = Migrator.make({});
 export const runMigrations = Effect.fn("BotDatabase.runMigrations")(function* () {

@@ -93,6 +93,15 @@ describe("planBotSave", () => {
     });
   });
 
+  it("saves a changed task limit and refuses one out of bounds", () => {
+    const baseline = botDraftFromDetail({ ...detail, taskLimit: 5 });
+    expect(planBotSave(baseline, { ...baseline, taskLimit: " 2 " })).toEqual({
+      steps: [{ type: "update", input: { botId, taskLimit: 2 } }],
+    });
+    for (const taskLimit of ["0", "21", "2.5", ""])
+      expect(planBotSave(baseline, { ...baseline, taskLimit })).toHaveProperty("error");
+  });
+
   it("saves a chosen look and resets it to the default", () => {
     const look = { color: "lime", face: "wink", topper: "bow" } as const;
     const plain = botDraftFromDetail(detail);
