@@ -383,6 +383,7 @@ const makeThreadWorld = Effect.gen(function* () {
           Effect.andThen(Ref.get(poolSavesWork)),
           Effect.map((savedWork) => ({ savedWork })),
         ),
+      claimedPath: () => Effect.succeed(null),
       expire: Effect.void,
     }),
   );
@@ -3020,6 +3021,20 @@ it.effect("runs a Bot on Claude with what Claude can enforce, No changes include
   }).pipe(Effect.provide(layerDatabase)),
 );
 
+it.effect("names a daily routine's runs apart, though their timestamps end alike", () =>
+  Effect.sync(() => {
+    // Daily runs five days apart end in the same six digits of epoch milliseconds.
+    const due = Date.parse("2026-11-02T18:00:00.000Z");
+    const names = [0, 5].map((days) =>
+      BotTaskService.taskBranchName({
+        task_id: `bot-task:routine-1:0:${due + days * 24 * HOUR}`,
+        title: "Session preparation",
+      }),
+    );
+    assert.notEqual(names[0], names[1]);
+  }),
+);
+
 const workspaceOf = (world: ThreadWorld, workThreadId: ThreadId | null | undefined) =>
   Ref.get(world.threads).pipe(
     Effect.map((threads) => threads.get(workThreadId ?? assert.fail("no work thread"))?.workspace),
@@ -3043,7 +3058,7 @@ it.effect(
             baseBranch: "release",
           });
           const branch = fresh.branch ?? assert.fail("no branch");
-          assert.match(branch, /^bot\/fix-the-typo-[a-z0-9]{6}$/);
+          assert.match(branch, /^bot\/fix-the-typo-[0-9a-f]{8}$/);
           assert.equal(fresh.baseBranch, "release");
           assert.equal(
             yield* workspaceOf(world, fresh.workThreadId),
@@ -3084,6 +3099,36 @@ it.effect(
           );
           // The reading routine never asked the pool.
           assert.lengthOf(yield* Ref.get(world.poolTakes), 3);
+        }),
+      );
+    }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect(
+  "a reconcile pass leaves a task being started alone, so one claim takes its worktree",
+  () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(START);
+      yield* seedProject;
+      const world = yield* makeThreadWorld;
+      yield* withServices(world, (services) =>
+        Effect.gen(function* () {
+          yield* attachBot(services);
+          const gate = {
+            stage: "before-thread" as const,
+            entered: yield* Deferred.make<void>(),
+            release: yield* Deferred.make<void>(),
+          };
+          yield* Ref.set(world.launchGate, gate);
+          const starting = yield* Effect.forkScoped(
+            services.tasks.start({ botId, projectId: campaign, prompt: "Fix the typo." }),
+          );
+          yield* Deferred.await(gate.entered);
+          yield* services.tasks.reconcile;
+          yield* Deferred.succeed(gate.release, undefined);
+          const task = yield* Fiber.join(starting);
+          assert.lengthOf(yield* Ref.get(world.poolTakes), 1);
+          assert.equal(task.status, "accepted");
         }),
       );
     }).pipe(Effect.provide(layerDatabase)),

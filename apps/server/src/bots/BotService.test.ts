@@ -155,6 +155,7 @@ const layerSupport = Layer.mergeAll(
   // Task worktrees are covered in BotTaskService.test.ts and BotWorktreePool.test.ts.
   Layer.mock(BotWorktreePool.BotWorktreePool)({
     take: () => Effect.succeed({ _tag: "create", baseRef: "main" }),
+    claimedPath: () => Effect.succeed(null),
     expire: Effect.void,
   }),
 );

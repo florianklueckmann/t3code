@@ -429,7 +429,13 @@ it.effect(
       const bots = yield* BotDatabase.BotDatabase;
       yield* bots`DROP TABLE bot_worktrees`;
       yield* bots`DROP INDEX idx_bot_tasks_worktree`;
-      for (const column of ["branch", "base_branch", "worktree_state", "unfinished_work"])
+      for (const column of [
+        "branch",
+        "base_branch",
+        "worktree_state",
+        "unfinished_work",
+        "setup_signature",
+      ])
         yield* bots`ALTER TABLE bot_tasks DROP COLUMN ${bots(column)}`;
       yield* bots`DROP TABLE bot_watch_posts`;
       yield* bots`ALTER TABLE bot_tasks DROP COLUMN watch`;

@@ -19,6 +19,8 @@ import * as BotDatabase from "./persistence/BotDatabase.ts";
 export const BOT_WORKTREE_POOL_LIMIT = 5;
 /** A free worktree unused this long is removed. */
 export const BOT_WORKTREE_IDLE_DAYS = 7;
+/** `claimed_by` of a free worktree while Clear or expiry removes it. */
+const REMOVING = "removing";
 
 /** Lockfiles at the repository root; a change in one means the setup script must run again. */
 const LOCKFILES = [
@@ -110,6 +112,10 @@ export class BotWorktreePool extends Context.Service<
     readonly parkedPaths: (
       projectId: ProjectId,
     ) => Effect.Effect<ReadonlyArray<string>, BotWorktreePoolError>;
+    /** Where a worktree the thread claimed is, before its launch recorded it on the thread. */
+    readonly claimedPath: (
+      workThreadId: ThreadId,
+    ) => Effect.Effect<string | null, BotWorktreePoolError>;
     /** Disk use of these folders, null when one could not be read. */
     readonly measure: (paths: ReadonlyArray<string>) => Effect.Effect<number | null>;
     /** Removes the project's free worktrees; returns how many. */
@@ -162,9 +168,14 @@ const make = Effect.gen(function* () {
     return root === null ? null : project.workspaceRoot;
   });
 
-  const lockfileSignature = (cwd: string) =>
-    read("lockfiles", cwd, ["ls-tree", "HEAD", "--", ...LOCKFILES]).pipe(
+  const lockfileSignature = (cwd: string, commit = "HEAD") =>
+    read("lockfiles", cwd, ["ls-tree", commit, "--", ...LOCKFILES]).pipe(
       Effect.map((result) => result.stdout.trim()),
+    );
+  /** The lockfiles the worktree's last setup installed from; parking keeps it with the worktree. */
+  const recordSetup = (workThreadId: ThreadId, signature: string) =>
+    sql`UPDATE bot_tasks SET setup_signature = ${signature} WHERE work_thread_id = ${workThreadId}`.pipe(
+      Effect.mapError(storage),
     );
 
   /** The remote's copy of the base when there is a remote, fetched now; otherwise the local branch. */
@@ -176,11 +187,21 @@ const make = Effect.gen(function* () {
       .resolvePrimaryRemoteName(cwd)
       .pipe(Effect.orElseSucceed(() => null));
     if (remoteName !== null) {
-      const branchName =
+      let branchName =
         baseBranch ??
         (yield* gitWorkflow
           .resolveDefaultBranchName(cwd, remoteName)
           .pipe(Effect.orElseSucceed(() => null)));
+      // A clone made without `origin/HEAD` still tracks the remote's main or master.
+      for (const candidate of ["main", "master"]) {
+        if (branchName !== null) break;
+        if (
+          yield* gitWorkflow
+            .hasCommit({ cwd, refName: `refs/remotes/${remoteName}/${candidate}` })
+            .pipe(Effect.orElseSucceed(() => false))
+        )
+          branchName = candidate;
+      }
       if (branchName !== null) {
         const fetched = yield* gitWorkflow
           .fetchWorktreeBaseCommit({
@@ -296,22 +317,27 @@ const make = Effect.gen(function* () {
         target,
         startPoint === null
           ? ["switch", "--discard-changes", "--quiet", branch]
-          : ["switch", "--discard-changes", "--quiet", "-C", branch, startPoint],
+          : // Never -C: an existing branch of that name holds another task's work.
+            ["switch", "--discard-changes", "--quiet", "-c", branch, startPoint],
       );
     }
     const signature = yield* lockfileSignature(target);
-    return { setupNeeded: signature !== row.setup_signature };
+    return { signature, setupNeeded: signature !== row.setup_signature };
   });
 
   const take: BotWorktreePool["Service"]["take"] = Effect.fn("BotWorktreePool.take")(
     function* (input) {
       const root = yield* repositoryOf(input.projectId);
-      // A repository without a commit has nothing to branch from, like a folder without Git.
+      // A repository without any commit has nothing to branch from, like a folder without Git.
       if (
         root === null ||
-        !(yield* gitWorkflow
-          .hasCommit({ cwd: root, refName: "HEAD" })
-          .pipe(Effect.orElseSucceed(() => false)))
+        (yield* read("any-commit", root, [
+          "for-each-ref",
+          "--count=1",
+          "--format=%(objectname)",
+          "refs/heads",
+          "refs/remotes",
+        ])).stdout.trim() === ""
       )
         return { _tag: "no-git" } as const;
       while (true) {
@@ -340,12 +366,21 @@ const make = Effect.gen(function* () {
           )
           .pipe(Effect.mapError(storage));
         if (decided._tag === "full") return decided;
+        // A base that does not resolve fails the task; its release parks a claimed worktree again.
         const baseRef = yield* resolveBase(root, input.baseBranch);
-        if (decided._tag === "create") return { _tag: "create", baseRef } as const;
+        if (decided._tag === "create") {
+          // The launch's setup script installs from the base's lockfiles.
+          yield* recordSetup(input.workThreadId, yield* lockfileSignature(root, baseRef));
+          return { _tag: "create", baseRef } as const;
+        }
         const target = threadPathBeside(decided.row.path, input.branch);
         const moved = yield* moveClaimed(root, decided.row, target, input.branch, baseRef);
         // The free worktree was gone from disk; try the next one.
         if (moved === null) continue;
+        yield* recordSetup(
+          input.workThreadId,
+          moved.setupNeeded ? moved.signature : decided.row.setup_signature,
+        );
         return { _tag: "pooled", worktreePath: target, setupNeeded: moved.setupNeeded } as const;
       }
     },
@@ -373,30 +408,45 @@ const make = Effect.gen(function* () {
         "--porcelain",
         "--untracked-files=all",
       ]);
-      const savedWork = status.stdout.trim() !== "";
-      if (savedWork) {
+      let savedWork = false;
+      if (status.stdout.trim() !== "") {
         const onBranch = yield* read("current-branch", target, ["symbolic-ref", "-q", "HEAD"]);
         if (onBranch.stdout.trim() === "")
           yield* run("wip-branch", target, ["switch", "-c", input.wipBranch]);
         yield* run("stage", target, ["add", "-A"]);
-        yield* run("commit", target, [
-          ...(yield* commitIdentity(target)),
-          "commit",
-          "--no-verify",
-          "--quiet",
-          "-m",
-          input.commitMessage,
-        ]);
+        // Edits inside a submodule stage nothing here; they are kept by not removing the checkout.
+        savedWork = (yield* read("staged", target, ["diff", "--cached", "--quiet"])).exitCode !== 0;
+        if (savedWork)
+          yield* run("commit", target, [
+            ...(yield* commitIdentity(target)),
+            "commit",
+            "--no-verify",
+            "--quiet",
+            "-m",
+            input.commitMessage,
+          ]);
       }
       // Tracked files back to the commit, untracked ones gone, ignored ones kept for the next task.
       yield* run("reset", target, ["reset", "--hard", "--quiet"]);
       yield* run("clean", target, ["clean", "-fdq"]);
       // Detached, so the branch is free for a follow-up in another worktree.
       yield* run("detach", target, ["switch", "--detach", "--quiet"]);
-      const signature = yield* lockfileSignature(target);
+      const [task] = yield* sql<{ readonly setup_signature: string | null }>`
+        SELECT setup_signature FROM bot_tasks WHERE work_thread_id = ${input.workThreadId}
+      `.pipe(Effect.mapError(storage));
+      // Unknown when nothing recorded a setup: the next task runs it.
+      const signature = task?.setup_signature ?? "";
       const claimed = yield* sql<WorktreeRow>`
         SELECT * FROM bot_worktrees WHERE claimed_by = ${input.workThreadId}
       `.pipe(Effect.mapError(storage));
+      // Work git could not commit, such as edits inside a submodule, is never removed.
+      const dirty =
+        (yield* run("status-after", target, [
+          "status",
+          "--porcelain",
+          "--ignore-submodules=none",
+        ])).stdout.trim() !== "";
+      const removeIfClean = dirty ? Effect.void : removeWorktree(root, target);
       const forget =
         claimed[0] === undefined
           ? Effect.void
@@ -408,8 +458,8 @@ const make = Effect.gen(function* () {
         Effect.map(([held, free]) => held - 1 + free < BOT_WORKTREE_POOL_LIMIT),
         Effect.mapError(storage),
       );
-      if (!room) {
-        yield* removeWorktree(root, target);
+      if (!room || dirty) {
+        yield* removeIfClean;
         yield* forget;
         return { savedWork };
       }
@@ -417,11 +467,14 @@ const make = Effect.gen(function* () {
         claimed[0]?.worktree_id ??
         (yield* random.uuidV4().pipe(Effect.orDie)).replaceAll("-", "").slice(0, 12);
       const parkedPath = path.join(path.dirname(target), `bot-pool-${id}`);
-      const moved = yield* run("park", root, ["worktree", "move", target, parkedPath]).pipe(
-        Effect.as(true),
-        // Git refuses to move a worktree with submodules; such a worktree is not reused.
-        Effect.catch(() => removeWorktree(root, target).pipe(Effect.as(false))),
-      );
+      // A claim whose task never launched is still in its parked folder.
+      const moved =
+        parkedPath === target ||
+        (yield* run("park", root, ["worktree", "move", target, parkedPath]).pipe(
+          Effect.as(true),
+          // Git refuses to move a worktree with submodules; such a worktree is not reused.
+          Effect.catch(() => removeWorktree(root, target).pipe(Effect.as(false))),
+        ));
       if (!moved) {
         yield* forget;
         return { savedWork };
@@ -461,13 +514,26 @@ const make = Effect.gen(function* () {
           yield* gitWorkflow
             .createWorktree({ cwd: root, refName: thread.branch, path: thread.worktreePath })
             .pipe(Effect.mapError((cause) => fail("create", cause.message)(cause)));
+          // A follow-up runs no setup script, so this checkout has nothing installed.
+          yield* recordSetup(thread.id, "");
           return true;
         }
         const moved = yield* moveClaimed(root, row, thread.worktreePath, thread.branch, null);
-        if (moved !== null) return true;
+        if (moved !== null) {
+          yield* recordSetup(thread.id, row.setup_signature);
+          return true;
+        }
       }
     },
   );
+
+  const claimedPath: BotWorktreePool["Service"]["claimedPath"] = (workThreadId) =>
+    sql<{ readonly path: string }>`
+      SELECT path FROM bot_worktrees WHERE claimed_by = ${workThreadId}
+    `.pipe(
+      Effect.map((rows) => rows[0]?.path ?? null),
+      Effect.mapError(storage),
+    );
 
   const parkedPaths: BotWorktreePool["Service"]["parkedPaths"] = (projectId) =>
     sql<{ readonly path: string }>`
@@ -522,27 +588,37 @@ const make = Effect.gen(function* () {
     ).pipe(Effect.mapError(storage));
     let removed = 0;
     for (const row of rows) {
-      const claimed = yield* sql<{ readonly worktree_id: string }>`
-        DELETE FROM bot_worktrees WHERE worktree_id = ${row.worktree_id} AND claimed_by IS NULL
-        RETURNING worktree_id
+      // Reserved while git removes it, so no task takes it; forgotten only once it is gone.
+      const reserved = yield* sql<{ readonly worktree_id: string }>`
+        UPDATE bot_worktrees SET claimed_by = ${REMOVING}
+        WHERE worktree_id = ${row.worktree_id} AND claimed_by IS NULL RETURNING worktree_id
       `.pipe(Effect.mapError(storage));
-      if (claimed.length === 0) continue;
+      if (reserved.length === 0) continue;
       const root = yield* repositoryOf(row.project_id as ProjectId).pipe(
         Effect.orElseSucceed(() => null),
       );
-      if (root !== null) {
-        const removal = (yield* exists(row.path))
-          ? removeWorktree(root, row.path)
-          : gitWorkflow
-              .pruneWorktrees({ cwd: root })
-              .pipe(Effect.mapError((cause) => fail("prune", cause.message)(cause)));
-        yield* removal.pipe(
-          Effect.catchCause((cause) =>
-            Effect.logWarning("Could not remove a free Bot worktree", { path: row.path, cause }),
+      const removal =
+        root === null
+          ? Effect.void
+          : (yield* exists(row.path))
+            ? removeWorktree(root, row.path)
+            : gitWorkflow
+                .pruneWorktrees({ cwd: root })
+                .pipe(Effect.mapError((cause) => fail("prune", cause.message)(cause)));
+      const gone = yield* removal.pipe(
+        Effect.as(true),
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Could not remove a free Bot worktree", { path: row.path, cause }).pipe(
+            Effect.as(false),
           ),
-        );
-      }
-      removed++;
+        ),
+      );
+      yield* (
+        gone
+          ? sql`DELETE FROM bot_worktrees WHERE worktree_id = ${row.worktree_id}`
+          : sql`UPDATE bot_worktrees SET claimed_by = NULL WHERE worktree_id = ${row.worktree_id}`
+      ).pipe(Effect.mapError(storage));
+      if (gone) removed++;
     }
     return removed;
   });
@@ -561,6 +637,7 @@ const make = Effect.gen(function* () {
     park,
     restore,
     parkedPaths,
+    claimedPath,
     measure,
     clear,
     expire,

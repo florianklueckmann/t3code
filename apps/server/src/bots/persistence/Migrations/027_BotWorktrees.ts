@@ -9,6 +9,8 @@ export default Effect.gen(function* () {
   // worktree. 'released': its worktree went back to the pool; a follow-up takes one again.
   yield* sql`ALTER TABLE bot_tasks ADD COLUMN worktree_state TEXT`;
   yield* sql`ALTER TABLE bot_tasks ADD COLUMN unfinished_work INTEGER NOT NULL DEFAULT 0`;
+  // Lockfiles the work thread's worktree was last set up from; it goes with the worktree.
+  yield* sql`ALTER TABLE bot_tasks ADD COLUMN setup_signature TEXT`;
   // Free worktrees only; one in use belongs to its task's work thread.
   yield* sql`CREATE TABLE bot_worktrees (
     worktree_id TEXT PRIMARY KEY,

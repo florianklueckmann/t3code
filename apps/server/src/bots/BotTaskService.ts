@@ -36,6 +36,7 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Predicate from "effect/Predicate";
 import * as PubSub from "effect/PubSub";
+import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -140,18 +141,17 @@ const writesFiles = (row: Pick<BotTaskRow, "origin" | "allow_changes" | "watch">
   !isNoChangesTask(row) && row.watch !== 1;
 
 /** Stable per task, so a retried dispatch names the same branch. */
-const taskBranchName = (row: Pick<BotTaskRow, "task_id" | "title">) => {
+export const taskBranchName = (row: Pick<BotTaskRow, "task_id" | "title">) => {
   const slug = row.title
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 40)
     .replace(/-+$/, "");
-  const suffix = row.task_id
-    .replace(/[^A-Za-z0-9]/g, "")
-    .slice(-6)
-    .toLowerCase();
-  return `bot/${slug === "" ? "task" : slug}-${suffix}`;
+  // From the whole id: routine ids differ only in timestamps whose last digits repeat.
+  let hash = 0x811c9dc5;
+  for (const character of row.task_id) hash = Math.imul(hash ^ character.charCodeAt(0), 0x01000193);
+  return `bot/${slug === "" ? "task" : slug}-${(hash >>> 0).toString(16).padStart(8, "0")}`;
 };
 
 /**
@@ -309,6 +309,7 @@ const make = Effect.gen(function* () {
   const random = yield* SecureRandom.SecureRandom;
   const worktrees = yield* BotWorktreePool.BotWorktreePool;
   const path = yield* Path.Path;
+  const dispatching = yield* Ref.make<ReadonlySet<string>>(new Set());
   const changes = yield* PubSub.sliding<{
     readonly taskId: BotTaskId;
     readonly workThreadId: string | null;
@@ -617,6 +618,24 @@ const make = Effect.gen(function* () {
    * A cancel can land while the launch runs, so the cancel flag is checked again after it.
    */
   const dispatch = Effect.fn("BotTaskService.dispatch")(function* (stale: BotTaskRow) {
+    // The start call and a reconcile pass can both find a task not yet launched. One claims its
+    // worktree and launches; the other leaves it to that one.
+    const entered = yield* Ref.modify(dispatching, (current) =>
+      current.has(stale.task_id) ? [false, current] : [true, new Set(current).add(stale.task_id)],
+    );
+    if (!entered) return;
+    yield* launchWork(stale).pipe(
+      Effect.ensuring(
+        Ref.update(dispatching, (current) => {
+          const next = new Set(current);
+          next.delete(stale.task_id);
+          return next;
+        }),
+      ),
+    );
+  });
+
+  const launchWork = Effect.fn("BotTaskService.launchWork")(function* (stale: BotTaskRow) {
     const row = yield* readRow(stale.task_id);
     if (row === undefined || row.completed_at !== null || row.cancel_requested_at !== null) return;
     const bot = yield* store.getBot(row.bot_id).pipe(Effect.mapError(storageError));
@@ -1717,7 +1736,9 @@ const make = Effect.gen(function* () {
   const workThreadIdle = (shell: OrchestrationV2ThreadShell | null) =>
     shell === null ||
     shell.deletedAt !== null ||
-    (shell.status !== "idle" && isTerminal(deriveTaskStatus({ cancelRequested: false, shell })));
+    (shell.status !== "idle" &&
+      (shell.pendingBackgroundTasks?.length ?? 0) === 0 &&
+      isTerminal(deriveTaskStatus({ cancelRequested: false, shell })));
 
   /**
    * Gives a finished task's worktree back to the pool once its work thread is idle: after the task
@@ -1725,7 +1746,7 @@ const make = Effect.gen(function* () {
    * that starts meanwhile either finds the worktree in place or restores it after.
    */
   const releaseWorktree = Effect.fn("BotTaskService.releaseWorktree")(function* (row: BotTaskRow) {
-    if (row.work_thread_id === null || row.branch === null) return;
+    if (row.work_thread_id === null) return;
     const workThreadId = ThreadId.make(row.work_thread_id);
     const readShell = threads
       .getThreadShell(workThreadId)
@@ -1735,9 +1756,14 @@ const make = Effect.gen(function* () {
     const released = sql`
       UPDATE bot_tasks SET worktree_state = 'released' WHERE task_id = ${row.task_id}
     `.pipe(Effect.mapError(storageError));
-    const worktreePath = shell?.worktreePath ?? null;
+    // A task that failed before its launch recorded the worktree still holds its claim.
+    const worktreePath =
+      shell?.worktreePath ??
+      (yield* worktrees
+        .claimedPath(workThreadId)
+        .pipe(Effect.mapError((cause) => botError(cause.message)(cause))));
     if (worktreePath === null) return yield* released;
-    const branch = row.branch;
+    const branch = row.branch ?? taskBranchName(row);
     const savedWork = yield* withWorkspaceLease(
       path.resolve(worktreePath),
       Effect.gen(function* () {

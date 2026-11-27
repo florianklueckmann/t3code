@@ -202,6 +202,17 @@ it.effect("ten tasks in a row share one worktree and install once until the lock
       const { claim } = yield* world.runTask(11);
       assert.deepInclude(claim, { _tag: "pooled", setupNeeded: true });
       assert.equal(world.setups(), 2);
+
+      // A task that commits a lockfile change without installing leaves the old install behind.
+      const bump = yield* world.runTask(12, {
+        work: (worktreePath) =>
+          world
+            .write(`${worktreePath}/pnpm-lock.yaml`, "lock: 3\n")
+            .pipe(Effect.andThen(world.git(worktreePath, "commit", "-qam", "bump again"))),
+      });
+      yield* world.git(world.root, "merge", "-q", "--ff-only", bump.branch);
+      yield* world.git(world.root, "push", "origin", "main");
+      assert.deepInclude((yield* world.runTask(13)).claim, { _tag: "pooled", setupNeeded: true });
     }),
   ),
 );
@@ -277,6 +288,96 @@ it.effect("starts a task from the base branch it names", () =>
   ),
 );
 
+it.effect(
+  "never overwrites an existing branch, and gives back a worktree a failed start claimed",
+  () =>
+    withRepository((world) =>
+      Effect.gen(function* () {
+        const sql = yield* BotDatabase.BotDatabase;
+        yield* world.runTask(1);
+        yield* world.git(world.root, "branch", "bot/taken", "main");
+        const taken = yield* world.git(world.root, "rev-parse", "bot/taken");
+        yield* world.git(world.root, "commit", "--allow-empty", "-m", "newer main");
+        yield* world.git(world.root, "push", "origin", "main");
+        const thread = ThreadId.make(`${BOT_WORK_THREAD_ID_PREFIX}taken`);
+        yield* sql`INSERT INTO bot_tasks (task_id, bot_id, project_id, home_thread_id, work_thread_id,
+          origin, title, prompt, runtime_mode, status, created_at, updated_at)
+        VALUES ('taken', 'bot', ${projectId}, 'home', ${thread}, 'direct', 'Task', 'Do it',
+          'full-access', 'accepted', ${NOW}, ${NOW})`;
+        const refused = yield* world.pool
+          .take({ projectId, workThreadId: thread, branch: "bot/taken", baseBranch: null })
+          .pipe(Effect.flip);
+        assert.equal(refused.operation, "checkout");
+        assert.equal(yield* world.git(world.root, "rev-parse", "bot/taken"), taken);
+
+        // The task fails; its release finds the claim and parks the worktree for the next task.
+        const claimed = yield* world.pool.claimedPath(thread);
+        assert.isNotNull(claimed);
+        yield* world.pool.park({
+          projectId,
+          workThreadId: thread,
+          worktreePath: claimed!,
+          commitMessage: "WIP: Task",
+          wipBranch: "bot/taken-wip",
+        });
+        assert.isNull(yield* world.pool.claimedPath(thread));
+        assert.lengthOf(yield* world.pool.parkedPaths(projectId), 1);
+        assert.equal((yield* world.runTask(2)).claim._tag, "pooled");
+      }),
+    ),
+);
+
+it.effect("keeps a checkout whose edits inside a submodule it cannot commit", () =>
+  withRepository((world) =>
+    Effect.gen(function* () {
+      const library = `${world.root}-library`;
+      yield* world.git(world.root, "init", "-q", "-b", "main", library);
+      yield* world.write(`${library}/lib.txt`, "lib\n");
+      yield* world.git(library, "add", "-A");
+      yield* world.git(
+        library,
+        "-c",
+        "user.email=t@example.com",
+        "-c",
+        "user.name=T",
+        "commit",
+        "-qm",
+        "lib",
+      );
+      yield* world.git(
+        world.root,
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        "-q",
+        library,
+        "lib",
+      );
+      yield* world.git(world.root, "commit", "-qm", "add submodule");
+      yield* world.git(world.root, "push", "origin", "main");
+      const task = yield* world.runTask(1, {
+        work: (worktreePath) =>
+          world
+            .git(
+              worktreePath,
+              "-c",
+              "protocol.file.allow=always",
+              "submodule",
+              "update",
+              "--init",
+              "-q",
+            )
+            .pipe(Effect.andThen(world.write(`${worktreePath}/lib/lib.txt`, "edited\n"))),
+      });
+      assert.isFalse(task.savedWork);
+      assert.isTrue(yield* world.exists(task.worktreePath));
+      assert.equal(yield* world.git(`${task.worktreePath}/lib`, "show", "HEAD:lib.txt"), "lib");
+      assert.deepEqual(yield* world.pool.parkedPaths(projectId), []);
+    }),
+  ),
+);
+
 it.effect("keeps a new task waiting while the pool is full", () =>
   withRepository((world) =>
     Effect.gen(function* () {
@@ -302,15 +403,22 @@ it.effect("keeps a new task waiting while the pool is full", () =>
 it.effect("leaves a repository without a commit to the project folder", () =>
   withRepository((world) =>
     Effect.gen(function* () {
-      // HEAD names a branch that has no commit yet, as right after `git init`.
+      const take = (n: number) =>
+        world.pool.take({
+          projectId,
+          workThreadId: ThreadId.make(`${BOT_WORK_THREAD_ID_PREFIX}fresh-${n}`),
+          branch: `bot/fresh-${n}`,
+          baseBranch: null,
+        });
+      // An unborn HEAD alone is not an empty repository: main still has commits.
       yield* world.git(world.root, "symbolic-ref", "HEAD", "refs/heads/unborn");
-      const claim = yield* world.pool.take({
-        projectId,
-        workThreadId: ThreadId.make(`${BOT_WORK_THREAD_ID_PREFIX}fresh`),
-        branch: "bot/fresh",
-        baseBranch: null,
-      });
-      assert.equal(claim._tag, "no-git");
+      assert.equal((yield* take(1))._tag, "create");
+      // With no commit anywhere, as right after `git init`, the task runs in the folder.
+      yield* world.git(world.root, "remote", "set-head", "origin", "--delete");
+      const refs = yield* world.git(world.root, "for-each-ref", "--format=%(refname)");
+      for (const ref of refs.split("\n").filter(Boolean))
+        yield* world.git(world.root, "update-ref", "-d", ref);
+      assert.equal((yield* take(2))._tag, "no-git");
     }),
   ),
 );
