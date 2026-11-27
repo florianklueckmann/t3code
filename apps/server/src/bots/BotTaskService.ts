@@ -1772,9 +1772,11 @@ const make = Effect.gen(function* () {
     const savedWork = yield* withWorkspaceLease(
       path.resolve(worktreePath),
       Effect.gen(function* () {
-        if (!workThreadIdle(yield* readShell)) return null;
-        // A failed task may have failed in its setup script; the next task runs it again.
-        if ((yield* readRow(row.task_id))?.status === "failed")
+        // Setup finishes before the agent starts, so a run that never started may have left the
+        // install unfinished; the next task in this worktree runs it again.
+        const current = yield* readShell;
+        if (!workThreadIdle(current)) return null;
+        if (current?.latestRunStartedAt == null)
           yield* sql`UPDATE bot_tasks SET setup_signature = NULL WHERE task_id = ${row.task_id}`.pipe(
             Effect.mapError(storageError),
           );

@@ -382,7 +382,7 @@ it.effect("keeps a checkout whose edits inside a submodule it cannot commit", ()
   ),
 );
 
-it.effect("asks the remote for its default branch when origin/HEAD is missing", () =>
+it.effect("starts from the remote's current default branch, not a stale origin/HEAD", () =>
   withRepository((world) =>
     Effect.gen(function* () {
       const origin = yield* world.git(world.root, "remote", "get-url", "origin");
@@ -397,7 +397,6 @@ it.effect("asks the remote for its default branch when origin/HEAD is missing", 
         "HEAD",
         "refs/heads/trunk",
       );
-      yield* world.git(world.root, "remote", "set-head", "origin", "--delete");
       const trunk = yield* world.git(world.root, "rev-parse", "trunk");
       assert.deepEqual((yield* world.runTask(1)).claim, { _tag: "create", baseRef: trunk });
     }),

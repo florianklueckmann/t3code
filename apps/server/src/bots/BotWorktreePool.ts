@@ -195,12 +195,8 @@ const make = Effect.gen(function* () {
       .resolvePrimaryRemoteName(cwd)
       .pipe(Effect.orElseSucceed(() => null));
     if (remoteName !== null) {
-      let branchName =
-        baseBranch ??
-        (yield* gitWorkflow
-          .resolveDefaultBranchName(cwd, remoteName)
-          .pipe(Effect.orElseSucceed(() => null)));
-      // Without a local `origin/HEAD`, ask the remote which branch its HEAD names.
+      // The remote's HEAD now; the local `origin/HEAD` can be stale, so it only stands in offline.
+      let branchName = baseBranch;
       if (branchName === null) {
         const advertised = yield* read("remote-head", cwd, [
           "ls-remote",
@@ -209,7 +205,10 @@ const make = Effect.gen(function* () {
           "HEAD",
         ]).pipe(Effect.orElseSucceed(() => null));
         branchName =
-          /^ref: refs\/heads\/(\S+)\s+HEAD$/m.exec(advertised?.stdout ?? "")?.[1] ?? null;
+          /^ref: refs\/heads\/(\S+)\s+HEAD$/m.exec(advertised?.stdout ?? "")?.[1] ??
+          (yield* gitWorkflow
+            .resolveDefaultBranchName(cwd, remoteName)
+            .pipe(Effect.orElseSucceed(() => null)));
       }
       if (branchName !== null) {
         const fetched = yield* gitWorkflow

@@ -1132,7 +1132,9 @@ const make = Effect.gen(function* () {
       const prepare = prepareInBackground(input, threadId, runId);
       if (
         runId === null ||
-        (input.workspaceStrategy.type !== "worktree" && input.reusedWorktree === undefined)
+        (input.workspaceStrategy.type !== "worktree" &&
+          input.reusedWorktree === undefined &&
+          input.setupScript !== "await")
       ) {
         return yield* prepare;
       }

@@ -140,6 +140,8 @@ interface FakeThread {
   readonly backgroundTasks: number;
   /** Set once the first message admitted a run. */
   readonly runId: string | null;
+  /** Its latest run reached the agent, past workspace preparation. */
+  readonly started?: boolean;
   /** Where the launch put it: "root", "worktree <branch> from <base>" or "pooled <path> <branch>". */
   readonly workspace: string;
   readonly worktreePath: string | null;
@@ -285,6 +287,7 @@ const makeThreadWorld = Effect.gen(function* () {
       | "latestRunCompletedAt"
       | "activeRunId"
       | "worktreePath"
+      | "latestRunStartedAt"
       | "id"
       | "projectId"
     > = {
@@ -306,6 +309,7 @@ const makeThreadWorld = Effect.gen(function* () {
           : null,
       activeRunId: thread.status === "running" ? RunId.make(thread.runId!) : null,
       worktreePath: thread.worktreePath,
+      latestRunStartedAt: thread.started === true ? DateTime.makeUnsafe(0) : null,
     };
     return shell as OrchestrationV2ThreadShell;
   });
@@ -3252,6 +3256,12 @@ it.effect(
           yield* services.tasks.reconcile;
           assert.deepEqual(yield* Ref.get(world.poolParks), []);
 
+          // Its run never started, so the install may be unfinished: the next task sets up again.
+          const setupOf = sql<{ readonly setup_signature: string | null }>`
+            SELECT setup_signature FROM bot_tasks WHERE task_id = ${task.id}`.pipe(
+            Effect.map((rows) => rows[0]?.setup_signature),
+          );
+          yield* sql`UPDATE bot_tasks SET setup_signature = 'lock-a' WHERE task_id = ${task.id}`;
           yield* Ref.set(world.poolSavesWork, true);
           yield* services.tasks.cancel({ taskId: task.id });
           yield* services.tasks.reconcile;
@@ -3262,8 +3272,12 @@ it.effect(
             unfinishedWork: true,
           });
           assert.deepEqual(yield* Ref.get(world.poolParks), [worktreePath]);
+          assert.isNull(yield* setupOf);
 
           // A follow-up took a worktree again at turn start; it goes back when that turn ends.
+          // Once a run started, the install it set up is trusted.
+          yield* sql`UPDATE bot_tasks SET setup_signature = 'lock-a' WHERE task_id = ${task.id}`;
+          yield* world.update(thread, { started: true });
           yield* sql`UPDATE bot_tasks SET worktree_state = 'held' WHERE task_id = ${task.id}`;
           yield* Ref.set(world.poolSavesWork, false);
           yield* world.update(thread, { status: "running" });
@@ -3273,6 +3287,7 @@ it.effect(
           yield* services.tasks.reconcile;
           assert.deepEqual(yield* Ref.get(world.poolParks), [worktreePath, worktreePath]);
           assert.isTrue((yield* services.tasks.get(task.id)).unfinishedWork);
+          assert.equal(yield* setupOf, "lock-a");
         }),
       );
     }).pipe(Effect.provide(layerDatabase)),
