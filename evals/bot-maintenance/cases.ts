@@ -258,6 +258,106 @@ export const CASES: ReadonlyArray<MaintenanceCase> = [
     ],
   },
   {
+    id: "task-result-corrects-inferred-fact",
+    source:
+      "Learning from the Bot's own work: finished work that shows an inferred fact is outdated replaces it",
+    learning: [
+      {
+        id: "entry-previews",
+        kind: "fact",
+        text: "Deploy previews for pull requests run on Vercel.",
+        origin: "correction",
+      },
+    ],
+    sources: [
+      taskResult(
+        "task-4",
+        "Fixed the broken preview link in the PR template. While doing it I checked the deploy setup: the Vercel project was deleted and `.github/workflows/preview.yml` now deploys every pull request to Cloudflare Pages. The template links to the Cloudflare Pages preview and the link works on PR 318.",
+      ),
+    ],
+    checks: [
+      {
+        name: "replaces the outdated Vercel entry from the finished work",
+        expect: "some",
+        where: {
+          op: "replace",
+          target: "entry-previews",
+          text: [/cloudflare/i],
+          cites: ["task-4"],
+        },
+      },
+      {
+        name: "does not add Cloudflare beside the Vercel entry",
+        expect: "none",
+        where: { op: "add", text: [/cloudflare/i] },
+      },
+    ],
+  },
+  {
+    id: "diagnosis-corrects-inferred-procedure",
+    source:
+      "Learning from the Bot's own work: a failed routine's diagnosis corrects the procedure that caused the failure",
+    learning: [
+      {
+        id: "entry-import-reset",
+        kind: "procedure",
+        text: "Before the nightly import, run `pnpm db:reset` so the import starts from a clean database.",
+        origin: "correction",
+      },
+    ],
+    sources: [
+      taskResult(
+        "task-5",
+        'Diagnosis of the failed routine "Nightly import". The run stopped at the import step with `relation "import_staging" does not exist`. The routine ran `pnpm db:reset` first, and `scripts/db-reset.sql` drops `import_staging`, the table the import reads from. The reset is what breaks the import: the three earlier failures this week show the same error right after the reset. The import must run without `pnpm db:reset`; `pnpm db:migrate` alone leaves `import_staging` in place.',
+      ),
+    ],
+    checks: [
+      {
+        name: "replaces the procedure with one that leaves the reset out",
+        expect: "some",
+        where: {
+          op: "replace",
+          target: "entry-import-reset",
+          text: [/(do not|don't|never|without|must not|avoid|skip|instead of)[^.]*db:reset/i],
+          cites: ["task-5"],
+        },
+      },
+    ],
+  },
+  {
+    id: "task-result-leaves-user-words",
+    source:
+      "Learning from the Bot's own work, control: finished work never rewrites a preference or a standing instruction on its own",
+    learning: [
+      {
+        id: "entry-bullets",
+        kind: "preference",
+        text: "Status updates are three bullet points at most.",
+        origin: "correction",
+      },
+      {
+        id: "entry-staging-db",
+        kind: "fact",
+        text: "The staging database is Postgres 16 on port 5433.",
+        origin: "instruction",
+      },
+    ],
+    sources: [
+      taskResult(
+        "task-6",
+        "Ran the integration tests against staging. I connected on port 5432 and the connection was refused twice before I retried with the documented port. The run was large, so I wrote the status update as five paragraphs instead of bullets. All 212 tests pass.",
+      ),
+    ],
+    checks: [
+      { name: "replaces nothing", expect: "none", where: { op: "replace" } },
+      {
+        name: "learns no new status format or port",
+        expect: "none",
+        where: { text: [/paragraph|5432/i] },
+      },
+    ],
+  },
+  {
     id: "failed-task-not-procedure",
     source:
       "T3B-20 acceptance: failed, cancelled or interrupted task results do not become confirmed successful procedures",

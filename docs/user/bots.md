@@ -368,7 +368,11 @@ codebase does not leak into another. You see it under each project in
 
 **Maintenance**, under each project in **Settings → Bots**, reviews that
 project's new messages and newly finished tasks once a night at 03:00 server
-time and records lessons by the same **Learning** option. It needs the Bot on a
+time and records lessons by the same **Learning** option. What a finished task
+found, including the diagnosis of a failed routine, can add or correct a fact
+or a procedure the Bot inferred. On its own it never changes one of your
+standing instructions or a preference; that takes something you wrote to the
+Bot. It needs the Bot on a
 signed-in Codex or Claude model, and starts with what comes after you turn it
 on. It always uses the Bot's own provider and model, never another one. A night
 is skipped while the Bot's conversation or its tasks are still busy, while the
