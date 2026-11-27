@@ -213,6 +213,17 @@ it.effect("ten tasks in a row share one worktree and install once until the lock
       yield* world.git(world.root, "merge", "-q", "--ff-only", bump.branch);
       yield* world.git(world.root, "push", "origin", "main");
       assert.deepInclude((yield* world.runTask(13)).claim, { _tag: "pooled", setupNeeded: true });
+
+      // Lockfiles at any depth count; other changes do not.
+      yield* world.write(`${world.root}/README.md`, "changed\n");
+      yield* world.git(world.root, "commit", "-qam", "readme");
+      yield* world.git(world.root, "push", "-q", "origin", "main");
+      assert.deepInclude((yield* world.runTask(14)).claim, { _tag: "pooled", setupNeeded: false });
+      yield* world.write(`${world.root}/frontend/package-lock.json`, "{}\n");
+      yield* world.git(world.root, "add", "-A");
+      yield* world.git(world.root, "commit", "-qm", "frontend lockfile");
+      yield* world.git(world.root, "push", "-q", "origin", "main");
+      assert.deepInclude((yield* world.runTask(15)).claim, { _tag: "pooled", setupNeeded: true });
     }),
   ),
 );

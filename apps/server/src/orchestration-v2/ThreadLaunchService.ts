@@ -1487,11 +1487,6 @@ const make = Effect.gen(function* () {
       messageIds: [run.userMessageId],
     });
     const message = messages.find((candidate) => candidate.id === run.userMessageId);
-    // A Bot task's pooled worktree went back to the pool when its setup failed; a retry takes
-    // one again and waits for setup, as the task's own launch did.
-    const botPooled =
-      workspacePreparation.type === "existing_worktree" && mayBeBotWorkThreadId(thread.id);
-    if (botPooled && Option.isSome(worktreeRestore)) yield* worktreeRestore.value.restore(thread);
     const reuse =
       workspacePreparation.type === "worktree" &&
       thread.worktreePath !== null &&
@@ -1505,6 +1500,12 @@ const make = Effect.gen(function* () {
             reusedWorktree: { baseRef: workspacePreparation.baseRef },
           }
         : null;
+    // A Bot task's worktree went back to the pool when its setup failed, whether the task made it
+    // or took it from the pool; a retry takes one again and waits for setup, as the launch did.
+    const botPooled =
+      mayBeBotWorkThreadId(thread.id) &&
+      (reuse !== null || workspacePreparation.type === "existing_worktree");
+    if (botPooled && Option.isSome(worktreeRestore)) yield* worktreeRestore.value.restore(thread);
     return yield* schedulePreparation(
       {
         commandId: input.commandId,

@@ -21,10 +21,10 @@ export const BOT_WORKTREE_POOL_LIMIT = 5;
 export const BOT_WORKTREE_IDLE_DAYS = 7;
 /** `claimed_by` of a free worktree while Clear or expiry removes it. */
 const REMOVING = "removing";
-/** No lockfile listing looks like this, so a worktree with it always runs setup next. */
+/** Not a commit, so a worktree with it always runs setup next. */
 const SETUP_UNKNOWN = "unknown";
 
-/** Lockfiles at the repository root; a change in one means the setup script must run again. */
+/** Lockfiles at any depth; a change in one means the setup script must run again. */
 const LOCKFILES = [
   "pnpm-lock.yaml",
   "package-lock.json",
@@ -183,11 +183,24 @@ const make = Effect.gen(function* () {
     return root === null ? null : project.workspaceRoot;
   });
 
+  /** The commit a setup installs from, recorded as the worktree's setup signature. */
   const lockfileSignature = (cwd: string, commit = "HEAD") =>
-    read("lockfiles", cwd, ["ls-tree", commit, "--", ...LOCKFILES]).pipe(
+    run("setup-commit", cwd, ["rev-parse", "--verify", `${commit}^{commit}`]).pipe(
       Effect.map((result) => result.stdout.trim()),
     );
-  /** The lockfiles the worktree's last setup installed from; parking keeps it with the worktree. */
+  /** Whether a lockfile differs from the commit the last setup installed from, or it is unknown. */
+  const setupNeededAt = (cwd: string, setupCommit: string) =>
+    setupCommit === SETUP_UNKNOWN
+      ? Effect.succeed(true)
+      : read("lockfiles", cwd, [
+          "diff",
+          "--quiet",
+          setupCommit,
+          "HEAD",
+          "--",
+          ...LOCKFILES.map((name) => `:(glob)**/${name}`),
+        ]).pipe(Effect.map((result) => result.exitCode !== 0));
+  /** The commit the worktree's last setup installed from; parking keeps it with the worktree. */
   const recordSetup = (workThreadId: ThreadId, signature: string) =>
     sql`UPDATE bot_tasks SET setup_signature = ${signature} WHERE work_thread_id = ${workThreadId}`.pipe(
       Effect.mapError(storage),
@@ -346,8 +359,10 @@ const make = Effect.gen(function* () {
             ["switch", "--discard-changes", "--quiet", "-c", branch, startPoint],
       );
     }
-    const signature = yield* lockfileSignature(target);
-    return { signature, setupNeeded: signature !== row.setup_signature };
+    return {
+      signature: yield* lockfileSignature(target),
+      setupNeeded: yield* setupNeededAt(target, row.setup_signature),
+    };
   });
 
   const take: BotWorktreePool["Service"]["take"] = Effect.fn("BotWorktreePool.take")(
