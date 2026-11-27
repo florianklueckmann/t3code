@@ -313,16 +313,19 @@ export function BotLearningSection({
                     }
                   />
                 )}
-                <ActionText
-                  label="Retire"
-                  tone="muted"
-                  disabled={locked}
-                  onPress={() =>
-                    void run("Could not retire the entry", () =>
-                      retire({ environmentId, input: { botId, entryId } }),
-                    )
-                  }
-                />
+                {/* A suggestion to retire offers Retire below, beside Keep. */}
+                {view.retireSuggested ? null : (
+                  <ActionText
+                    label="Retire"
+                    tone="muted"
+                    disabled={locked}
+                    onPress={() =>
+                      void run("Could not retire the entry", () =>
+                        retire({ environmentId, input: { botId, entryId } }),
+                      )
+                    }
+                  />
+                )}
               </View>
             ) : null}
             {view.retireSuggested && view.current ? (

@@ -1283,18 +1283,21 @@ export function BotLearningList({
                       Apply to all projects
                     </Button>
                   )}
-                  <Button
-                    size="xs"
-                    variant="ghost-muted"
-                    disabled={locked}
-                    onClick={() =>
-                      void run("Could not retire the entry", () =>
-                        retire({ environmentId, input: { botId: bot.id, entryId } }),
-                      )
-                    }
-                  >
-                    Retire
-                  </Button>
+                  {/* A suggestion to retire offers Retire below, beside Keep. */}
+                  {view.retireSuggested ? null : (
+                    <Button
+                      size="xs"
+                      variant="ghost-muted"
+                      disabled={locked}
+                      onClick={() =>
+                        void run("Could not retire the entry", () =>
+                          retire({ environmentId, input: { botId: bot.id, entryId } }),
+                        )
+                      }
+                    >
+                      Retire
+                    </Button>
+                  )}
                 </div>
               ) : null}
             </div>

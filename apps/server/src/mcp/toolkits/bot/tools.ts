@@ -116,7 +116,12 @@ export type BotToolInput = typeof BotToolParameters.Type;
 
 // Appearance is client presentation; agents neither edit nor read it yet.
 const { appearance: _summaryAppearance, ...botToolSummaryFields } = BotSummary.fields;
-const { appearance: _detailAppearance, ...botToolDetailFields } = BotDetail.fields;
+// Suggestions to retire are the user's to answer in Settings; agents do not see them yet.
+const {
+  appearance: _detailAppearance,
+  learningRetireSuggestions: _retireSuggestions,
+  ...botToolDetailFields
+} = BotDetail.fields;
 
 /** Read-only: only the user changes these, in Settings → Bots. */
 const BotToolAlerts = Schema.Struct({
