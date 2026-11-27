@@ -40,6 +40,18 @@ it("credits a replace of the outdated entry and fails an add beside it", () => {
   expect(added.checks.map((check) => check.pass)).toEqual([false, false]);
 });
 
+it("credits a reinforce only for the entry the person repeated", () => {
+  const repeated = caseOf("repeated-correction-reinforced");
+  const reinforce = (entryId: string) => ({
+    op: "reinforce",
+    target: [...batchFor(repeated).targets].find(([, target]) => target.entryId === entryId)![0],
+    evidence: [{ source: "i1", quote: "Three bullets max" }],
+  });
+  expect(grade(repeated.id, [reinforce("entry-bullets")]).pass).toBe(true);
+  expect(grade(repeated.id, [reinforce("entry-staging-db")]).pass).toBe(false);
+  expect(grade(repeated.id, []).pass).toBe(false);
+});
+
 it("matches cited sources by id and kinds by the operation", () => {
   const procedure = (key: string, quoteText: string) =>
     grade("failed-task-not-procedure", [

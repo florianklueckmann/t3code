@@ -155,7 +155,7 @@ export const transferLegacyBots = Effect.fn("BotDatabase.transferLegacyBots")(fu
                 ) &&
                 !(
                   table === "bot_learning_revisions" &&
-                  (row.name === "activated_at" || row.name === "restored_from")
+                  ["activated_at", "restored_from", "reinforced_at"].includes(row.name)
                 ),
             );
             if (
@@ -210,6 +210,7 @@ export const transferLegacyBots = Effect.fn("BotDatabase.transferLegacyBots")(fu
               if (table === "bot_learning_revisions") {
                 row.activated_at = row.status === "active" ? (row.decided_at ?? null) : null;
                 row.restored_from = null;
+                row.reinforced_at = null;
               }
               const keys = targetColumns
                 .filter((column) => column.pk > 0)

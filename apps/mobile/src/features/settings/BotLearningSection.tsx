@@ -4,6 +4,7 @@ import {
   BOT_LEARNING_STATUS_LABELS,
   BOT_LEARNING_SUGGESTION_LABEL,
   BOT_TURN_LEARNING_EXPLANATION,
+  botLearningConfirmedLabel,
   botLearningOriginLabel,
   botLearningRevisionInput,
   botLearningScopeChange,
@@ -193,6 +194,7 @@ export function BotLearningSection({
         const shown = view.current ?? view.latest;
         const entryId = view.entry.id;
         const marker = turn?.markerOf(view.entry) ?? null;
+        const confirmed = botLearningConfirmedLabel(shown);
         return (
           <View
             key={entryId}
@@ -207,6 +209,7 @@ export function BotLearningSection({
               {BOT_LEARNING_STATUS_LABELS[view.current ? "active" : view.latest.status]} ·{" "}
               {botLearningOriginLabel(shown)}
               {marker === null ? "" : ` · ${marker}`}
+              {confirmed === null ? "" : ` · ${confirmed}`}
             </Text>
             <Text
               textRole="body"

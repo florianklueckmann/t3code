@@ -85,6 +85,7 @@ it.effect.each([78, 79, 80, 81, 82, 83])(
                         ? row.decided_at
                         : null,
                     restored_from: null,
+                    reinforced_at: null,
                   }
                 : {}),
             })),

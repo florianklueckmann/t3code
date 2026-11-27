@@ -73,6 +73,7 @@ const learning = (
   decided_at: null,
   activated_at: null,
   restored_from: null,
+  reinforced_at: null,
 });
 const build = (
   sources: ReadonlyArray<Evidence.Source>,
@@ -262,6 +263,10 @@ it("verifies proposals against the exact packet and rejects the whole batch on a
         sameAs: "o1",
       },
       { op: "match", target: "e1", sameAs: "o1" },
+      { op: "reinforce", target: "e1", evidence: [{ source: "i1", quote: "always cite" }] },
+      // The Bot's own report and a lesson not yet in use reinforce nothing; both are dropped.
+      { op: "reinforce", target: "e1", evidence: [{ source: "t1", quote: "Converted" }] },
+      { op: "reinforce", target: "e2", evidence: [{ source: "i1", quote: "always cite" }] },
     ],
   });
   if (verified._tag !== "verified") return assert.fail(verified.reason);
@@ -278,6 +283,7 @@ it("verifies proposals against the exact packet and rejects the whole batch on a
       ["replace", "own", "m1"],
       ["add", "fact", "task", { entryId: "far", revision: 1, kind: "fact" }],
       ["match", "own", "far"],
+      ["reinforce", "own", "m1"],
     ],
   );
   const empty = Evidence.verifyProposal(batch, { operations: [] });
@@ -304,6 +310,7 @@ it("verifies proposals against the exact packet and rejects the whole batch on a
     [withOperation({ op: "match", target: "e2", sameAs: "o1" }), "unknown_target"],
     [withOperation({ op: "match", target: "e3", sameAs: "o1" }), "unknown_target"],
     [withOperation({ op: "match", target: "e1", sameAs: "e1" }), "unknown_match"],
+    [withOperation({ op: "reinforce", target: "e9", evidence: add.evidence }), "unknown_target"],
     [withOperation({ ...add, sameAs: "o9" }), "unknown_match"],
     [
       withOperation({

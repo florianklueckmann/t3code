@@ -73,6 +73,8 @@ export interface BotLearningRow {
   readonly activated_at: string | null;
   /** The earlier revision a restore copied. */
   readonly restored_from: number | null;
+  /** When the lesson last came up again unchanged; ranks it for a turn like a newer lesson. */
+  readonly reinforced_at: string | null;
 }
 
 /** A project lesson suggested for all projects because another project keeps `matched`. */
@@ -157,6 +159,12 @@ export class BotStore extends Context.Service<
       readonly decidedAt: string;
       readonly origin?: string;
     }) => Effect.Effect<void, BotStoreError>;
+    /** Only a revision still in use is reinforced. */
+    readonly setLearningReinforced: (input: {
+      readonly entryId: string;
+      readonly revision: number;
+      readonly reinforcedAt: string;
+    }) => Effect.Effect<void, BotStoreError>;
     readonly listLearningSuggestions: (
       botId: string,
     ) => Effect.Effect<ReadonlyArray<BotLearningSuggestionRow>, BotStoreError>;
@@ -234,6 +242,7 @@ const toLearningEntries = Effect.fn("BotStore.toLearningEntries")(function* (
       conflictsWithInstruction: row.conflicts_with_instruction !== 0,
       createdAt: row.created_at,
       decidedAt: row.decided_at,
+      reinforcedAt: row.reinforced_at,
     };
     const entry = entries.get(row.entry_id);
     if (entry === undefined) entries.set(row.entry_id, { rows: [row], revisions: [revision] });
@@ -476,17 +485,32 @@ export const layer = Layer.effect(
         INSERT INTO bot_learning_revisions (
           entry_id, revision, bot_id, project_id, kind, text, normalized_text, rationale,
           evidence, origin, source_json, learned_in_project_id, status, base_revision,
-          conflicts_with_instruction, created_at, decided_at, activated_at, restored_from
+          conflicts_with_instruction, created_at, decided_at, activated_at, restored_from,
+          reinforced_at
         ) VALUES (
           ${row.entry_id}, ${row.revision}, ${row.bot_id}, ${row.project_id}, ${row.kind},
           ${row.text}, ${row.normalized_text}, ${row.rationale}, ${row.evidence}, ${row.origin},
           ${row.source_json}, ${row.learned_in_project_id}, ${row.status}, ${row.base_revision},
           ${row.conflicts_with_instruction}, ${row.created_at}, ${row.decided_at},
-          ${row.activated_at}, ${row.restored_from}
+          ${row.activated_at}, ${row.restored_from}, ${row.reinforced_at}
         )
       `;
       },
       Effect.mapError(fail("insert-learning")),
+    );
+
+    const setLearningReinforced = Effect.fn("BotStore.setLearningReinforced")(
+      function* (input: {
+        readonly entryId: string;
+        readonly revision: number;
+        readonly reinforcedAt: string;
+      }) {
+        yield* sql`
+          UPDATE bot_learning_revisions SET reinforced_at = ${input.reinforcedAt}
+          WHERE entry_id = ${input.entryId} AND revision = ${input.revision} AND status = 'active'
+        `;
+      },
+      Effect.mapError(fail("set-learning-reinforced")),
     );
 
     const setLearningStatus = Effect.fn("BotStore.setLearningStatus")(
@@ -709,6 +733,7 @@ export const layer = Layer.effect(
       ),
       insertLearning,
       setLearningStatus,
+      setLearningReinforced,
       listLearningSuggestions,
       upsertLearningSuggestion,
       setLearningSuggestionDismissed,

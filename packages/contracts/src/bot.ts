@@ -221,6 +221,11 @@ export const BotLearningRevision = Schema.Struct({
   conflictsWithInstruction: Schema.Boolean,
   createdAt: IsoDateTime,
   decidedAt: Schema.NullOr(IsoDateTime),
+  /**
+   * When the user last brought the lesson up again unchanged, which ranks it for a turn like a
+   * newer one. Absent on servers that do not track it.
+   */
+  reinforcedAt: Schema.optionalKey(Schema.NullOr(IsoDateTime)),
 });
 export type BotLearningRevision = typeof BotLearningRevision.Type;
 

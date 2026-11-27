@@ -25,6 +25,7 @@ export const batchFor = (testCase: MaintenanceCase): Evidence.Batch => {
     decided_at: null,
     activated_at: AT,
     restored_from: null,
+    reinforced_at: null,
   }));
   const built = Evidence.buildBatch({
     authority: {
@@ -66,9 +67,9 @@ export const batchFor = (testCase: MaintenanceCase): Evidence.Batch => {
 };
 
 export interface GradedOperation {
-  readonly op: "add" | "replace" | "match";
+  readonly op: "add" | "replace" | "match" | "reinforce";
   readonly kind: string;
-  /** The lesson's text; for a match, the text of the entry it targets. */
+  /** The lesson's text; for a match or a reinforce, the text of the entry it targets. */
   readonly text: string;
   readonly target: string | null;
   /** The other project's entry a match names. */
@@ -116,14 +117,23 @@ export const gradeSample = (
           matched: operation.matched.entryId,
           cites: [],
         }
-      : {
-          op: operation.op,
-          kind: operation.op === "add" ? operation.kind : operation.target.kind,
-          text: operation.text,
-          target: operation.op === "replace" ? operation.target.entryId : null,
-          matched: operation.op === "add" ? (operation.matched?.entryId ?? null) : null,
-          cites: operation.evidence.map((ref) => ref.source.id),
-        },
+      : operation.op === "reinforce"
+        ? {
+            op: operation.op,
+            kind: operation.target.kind,
+            text: operation.target.text,
+            target: operation.target.entryId,
+            matched: null,
+            cites: operation.evidence.map((ref) => ref.source.id),
+          }
+        : {
+            op: operation.op,
+            kind: operation.op === "add" ? operation.kind : operation.target.kind,
+            text: operation.text,
+            target: operation.op === "replace" ? operation.target.entryId : null,
+            matched: operation.op === "add" ? (operation.matched?.entryId ?? null) : null,
+            cites: operation.evidence.map((ref) => ref.source.id),
+          },
   );
   const checks = testCase.checks.map((check) => ({
     check: check.name,

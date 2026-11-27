@@ -30,6 +30,7 @@ const row = (
     readonly origin?: "instruction" | "correction";
     readonly status?: BotStore.BotLearningRow["status"];
     readonly text?: string;
+    readonly reinforcedAt?: string;
   } = {},
 ): BotStore.BotLearningRow => ({
   entry_id: id,
@@ -51,6 +52,7 @@ const row = (
   decided_at: null,
   activated_at: null,
   restored_from: null,
+  reinforced_at: options.reinforcedAt ?? null,
 });
 
 const many = (count: number, options: Parameters<typeof row>[2] = {}) =>
@@ -119,6 +121,18 @@ it.each([
     selected: many(40)
       .map((each) => each.entry_id)
       .toReversed(),
+    eligible: 41,
+  },
+  {
+    name: "keeps an old lesson that came up again ahead of newer ones",
+    rows: [row("old", 0, { reinforcedAt: "2026-01-01T00:50:00.000Z" }), ...many(40)],
+    selected: [
+      "old",
+      ...many(40)
+        .slice(1)
+        .map((each) => each.entry_id)
+        .toReversed(),
+    ],
     eligible: 41,
   },
   {
@@ -471,6 +485,50 @@ it.effect("keeps a standing instruction when adopting a task's proposal to move 
       project_id: null,
       origin: "instruction",
     });
+  }).pipe(Effect.provide(storeLayer)),
+);
+
+it.effect("ranks a lesson the user repeats like a newer one, not one another agent repeats", () =>
+  Effect.gen(function* () {
+    const { learning, rows } = yield* fixture;
+    const old = yield* learning.record(policy, correction);
+    yield* TestClock.adjust("1 minute");
+    const newer = yield* learning.record(policy, { ...correction, text: "Use ISO dates." });
+    yield* TestClock.adjust("1 minute");
+    const selected = Effect.map(
+      rows,
+      (all) => BotLearning.turnLearning(all, projectA).summary.selected,
+    );
+
+    for (const repeat of [
+      { ...correction, awaitsUser: true },
+      { ...correction, source: { kind: "agent", label: "Bot maintenance" } },
+    ] as const) {
+      expect((yield* learning.record(policy, repeat)).duplicate).toBe(true);
+      expect(yield* selected).toEqual([newer.entryId, old.entryId]);
+    }
+
+    const fromUser = yield* learning.record(policy, correction);
+    expect(fromUser.duplicate).toBe(true);
+    expect(yield* selected).toEqual([old.entryId, newer.entryId]);
+  }).pipe(Effect.provide(storeLayer)),
+);
+
+it.effect("reinforces the lesson in use when an older rejected copy says the same", () =>
+  Effect.gen(function* () {
+    const { learning, rows } = yield* fixture;
+    const proposed = yield* learning.record("after_adoption", correction);
+    yield* learning.decide({ botId, ...proposed, decision: "reject" });
+    const kept = yield* learning.record(policy, { ...correction, ...user });
+    yield* TestClock.adjust("1 minute");
+
+    expect(yield* learning.record(policy, correction)).toMatchObject({
+      entryId: kept.entryId,
+      duplicate: true,
+    });
+    expect((yield* rows).find((row) => row.entry_id === kept.entryId)?.reinforced_at).toBe(
+      "1970-01-01T00:01:00.000Z",
+    );
   }).pipe(Effect.provide(storeLayer)),
 );
 
