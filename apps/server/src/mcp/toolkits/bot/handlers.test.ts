@@ -53,6 +53,7 @@ const detail = {
   archivedAt: null,
   projects: [],
   learning: [],
+  learningRetireSuggestions: [],
   pendingLearning: 0,
 } satisfies BotDetail;
 
@@ -508,6 +509,7 @@ it.effect("lets read-only clients read Bots but not change them", () =>
     // Appearance is client presentation; the agent's view of a Bot stays unchanged.
     expect(read.result).toMatchObject({ bot: { name: detail.name } });
     expect(read.result).not.toHaveProperty("bot.appearance");
+    expect(read.result).not.toHaveProperty("bot.learningRetireSuggestions");
     // The editor's revision and `writable` stay with the user's settings.
     const { botId: _botId, revision: _revision, writable: _writable, ...alerts } = alertStatus;
     expect((read.result as { readonly alerts: unknown }).alerts).toEqual(alerts);

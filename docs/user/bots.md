@@ -355,6 +355,11 @@ codebase does not leak into another. You see it under each project in
   the lesson where it is and the suggestion does not come back for it; **Show
   again** undoes that. The Bot finds lessons with the same wording on its own,
   and reworded ones during nightly maintenance.
+- A lesson from a correction that has not changed or come up again in 60 days
+  is marked **Suggested to retire**, at most three per project at a time.
+  **Keep** counts it as confirmed today, so it is not suggested again for
+  another 60 days; **Retire** stops it. Nothing is retired on its own, and
+  your standing instructions are never suggested.
 - **Edit** rewords an entry as a new version, so its earlier wording stays in
   its history.
 - **Retire** stops an entry, and **Restore** brings back an earlier version.

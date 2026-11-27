@@ -127,8 +127,20 @@ export const BotLearningEntryId = TrimmedNonEmptyString.check(
 ).pipe(Schema.brand("BotLearningEntryId"));
 export type BotLearningEntryId = typeof BotLearningEntryId.Type;
 
+export const BotLearningRevisionRef = Schema.Struct({
+  entryId: BotLearningEntryId,
+  revision: PositiveInt,
+});
+export type BotLearningRevisionRef = typeof BotLearningRevisionRef.Type;
+
 /** How much active learning one Bot turn includes. */
 export const BOT_TURN_LEARNING_LIMITS = { entries: 40, chars: 8_000 } as const;
+
+/**
+ * When the Bot suggests retiring a lesson it inferred: after this many days in which the lesson
+ * neither changed nor came up again, and for at most `perScope` lessons of one project at a time.
+ */
+export const BOT_LEARNING_RETIRE_SUGGESTIONS = { idleDays: 60, perScope: 3 } as const;
 
 /**
  * The active learning the next turn in a project would include, by the selector that builds
@@ -325,6 +337,11 @@ export const BotDetail = Schema.Struct({
   learning: Schema.Array(BotLearningEntry),
   /** Absent on servers without suggestions. */
   learningSuggestions: Schema.optionalKey(Schema.Array(BotLearningSuggestion)),
+  /**
+   * Lessons in use the Bot suggests retiring, see `BOT_LEARNING_RETIRE_SUGGESTIONS`. Never
+   * retired on their own. Absent on servers without these suggestions.
+   */
+  learningRetireSuggestions: Schema.optionalKey(Schema.Array(BotLearningRevisionRef)),
 });
 export type BotDetail = typeof BotDetail.Type;
 
@@ -407,12 +424,6 @@ export const BotDetachProjectInput = Schema.Struct({
 });
 export type BotDetachProjectInput = typeof BotDetachProjectInput.Type;
 
-export const BotLearningRevisionRef = Schema.Struct({
-  entryId: BotLearningEntryId,
-  revision: PositiveInt,
-});
-export type BotLearningRevisionRef = typeof BotLearningRevisionRef.Type;
-
 /** A standing instruction the user records directly; it is active at once. */
 export const BotRecordLearningInput = Schema.Struct({
   botId: BotId,
@@ -428,10 +439,14 @@ export const BotRecordLearningInput = Schema.Struct({
 });
 export type BotRecordLearningInput = typeof BotRecordLearningInput.Type;
 
+/**
+ * adopt and reject settle a waiting revision. confirm keeps the revision in use: it counts as
+ * brought up again today, which also answers a suggestion to retire it.
+ */
 export const BotDecideLearningInput = Schema.Struct({
   botId: BotId,
   ...BotLearningRevisionRef.fields,
-  decision: Schema.Literals(["adopt", "reject"]),
+  decision: Schema.Literals(["adopt", "reject", "confirm"]),
 });
 export type BotDecideLearningInput = typeof BotDecideLearningInput.Type;
 

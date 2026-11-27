@@ -1,6 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
   BOT_LEARNING_KIND_LABELS,
+  BOT_LEARNING_RETIRE_SUGGESTION_TEXT,
   BOT_LEARNING_STATUS_LABELS,
   BOT_LEARNING_SUGGESTION_LABEL,
   BOT_TURN_LEARNING_EXPLANATION,
@@ -98,9 +99,12 @@ export function BotLearningSection({
     projects.find((project) => project.environmentId === environmentId && project.id === id)
       ?.title ?? "Unknown project";
   const views = detail.data
-    ? botLearningViews(detail.data.learning, projectId, detail.data.learningSuggestions).filter(
-        (view) => focus === undefined || view.entry.id === focus.entryId,
-      )
+    ? botLearningViews(
+        detail.data.learning,
+        projectId,
+        detail.data.learningSuggestions,
+        detail.data.learningRetireSuggestions,
+      ).filter((view) => focus === undefined || view.entry.id === focus.entryId)
     : [];
   const turn =
     detail.data && projectId !== null && focus === undefined
@@ -309,16 +313,55 @@ export function BotLearningSection({
                     }
                   />
                 )}
-                <ActionText
-                  label="Retire"
-                  tone="muted"
-                  disabled={locked}
-                  onPress={() =>
-                    void run("Could not retire the entry", () =>
-                      retire({ environmentId, input: { botId, entryId } }),
-                    )
-                  }
-                />
+                {/* A suggestion to retire offers Retire below, beside Keep. */}
+                {view.retireSuggested ? null : (
+                  <ActionText
+                    label="Retire"
+                    tone="muted"
+                    disabled={locked}
+                    onPress={() =>
+                      void run("Could not retire the entry", () =>
+                        retire({ environmentId, input: { botId, entryId } }),
+                      )
+                    }
+                  />
+                )}
+              </View>
+            ) : null}
+            {view.retireSuggested && view.current ? (
+              <View className="gap-1 pt-2">
+                <Text textRole="footnote" className="text-foreground">
+                  {BOT_LEARNING_RETIRE_SUGGESTION_TEXT}
+                </Text>
+                <View className="flex-row gap-5 pt-1">
+                  <ActionText
+                    label="Keep"
+                    disabled={locked}
+                    onPress={() =>
+                      void run("Could not keep the entry", () =>
+                        decide({
+                          environmentId,
+                          input: {
+                            botId,
+                            entryId,
+                            revision: shown.revision,
+                            decision: "confirm",
+                          },
+                        }),
+                      )
+                    }
+                  />
+                  <ActionText
+                    label="Retire"
+                    tone="muted"
+                    disabled={locked}
+                    onPress={() =>
+                      void run("Could not retire the entry", () =>
+                        retire({ environmentId, input: { botId, entryId } }),
+                      )
+                    }
+                  />
+                </View>
               </View>
             ) : null}
             {view.suggestion === undefined ? null : view.suggestion.dismissed ? (

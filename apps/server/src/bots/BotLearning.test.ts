@@ -156,6 +156,35 @@ it.each([
   if ("chars" in expected) expect(turn.summary.chars).toBe(expected.chars);
 });
 
+it("suggests retiring only inferred lessons, the few idle longest in each scope", () => {
+  const context = (projectId: string, detachedAt: string | null): BotStore.BotContextRow => ({
+    home_thread_id: `home-${projectId}`,
+    bot_id: "bot",
+    project_id: projectId,
+    guidance: "",
+    sources_json: "[]",
+    revision: 1,
+    thread_sync: null,
+    attached_at: "2026-01-01T00:00:00.000Z",
+    detached_at: detachedAt,
+    updated_at: "2026-01-01T00:00:00.000Z",
+  });
+  const suggested = BotLearning.retireSuggestions(
+    [
+      ...many(5),
+      row("shared", 2, { projectId: null }),
+      row("instruction", 0, { origin: "instruction" }),
+      row("confirmed", 0, { reinforcedAt: "2026-01-01T00:30:00.000Z" }),
+      row("fresh", 20),
+      row("retired", 0, { status: "retired" }),
+      row("detached", 0, { projectId: projectB }),
+    ],
+    [context(projectA, null), context(projectB, "2026-01-01T00:00:00.000Z")],
+    "2026-01-01T00:10:00.000Z",
+  );
+  expect(suggested.map((each) => each.entryId).toSorted()).toEqual(["e01", "e02", "e03", "shared"]);
+});
+
 const botId = BotId.make("bot");
 const policy = "automatic";
 const correction = {
@@ -529,6 +558,30 @@ it.effect("reinforces the lesson in use when an older rejected copy says the sam
     expect((yield* rows).find((row) => row.entry_id === kept.entryId)?.reinforced_at).toBe(
       "1970-01-01T00:01:00.000Z",
     );
+  }).pipe(Effect.provide(storeLayer)),
+);
+
+it.effect("stops suggesting a lesson for retirement once the user keeps it", () =>
+  Effect.gen(function* () {
+    const { learning, rows, store } = yield* fixture;
+    const lesson = yield* learning.record(policy, correction);
+    yield* TestClock.adjust("61 days");
+    const suggested = Effect.gen(function* () {
+      const idleSince = DateTime.formatIso(DateTime.subtract(yield* DateTime.now, { days: 60 }));
+      return BotLearning.retireSuggestions(
+        yield* rows,
+        yield* store.listContexts(botId),
+        idleSince,
+      );
+    });
+    const keep = learning.decide({ botId, ...lesson, decision: "confirm" });
+
+    expect(yield* suggested).toEqual([{ entryId: lesson.entryId, revision: lesson.revision }]);
+    yield* keep;
+    expect(yield* suggested).toEqual([]);
+
+    yield* learning.retire({ botId, entryId: lesson.entryId });
+    expect((yield* Effect.flip(keep)).message).toContain("not in use");
   }).pipe(Effect.provide(storeLayer)),
 );
 
