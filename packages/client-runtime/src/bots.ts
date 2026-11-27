@@ -1,5 +1,6 @@
 import {
   BOT_CONTINUATION_SECTIONS,
+  BOT_LEARNING_RETIRE_SUGGESTIONS,
   BOT_TURN_LEARNING_LIMITS,
   BotContinuationNoteInput,
   type BotContinuationNote,
@@ -23,6 +24,7 @@ import type {
   BotLearningKind,
   BotLearningNotice,
   BotLearningRevision,
+  BotLearningRevisionRef,
   BotLearningStatus,
   BotLearningSuggestion,
   BotProjectContext,
@@ -240,6 +242,9 @@ export const BOT_LEARNING_STATUS_LABELS: Record<BotLearningStatus, string> = {
 /** Marks a lesson the Bot offers for all projects, on its settings row and its Home notice. */
 export const BOT_LEARNING_SUGGESTION_LABEL = "Suggested for all projects";
 
+/** Shown on a lesson the Bot suggests retiring, above Keep and Retire. */
+export const BOT_LEARNING_RETIRE_SUGGESTION_TEXT = `Suggested to retire · hasn't changed or come up in ${BOT_LEARNING_RETIRE_SUGGESTIONS.idleDays} days. Keep it if the Bot still needs it.`;
+
 export function botLearningOriginLabel(revision: BotLearningRevision): string {
   if (revision.origin === "instruction") return "Your instruction";
   if (revision.source.kind === "task") return "Proposed by a task";
@@ -279,16 +284,19 @@ export interface BotLearningView {
         readonly dismissed: boolean;
       }
     | undefined;
+  /** The Bot suggests retiring the revision in use; the user keeps or retires it. */
+  readonly retireSuggested: boolean;
 }
 
 /**
  * The entries of one scope (a project, or null for those shared across projects): those
- * waiting for the user first, then active ones, then the rest.
+ * waiting for the user first, then those suggested to retire, then active ones, then the rest.
  */
 export function botLearningViews(
   entries: ReadonlyArray<BotLearningEntry>,
   projectId: ProjectId | null,
   suggestions: ReadonlyArray<BotLearningSuggestion> = [],
+  retireSuggestions: ReadonlyArray<BotLearningRevisionRef> = [],
 ): ReadonlyArray<BotLearningView> {
   const active = (entry: BotLearningEntry | undefined) =>
     entry?.revisions.find((revision) => revision.status === "active");
@@ -321,6 +329,9 @@ export function botLearningViews(
                 text: matchedText === current.text ? null : matchedText,
                 dismissed: suggestion.dismissedAt !== null,
               },
+        retireSuggested: retireSuggestions.some(
+          (each) => each.entryId === entry.id && each.revision === current?.revision,
+        ),
         pending: newestFirst.filter((revision) => revision.status === "pending"),
         latest,
         restorable: newestFirst.filter(
@@ -333,7 +344,7 @@ export function botLearningViews(
     ];
   });
   const rank = (view: BotLearningView) =>
-    view.pending.length > 0 ? 0 : view.current !== undefined ? 1 : 2;
+    view.pending.length > 0 ? 0 : view.retireSuggested ? 1 : view.current !== undefined ? 2 : 3;
   return [...views].sort((a, b) => rank(a) - rank(b));
 }
 

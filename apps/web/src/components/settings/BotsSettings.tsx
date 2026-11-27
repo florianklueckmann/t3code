@@ -1,6 +1,7 @@
 import { RegistryContext, useAtomValue } from "@effect/atom-react";
 import {
   BOT_LEARNING_KIND_LABELS,
+  BOT_LEARNING_RETIRE_SUGGESTION_TEXT,
   BOT_LEARNING_STATUS_LABELS,
   BOT_LEARNING_SUGGESTION_LABEL,
   BOT_ROUTINE_WATCH_DESCRIPTION,
@@ -1126,9 +1127,12 @@ export function BotLearningList({
   const decideSuggestion = useAtomCommand(serverEnvironment.decideBotLearningSuggestion, {
     label: "bot learning",
   });
-  const views = botLearningViews(bot.learning, projectId, bot.learningSuggestions).filter(
-    (view) => focus === undefined || view.entry.id === focus.entryId,
-  );
+  const views = botLearningViews(
+    bot.learning,
+    projectId,
+    bot.learningSuggestions,
+    bot.learningRetireSuggestions,
+  ).filter((view) => focus === undefined || view.entry.id === focus.entryId);
   const turn =
     projectId === null || focus !== undefined ? null : botTurnLearningView(bot, projectId);
   const marked = (revision: number) =>
@@ -1393,6 +1397,44 @@ export function BotLearningList({
                 </div>
               </div>
             ))}
+            {view.retireSuggested && view.current ? (
+              <div className="space-y-1 rounded-md bg-muted/40 p-2">
+                <p className="text-xs font-medium">{BOT_LEARNING_RETIRE_SUGGESTION_TEXT}</p>
+                <div className="flex gap-2">
+                  <Button
+                    size="xs"
+                    disabled={locked}
+                    onClick={() =>
+                      void run("Could not keep the entry", () =>
+                        decide({
+                          environmentId,
+                          input: {
+                            botId: bot.id,
+                            entryId,
+                            revision: shown.revision,
+                            decision: "confirm",
+                          },
+                        }),
+                      )
+                    }
+                  >
+                    Keep
+                  </Button>
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    disabled={locked}
+                    onClick={() =>
+                      void run("Could not retire the entry", () =>
+                        retire({ environmentId, input: { botId: bot.id, entryId } }),
+                      )
+                    }
+                  >
+                    Retire
+                  </Button>
+                </div>
+              </div>
+            ) : null}
             {view.suggestion === undefined ? null : view.suggestion.dismissed ? (
               <p className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
                 You dismissed the suggestion to apply this to all projects.

@@ -1,4 +1,5 @@
 import {
+  BOT_LEARNING_RETIRE_SUGGESTIONS,
   BOT_TURN_LEARNING_LIMITS,
   BotError,
   type BotDecideLearningInput,
@@ -354,6 +355,12 @@ export const make = (deps: {
   const decide = Effect.fn("BotLearning.decide")(function* (input: BotDecideLearningInput) {
     const rows = yield* store.listLearning(input.botId);
     const row = yield* requireRevision(rows, input.entryId, input.revision);
+    if (input.decision === "confirm") {
+      if (row.status !== "active") {
+        return yield* fail(`Revision ${row.revision} is ${row.status}, not in use.`);
+      }
+      return yield* reinforce(input);
+    }
     if (row.status !== "pending") {
       return yield* fail(`Revision ${row.revision} is ${row.status}, not pending.`);
     }
@@ -621,6 +628,35 @@ function repeatedLessons(lessons: ReadonlyArray<BotStore.BotLearningRow>) {
         .find((earlier) => earlier.project_id !== entry.project_id);
       return matched === undefined ? [] : [{ entry, matched }];
     }),
+  );
+}
+
+/**
+ * Lessons the Bot inferred that have neither changed nor come up again since `idleSince`: per
+ * scope the few idle longest, so the user tidies a handful at a time. Derived on every read, so
+ * confirming or retiring one answers it and the next takes its place. The user's own
+ * instructions and detached projects are never suggested.
+ */
+export function retireSuggestions(
+  rows: ReadonlyArray<BotStore.BotLearningRow>,
+  contexts: ReadonlyArray<BotStore.BotContextRow>,
+  idleSince: string,
+): ReadonlyArray<BotLearningRevisionRef> {
+  const attached = new Set(
+    contexts.filter((context) => context.detached_at === null).map((context) => context.project_id),
+  );
+  const idle = rows
+    .filter(
+      (row) =>
+        row.status === "active" &&
+        row.origin === "correction" &&
+        (row.project_id === null || attached.has(row.project_id)),
+    )
+    .map((row) => ({ row, at: later(row.created_at, row.reinforced_at) }))
+    .filter(({ at }) => at <= idleSince)
+    .toSorted((a, b) => a.at.localeCompare(b.at));
+  return [...Map.groupBy(idle, ({ row }) => row.project_id).values()].flatMap((scope) =>
+    scope.slice(0, BOT_LEARNING_RETIRE_SUGGESTIONS.perScope).map(({ row }) => refOf(row)),
   );
 }
 

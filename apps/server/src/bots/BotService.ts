@@ -1,5 +1,6 @@
 import {
   BOT_HOME_THREAD_ID_PREFIX,
+  BOT_LEARNING_RETIRE_SUGGESTIONS,
   BOT_TASK_TERMINAL_STATUSES,
   type BotAttachProjectInput,
   type BotContinuationScope,
@@ -224,6 +225,15 @@ const make = Effect.gen(function* () {
       ...detail,
       capabilities: BotProviderSupport.botCapabilities(instance?.driverKind),
       learningSuggestions: BotLearning.currentSuggestions(learning, suggestions, contexts),
+      learningRetireSuggestions: BotLearning.retireSuggestions(
+        learning,
+        contexts,
+        DateTime.formatIso(
+          DateTime.subtract(yield* DateTime.now, {
+            days: BOT_LEARNING_RETIRE_SUGGESTIONS.idleDays,
+          }),
+        ),
+      ),
       projects: detail.projects.map((project) => ({
         ...project,
         turnLearning: BotLearning.turnLearning(learning, project.projectId).summary,
