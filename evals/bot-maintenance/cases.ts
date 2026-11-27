@@ -27,8 +27,8 @@ export interface Where {
   /** Every pattern must match the lesson text. */
   readonly text?: ReadonlyArray<RegExp>;
   readonly kinds?: ReadonlyArray<BotLearningKind>;
-  readonly op?: "add" | "replace" | "match";
-  /** The learning entry id a replace or a match targets. */
+  readonly op?: "add" | "replace" | "match" | "reinforce";
+  /** The learning entry id a replace, a match or a reinforce targets. */
   readonly target?: string;
   /** The other project's learning entry id a match, or an add's "sameAs", names. */
   readonly matched?: string;
@@ -120,9 +120,82 @@ export const CASES: ReadonlyArray<MaintenanceCase> = [
       {
         name: "does not restate the changeset lesson",
         expect: "none",
-        where: { text: [/changeset|changelog/i] },
+        where: { op: "add", text: [/changeset|changelog/i] },
+      },
+      {
+        name: "does not rewrite the changeset lesson",
+        expect: "none",
+        where: { op: "replace", target: "entry-changeset" },
+      },
+      {
+        name: "marks the repeated lesson as still in use",
+        expect: "some",
+        where: { op: "reinforce", target: "entry-changeset", cites: ["msg-3"] },
       },
     ],
+  },
+  {
+    id: "repeated-correction-reinforced",
+    source:
+      "Learning salience: a lesson the person has to repeat is reinforced so it stays in the turn's context",
+    learning: [
+      {
+        id: "entry-bullets",
+        kind: "preference",
+        text: "Status updates are three bullet points at most.",
+        origin: "correction",
+      },
+      {
+        id: "entry-staging-db",
+        kind: "fact",
+        text: "The staging database is Postgres 16 on port 5433.",
+        origin: "correction",
+      },
+    ],
+    sources: [
+      input(
+        "msg-11",
+        "That status update was a wall of text again. Three bullets max, like I said before.",
+      ),
+    ],
+    checks: [
+      {
+        name: "reinforces the lesson the person repeated",
+        expect: "some",
+        where: { op: "reinforce", target: "entry-bullets", cites: ["msg-11"] },
+      },
+      {
+        name: "leaves the unrelated lesson alone",
+        expect: "none",
+        where: { target: "entry-staging-db" },
+      },
+      { name: "adds no second copy", expect: "none", where: { op: "add", text: [/bullet/i] } },
+    ],
+  },
+  {
+    id: "topic-mention-not-reinforced",
+    source: "Learning salience control: a topic that only comes up reinforces nothing",
+    learning: [
+      {
+        id: "entry-staging-db",
+        kind: "fact",
+        text: "The staging database is Postgres 16 on port 5433.",
+        origin: "correction",
+      },
+      {
+        id: "entry-bullets",
+        kind: "preference",
+        text: "Status updates are three bullet points at most.",
+        origin: "correction",
+      },
+    ],
+    sources: [
+      input(
+        "msg-12",
+        "Did last night's migration on the staging database finish? Send me a status update when you know.",
+      ),
+    ],
+    checks: [{ name: "proposes nothing", expect: "empty" }],
   },
   {
     id: "project-fact-stays-project",

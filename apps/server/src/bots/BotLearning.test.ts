@@ -30,6 +30,7 @@ const row = (
     readonly origin?: "instruction" | "correction";
     readonly status?: BotStore.BotLearningRow["status"];
     readonly text?: string;
+    readonly reinforcedAt?: string;
   } = {},
 ): BotStore.BotLearningRow => ({
   entry_id: id,
@@ -51,6 +52,7 @@ const row = (
   decided_at: null,
   activated_at: null,
   restored_from: null,
+  reinforced_at: options.reinforcedAt ?? null,
 });
 
 const many = (count: number, options: Parameters<typeof row>[2] = {}) =>
@@ -119,6 +121,18 @@ it.each([
     selected: many(40)
       .map((each) => each.entry_id)
       .toReversed(),
+    eligible: 41,
+  },
+  {
+    name: "keeps an old lesson that came up again ahead of newer ones",
+    rows: [row("old", 0, { reinforcedAt: "2026-01-01T00:50:00.000Z" }), ...many(40)],
+    selected: [
+      "old",
+      ...many(40)
+        .slice(1)
+        .map((each) => each.entry_id)
+        .toReversed(),
+    ],
     eligible: 41,
   },
   {
@@ -471,6 +485,28 @@ it.effect("keeps a standing instruction when adopting a task's proposal to move 
       project_id: null,
       origin: "instruction",
     });
+  }).pipe(Effect.provide(storeLayer)),
+);
+
+it.effect("ranks a lesson the user repeats like a newer one, not one another agent repeats", () =>
+  Effect.gen(function* () {
+    const { learning, rows } = yield* fixture;
+    const old = yield* learning.record(policy, correction);
+    yield* TestClock.adjust("1 minute");
+    const newer = yield* learning.record(policy, { ...correction, text: "Use ISO dates." });
+    yield* TestClock.adjust("1 minute");
+    const selected = Effect.map(
+      rows,
+      (all) => BotLearning.turnLearning(all, projectA).summary.selected,
+    );
+
+    const fromAgent = yield* learning.record(policy, { ...correction, awaitsUser: true });
+    expect(fromAgent.duplicate).toBe(true);
+    expect(yield* selected).toEqual([newer.entryId, old.entryId]);
+
+    const fromUser = yield* learning.record(policy, correction);
+    expect(fromUser.duplicate).toBe(true);
+    expect(yield* selected).toEqual([old.entryId, newer.entryId]);
   }).pipe(Effect.provide(storeLayer)),
 );
 

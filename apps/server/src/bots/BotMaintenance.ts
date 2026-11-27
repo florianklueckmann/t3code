@@ -74,6 +74,8 @@ export interface Outcome {
   readonly duplicate: number;
   /** Lessons offered to the user for all projects; a pair settled before is not counted again. */
   readonly suggested: number;
+  /** Lessons in use that the person brought up again unchanged. */
+  readonly reinforced: number;
 }
 
 export type DeferReason =
@@ -840,6 +842,7 @@ export const make = Effect.gen(function* () {
               stale: 0,
               duplicate: 0,
               suggested: 0,
+              reinforced: 0,
             };
             // The basis pins this project's entries; the other project's may have changed.
             const suggest = Effect.fn("BotMaintenance.suggest")(function* (
@@ -870,6 +873,14 @@ export const make = Effect.gen(function* () {
             for (const operation of verified.proposal.operations) {
               if (operation.op === "match") {
                 yield* suggest(operation.target, operation.matched);
+                continue;
+              }
+              if (operation.op === "reinforce") {
+                yield* learning.reinforce({
+                  entryId: BotLearningEntryId.make(operation.target.entryId),
+                  revision: operation.target.revision,
+                });
+                outcome.reinforced += 1;
                 continue;
               }
               const kind = operation.op === "add" ? operation.kind : operation.target.kind;

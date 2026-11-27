@@ -437,7 +437,9 @@ Daily Home check is on and starts with work that finishes after you turn it on.
 
 The Bot gets its current learning at the start of each turn, not its whole
 history: at most 40 entries or 8,000 characters, your instructions first and
-then the newest. Each project's **Learning** section previews the next turn
+then the newest. A lesson you bring up again counts as new from that day, so
+what you keep needing stays in context; Maintenance notices this in what you
+wrote to the Bot. Each project's **Learning** section previews the next turn
 there: how many entries are in context, how many characters they use, and
 which entries are on demand, so the Bot reads them only when it looks them up.
 Retire or merge entries to make room. Learning does

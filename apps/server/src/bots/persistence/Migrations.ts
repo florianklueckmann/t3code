@@ -29,6 +29,7 @@ import McpCalendarChoice from "./Migrations/024_BotMcpCalendarChoice.ts";
 import LearningSuggestions from "./Migrations/025_BotLearningSuggestions.ts";
 import Watch from "./Migrations/026_BotWatch.ts";
 import Worktrees from "./Migrations/027_BotWorktrees.ts";
+import LearningReinforced from "./Migrations/028_BotLearningReinforced.ts";
 
 const routines = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -79,6 +80,7 @@ const entries = [
   [25, "BotLearningSuggestions", LearningSuggestions],
   [26, "BotWatch", Watch],
   [27, "BotWorktrees", Worktrees],
+  [28, "BotLearningReinforced", LearningReinforced],
 ] as const;
 const run = Migrator.make({});
 export const runMigrations = Effect.fn("BotDatabase.runMigrations")(function* () {

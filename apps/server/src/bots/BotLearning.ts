@@ -153,6 +153,11 @@ export const make = (deps: {
     if (row.status === "active") yield* activate(rows, row, row.created_at);
   });
 
+  /** Marks a lesson in use as having come up again, which ranks it for a turn like a newer one. */
+  const reinforce = Effect.fn("BotLearning.reinforce")(function* (ref: BotLearningRevisionRef) {
+    yield* store.setLearningReinforced({ ...ref, reinforcedAt: yield* deps.now });
+  });
+
   const record = Effect.fn("BotLearning.record")(function* (
     policy: BotLearningPolicy,
     input: RecordLearningInput,
@@ -170,6 +175,7 @@ export const make = (deps: {
       source_json: BotStore.encodeLearningSource(input.source),
       learned_in_project_id: input.projectId,
       created_at: now,
+      reinforced_at: null,
     };
     const fromTask = input.source.kind === "task";
     if (fromTask) {
@@ -282,15 +288,20 @@ export const make = (deps: {
           repeats(input, normalized, row)),
     );
     if (duplicate !== undefined) {
-      return confirmsInference(input, duplicate)
-        ? yield* record(policy, {
-            ...input,
-            replaces: {
-              entryId: BotLearningEntryId.make(duplicate.entry_id),
-              revision: duplicate.revision,
-            },
-          })
-        : duplicateOf(duplicate);
+      if (confirmsInference(input, duplicate)) {
+        return yield* record(policy, {
+          ...input,
+          replaces: {
+            entryId: BotLearningEntryId.make(duplicate.entry_id),
+            revision: duplicate.revision,
+          },
+        });
+      }
+      // Only the person saying it again counts: an agent restating what it was given proves nothing.
+      if (duplicate.status === "active" && !fromTask && !input.awaitsUser) {
+        yield* reinforce(refOf(duplicate));
+      }
+      return duplicateOf(duplicate);
     }
     const status = initialStatus({
       origin: input.origin,
@@ -467,6 +478,7 @@ export const make = (deps: {
       decided_at: now,
       activated_at: now,
       restored_from: target.revision,
+      reinforced_at: null,
     };
     yield* insertRevision(rows, row);
   });
@@ -560,11 +572,14 @@ export const make = (deps: {
     retire,
     restore,
     settleTask,
+    reinforce,
     suggest,
     syncSuggestions,
     decideSuggestion,
   };
 };
+
+const later = (at: string, other: string | null) => (other !== null && other > at ? other : at);
 
 const refOf = (row: BotStore.BotLearningRow): BotLearningRevisionRef => ({
   entryId: BotLearningEntryId.make(row.entry_id),
@@ -653,8 +668,9 @@ const duplicateOf = (row: BotStore.BotLearningRow): RecordLearningResult => ({
 
 /**
  * The active learning one turn in a project includes: its own entries and the Bot's shared ones,
- * standing instructions first and then the newest, until either limit is reached. The turn's
- * context and the Bot's detail both read it, so what settings show cannot drift from a turn.
+ * standing instructions first and then the newest or most recently reinforced, until either limit
+ * is reached. The turn's context and the Bot's detail both read it, so what settings show cannot
+ * drift from a turn.
  */
 export function turnLearning(rows: ReadonlyArray<BotStore.BotLearningRow>, projectId: string) {
   const projectRevisions = new Map<string, number>();
@@ -671,10 +687,17 @@ export function turnLearning(rows: ReadonlyArray<BotStore.BotLearningRow>, proje
         ? projectRevisions.get(`${row.entry_id}:${row.base_revision}`)
         : undefined;
     const base = baseIndex === undefined ? undefined : rows[baseIndex];
-    const rank =
+    const moved =
       base?.origin === row.origin && isScopeOnlyMove(base, row.project_id, row.normalized_text)
-        ? { at: base.created_at, index: baseIndex ?? index }
-        : { at: row.created_at, index };
+        ? base
+        : undefined;
+    const rank =
+      moved === undefined
+        ? { at: later(row.created_at, row.reinforced_at), index }
+        : {
+            at: later(later(moved.created_at, moved.reinforced_at), row.reinforced_at),
+            index: baseIndex ?? index,
+          };
     return [{ row, rank }];
   });
   eligible.sort(

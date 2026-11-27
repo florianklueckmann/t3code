@@ -463,13 +463,14 @@ it.effect(
       yield* bots`ALTER TABLE bot_tasks DROP COLUMN diagnoses_run_id`;
       yield* bots`ALTER TABLE bot_learning_revisions DROP COLUMN activated_at`;
       yield* bots`ALTER TABLE bot_learning_revisions DROP COLUMN restored_from`;
+      yield* bots`ALTER TABLE bot_learning_revisions DROP COLUMN reinforced_at`;
       yield* bots`DELETE FROM effect_sql_migrations WHERE migration_id >= 11`;
       yield* BotMigrations.runMigrations().pipe(Effect.provideService(SqlClient.SqlClient, bots));
       const history = yield* bots<{
         readonly migration_id: number;
         readonly name: string;
       }>`SELECT migration_id, name FROM effect_sql_migrations ORDER BY migration_id`;
-      assert.deepEqual(history.slice(-17), [
+      assert.deepEqual(history.slice(-18), [
         { migration_id: 11, name: "BotMaintenance" },
         { migration_id: 12, name: "BotMaintenanceReceipts" },
         { migration_id: 13, name: "BotMaintenanceNightly" },
@@ -487,6 +488,7 @@ it.effect(
         { migration_id: 25, name: "BotLearningSuggestions" },
         { migration_id: 26, name: "BotWatch" },
         { migration_id: 27, name: "BotWorktrees" },
+        { migration_id: 28, name: "BotLearningReinforced" },
       ]);
       const maintenance = yield* BotMaintenance.BotMaintenance;
       const view = yield* maintenance.get(scope);
@@ -869,7 +871,8 @@ const learningRows = Effect.gen(function* () {
     readonly origin: string;
     readonly source_json: string;
     readonly evidence: string;
-  }>`SELECT entry_id, revision, project_id, text, status, origin, source_json, evidence FROM bot_learning_revisions ORDER BY rowid`;
+    readonly reinforced_at: string | null;
+  }>`SELECT entry_id, revision, project_id, text, status, origin, source_json, evidence, reinforced_at FROM bot_learning_revisions ORDER BY rowid`;
 });
 
 const sourceStates = Effect.gen(function* () {
@@ -2580,6 +2583,11 @@ it.effect("never lets an inferred lesson override or sidestep a standing instruc
           },
           add("i1", "with the party's gold total", "Mention the gold total early."),
           add("i1", "the party's gold total", "The party tracks a gold total.", "fact"),
+          {
+            op: "reinforce",
+            target: packet.learning.find((entry) => entry.text === rule)?.key ?? "missing",
+            evidence: [{ source: "i1", quote: "open every session recap" }],
+          },
         ],
       }),
     );
@@ -2602,14 +2610,20 @@ it.effect("never lets an inferred lesson override or sidestep a standing instruc
           stale: 0,
           duplicate: 0,
           suggested: 0,
+          reinforced: 1,
         });
         assert.deepEqual(
-          (yield* learningRows).map((row) => [row.text, row.origin, row.status]),
+          (yield* learningRows).map((row) => [
+            row.text,
+            row.origin,
+            row.status,
+            row.reinforced_at !== null,
+          ]),
           [
-            [rule, "instruction", "active"],
-            [goldLesson, "correction", "pending"],
-            ["Mention the gold total early.", "correction", "pending"],
-            ["The party tracks a gold total.", "correction", "active"],
+            [rule, "instruction", "active", true],
+            [goldLesson, "correction", "pending", false],
+            ["Mention the gold total early.", "correction", "pending", false],
+            ["The party tracks a gold total.", "correction", "active", false],
           ],
         );
         const instructions = yield* instructionsAt(turnContext);

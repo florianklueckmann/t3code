@@ -5,6 +5,7 @@ import {
   BOT_LEARNING_SUGGESTION_LABEL,
   BOT_ROUTINE_WATCH_DESCRIPTION,
   BOT_TURN_LEARNING_EXPLANATION,
+  botLearningConfirmedLabel,
   botLearningOriginLabel,
   botLearningRevisionInput,
   botLearningScopeChange,
@@ -1224,6 +1225,7 @@ export function BotLearningList({
         const shown = view.current ?? view.latest;
         const entryId = view.entry.id;
         const marker = turn?.markerOf(view.entry) ?? null;
+        const confirmed = botLearningConfirmedLabel(shown);
         return (
           <div
             key={entryId}
@@ -1249,6 +1251,7 @@ export function BotLearningList({
                   {botLearningOriginLabel(shown)}
                   {view.entry.projectId === null ? ` in ${titleOf(shown.learnedInProjectId)}` : ""}
                   {shown.evidence === "" ? "" : ` · “${shown.evidence}”`}
+                  {confirmed === null ? "" : ` · ${confirmed}`}
                 </p>
               </div>
               {view.current ? (

@@ -246,6 +246,15 @@ export function botLearningOriginLabel(revision: BotLearningRevision): string {
   return "Learned from a correction";
 }
 
+/** "Confirmed Nov 27, 2026" for a lesson the user brought up again, else null. */
+export function botLearningConfirmedLabel(revision: BotLearningRevision): string | null {
+  if (revision.reinforcedAt == null) return null;
+  return `Confirmed ${DateTime.formatLocal(DateTime.makeUnsafe(revision.reinforcedAt), {
+    dateStyle: "medium",
+    locale: "en-US",
+  })}`;
+}
+
 export interface BotLearningView {
   readonly entry: BotLearningEntry;
   /** The revision in use, if any. */
@@ -342,7 +351,7 @@ export const BOT_TURN_LEARNING_EXPLANATION = `A preview from the saved learning,
   BOT_TURN_LEARNING_LIMITS.entries
 } entries or ${BOT_TURN_LEARNING_LIMITS.chars.toLocaleString(
   "en-US",
-)} characters, counting those for all projects: your instructions first, then the newest. The Bot reads the rest on demand. Retire or merge entries to make room.`;
+)} characters, counting those for all projects: your instructions first, then the newest and those you confirmed most recently. The Bot reads the rest on demand. Retire or merge entries to make room.`;
 
 export interface BotTurnLearningView {
   /** Counts and characters of the next turn here, as the server selected them. */

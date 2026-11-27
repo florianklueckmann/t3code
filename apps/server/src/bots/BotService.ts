@@ -137,6 +137,9 @@ export class BotService extends Context.Service<
           policy: BotLearningPolicy,
           input: BotLearning.RecordLearningInput,
         ) => Effect.Effect<BotLearning.RecordLearningResult, BotError | BotStore.BotStoreError>;
+        readonly reinforce: (
+          ref: BotLearningRevisionRef,
+        ) => Effect.Effect<void, BotStore.BotStoreError>;
         /** Suggests `entry` for all projects because another project keeps `matched`. */
         readonly suggest: (input: {
           readonly botId: string;
@@ -958,6 +961,7 @@ const make = Effect.gen(function* () {
           context,
           rows,
           record: learning.record,
+          reinforce: learning.reinforce,
           suggest: learning.suggest,
         });
       }),
