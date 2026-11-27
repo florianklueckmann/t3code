@@ -93,8 +93,11 @@ export interface ThreadLaunchInput {
   readonly runtimeMode: RuntimeMode;
   readonly interactionMode: ProviderInteractionMode;
   readonly workspaceStrategy: ThreadLaunchWorkspaceStrategy;
-  /** "skip" leaves out the project's setup script: the worktree already has what it installs. */
-  readonly setupScript?: "skip";
+  /**
+   * "skip" leaves out the project's setup script: the worktree already has what it installs.
+   * "await" runs it in an existing worktree as a new one does, and the agent starts after it.
+   */
+  readonly setupScript?: "skip" | "await";
   readonly initialMessage?: ThreadLaunchInitialMessage;
   readonly importedNativeThread?: {
     readonly ref: {
@@ -517,7 +520,10 @@ const make = Effect.gen(function* () {
     );
 
     const reused = input.reusedWorktree;
-    const tracked = input.workspaceStrategy.type === "worktree" || reused !== undefined;
+    const tracked =
+      input.workspaceStrategy.type === "worktree" ||
+      reused !== undefined ||
+      input.setupScript === "await";
     let createdWorktreePath: string | null = null;
     let createdBranch: string | null = null;
     let setupTerminalId: string | null = null;
@@ -533,11 +539,11 @@ const make = Effect.gen(function* () {
         stages: ["fetch", "checkout", "submodules", "setup-script", "agent"],
         fiber: yield* Effect.fiber,
       });
-    } else if (reused !== undefined) {
+    } else if (reused !== undefined || input.setupScript === "await") {
       yield* setupTracker.begin({
         threadId,
         branch: input.workspaceStrategy.branch ?? null,
-        baseRef: reused.baseRef,
+        baseRef: reused?.baseRef ?? null,
         stages: ["setup-script", "agent"],
         fiber: yield* Effect.fiber,
       });

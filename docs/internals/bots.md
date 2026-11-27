@@ -73,7 +73,10 @@ first asks the pool to move a free worktree back to the path. Release and turn s
 both run under the path's workspace lease, and release checks that the thread is idle
 inside the lease. A follow-up therefore never runs in a worktree another task holds,
 and never in the project checkout. A terminal does not take a pooled worktree: it can
-stay open after the turn that would give the worktree back.
+stay open after the turn that would give the worktree back. Release does not see
+terminals either, so one opened while a task holds its worktree keeps its old folder
+after the worktree moves. The pool cap applies to starting tasks; a follow-up still
+gets a worktree when the pool is full, and release removes the extra one.
 
 ## Persistence and recovery
 

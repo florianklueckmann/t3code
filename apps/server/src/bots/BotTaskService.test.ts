@@ -204,6 +204,11 @@ const makeThreadWorld = Effect.gen(function* () {
   /** Worktree paths given back to the pool, in order. */
   const poolParks = yield* Ref.make<ReadonlyArray<string>>([]);
   const poolSavesWork = yield* Ref.make(false);
+  /** When set, the next pool claim signals `entered` and waits for `release`. */
+  const poolGate = yield* Ref.make<{
+    readonly entered: Deferred.Deferred<void>;
+    readonly release: Deferred.Deferred<void>;
+  } | null>(null);
   /** The next command of this type fails before it is recorded. */
   const failNext = yield* Ref.make<OrchestrationV2ServerCommand["type"] | null>(null);
 
@@ -370,6 +375,11 @@ const makeThreadWorld = Effect.gen(function* () {
       take: (input) =>
         Effect.gen(function* () {
           yield* Ref.update(poolTakes, (all) => [...all, input]);
+          const gate = yield* Ref.getAndSet(poolGate, null);
+          if (gate !== null) {
+            yield* Deferred.succeed(gate.entered, undefined);
+            yield* Deferred.await(gate.release);
+          }
           const [next, ...rest] = yield* Ref.get(poolClaims);
           if (rest.length > 0) yield* Ref.set(poolClaims, rest);
           const claim = next ?? { _tag: "create", baseRef: "origin-main" };
@@ -417,6 +427,7 @@ const makeThreadWorld = Effect.gen(function* () {
     poolTakes,
     poolParks,
     poolSavesWork,
+    poolGate,
   };
 });
 
@@ -3132,6 +3143,40 @@ it.effect(
         }),
       );
     }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect("a task cancelled while it claims a worktree never launches into it", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(START);
+    yield* seedProject;
+    const world = yield* makeThreadWorld;
+    yield* withServices(world, (services) =>
+      Effect.gen(function* () {
+        yield* attachBot(services);
+        const gate = {
+          entered: yield* Deferred.make<void>(),
+          release: yield* Deferred.make<void>(),
+        };
+        yield* Ref.set(world.poolGate, gate);
+        const starting = yield* Effect.forkScoped(
+          services.tasks.start({
+            botId,
+            projectId: campaign,
+            prompt: "Fix the typo.",
+            commandId: CommandId.make("cancelled-while-claiming"),
+          }),
+        );
+        yield* Deferred.await(gate.entered);
+        const taskId = BotTaskId.make("bot-task:cancelled-while-claiming");
+        yield* services.tasks.cancel({ taskId });
+        yield* Deferred.succeed(gate.release, undefined);
+        yield* Fiber.join(starting);
+        const task = yield* services.tasks.get(taskId);
+        assert.equal(task.status, "cancelled");
+        assert.isUndefined(yield* workspaceOf(world, task.workThreadId));
+      }),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
 );
 
 it.effect("a task waits for a free worktree, and without Git for the other writing task", () =>

@@ -607,7 +607,7 @@ const make = Effect.gen(function* () {
                 worktreePath: claim.worktreePath,
                 branch,
               },
-              ...(claim.setupNeeded ? {} : { setupScript: "skip" as const }),
+              setupScript: claim.setupNeeded ? ("await" as const) : ("skip" as const),
             } as const);
       }
     }
@@ -637,7 +637,13 @@ const make = Effect.gen(function* () {
 
   const launchWork = Effect.fn("BotTaskService.launchWork")(function* (stale: BotTaskRow) {
     const row = yield* readRow(stale.task_id);
-    if (row === undefined || row.completed_at !== null || row.cancel_requested_at !== null) return;
+    if (
+      row === undefined ||
+      row.completed_at !== null ||
+      row.cancel_requested_at !== null ||
+      row.dispatched_at !== null
+    )
+      return;
     const bot = yield* store.getBot(row.bot_id).pipe(Effect.mapError(storageError));
     if (bot === undefined || row.work_thread_id === null) return;
     const modelSelection =
@@ -647,32 +653,30 @@ const make = Effect.gen(function* () {
             Effect.mapError(storageError),
           );
     const workThreadId = ThreadId.make(row.work_thread_id);
-    const launched = yield* claimWorkspace(row, workThreadId).pipe(
-      Effect.flatMap((workspace) =>
-        workspace === null
-          ? Effect.succeed("waiting" as const)
-          : threadLaunch
-              .launch({
-                commandId: CommandId.make(`bot-task-launch:${row.task_id}`),
-                threadId: workThreadId,
-                projectId: row.project_id as ProjectId,
-                title: row.title,
-                modelSelection,
-                runtimeMode: row.runtime_mode as RuntimeMode,
-                interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-                ...workspace,
-                initialMessage: {
-                  messageId: MessageId.make(`bot-task-message:${row.task_id}`),
-                  text: row.prompt,
-                  attachments: [],
-                },
-                createdBy: row.origin === "direct" ? "user" : "system",
-                creationSource: "server",
-              })
-              .pipe(Effect.as("launched" as const)),
-      ),
-      Effect.exit,
-    );
+    const launched = yield* Effect.gen(function* () {
+      const workspace = yield* claimWorkspace(row, workThreadId);
+      if (workspace === null) return "waiting" as const;
+      // A cancel during the claim ended the task already; its release frees the claim.
+      if ((yield* readRow(row.task_id))?.cancel_requested_at != null) return "waiting" as const;
+      yield* threadLaunch.launch({
+        commandId: CommandId.make(`bot-task-launch:${row.task_id}`),
+        threadId: workThreadId,
+        projectId: row.project_id as ProjectId,
+        title: row.title,
+        modelSelection,
+        runtimeMode: row.runtime_mode as RuntimeMode,
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        ...workspace,
+        initialMessage: {
+          messageId: MessageId.make(`bot-task-message:${row.task_id}`),
+          text: row.prompt,
+          attachments: [],
+        },
+        createdBy: row.origin === "direct" ? "user" : "system",
+        creationSource: "server",
+      });
+      return "launched" as const;
+    }).pipe(Effect.exit);
     if (launched._tag === "Success" && launched.value === "waiting") return;
     const now = yield* nowIso;
     if (launched._tag === "Success") {
@@ -1746,7 +1750,8 @@ const make = Effect.gen(function* () {
    * that starts meanwhile either finds the worktree in place or restores it after.
    */
   const releaseWorktree = Effect.fn("BotTaskService.releaseWorktree")(function* (row: BotTaskRow) {
-    if (row.work_thread_id === null) return;
+    // A dispatch still under way owns the claim it is launching into.
+    if (row.work_thread_id === null || (yield* Ref.get(dispatching)).has(row.task_id)) return;
     const workThreadId = ThreadId.make(row.work_thread_id);
     const readShell = threads
       .getThreadShell(workThreadId)
@@ -1768,6 +1773,11 @@ const make = Effect.gen(function* () {
       path.resolve(worktreePath),
       Effect.gen(function* () {
         if (!workThreadIdle(yield* readShell)) return null;
+        // A failed task may have failed in its setup script; the next task runs it again.
+        if ((yield* readRow(row.task_id))?.status === "failed")
+          yield* sql`UPDATE bot_tasks SET setup_signature = NULL WHERE task_id = ${row.task_id}`.pipe(
+            Effect.mapError(storageError),
+          );
         const parked = yield* worktrees
           .park({
             projectId: ProjectId.make(row.project_id),

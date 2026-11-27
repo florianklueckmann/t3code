@@ -370,10 +370,36 @@ it.effect("keeps a checkout whose edits inside a submodule it cannot commit", ()
             )
             .pipe(Effect.andThen(world.write(`${worktreePath}/lib/lib.txt`, "edited\n"))),
       });
+      // Kept where it is, on its branch, with the edit: nothing reset it.
       assert.isFalse(task.savedWork);
-      assert.isTrue(yield* world.exists(task.worktreePath));
-      assert.equal(yield* world.git(`${task.worktreePath}/lib`, "show", "HEAD:lib.txt"), "lib");
+      assert.equal(yield* world.git(task.worktreePath, "branch", "--show-current"), task.branch);
+      assert.equal(
+        yield* world.git(`${task.worktreePath}/lib`, "status", "--porcelain"),
+        "M lib.txt",
+      );
       assert.deepEqual(yield* world.pool.parkedPaths(projectId), []);
+    }),
+  ),
+);
+
+it.effect("asks the remote for its default branch when origin/HEAD is missing", () =>
+  withRepository((world) =>
+    Effect.gen(function* () {
+      const origin = yield* world.git(world.root, "remote", "get-url", "origin");
+      yield* world.git(world.root, "switch", "-q", "-c", "trunk");
+      yield* world.git(world.root, "commit", "-q", "--allow-empty", "-m", "trunk");
+      yield* world.git(world.root, "push", "-q", "origin", "trunk");
+      yield* world.git(world.root, "switch", "-q", "main");
+      yield* world.git(
+        world.root,
+        `--git-dir=${origin}`,
+        "symbolic-ref",
+        "HEAD",
+        "refs/heads/trunk",
+      );
+      yield* world.git(world.root, "remote", "set-head", "origin", "--delete");
+      const trunk = yield* world.git(world.root, "rev-parse", "trunk");
+      assert.deepEqual((yield* world.runTask(1)).claim, { _tag: "create", baseRef: trunk });
     }),
   ),
 );

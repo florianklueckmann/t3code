@@ -21,6 +21,8 @@ export const BOT_WORKTREE_POOL_LIMIT = 5;
 export const BOT_WORKTREE_IDLE_DAYS = 7;
 /** `claimed_by` of a free worktree while Clear or expiry removes it. */
 const REMOVING = "removing";
+/** No lockfile listing looks like this, so a worktree with it always runs setup next. */
+const SETUP_UNKNOWN = "unknown";
 
 /** Lockfiles at the repository root; a change in one means the setup script must run again. */
 const LOCKFILES = [
@@ -141,6 +143,12 @@ const make = Effect.gen(function* () {
       ...(cause === undefined ? {} : { cause }),
     });
   const storage = fail("storage", "Bot worktree storage failed.");
+  // A removal the last server run did not finish: the worktree is free again.
+  yield* sql`UPDATE bot_worktrees SET claimed_by = NULL WHERE claimed_by = ${REMOVING}`.pipe(
+    Effect.catchCause((cause) =>
+      Effect.logWarning("Could not free Bot worktrees a removal left reserved", { cause }),
+    ),
+  );
   const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
 
   const run = (operation: string, cwd: string, args: ReadonlyArray<string>) =>
@@ -192,15 +200,16 @@ const make = Effect.gen(function* () {
         (yield* gitWorkflow
           .resolveDefaultBranchName(cwd, remoteName)
           .pipe(Effect.orElseSucceed(() => null)));
-      // A clone made without `origin/HEAD` still tracks the remote's main or master.
-      for (const candidate of ["main", "master"]) {
-        if (branchName !== null) break;
-        if (
-          yield* gitWorkflow
-            .hasCommit({ cwd, refName: `refs/remotes/${remoteName}/${candidate}` })
-            .pipe(Effect.orElseSucceed(() => false))
-        )
-          branchName = candidate;
+      // Without a local `origin/HEAD`, ask the remote which branch its HEAD names.
+      if (branchName === null) {
+        const advertised = yield* read("remote-head", cwd, [
+          "ls-remote",
+          "--symref",
+          remoteName,
+          "HEAD",
+        ]).pipe(Effect.orElseSucceed(() => null));
+        branchName =
+          /^ref: refs\/heads\/(\S+)\s+HEAD$/m.exec(advertised?.stdout ?? "")?.[1] ?? null;
       }
       if (branchName !== null) {
         const fetched = yield* gitWorkflow
@@ -209,8 +218,18 @@ const make = Effect.gen(function* () {
             refName: branchName,
             remote: { remoteName, branchName },
           })
-          .pipe(Effect.orElseSucceed(() => null));
-        if (fetched !== null) return fetched.commitSha;
+          .pipe(Effect.result);
+        if (fetched._tag === "Success" && fetched.success !== null)
+          return fetched.success.commitSha;
+        // Offline, the remote's branch as last fetched beats a local branch of the same name.
+        const tracking = `refs/remotes/${remoteName}/${branchName}`;
+        if (
+          fetched._tag === "Failure" &&
+          (yield* gitWorkflow
+            .hasCommit({ cwd, refName: tracking })
+            .pipe(Effect.orElseSucceed(() => false)))
+        )
+          return tracking;
       }
     }
     const candidates =
@@ -331,13 +350,16 @@ const make = Effect.gen(function* () {
       // A repository without any commit has nothing to branch from, like a folder without Git.
       if (
         root === null ||
-        (yield* read("any-commit", root, [
+        ((yield* read("any-commit", root, [
           "for-each-ref",
           "--count=1",
           "--format=%(objectname)",
           "refs/heads",
           "refs/remotes",
-        ])).stdout.trim() === ""
+        ])).stdout.trim() === "" &&
+          !(yield* gitWorkflow
+            .hasCommit({ cwd: root, refName: "HEAD" })
+            .pipe(Effect.orElseSucceed(() => false))))
       )
         return { _tag: "no-git" } as const;
       while (true) {
@@ -426,6 +448,27 @@ const make = Effect.gen(function* () {
             input.commitMessage,
           ]);
       }
+      const claimed = yield* sql<WorktreeRow>`
+        SELECT * FROM bot_worktrees WHERE claimed_by = ${input.workThreadId}
+      `.pipe(Effect.mapError(storage));
+      const forget =
+        claimed[0] === undefined
+          ? Effect.void
+          : sql`DELETE FROM bot_worktrees WHERE worktree_id = ${claimed[0].worktree_id}`.pipe(
+              Effect.mapError(storage),
+            );
+      // Work the commit could not hold, such as edits inside a submodule, stays where it is, on
+      // the task's branch: no reset, and the checkout leaves the pool.
+      const unsaved =
+        (yield* run("status-after", target, [
+          "status",
+          "--porcelain",
+          "--ignore-submodules=none",
+        ])).stdout.trim() !== "";
+      if (unsaved) {
+        yield* forget;
+        return { savedWork };
+      }
       // Tracked files back to the commit, untracked ones gone, ignored ones kept for the next task.
       yield* run("reset", target, ["reset", "--hard", "--quiet"]);
       yield* run("clean", target, ["clean", "-fdq"]);
@@ -434,32 +477,14 @@ const make = Effect.gen(function* () {
       const [task] = yield* sql<{ readonly setup_signature: string | null }>`
         SELECT setup_signature FROM bot_tasks WHERE work_thread_id = ${input.workThreadId}
       `.pipe(Effect.mapError(storage));
-      // Unknown when nothing recorded a setup: the next task runs it.
-      const signature = task?.setup_signature ?? "";
-      const claimed = yield* sql<WorktreeRow>`
-        SELECT * FROM bot_worktrees WHERE claimed_by = ${input.workThreadId}
-      `.pipe(Effect.mapError(storage));
-      // Work git could not commit, such as edits inside a submodule, is never removed.
-      const dirty =
-        (yield* run("status-after", target, [
-          "status",
-          "--porcelain",
-          "--ignore-submodules=none",
-        ])).stdout.trim() !== "";
-      const removeIfClean = dirty ? Effect.void : removeWorktree(root, target);
-      const forget =
-        claimed[0] === undefined
-          ? Effect.void
-          : sql`DELETE FROM bot_worktrees WHERE worktree_id = ${claimed[0].worktree_id}`.pipe(
-              Effect.mapError(storage),
-            );
+      const signature = task?.setup_signature ?? SETUP_UNKNOWN;
       // The worktree being parked still counts as held.
       const room = yield* Effect.all([heldCount(input.projectId), freeCount(input.projectId)]).pipe(
         Effect.map(([held, free]) => held - 1 + free < BOT_WORKTREE_POOL_LIMIT),
         Effect.mapError(storage),
       );
-      if (!room || dirty) {
-        yield* removeIfClean;
+      if (!room) {
+        yield* removeWorktree(root, target);
         yield* forget;
         return { savedWork };
       }
@@ -515,7 +540,7 @@ const make = Effect.gen(function* () {
             .createWorktree({ cwd: root, refName: thread.branch, path: thread.worktreePath })
             .pipe(Effect.mapError((cause) => fail("create", cause.message)(cause)));
           // A follow-up runs no setup script, so this checkout has nothing installed.
-          yield* recordSetup(thread.id, "");
+          yield* recordSetup(thread.id, SETUP_UNKNOWN);
           return true;
         }
         const moved = yield* moveClaimed(root, row, thread.worktreePath, thread.branch, null);
