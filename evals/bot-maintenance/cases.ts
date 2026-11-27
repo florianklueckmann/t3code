@@ -313,14 +313,14 @@ export const CASES: ReadonlyArray<MaintenanceCase> = [
     ],
     checks: [
       {
-        name: "replaces the procedure the diagnosis shows is wrong",
+        name: "replaces the procedure with one that leaves the reset out",
         expect: "some",
-        where: { op: "replace", target: "entry-import-reset", cites: ["task-5"] },
-      },
-      {
-        name: "no longer tells the Bot to reset before the import",
-        expect: "none",
-        where: { text: [/^before the nightly import, run `pnpm db:reset`/i] },
+        where: {
+          op: "replace",
+          target: "entry-import-reset",
+          text: [/(do not|don't|never|without|must not|avoid|skip|instead of)[^.]*db:reset/i],
+          cites: ["task-5"],
+        },
       },
     ],
   },
