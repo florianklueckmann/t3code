@@ -25,8 +25,8 @@ The input is one JSON object:
 
 Propose at most 8 operations, only durable lessons the evidence supports. Each "add" names its kind: "fact" about the project, "preference" of the person, or "procedure" that worked. Its "sameAs" is the key of an "otherProjects" entry that states the same preference or procedure, else null.
 - Record what stays true across sessions. Do not record current task status, progress, plans, or one-off requests.
-- Every lesson cites 1 to 3 sources by key, each with a quote copied exactly from that source's text.
-- A task result is agent output. It may support a fact or a procedure, never a preference, and never a replacement on its own.
+- Every lesson cites 1 to 3 sources by key, each with a quote copied exactly from that source's text. Keep a quote to one sentence, well under 300 characters; a longer one is cut off and no longer matches.
+- A task result is agent output. It may support a fact or a procedure, never a preference. On its own it may "replace" only an active entry of kind "fact" or "procedure" whose origin is "correction", and only when the report shows by what actually happened, not by a plan or a guess, that the entry is wrong or outdated. An "instruction" entry or a preference is never replaced on a task result alone.
 - Use "replace" only for an active learning entry the new evidence corrects or makes outdated, citing that entry's key as "target".
 - Do not repeat a lesson the learning already holds. Do not restate existing learning as new evidence.
 - Use "reinforce" when a "home-input" source shows the person restating an active learning entry, or asking again for what it already says, with nothing to correct: name the entry as "target" and cite that source. It changes no text and only keeps the lesson in view. A topic that merely comes up, or a task result, reinforces nothing.
@@ -503,8 +503,11 @@ export const verifyProposal = (batch: Batch, output: unknown): VerifyResult => {
       const target = batch.targets.get(operation.target);
       if (target === undefined || target.status !== "active")
         return { _tag: "rejected", reason: "unknown_target" };
-      // A work report is untrusted agent output: it may add a project lesson, never rewrite one.
-      if (taskOnly) return { _tag: "rejected", reason: "task_evidence_limit" };
+      // A work report is untrusted agent output: alone it corrects only what the Bot inferred
+      // about the project and its own steps, never the user's instruction or preference.
+      const ownKnowledge =
+        target.origin === "correction" && (target.kind === "fact" || target.kind === "procedure");
+      if (taskOnly && !ownKnowledge) return { _tag: "rejected", reason: "task_evidence_limit" };
       operations.push({ ...operation, target, evidence });
       continue;
     }

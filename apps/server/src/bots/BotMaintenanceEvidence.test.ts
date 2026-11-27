@@ -263,6 +263,14 @@ it("verifies proposals against the exact packet and rejects the whole batch on a
         sameAs: "o1",
       },
       { op: "match", target: "e1", sameAs: "o1" },
+      // Finished work alone may correct a fact the Bot inferred.
+      {
+        op: "replace",
+        target: "e1",
+        text: "Cite the vault index.",
+        rationale: "",
+        evidence: [{ source: "t1", quote: "The vault index lives in Index.md." }],
+      },
       { op: "reinforce", target: "e1", evidence: [{ source: "i1", quote: "always cite" }] },
       // The Bot's own report and a lesson not yet in use reinforce nothing; both are dropped.
       { op: "reinforce", target: "e1", evidence: [{ source: "t1", quote: "Converted" }] },
@@ -283,6 +291,7 @@ it("verifies proposals against the exact packet and rejects the whole batch on a
       ["replace", "own", "m1"],
       ["add", "fact", "task", { entryId: "far", revision: 1, kind: "fact" }],
       ["match", "own", "far"],
+      ["replace", "own", "task"],
       ["reinforce", "own", "m1"],
     ],
   );
@@ -313,20 +322,32 @@ it("verifies proposals against the exact packet and rejects the whole batch on a
     [withOperation({ op: "reinforce", target: "e9", evidence: add.evidence }), "unknown_target"],
     [withOperation({ ...add, sameAs: "o9" }), "unknown_match"],
     [
-      withOperation({
-        op: "replace",
-        target: "e1",
-        text: "x",
-        rationale: "",
-        evidence: [{ source: "t1", quote: "Converted the notes." }],
-      }),
-      "task_evidence_limit",
-    ],
-    [
       withOperation({ ...add, evidence: [{ source: "t1", quote: "Converted the notes." }] }),
       "task_evidence_limit",
     ],
   ] as const) {
     assert.equal(rejected(output), reason, JSON.stringify(output));
+  }
+
+  // Finished work alone never rewrites the user's instruction or preference.
+  const userWords = ready(
+    build(
+      [taskResult("task", "Converted the notes.")],
+      [learning("rule", { origin: "instruction" }), learning("taste", { kind: "preference" })],
+    ),
+  );
+  for (const target of userWords.targets.keys()) {
+    const result = Evidence.verifyProposal(userWords, {
+      operations: [
+        {
+          op: "replace",
+          target,
+          text: "x",
+          rationale: "",
+          evidence: [{ source: "t1", quote: "Converted the notes." }],
+        },
+      ],
+    });
+    assert.equal(result._tag === "rejected" && result.reason, "task_evidence_limit", target);
   }
 });

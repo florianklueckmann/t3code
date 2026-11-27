@@ -18,10 +18,10 @@ Flags: `--instance` (`codex`, the default, or `claude`), `--model` (default `gpt
 
 | Model              | Effort  | Run                   | Passed |
 | ------------------ | ------- | --------------------- | ------ |
-| `gpt-6.1-terra`    | high    | 2026-11-24, 1 sample  | 7/7    |
+| `gpt-6.1-terra`    | high    | 2026-11-27, 3 samples | 45/48  |
 | `claude-haiku-5-5` | default | 2026-11-24, 3 samples | 33/33  |
 
-The Codex row predates the four `match` cases; the Claude row includes them.
+The Codex run fails `repeat-in-second-project-matched` on all three samples, as it did before the `reinforce` and task-result replace cases were added. The Claude row predates those five cases.
 
 The run stops before any model call when the sealed generator refuses the selection, for example because the model or effort is missing from the account's catalog or the account is signed out. It never falls back to another model.
 
