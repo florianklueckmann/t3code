@@ -13,6 +13,7 @@ import * as BotHomeFolders from "../bots/BotHomeFolders.ts";
 import * as BotHomes from "../bots/BotHomes.ts";
 import * as BotService from "../bots/BotService.ts";
 import * as BotRuntimePolicy from "../bots/BotRuntimePolicy.ts";
+import * as BotTaskAcceptance from "../bots/BotTaskAcceptance.ts";
 import * as BotTaskService from "../bots/BotTaskService.ts";
 import * as BotTurnContext from "../bots/BotTurnContext.ts";
 import * as BotWorktreePool from "../bots/BotWorktreePool.ts";
@@ -334,6 +335,7 @@ const layerBotTaskProvided = BotTaskService.layer.pipe(
       layerThreadLaunchProvided,
       layerThreadManagementProvided,
       layerBotWorktreePoolProvided,
+      BotTaskAcceptance.layer.pipe(Layer.provide(layerProjectService)),
     ),
   ),
 );

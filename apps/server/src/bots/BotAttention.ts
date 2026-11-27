@@ -51,6 +51,8 @@ export interface BotAlert {
   readonly homeThreadId: string;
   readonly phase: "completed" | "failed";
   readonly endedAt: DateTime.DateTime | null;
+  /** A result that waits for the user: held and sent with the others that come in shortly. */
+  readonly gather?: boolean;
 }
 
 export interface BotAlertCounts {
@@ -67,6 +69,8 @@ export interface BotAlertDigest {
   readonly projectId: string | null;
   readonly held: number;
   readonly allFailed: boolean;
+  /** Held alerts in it that were gathered because their results wait for the user. */
+  readonly needYou: number;
   /** When it was claimed: its relay identity and alert time, the same on every retry. */
   readonly digestAt: string;
 }
@@ -116,6 +120,9 @@ export class BotAttention extends Context.Service<
  * moves by a day at most; a repeated publish of a run this old is not decided anew (see `admit`).
  */
 const DECISION_RETENTION_DAYS = 7;
+
+/** How long the first result waiting for the user waits for others, to go out as one alert. */
+const GATHER_MINUTES = 5;
 
 /** The relay rings for a completion at most this old; an older unsent claim gets a new identity. */
 const DIGEST_RECLAIM_MS = 2 * 60_000;
@@ -169,6 +176,28 @@ export const make = Effect.gen(function* () {
   const changed = yield* PubSub.sliding<void>(1);
   const notifyChanged = PubSub.publish(changed, undefined).pipe(Effect.asVoid);
 
+  /**
+   * When a held alert may go out: its gathering's end while today's limit has room for that one
+   * alert, or else the digest's time.
+   */
+  const releaseAt = (
+    row: { readonly decided_at: string; readonly release_at: string | null },
+    quiet: BotQuietHours | null,
+    roomToday: boolean,
+  ): DateTime.DateTime => {
+    const digest = digestDueAt(local(row.decided_at), quiet);
+    if (row.release_at === null) return digest;
+    const gathered = DateTime.makeUnsafe(row.release_at);
+    // Never before its gathering ends, also when it falls back to the digest.
+    return roomToday ? gathered : DateTime.max(gathered, digest);
+  };
+
+  const sentOn = (botId: string, day: string) =>
+    sql<{ readonly count: number }>`SELECT COUNT(*) AS count FROM bot_alerts
+      WHERE bot_id = ${botId} AND day = ${day} AND held = 0`.pipe(
+      Effect.map((rows) => rows[0]?.count ?? 0),
+    );
+
   const settings = (botId: string) =>
     sql<SettingsRow>`SELECT revision, daily_limit, quiet_start, quiet_end, remit
       FROM bot_attention WHERE bot_id = ${botId}`.pipe(Effect.map((rows) => settingsOf(rows[0])));
@@ -180,13 +209,21 @@ export const make = Effect.gen(function* () {
     if (bot === undefined) return yield* new BotError({ message: "Bot not found.", botId });
     const current = yield* settings(botId);
     const now = yield* localNow;
-    const [sent] = yield* sql<{ readonly count: number }>`SELECT COUNT(*) AS count FROM bot_alerts
-      WHERE bot_id = ${botId} AND day = ${DateTime.formatIsoDate(now)} AND held = 0`;
-    const [held] = yield* sql<{
-      readonly count: number;
-      readonly oldest: string | null;
-    }>`SELECT COUNT(*) AS count, MIN(decided_at) AS oldest FROM bot_alerts
+    const today = DateTime.formatIsoDate(now);
+    const sent = yield* sentOn(botId, today);
+    const held = yield* sql<{
+      readonly decided_at: string;
+      readonly release_at: string | null;
+      readonly day: string;
+      readonly digest_at: string | null;
+    }>`SELECT decided_at, release_at, day, digest_at FROM bot_alerts
       WHERE bot_id = ${botId} AND held = 1 AND digest_sent_at IS NULL`;
+    // A claimed digest goes out at its claim, also while the relay retries it.
+    const releases = held.map((row) =>
+      row.digest_at !== null
+        ? DateTime.makeUnsafe(row.digest_at)
+        : releaseAt(row, current.quietHours, row.day === today && sent < current.dailyLimit),
+    );
     return {
       botId,
       revision: current.revision,
@@ -194,12 +231,12 @@ export const make = Effect.gen(function* () {
       quietHours: current.quietHours,
       remit: current.remit,
       writable: bot.archived_at === null,
-      sentToday: sent?.count ?? 0,
-      held: held?.count ?? 0,
+      sentToday: sent,
+      held: held.length,
       digestAt:
-        held?.oldest == null
+        releases.length === 0
           ? null
-          : DateTime.formatIso(digestDueAt(local(held.oldest), current.quietHours)),
+          : DateTime.formatIso(releases.reduce((earliest, at) => DateTime.min(earliest, at))),
     } satisfies BotAttentionView;
   }, Effect.mapError(failure));
 
@@ -263,11 +300,22 @@ export const make = Effect.gen(function* () {
         const day = DateTime.formatIsoDate(now);
         const [sent] = yield* sql<{ readonly count: number }>`SELECT COUNT(*) AS count
           FROM bot_alerts WHERE bot_id = ${alert.botId} AND day = ${day} AND held = 0`;
-        const held =
+        const budgetHolds =
           inQuietHours(now, current.quietHours) || (sent?.count ?? 0) >= current.dailyLimit;
-        yield* sql`INSERT INTO bot_alerts (alert_key, bot_id, task_id, work_thread_id, home_thread_id, phase, day, decided_at, held)
+        const gathers = !budgetHolds && alert.gather === true;
+        const held = budgetHolds || gathers;
+        // Results waiting for the user join the gathering already open, which goes out as one alert.
+        const [open] = gathers
+          ? yield* sql<{ readonly release_at: string }>`SELECT release_at FROM bot_alerts
+              WHERE bot_id = ${alert.botId} AND held = 1 AND digest_at IS NULL
+                AND release_at > ${DateTime.formatIso(now)} ORDER BY release_at LIMIT 1`
+          : [];
+        const releaseAt = gathers
+          ? (open?.release_at ?? DateTime.formatIso(DateTime.add(now, { minutes: GATHER_MINUTES })))
+          : null;
+        yield* sql`INSERT INTO bot_alerts (alert_key, bot_id, task_id, work_thread_id, home_thread_id, phase, day, decided_at, held, release_at)
           VALUES (${key}, ${alert.botId}, ${alert.taskId}, ${alert.workThreadId}, ${alert.homeThreadId},
-            ${alert.phase}, ${day}, ${DateTime.formatIso(now)}, ${held ? 1 : 0})`;
+            ${alert.phase}, ${day}, ${DateTime.formatIso(now)}, ${held ? 1 : 0}, ${releaseAt})`;
         // A held alert stays until its digest went out.
         yield* sql`DELETE FROM bot_alerts WHERE bot_id = ${alert.botId}
           AND day < ${DateTime.formatIsoDate(retained)} AND (held = 0 OR digest_sent_at IS NOT NULL)`;
@@ -285,6 +333,7 @@ export const make = Effect.gen(function* () {
       Effect.mapError(failure),
     );
 
+  // One transaction, so the budget a claim reads is the budget it takes from.
   const claimDigests = Effect.gen(function* () {
     const rows = yield* sql<{
       readonly alert_key: string;
@@ -294,8 +343,11 @@ export const make = Effect.gen(function* () {
       readonly project_id: string | null;
       readonly phase: string;
       readonly decided_at: string;
+      readonly release_at: string | null;
+      readonly day: string;
       readonly digest_at: string | null;
-    }>`SELECT a.alert_key, a.bot_id, b.name, a.home_thread_id, c.project_id, a.phase, a.decided_at, a.digest_at
+    }>`SELECT a.alert_key, a.bot_id, b.name, a.home_thread_id, c.project_id, a.phase, a.decided_at,
+        a.release_at, a.day, a.digest_at
       FROM bot_alerts a JOIN bots b ON b.bot_id = a.bot_id
       LEFT JOIN bot_project_contexts c ON c.home_thread_id = a.home_thread_id
       WHERE a.held = 1 AND a.digest_sent_at IS NULL ORDER BY a.decided_at, a.alert_key`;
@@ -304,8 +356,13 @@ export const make = Effect.gen(function* () {
     const nowIso = DateTime.formatIso(now);
     const digests: Array<BotAlertDigest> = [];
     for (const botId of new Set(rows.map((row) => row.bot_id))) {
-      const { quietHours } = yield* settings(botId);
+      const { quietHours, dailyLimit } = yield* settings(botId);
       if (inQuietHours(now, quietHours)) continue;
+      const today = DateTime.formatIsoDate(now);
+      const roomToday = (yield* sentOn(botId, today)) < dailyLimit;
+      // A gathering counts against its own day; one left from an earlier day joins the digest.
+      const gathersToday = (row: (typeof rows)[number]) =>
+        row.release_at !== null && row.day === today && roomToday;
       const held = rows.filter((row) => row.bot_id === botId);
       const claimed = held.find((row) => row.digest_at !== null)?.digest_at ?? null;
       let digestAt = claimed;
@@ -315,12 +372,19 @@ export const make = Effect.gen(function* () {
         batch = held.filter(
           (row) =>
             row.digest_at !== null ||
-            !DateTime.isGreaterThan(digestDueAt(local(row.decided_at), quietHours), now),
+            !DateTime.isGreaterThan(releaseAt(row, quietHours, gathersToday(row)), now),
         );
         if (batch.length === 0) continue;
         digestAt = nowIso;
         yield* sql`UPDATE bot_alerts SET digest_at = ${digestAt}
           WHERE alert_key IN ${sql.in(batch.map((row) => row.alert_key))}`;
+        // Gathered results go out as one alert instead of their own, so the claim takes one of
+        // today's alerts before any other can. Keyed to the gathering, so a renewed claim reuses it.
+        const gathering = batch.find(gathersToday);
+        if (gathering !== undefined)
+          yield* sql`INSERT OR IGNORE INTO bot_alerts (alert_key, bot_id, task_id, work_thread_id, home_thread_id, phase, day, decided_at, held)
+            VALUES (${`digest:${gathering.alert_key}`}, ${botId}, '', '', ${gathering.home_thread_id},
+              'completed', ${today}, ${nowIso}, 0)`;
       }
       const newest = batch.at(-1)!;
       digests.push({
@@ -330,11 +394,12 @@ export const make = Effect.gen(function* () {
         projectId: newest.project_id,
         held: batch.length,
         allFailed: batch.every((row) => row.phase === "failed"),
+        needYou: batch.filter((row) => row.release_at !== null).length,
         digestAt: digestAt!,
       });
     }
     return digests;
-  }).pipe(Effect.mapError(failure));
+  }).pipe(sql.withTransaction, Effect.mapError(failure));
 
   const canSendDigest = Effect.fn("BotAttention.canSendDigest")(function* (digest: BotAlertDigest) {
     const now = yield* localNow;

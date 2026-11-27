@@ -11,6 +11,7 @@ import {
   type BotMaintenanceView,
   type BotHomeCheckView,
   BotAlertDailyLimit,
+  BotTaskLimit,
   type BotAttentionView,
   type BotFailureDiagnosisView,
   type BotRecordLearningInput,
@@ -550,6 +551,41 @@ export const BOT_TASK_STATUS_LABELS: Readonly<Record<BotTaskStatus, string>> = {
   cancelled: "Cancelled",
   skipped: "Skipped",
 };
+
+/** Shown instead of Completed when the result check found the result not done, or it asks something. */
+export const BOT_TASK_NEEDS_YOU_LABEL = "Needs you";
+
+export function isBotTaskWaitingOnYou(task: Pick<BotTaskSummary, "acceptance">): boolean {
+  return task.acceptance?.state === "needs_you";
+}
+
+/** What the result check says on a finished task's card: what is missing, questions, unchecked evidence. */
+export function botTaskAcceptanceLines(task: Pick<BotTaskSummary, "acceptance">): string[] {
+  const acceptance = task.acceptance;
+  if (acceptance === undefined) return [];
+  const report = acceptance.report;
+  const unchecked = (report?.evidence ?? [])
+    .filter((item) => item.check === "unchecked")
+    .map((item) => item.text);
+  return [
+    ...(acceptance.missing.length === 0 ? [] : [`Not done: ${acceptance.missing.join(" ")}`]),
+    ...(report === null || report.openQuestions.length === 0
+      ? []
+      : [`Open questions: ${report.openQuestions.join(" ")}`]),
+    ...(unchecked.length === 0 ? [] : [`Not checked: ${unchecked.join(", ")}`]),
+  ];
+}
+
+export const BOT_TASK_LIMIT_DESCRIPTION =
+  "How many tasks you or the Bot start may run at the same time, across its projects. More wait and start oldest first. Routines and watches do not count.";
+const isBotTaskLimit = Schema.is(BotTaskLimit);
+/** A whole number of tasks within the limit's bounds, or null. */
+export function parseBotTaskLimit(text: string): number | null {
+  const trimmed = text.trim();
+  if (!/^\d+$/.test(trimmed)) return null;
+  const limit = Number(trimmed);
+  return isBotTaskLimit(limit) ? limit : null;
+}
 
 export function botTaskResultNotice(result: BotTaskResult): string | null {
   switch (result.result.state) {

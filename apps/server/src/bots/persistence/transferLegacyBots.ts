@@ -1,3 +1,4 @@
+import { BOT_TASK_LIMIT_DEFAULT } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -128,12 +129,13 @@ export const transferLegacyBots = Effect.fn("BotDatabase.transferLegacyBots")(fu
             const expected = targetColumns.filter(
               (row) =>
                 !(table === "bots" && head < 79 && row.name === "appearance_json") &&
-                // Legacy Bots had no MCP grants and no Home of their own.
+                // Legacy Bots had no MCP grants, no Home of their own and no task limit.
                 !(
                   table === "bots" &&
                   (row.name === "mcp_grant_revision" ||
                     row.name === "mcp_own_codex_servers" ||
-                    row.name === "home_access")
+                    row.name === "home_access" ||
+                    row.name === "task_limit")
                 ) &&
                 !(table === "bot_project_contexts" && row.name === "kind") &&
                 !(table === "bot_tasks" && head < 83 && row.name === "allow_changes") &&
@@ -154,6 +156,7 @@ export const transferLegacyBots = Effect.fn("BotDatabase.transferLegacyBots")(fu
                     "worktree_state",
                     "unfinished_work",
                     "setup_signature",
+                    "acceptance_json",
                   ].includes(row.name)
                 ) &&
                 !(
@@ -192,6 +195,7 @@ export const transferLegacyBots = Effect.fn("BotDatabase.transferLegacyBots")(fu
                 row.mcp_grant_revision = 0;
                 row.mcp_own_codex_servers = 0;
                 row.home_access = "read";
+                row.task_limit = BOT_TASK_LIMIT_DEFAULT;
               }
               if (table === "bot_project_contexts") row.kind = "project";
               if (table === "bot_tasks" && head < 83) row.allow_changes = 0;
@@ -210,6 +214,7 @@ export const transferLegacyBots = Effect.fn("BotDatabase.transferLegacyBots")(fu
                 row.worktree_state = null;
                 row.unfinished_work = 0;
                 row.setup_signature = null;
+                row.acceptance_json = null;
               }
               // As migration 019 fills them for revisions that were already stored.
               if (table === "bot_learning_revisions") {

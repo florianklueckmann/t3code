@@ -313,11 +313,18 @@ export const BotMcpGrants = Schema.Struct({
 });
 export type BotMcpGrants = typeof BotMcpGrants.Type;
 
+/** Tasks the user or the Bot start that one Bot runs at the same time, across its projects. */
+export const BOT_TASK_LIMIT_DEFAULT = 5;
+export const BOT_TASK_LIMIT_MAX = 20;
+export const BotTaskLimit = PositiveInt.check(Schema.isLessThanOrEqualTo(BOT_TASK_LIMIT_MAX));
+
 export const BotSummary = Schema.Struct({
   id: BotId,
   name: BotName,
   modelSelection: ModelSelection,
   learningPolicy: BotLearningPolicy,
+  /** Absent on servers without a task limit. */
+  taskLimit: Schema.optionalKey(BotTaskLimit),
   /** Null uses the default derived from the Bot id; absent on servers without appearance. */
   appearance: Schema.optionalKey(Schema.NullOr(ReceivedBotAppearance)),
   /** Absent on servers without grants: the feature is unavailable, not an empty grant set. */
@@ -404,6 +411,7 @@ export const BotUpdateInput = Schema.Struct({
   instructions: Schema.optional(BotInstructions),
   modelSelection: Schema.optional(ModelSelection),
   learningPolicy: Schema.optional(BotLearningPolicy),
+  taskLimit: Schema.optional(BotTaskLimit),
   /** Null returns the Bot to its default look. */
   appearance: Schema.optional(Schema.NullOr(BotAppearance)),
 });
@@ -616,6 +624,39 @@ export const BOT_TASK_TERMINAL_STATUSES: ReadonlySet<BotTaskStatus> = new Set([
 export const BotTaskOrigin = Schema.Literals(["direct", "routine"]);
 export type BotTaskOrigin = typeof BotTaskOrigin.Type;
 
+export const BotTaskReportStatus = Schema.Literals(["done", "partial", "blocked"]);
+export type BotTaskReportStatus = typeof BotTaskReportStatus.Type;
+
+/**
+ * Whether the server found what one evidence item names: a branch, commit or file is `found` or
+ * `missing`; a `link` is accepted as given; anything else is `unchecked`.
+ */
+export const BotTaskEvidenceCheck = Schema.Literals(["found", "missing", "link", "unchecked"]);
+export type BotTaskEvidenceCheck = typeof BotTaskEvidenceCheck.Type;
+
+/** The fixed shape a direct task's work thread reports its result in. */
+export const BotTaskReport = Schema.Struct({
+  result: Schema.String,
+  status: BotTaskReportStatus,
+  evidence: Schema.Array(Schema.Struct({ text: Schema.String, check: BotTaskEvidenceCheck })),
+  openQuestions: Schema.Array(Schema.String),
+});
+export type BotTaskReport = typeof BotTaskReport.Type;
+
+/**
+ * The server's check of a completed direct task's result. It reads the report and checks that its
+ * evidence exists, never the content. `done` needs a done status, evidence with nothing missing,
+ * and no open questions; anything else waits for the user.
+ */
+export const BotTaskAcceptance = Schema.Struct({
+  state: Schema.Literals(["done", "needs_you"]),
+  /** Why the result is not done, one short sentence each; empty when only questions are open. */
+  missing: Schema.Array(Schema.String),
+  /** Null when the final message had no readable report. */
+  report: Schema.NullOr(BotTaskReport),
+});
+export type BotTaskAcceptance = typeof BotTaskAcceptance.Type;
+
 export const BotTaskSummary = Schema.Struct({
   id: BotTaskId,
   botId: BotId,
@@ -675,6 +716,8 @@ export const BotTaskSummary = Schema.Struct({
   baseBranch: Schema.optional(TrimmedNonEmptyString),
   /** The work thread left uncommitted changes, saved as a WIP commit on `branch`. */
   unfinishedWork: Schema.optional(Schema.Literal(true)),
+  /** Set on a completed direct task. Absent on routines, watches, diagnoses and older tasks. */
+  acceptance: Schema.optional(BotTaskAcceptance),
 });
 export type BotTaskSummary = typeof BotTaskSummary.Type;
 

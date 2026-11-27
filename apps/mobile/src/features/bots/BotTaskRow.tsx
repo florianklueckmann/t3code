@@ -1,8 +1,10 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
+  botTaskAcceptanceLines,
   botTaskBranchLabel,
   botTaskDiagnosisLabel,
   isBotTaskOpen,
+  isBotTaskWaitingOnYou,
 } from "@t3tools/client-runtime/bots";
 import type { BotTaskSummary, EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { useState } from "react";
@@ -79,7 +81,12 @@ export function BotTaskRow(props: {
       <Text className="text-sm text-foreground" numberOfLines={3}>
         {task.title}
       </Text>
-      <BotTaskStatusLine status={task.status} trailing={when} numberOfLines={1} />
+      <BotTaskStatusLine
+        status={task.status}
+        needsYou={isBotTaskWaitingOnYou(task)}
+        trailing={when}
+        numberOfLines={1}
+      />
       {diagnosisLabel === null ? null : (
         <Text className="text-xs text-foreground-muted" numberOfLines={2}>
           {diagnosisLabel}
@@ -90,11 +97,17 @@ export function BotTaskRow(props: {
           {branchLabel}
         </Text>
       )}
-      {props.showDetail && task.detail ? (
+      {/* A queued task's detail says what it waits for. */}
+      {(props.showDetail || task.status === "accepted") && task.detail ? (
         <Text className="text-xs text-foreground-muted" numberOfLines={2}>
           {task.detail}
         </Text>
       ) : null}
+      {botTaskAcceptanceLines(task).map((line) => (
+        <Text key={line} className="text-xs text-foreground-muted" numberOfLines={3}>
+          {line}
+        </Text>
+      ))}
       {hasActions ? (
         <View className="flex-row flex-wrap items-center gap-x-5">
           {canView ? (

@@ -99,8 +99,10 @@ sources. When it finishes, its card in the Bot's conversation shows the
 run status and the conversation is marked unread. **View result** reads the saved
 final response without opening the conversation; **Open thread** opens the work
 thread for context or follow-up. The saved result stays tied to the task's run,
-even after a follow-up in that thread. Completed means the run ended, not that
-its answer proves the goal was achieved. Older tasks may have no saved result.
+even after a follow-up in that thread. For a routine, Completed means the run
+ended, not that its answer proves the goal was achieved; a direct task's result
+is checked, see [Results that wait for you](#results-that-wait-for-you). Older
+tasks may have no saved result.
 Cards also show tasks that are still working, waiting for your answer, failed,
 were interrupted or cancelled, or were skipped. **Hide** removes a finished card
 from the conversation on this device only, and **Show hidden** brings it back;
@@ -115,7 +117,8 @@ If the Bot continues in its conversation after a result, that follow-up may noti
 
 Results of work you didn't start yourself, such as scheduled routines and diagnoses, count against
 the Bot's alert budget (see [Alerts and remit](#alerts-and-remit)); results of tasks you asked for
-and routines you ran with **Run now** always alert at once. Cancelled and skipped tasks do not alert. Work-thread failures follow the existing failure
+and routines you ran with **Run now** alert at once, except results that
+[wait for you](#results-that-wait-for-you). Cancelled and skipped tasks do not alert. Work-thread failures follow the existing failure
 notification preference. If delivery is unavailable, the result card and unread
 conversation remain; reconnecting can deliver a recent result, but results older
 than two minutes do not trigger a delayed alert. Each registered device follows
@@ -126,7 +129,8 @@ For a direct task, you can ask the Bot to return its result here automatically
 and continue the work you already authorized. This is off by default and allows
 one pending return per conversation input turn. It waits for active work and
 children to finish; newer direct input cancels the pending return. Failed or
-cancelled tasks keep their status on the card without starting a result turn.
+cancelled tasks, and results that wait for you, keep their status on the card
+without starting a result turn.
 Detach, archive, and cancelling the task revoke a pending return. Routines and
 older tasks do not gain automatic returns.
 
@@ -137,6 +141,41 @@ from many threads, or Sol or Opus to design and test a complex script. The choic
 applies only to that work. If a requested model or option is unavailable, or the
 provider can't run the task with your Bot's settings, the Bot tells you why.
 Routine runs use the Bot's current model.
+
+### Tasks at once
+
+A Bot runs at most a set number of tasks at the same time, across all its
+projects: 5 by default. Change it under **Tasks at once** when you edit the Bot in
+**Settings → Bots**. It counts tasks you or the Bot start, including ones waiting
+for your answer. Routines and watches do not count and run on time.
+
+A task over the limit is saved and waits; its card shows it as Queued and says
+it waits for a free slot. When a running task ends, the oldest waiting task
+starts. You can cancel a waiting task, and it then never starts. Waiting tasks
+keep their place when the server restarts. A task can also wait for a free
+worktree in its project, see below.
+
+### Results that wait for you
+
+A direct task's brief says what counts as done. Its work thread ends its answer
+with a short report: the result, its status (done, partial or blocked), the
+evidence for it, and any open questions. T3 Code checks only that the report
+names evidence and that each branch, commit and file it names exists. A link is
+accepted as given and never opened. Other evidence counts but is not checked,
+and the card says so. The content of the answer is not judged.
+
+When the report is missing, names no evidence, names a branch, commit or file
+that does not exist, has a status other than done, or asks you something, the
+task is not shown as done. Its card says **Needs you** with what is missing, and
+the task goes under **Waiting on you** in the Bot's working notes, when they have
+room for one more item. Questions
+from several tasks reach your phone together, as one alert under the Bot's
+[alert budget](#alerts-and-remit), a few minutes after the first. Such a result
+does not return to the conversation automatically. Routines, watches and
+diagnoses keep their own result format and are not checked.
+
+The report works the same with Codex, Claude and Pi, since it is part of the
+task's final answer.
 
 ### Where a task works
 
@@ -269,7 +308,8 @@ cancel a running one from its card.
 phone. It counts results of work you didn't start yourself: scheduled routines,
 diagnoses, and tasks or routine runs the Bot started without a message from you.
 A task you asked for in the conversation and a routine you ran with **Run now**
-always alert at once and never count.
+always alert at once and never count, unless the result
+[waits for you](#results-that-wait-for-you).
 
 - **Alerts per day** (3 by default) counts per day in the server's time zone.
   Type any whole number. With 0, every counted alert is held.
@@ -279,7 +319,8 @@ always alert at once and never count.
 Held alerts are not dropped. They arrive as one alert for the Bot when quiet
 hours end, or at the start of the next day when quiet hours are off. That alert
 does not count against the next day's limit, and tapping it opens the Bot's
-conversation. The settings show how many alerts went out today and how many
+conversation. Results that wait for you are gathered for five minutes and then
+arrive as one alert, which counts once against the day's limit. The settings show how many alerts went out today and how many
 are held.
 
 **Remit** is up to 500 characters, in your words, on what deserves a Waiting

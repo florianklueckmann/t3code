@@ -181,11 +181,76 @@ it("checks the routine a home turn sets up against the session and lead time", (
   ]);
 });
 
+const accepted = (state: "done" | "needs_you") => ({ state, missing: [], report: null });
+
+it("grades a task's result check, and a result that waits for the user as not returned", () => {
+  const reports = byId("task-reports-evidence");
+  const edited = {
+    ...base,
+    tasks: [
+      {
+        status: "completed" as const,
+        origin: "direct" as const,
+        returnToHome: false,
+        acceptance: accepted("done"),
+      },
+    ],
+    homeRuns: 1,
+    filesChanged: ["world/notes.md"],
+    filesAfter:
+      "expectedFiles" in reports && reports.expectedFiles !== undefined
+        ? reports.expectedFiles
+        : {},
+    tools: [
+      {
+        type: "tool_call",
+        title: null,
+        text: JSON.stringify({ toolName: "t3_bot", input: { action: "start_task" } }),
+      },
+    ],
+  };
+  expect(failed(gradeSample(reports, edited))).toEqual([]);
+  // Before T3B-122 the work thread reported no evidence, so its result waited for the user.
+  expect(
+    failed(
+      gradeSample(reports, {
+        ...edited,
+        tasks: [{ ...edited.tasks[0]!, acceptance: accepted("needs_you") }],
+      }),
+    ),
+  ).toEqual(["task result check: done"]);
+  const incomplete = byId("returns-incomplete-task-honestly");
+  const waiting = {
+    ...base,
+    tasks: [
+      {
+        status: "completed" as const,
+        origin: "direct" as const,
+        returnToHome: true,
+        acceptance: accepted("needs_you"),
+      },
+    ],
+    homeRuns: 1,
+    tools: edited.tools,
+  };
+  expect(failed(gradeSample(incomplete, waiting))).toEqual([]);
+  expect(failed(gradeSample(incomplete, { ...waiting, homeRuns: 2 }))).toEqual([
+    "bounded Home turns",
+  ]);
+});
+
 it("keeps missing Home returns as failed checks with task and file evidence", () => {
   const testCase = byId("returns-task-and-continues");
   const run = {
     ...base,
-    tasks: [{ status: "completed" as const, origin: "direct" as const, returnToHome: true }],
+    tasks: [
+      {
+        status: "completed" as const,
+        origin: "direct" as const,
+        returnToHome: true,
+        acceptance: accepted("done"),
+      },
+    ],
     homeRuns: 2,
     filesChanged: ["world/verified.md"],
     filesAfter: {

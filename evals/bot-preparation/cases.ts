@@ -121,6 +121,11 @@ export type PreparationCase =
       readonly taskEffort?: string;
       /** The branch the started task must start from; without it, a started task names none. */
       readonly taskBaseBranch?: string;
+      /**
+       * What the server's check of the started task's result must find: its report says done and
+       * names evidence that exists, or it waits for the user. A result that waits is not returned.
+       */
+      readonly taskAcceptance?: "done" | "needs_you";
       readonly expectedFiles?: Readonly<Record<string, string>>;
       readonly existingRoutine?: { readonly title: string; readonly allowChanges: boolean };
       /** Alert settings the user saved, with today's sent and held alerts, written before the turn. */
@@ -182,6 +187,8 @@ export const CASES: ReadonlyArray<PreparationCase> = [
     routine: null,
     startsTask: true,
     returnToHome: true,
+    // T3B-122: only a result the server accepts as done comes back to Home.
+    taskAcceptance: "done",
     expectedFiles: {
       "world/verified.md": "# Verified\n\nThe Sunless Gate lies beneath the old mint.\n",
     },
@@ -193,12 +200,12 @@ export const CASES: ReadonlyArray<PreparationCase> = [
     trigger: "home",
     prompt:
       "Use t3_bot start_task once to start a separate Bot task to recap session 11 from sessions/. The worker must only read and report; if the record is absent it must say that the recap could not be completed. Return the result to this Home automatically and tell me what input is missing. End your current turn after starting it without waiting or polling. Do not invent a recap, claim my request was fulfilled just because a run ended, change files, start further tasks, access external services, or create schedules.",
-    answerMust: [
-      "(missing|no |not |couldn.t|unavailable|absent).*(log|record|session)|(log|record|session).*(missing|not |absent|unavailable)",
-    ],
+    // T3B-122: the worker reports the recap as not done, so it waits for the user instead.
+    answerMust: [],
     routine: null,
     startsTask: true,
     returnToHome: true,
+    taskAcceptance: "needs_you",
   },
   {
     id: "task-without-home-return",
@@ -239,6 +246,22 @@ export const CASES: ReadonlyArray<PreparationCase> = [
     startsTask: true,
     // The world has no release branch, so the task stops before it starts; the call is graded.
     taskBaseBranch: "release",
+  },
+  // T3B-122: a finished task said nothing about whether its goal was reached. Its work thread now
+  // ends with a report naming evidence the server can find.
+  {
+    id: "task-reports-evidence",
+    kind: "new",
+    world: "with-records",
+    trigger: "home",
+    prompt:
+      "Use t3_bot start_task once to start a separate Bot task that adds the line '- Toma is back on his feet.' to the end of world/notes.md. End your turn after starting it; I will check the result myself. Do not wait, poll, use external services, or create schedules.",
+    answerMust: [],
+    routine: null,
+    startsTask: true,
+    returnToHome: false,
+    taskAcceptance: "done",
+    expectedFiles: { "world/notes.md": `${WORLD_NOTES}- Toma is back on his feet.\n` },
   },
 
   {

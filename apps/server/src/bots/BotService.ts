@@ -538,6 +538,7 @@ const make = Effect.gen(function* () {
           instructions: input.instructions ?? current.instructions,
           modelSelection: input.modelSelection ?? current.modelSelection,
           learningPolicy: input.learningPolicy ?? current.learningPolicy,
+          ...(input.taskLimit === undefined ? {} : { taskLimit: input.taskLimit }),
           appearanceJson:
             input.appearance === undefined
               ? bot.appearance_json

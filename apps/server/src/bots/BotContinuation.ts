@@ -306,6 +306,16 @@ export class BotContinuation extends Context.Service<
       caller: Caller,
     ) => Effect.Effect<BotSaveContinuationResult, BotError>;
     readonly coverage: (scope: BotContinuationScope) => Effect.Effect<NoteCoverage, BotError>;
+    /**
+     * Adds one Waiting item about a task, written as the work run that reported it. Once per task:
+     * a repeat, or a note without room for the item, adds nothing and returns false.
+     */
+    readonly addTaskWaiting: (input: {
+      readonly scope: BotContinuationScope;
+      readonly taskId: BotTaskId;
+      readonly text: string;
+      readonly writer: { readonly threadId: ThreadId; readonly runId: RunId };
+    }) => Effect.Effect<boolean, BotError>;
     /** The newest saved revision of each Home that has notes. */
     readonly latestRevisions: Effect.Effect<ReadonlyMap<ThreadId, number>, BotError>;
     /** Signals each committed save, whoever made it. */
@@ -1029,11 +1039,70 @@ const make = Effect.gen(function* () {
     Effect.mapError(failure),
     Effect.withSpan("BotContinuation.latestRevisions"),
   );
+  const fitsNote = Schema.is(BotContinuationNote);
+  const addTaskWaiting = Effect.fn("BotContinuation.addTaskWaiting")(function* (input: {
+    readonly scope: BotContinuationScope;
+    readonly taskId: BotTaskId;
+    readonly text: string;
+    readonly writer: { readonly threadId: ThreadId; readonly runId: RunId };
+  }) {
+    const updateId = `task-waiting:${input.taskId}`;
+    const committed = yield* sql.withTransaction(
+      Effect.gen(function* () {
+        const context = yield* store.getContext(input.scope.botId, input.scope.projectId);
+        const bot = yield* store.getBot(input.scope.botId);
+        // A removed project or Bot has no notes left to add to.
+        if (bot?.archived_at !== null || context === undefined || context.detached_at !== null)
+          return false;
+        const home = ThreadId.make(context.home_thread_id);
+        const done =
+          yield* sql`SELECT 1 FROM bot_continuation_revisions WHERE home_thread_id = ${home} AND update_id = ${updateId}`;
+        if (done.length > 0) return false;
+        const old = yield* currentRow(home);
+        const previous = old === undefined ? null : yield* decodeRevision(old.revision_json);
+        const base = previous?.note ?? emptyNote();
+        const note = {
+          ...base,
+          waiting: [
+            ...base.waiting,
+            {
+              text: input.text,
+              refs: [
+                {
+                  kind: "task",
+                  taskId: input.taskId,
+                  status: "completed",
+                  resultRunId: input.writer.runId,
+                  availability: "available",
+                } as const,
+              ],
+            },
+          ],
+        };
+        if (!fitsNote(note)) return false;
+        // Coverage stays: this save shows no Home input, so it certifies none.
+        const revision: typeof StoredRevision.Type = {
+          ...(previous ?? { coverage: null, sourcePosition: null, sourceIds: [] }),
+          revision: (previous?.revision ?? 0) + 1,
+          note,
+          updatedBy: { kind: "bot", ...input.writer },
+          updatedAt: DateTime.formatIso(yield* DateTime.now),
+          restoredFrom: null,
+        };
+        yield* sql`INSERT INTO bot_continuation_revisions (home_thread_id, revision, update_id, request_hash, revision_json) VALUES (${home}, ${revision.revision}, ${updateId}, ${hash(updateId)}, ${yield* encodeRevision(revision)})`;
+        yield* sql`DELETE FROM bot_continuation_revisions WHERE home_thread_id = ${home} AND revision <= ${revision.revision - BOT_CONTINUATION_LIMITS.revisions}`;
+        return true;
+      }),
+    );
+    if (committed) yield* PubSub.publish(changed, undefined);
+    return committed;
+  }, Effect.mapError(failure));
   return BotContinuation.of({
     get,
     history,
     save,
     coverage,
+    addTaskWaiting,
     latestRevisions,
     changes: PubSub.subscribe(changed).pipe(Effect.map(Stream.fromSubscription)),
   });

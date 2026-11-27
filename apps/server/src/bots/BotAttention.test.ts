@@ -267,3 +267,73 @@ it.effect(
       assert.deepInclude(held!, { held: 1, allFailed: true });
     }).pipe(Effect.provide(services)),
 );
+
+it.effect("gathers results that wait for the user into one alert that counts once", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    yield* at("2026-11-02T12:00:00.000Z");
+    const attention = yield* startService;
+    yield* configure(attention, { quietHours: null, dailyLimit: 2 });
+    const gathered = (n: number) => ({ ...alert(n), gather: true });
+    assert.equal(yield* attention.admit(gathered(1)), "hold");
+    yield* at("2026-11-02T12:03:00.000Z");
+    assert.equal(yield* attention.admit(gathered(2)), "hold");
+    // An ordinary result still alerts on its own.
+    assert.equal(yield* attention.admit(alert(3)), "send");
+    assert.deepInclude(yield* attention.get(botId), {
+      sentToday: 1,
+      held: 2,
+      digestAt: "2026-11-02T12:05:00.000Z",
+    });
+    yield* at("2026-11-02T12:04:59.000Z");
+    assert.lengthOf(yield* attention.claimDigests, 0);
+    yield* at("2026-11-02T12:05:00.000Z");
+    const [digest] = yield* attention.claimDigests;
+    assert.deepInclude(digest!, { held: 2, needYou: 2 });
+    // The claim took the day's last alert, so one that comes before the digest goes out waits.
+    assert.equal(yield* attention.admit(alert(9)), "hold");
+    assert.equal((yield* attention.get(botId)).digestAt, "2026-11-02T12:05:00.000Z");
+    yield* attention.markDigestSent(digest!);
+    assert.deepInclude(yield* attention.get(botId), { sentToday: 2, held: 1 });
+    // The day's limit is reached, so the next one waits for the next day's digest.
+    yield* at("2026-11-02T13:00:00.000Z");
+    assert.equal(yield* attention.admit(gathered(4)), "hold");
+    assert.deepInclude(yield* attention.get(botId), {
+      held: 2,
+      digestAt: "2026-11-03T00:00:00.000Z",
+    });
+  }).pipe(Effect.provide(services)),
+);
+
+it.effect("a gathering that crosses midnight still waits its five minutes", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    yield* at("2026-11-02T23:59:00.000Z");
+    const attention = yield* startService;
+    yield* configure(attention, { quietHours: null });
+    assert.equal(yield* attention.admit({ ...alert(1), gather: true }), "hold");
+    yield* at("2026-11-03T00:00:00.000Z");
+    assert.lengthOf(yield* attention.claimDigests, 0);
+    yield* at("2026-11-03T00:04:00.000Z");
+    assert.lengthOf(yield* attention.claimDigests, 1);
+  }).pipe(Effect.provide(services)),
+);
+
+it.effect("a gathering whose day's limit fills meanwhile waits for the next day's digest", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    yield* at("2026-11-02T12:00:00.000Z");
+    const attention = yield* startService;
+    yield* configure(attention, { quietHours: null, dailyLimit: 1 });
+    assert.equal(yield* attention.admit({ ...alert(1), gather: true }), "hold");
+    assert.equal(yield* attention.admit(alert(2)), "send");
+    yield* at("2026-11-02T12:05:00.000Z");
+    assert.lengthOf(yield* attention.claimDigests, 0);
+    yield* at("2026-11-03T00:00:00.000Z");
+    const [digest] = yield* attention.claimDigests;
+    assert.deepInclude(digest!, { held: 1, needYou: 1 });
+    yield* attention.markDigestSent(digest!);
+    // A digest at the day's start is outside the cap, as every held digest is.
+    assert.deepInclude(yield* attention.get(botId), { sentToday: 0, held: 0 });
+  }).pipe(Effect.provide(services)),
+);

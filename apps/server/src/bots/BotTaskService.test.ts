@@ -7,6 +7,7 @@ import {
   BotId,
   botHomeProjectId,
   BotTaskId,
+  type BotTaskSummary,
   BotTaskListInput,
   type BotTaskStatus,
   CommandId,
@@ -70,6 +71,7 @@ import * as BotFailureDiagnosis from "./BotFailureDiagnosis.ts";
 import * as BotHomeFolders from "./BotHomeFolders.ts";
 import * as BotProjectGuard from "./BotProjectGuard.ts";
 import * as BotService from "./BotService.ts";
+import * as BotTaskAcceptance from "./BotTaskAcceptance.ts";
 import * as BotTaskService from "./BotTaskService.ts";
 import * as BotTurnContext from "./BotTurnContext.ts";
 import * as BotWorktreePool from "./BotWorktreePool.ts";
@@ -217,6 +219,8 @@ const makeThreadWorld = Effect.gen(function* () {
   } | null>(null);
   /** The next command of this type fails before it is recorded. */
   const failNext = yield* Ref.make<OrchestrationV2ServerCommand["type"] | null>(null);
+  /** Branches, commits and files a result's evidence check finds. */
+  const existingEvidence = yield* Ref.make<ReadonlySet<string>>(new Set(["notes/prep.md"]));
 
   const update = (threadId: ThreadId, change: Partial<FakeThread>) =>
     Ref.update(threads, (current) => {
@@ -405,6 +409,22 @@ const makeThreadWorld = Effect.gen(function* () {
       claimedPath: () => Effect.succeed(null),
       expire: Effect.void,
     }),
+    Layer.mock(BotTaskAcceptance.BotTaskEvidence)({
+      check: ({ items }) =>
+        Ref.get(existingEvidence).pipe(
+          Effect.map((existing) =>
+            items.map((item) =>
+              "target" in item
+                ? existing.has(item.target)
+                  ? "found"
+                  : "missing"
+                : item.kind === "link"
+                  ? "link"
+                  : "unchecked",
+            ),
+          ),
+        ),
+    }),
   );
 
   /** Resolves with the next work thread launched. */
@@ -437,6 +457,7 @@ const makeThreadWorld = Effect.gen(function* () {
     poolParks,
     poolSavesWork,
     poolGate,
+    existingEvidence,
   };
 });
 
@@ -739,6 +760,8 @@ it.effect(
               homeThreadId: task.homeThreadId,
               byHand: true,
               quiet: false,
+              // The result has no report line, so it waits for the user.
+              needsYou: true,
               workThreadId,
               status: "completed",
               resultRunId: runId,
@@ -944,10 +967,17 @@ it.effect("returns only opted-in saved results to Home once across retry and res
   Effect.gen(function* () {
     yield* seedProject;
     const world = yield* makeThreadWorld;
-    const { task, home, anchor } = yield* withServices(world, (services) =>
+    const { task, ordinary, home, anchor } = yield* withServices(world, (services) =>
       Effect.gen(function* () {
         const home = yield* attachBot(services);
         const anchor = yield* seedHomeRun(world, home, "external-mcp");
+        // Admitted, so reconciled, before the returning task; while it works, the return waits.
+        const ordinary = yield* services.tasks.start({
+          botId,
+          projectId: campaign,
+          prompt: "Ordinary.",
+          commandId: CommandId.make("ordinary"),
+        });
         const task = yield* services.tasks.start(
           {
             botId,
@@ -957,43 +987,12 @@ it.effect("returns only opted-in saved results to Home once across retry and res
           },
           { returnToHomeFrom: home },
         );
-        const ordinary = yield* services.tasks.start({
-          botId,
-          projectId: campaign,
-          prompt: "Ordinary.",
-        });
-        yield* world.update(ordinary.workThreadId!, { status: "completed" });
-        yield* world.update(task.workThreadId!, { status: "completed" });
+        yield* finishRun(world, task.workThreadId!, DONE_RESULT);
         yield* services.tasks.reconcile;
-        return { task, home, anchor };
+        return { task, ordinary, home, anchor };
       }),
     );
     const runId = RunId.make(`run:${task.workThreadId}`);
-    yield* Ref.update(world.records, (all) =>
-      new Map(all).set(task.workThreadId!, {
-        thread: {
-          id: task.workThreadId!,
-          projectId: campaign,
-          deletedAt: null,
-        } as OrchestrationV2ThreadProjection["thread"],
-        runs: [
-          { id: runId, threadId: task.workThreadId!, status: "completed" } as OrchestrationV2Run,
-        ],
-        messages: [
-          {
-            id: MessageId.make("result"),
-            threadId: task.workThreadId!,
-            runId,
-            role: "assistant",
-            text: "Saved answer",
-            streaming: false,
-            createdAt: DateTime.makeUnsafe(START),
-            updatedAt: DateTime.makeUnsafe(START),
-          } as OrchestrationV2ThreadProjection["messages"][number],
-        ],
-        turnItems: [],
-      }),
-    );
     const sql = yield* BotDatabase.BotDatabase;
     yield* sql`CREATE TRIGGER interrupt_return_bookkeeping BEFORE UPDATE OF return_finished_at ON bot_tasks
       BEGIN SELECT RAISE(ABORT, 'injected interruption after receipt'); END`;
@@ -1002,6 +1001,7 @@ it.effect("returns only opted-in saved results to Home once across retry and res
         // The saved run remains authoritative after a later work-thread turn.
         yield* world.update(task.workThreadId!, { runId: "later-run" });
         yield* world.update(home, { status: "completed" });
+        yield* world.update(ordinary.workThreadId!, { status: "completed" });
         yield* Ref.set(world.failNext, "bot-task.result.deliver");
         yield* services.tasks.reconcile;
         yield* services.tasks.reconcile;
@@ -1171,15 +1171,20 @@ it.effect.each([
       Effect.gen(function* () {
         const home = yield* attachBot(services);
         yield* seedHomeRun(world, home);
+        // Admitted, so reconciled, first; while it works, a completed result's return waits.
+        const blocker = yield* services.tasks.start({
+          botId,
+          projectId: campaign,
+          prompt: "Other work.",
+          commandId: CommandId.make("blocker"),
+        });
         const task = yield* services.tasks.start(
-          { botId, projectId: campaign, prompt: "Prepare." },
+          { botId, projectId: campaign, prompt: "Prepare.", commandId: CommandId.make("return") },
           { returnToHomeFrom: home },
         );
         if (state === "cancelled") yield* services.tasks.cancel({ taskId: task.id });
-        else
-          yield* world.update(task.workThreadId!, {
-            status: state === "failed" ? "failed" : "completed",
-          });
+        else if (state === "failed") yield* world.update(task.workThreadId!, { status: "failed" });
+        else yield* finishRun(world, task.workThreadId!, DONE_RESULT);
         yield* services.tasks.reconcile;
         const runId = RunId.make(`run:${task.workThreadId}`);
         yield* Ref.update(world.records, (all) =>
@@ -1226,6 +1231,7 @@ it.effect.each([
           yield* services.bots.setArchived({ botId, archived: false });
         } else if (state === "revoke") yield* services.tasks.cancel({ taskId: task.id });
         yield* world.update(home, { status: "completed" });
+        yield* world.update(blocker.workThreadId!, { status: "completed" });
         yield* services.tasks.reconcile;
         assert.lengthOf(yield* world.commandsMatching("bot-task.result.deliver"), 0);
         if (state === "failed" || state === "cancelled")
@@ -1468,6 +1474,20 @@ it.effect("keeps each routine run's change permission after edits and a restart"
     );
   }).pipe(Effect.provide(layerDatabase)),
 );
+
+const report = (fields: {
+  readonly status?: string;
+  readonly evidence?: ReadonlyArray<string>;
+  readonly openQuestions?: ReadonlyArray<string>;
+}) =>
+  `T3_RESULT ${JSON.stringify({
+    result: "Prepared the notes.",
+    status: fields.status ?? "done",
+    evidence: fields.evidence ?? ["file: notes/prep.md"],
+    openQuestions: fields.openQuestions ?? [],
+  })}`;
+/** A direct task's final answer that the result check accepts. */
+const DONE_RESULT = `Prepared the notes.\n${report({})}`;
 
 /** Ends a work thread's run with `text` as its saved final answer. */
 const finishRun = (world: ThreadWorld, workThreadId: ThreadId, text: string) =>
@@ -2776,7 +2796,7 @@ it.effect.each<{
           { returnToHomeFrom: home },
         );
         yield* world.update(home, { status: "completed" });
-        yield* endRun(world, task.workThreadId ?? assert.fail("no work thread"), "completed");
+        yield* finishRun(world, task.workThreadId ?? assert.fail("no work thread"), DONE_RESULT);
         yield* Ref.set(world.disposeReturn, dropped);
         yield* services.tasks.reconcile;
         assert.lengthOf(yield* world.commandsMatching("bot-task.result.deliver"), 1);
@@ -3109,6 +3129,10 @@ it.effect("names a daily routine's runs apart, though their timestamps end alike
   }),
 );
 
+/** The thread a direct task launches into; its summary names it only once launched. */
+const workThreadOf = (task: Pick<BotTaskSummary, "id">) =>
+  ThreadId.make(`${BOT_WORK_THREAD_ID_PREFIX}${task.id}`);
+
 const workspaceOf = (world: ThreadWorld, workThreadId: ThreadId | null | undefined) =>
   Ref.get(world.threads).pipe(
     Effect.map((threads) => threads.get(workThreadId ?? assert.fail("no work thread"))?.workspace),
@@ -3234,9 +3258,11 @@ it.effect("a task cancelled while it claims a worktree never launches into it", 
         yield* services.tasks.cancel({ taskId });
         yield* Deferred.succeed(gate.release, undefined);
         yield* Fiber.join(starting);
+        // The launch returned without a thread; the next pass finishes the cancel.
+        yield* services.tasks.reconcile;
         const task = yield* services.tasks.get(taskId);
         assert.equal(task.status, "cancelled");
-        assert.isUndefined(yield* workspaceOf(world, task.workThreadId));
+        assert.isUndefined(yield* workspaceOf(world, workThreadOf(task)));
       }),
     );
   }).pipe(Effect.provide(layerDatabase)),
@@ -3258,13 +3284,13 @@ it.effect("a task waits for a free worktree, and without Git for the other writi
         });
         assert.equal(waiting.status, "accepted");
         assert.include(waiting.detail, "Waiting for a free worktree");
-        assert.isUndefined(yield* workspaceOf(world, waiting.workThreadId));
+        assert.isUndefined(yield* workspaceOf(world, workThreadOf(waiting)));
         yield* Ref.set(world.poolClaims, [{ _tag: "create", baseRef: "origin-main" }]);
         yield* services.tasks.reconcile;
         const started = yield* services.tasks.get(waiting.id);
         assert.isNull(started.detail);
         assert.equal(
-          yield* workspaceOf(world, waiting.workThreadId),
+          yield* workspaceOf(world, workThreadOf(waiting)),
           `worktree ${started.branch} from origin-main`,
         );
 
@@ -3284,10 +3310,10 @@ it.effect("a task waits for a free worktree, and without Git for the other writi
           prompt: "Rename the index.",
         });
         assert.include(second.detail, "Waiting for another task");
-        assert.isUndefined(yield* workspaceOf(world, second.workThreadId));
+        assert.isUndefined(yield* workspaceOf(world, workThreadOf(second)));
         yield* world.update(first.workThreadId ?? assert.fail(), { status: "completed" });
         yield* services.tasks.reconcile;
-        assert.equal(yield* workspaceOf(world, second.workThreadId), "root");
+        assert.equal(yield* workspaceOf(world, workThreadOf(second)), "root");
       }),
     );
   }).pipe(Effect.provide(layerDatabase)),
@@ -3350,4 +3376,245 @@ it.effect(
         }),
       );
     }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect("a Bot runs at most its task limit and starts waiting tasks oldest first", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(START);
+    yield* seedProject;
+    const world = yield* makeThreadWorld;
+    const launched = (tasks: ReadonlyArray<BotTaskSummary>) =>
+      Ref.get(world.threads).pipe(
+        Effect.map((threads) => tasks.map((task) => threads.has(workThreadOf(task)))),
+      );
+    const tasks = yield* withServices(world, (services) =>
+      Effect.gen(function* () {
+        yield* attachBot(services);
+        yield* services.bots.update({ botId, taskLimit: 2 });
+        const tasks: Array<BotTaskSummary> = [];
+        for (const n of [1, 2, 3, 4, 5]) {
+          yield* TestClock.adjust("1 second");
+          tasks.push(
+            yield* services.tasks.start({ botId, projectId: campaign, prompt: `Task ${n}.` }),
+          );
+        }
+        assert.deepEqual(yield* launched(tasks), [true, true, false, false, false]);
+        assert.deepInclude(tasks[2], {
+          status: "accepted",
+          detail: "Waiting for a free slot: Campaign Companion runs at most 2 tasks at once.",
+        });
+        // Routines do not count and start on time.
+        const routine = yield* runRoutine(services, false);
+        assert.isTrue((yield* Ref.get(world.threads)).has(routine.workThreadId));
+        // A cancelled waiting task never starts; the next one takes the free slot.
+        yield* services.tasks.cancel({ taskId: tasks[2]!.id });
+        yield* finishRun(world, tasks[0]!.workThreadId!, DONE_RESULT);
+        yield* services.tasks.reconcile;
+        assert.deepEqual(yield* launched(tasks), [true, true, false, true, false]);
+        // Cancelled before it started: no thread to open on its card.
+        assert.deepInclude(yield* services.tasks.get(tasks[2]!.id), {
+          status: "cancelled",
+          workThreadId: null,
+        });
+        return tasks;
+      }),
+    );
+    // After a restart the last task still waits, and starts once a slot frees up.
+    yield* withServices(world, (services) =>
+      Effect.gen(function* () {
+        yield* services.tasks.reconcile;
+        assert.deepEqual(yield* launched(tasks), [true, true, false, true, false]);
+        yield* finishRun(world, tasks[1]!.workThreadId!, DONE_RESULT);
+        yield* services.tasks.reconcile;
+        assert.deepEqual(yield* launched(tasks), [true, true, false, true, true]);
+        assert.isNull((yield* services.tasks.get(tasks[4]!.id)).detail);
+      }),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect("two tasks admitted at the same instant cannot both take the last slot", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(START);
+    yield* seedProject;
+    const world = yield* makeThreadWorld;
+    yield* withServices(world, (services) =>
+      Effect.gen(function* () {
+        yield* attachBot(services);
+        yield* services.bots.update({ botId, taskLimit: 1 });
+        const gate = {
+          stage: "before-thread" as const,
+          entered: yield* Deferred.make<void>(),
+          release: yield* Deferred.make<void>(),
+        };
+        yield* Ref.set(world.launchGate, gate);
+        // The first is still launching when the second, whose id sorts first, is admitted.
+        const first = yield* Effect.forkScoped(
+          services.tasks.start({
+            botId,
+            projectId: campaign,
+            prompt: "First.",
+            commandId: CommandId.make("z-first"),
+          }),
+        );
+        yield* Deferred.await(gate.entered);
+        const second = yield* services.tasks.start({
+          botId,
+          projectId: campaign,
+          prompt: "Second.",
+          commandId: CommandId.make("a-second"),
+        });
+        yield* Deferred.succeed(gate.release, undefined);
+        yield* Fiber.join(first);
+        assert.include(second.detail, "Waiting for a free slot");
+        // Not launched, so it reports no thread to open.
+        assert.isNull(second.workThreadId);
+        assert.isFalse((yield* Ref.get(world.threads)).has(workThreadOf(second)));
+      }),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect("a task cancelled while it launches keeps its slot until its thread stops", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(START);
+    yield* seedProject;
+    const world = yield* makeThreadWorld;
+    yield* withServices(world, (services) =>
+      Effect.gen(function* () {
+        yield* attachBot(services);
+        yield* services.bots.update({ botId, taskLimit: 1 });
+        const gate = {
+          stage: "before-thread" as const,
+          entered: yield* Deferred.make<void>(),
+          release: yield* Deferred.make<void>(),
+        };
+        yield* Ref.set(world.launchGate, gate);
+        const first = yield* Effect.forkScoped(
+          services.tasks.start({ botId, projectId: campaign, prompt: "First." }),
+        );
+        yield* Deferred.await(gate.entered);
+        const [launching] = (yield* services.tasks.list({ botId })).tasks;
+        yield* services.tasks.cancel({ taskId: launching!.id });
+        yield* TestClock.adjust("1 second");
+        const second = yield* services.tasks.start({
+          botId,
+          projectId: campaign,
+          prompt: "Second.",
+        });
+        assert.include(second.detail, "Waiting for a free slot");
+        yield* Deferred.succeed(gate.release, undefined);
+        yield* Fiber.join(first);
+        // The launch made its thread and stopped it; once that run ends, the slot is free.
+        yield* services.tasks.reconcile;
+        assert.equal((yield* services.tasks.get(launching!.id)).status, "cancelled");
+        assert.isTrue((yield* Ref.get(world.threads)).has(workThreadOf(second)));
+      }),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect.each([
+  {
+    name: "names a branch, commit and file that exist",
+    text: `Prepared the notes.\n${report({ evidence: ["branch: bot/notes", "commit: 0a1b2c3", "file: notes/prep.md:4", "link: https://example.com/doc", "The session log"] })}`,
+    acceptance: {
+      state: "done",
+      missing: [],
+      checks: ["found", "found", "found", "link", "unchecked"],
+    },
+  },
+  {
+    name: "names no evidence",
+    text: `Prepared the notes.\n${report({ evidence: [] })}`,
+    acceptance: { state: "needs_you", missing: ["The result names no evidence."], checks: [] },
+  },
+  {
+    name: "names a branch that does not exist",
+    text: `Prepared the notes.\n${report({ evidence: ["branch: bot/missing"] })}`,
+    acceptance: {
+      state: "needs_you",
+      missing: ["“branch: bot/missing” does not exist."],
+      checks: ["missing"],
+    },
+  },
+  {
+    name: "reports itself blocked with a question",
+    text: `Stuck.\n${report({ status: "blocked", openQuestions: ["Which session is next?"] })}`,
+    acceptance: {
+      state: "needs_you",
+      missing: ["The work thread reported its status as blocked."],
+      checks: ["found"],
+    },
+  },
+  {
+    name: "has no report",
+    text: "Prepared the notes.",
+    acceptance: {
+      state: "needs_you",
+      missing: ["The result did not end with a T3_RESULT line in the fixed shape."],
+      checks: null,
+    },
+  },
+] as const)("a direct task's result that $name", ({ text, acceptance: expected }) =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(START);
+    yield* seedProject;
+    const world = yield* makeThreadWorld;
+    yield* Ref.update(world.existingEvidence, (all) => new Set([...all, "bot/notes", "0a1b2c3"]));
+    const sql = yield* BotDatabase.BotDatabase;
+    yield* withServices(world, (services) =>
+      Effect.gen(function* () {
+        const home = yield* attachBot(services);
+        yield* seedHomeRun(world, home, "external-mcp");
+        const started = yield* services.tasks.start(
+          { botId, projectId: campaign, prompt: "Prepare the notes." },
+          { returnToHomeFrom: home },
+        );
+        yield* world.update(home, { status: "completed" });
+        yield* finishRun(world, started.workThreadId!, text);
+        yield* services.tasks.reconcile;
+        const task = yield* services.tasks.get(started.id);
+        assert.equal(task.status, "completed");
+        assert.deepInclude(task.acceptance, { state: expected.state, missing: expected.missing });
+        assert.deepEqual<ReadonlyArray<string> | null>(
+          task.acceptance?.report?.evidence.map((item) => item.check) ?? null,
+          expected.checks,
+        );
+        const [awareness] = yield* services.tasks.getAwarenessTasks(started.workThreadId!);
+        assert.equal(awareness?.needsYou, expected.state === "needs_you");
+        // The user reads the result without the report line.
+        const saved = yield* services.tasks.getResult({ taskId: task.id });
+        assert.notInclude(saved.result.state === "available" ? saved.result.text : "", "T3_RESULT");
+        const revisions = yield* sql<{ readonly revision_json: string }>`
+          SELECT revision_json FROM bot_continuation_revisions WHERE home_thread_id = ${home}
+          ORDER BY revision DESC LIMIT 1`;
+        const waiting: ReadonlyArray<{
+          readonly text: string;
+          readonly refs: ReadonlyArray<{ readonly taskId?: string }>;
+        }> = revisions[0] === undefined ? [] : JSON.parse(revisions[0].revision_json).note.waiting;
+        const deliveries = yield* world.commandsMatching("bot-task.result.deliver");
+        if (expected.state === "done") {
+          assert.deepEqual(waiting, []);
+          assert.lengthOf(deliveries, 1);
+          return;
+        }
+        // Not done: it waits for the user and does not go back to Home.
+        assert.lengthOf(deliveries, 0);
+        assert.lengthOf(waiting, 1);
+        assert.include(waiting[0]?.text, "“Campaign Companion: Prepare the notes.”");
+        for (const missing of expected.missing) assert.include(waiting[0]?.text, missing);
+        assert.deepEqual(
+          waiting[0]?.refs.map((ref) => ref.taskId),
+          [task.id],
+        );
+        // Settled once: another pass adds nothing.
+        yield* services.tasks.reconcile;
+        assert.lengthOf(
+          yield* sql`SELECT revision FROM bot_continuation_revisions WHERE home_thread_id = ${home}`,
+          1,
+        );
+      }),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
 );

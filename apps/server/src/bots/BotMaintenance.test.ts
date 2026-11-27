@@ -429,6 +429,9 @@ it.effect(
     Effect.gen(function* () {
       yield* seed;
       const bots = yield* BotDatabase.BotDatabase;
+      yield* bots`DROP INDEX idx_bot_tasks_open_direct`;
+      yield* bots`ALTER TABLE bots DROP COLUMN task_limit`;
+      yield* bots`ALTER TABLE bot_tasks DROP COLUMN acceptance_json`;
       yield* bots`DROP INDEX idx_bot_project_contexts_one_home`;
       yield* bots`ALTER TABLE bot_project_contexts DROP COLUMN kind`;
       yield* bots`ALTER TABLE bots DROP COLUMN home_access`;
@@ -475,7 +478,7 @@ it.effect(
         readonly migration_id: number;
         readonly name: string;
       }>`SELECT migration_id, name FROM effect_sql_migrations ORDER BY migration_id`;
-      assert.deepEqual(history.slice(-19), [
+      assert.deepEqual(history.slice(-20), [
         { migration_id: 11, name: "BotMaintenance" },
         { migration_id: 12, name: "BotMaintenanceReceipts" },
         { migration_id: 13, name: "BotMaintenanceNightly" },
@@ -495,6 +498,7 @@ it.effect(
         { migration_id: 27, name: "BotWorktrees" },
         { migration_id: 28, name: "BotLearningReinforced" },
         { migration_id: 29, name: "BotHome" },
+        { migration_id: 30, name: "BotTaskLimit" },
       ]);
       const maintenance = yield* BotMaintenance.BotMaintenance;
       const view = yield* maintenance.get(scope);

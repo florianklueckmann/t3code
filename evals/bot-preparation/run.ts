@@ -6,6 +6,7 @@
 import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
 import * as NodeUtil from "node:util";
@@ -79,7 +80,13 @@ export interface SampleRun {
   readonly tasks: ReadonlyArray<
     Pick<
       BotTaskSummary,
-      "status" | "origin" | "returnToHome" | "modelSelection" | "diagnosis" | "baseBranch"
+      | "status"
+      | "origin"
+      | "returnToHome"
+      | "modelSelection"
+      | "diagnosis"
+      | "baseBranch"
+      | "acceptance"
     > & {
       readonly workThreadId?: string | null;
     }
@@ -145,6 +152,12 @@ const berlinDate = new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Berlin" 
 
 const reasoningEffort = (selection: ModelSelection | undefined) =>
   selection?.options?.find((option) => option.id === "reasoningEffort")?.value;
+
+/** A started task's result comes back to Home only when asked for and accepted as done. */
+const returnsToHome = (testCase: PreparationCase) =>
+  testCase.trigger === "home" &&
+  testCase.returnToHome === true &&
+  testCase.taskAcceptance !== "needs_you";
 
 export const gradeSample = (testCase: PreparationCase, run: SampleRun) => {
   const checks: Array<{ readonly check: string; readonly pass: boolean }> = [];
@@ -234,8 +247,13 @@ export const gradeSample = (testCase: PreparationCase, run: SampleRun) => {
       "requested Home return policy",
       (run.tasks[0]?.returnToHome ?? false) === testCase.returnToHome,
     );
-    add("bounded Home turns", run.homeRuns === (testCase.returnToHome ? 2 : 1));
+    add("bounded Home turns", run.homeRuns === (returnsToHome(testCase) ? 2 : 1));
   }
+  if (testCase.taskAcceptance !== undefined)
+    add(
+      `task result check: ${testCase.taskAcceptance}`,
+      run.tasks[0]?.acceptance?.state === testCase.taskAcceptance,
+    );
   if (testCase.startsTask)
     add(
       testCase.taskBaseBranch === undefined
@@ -624,7 +642,7 @@ const runSample = Effect.fn("botPreparation.runSample")(function* (
     tools = toolActivity(yield* readItems(call, home, "activity"));
   }
   const tasks = yield* settledTasks(call, botId);
-  if (testCase.trigger === "home" && testCase.returnToHome === true) {
+  if (returnsToHome(testCase)) {
     for (let attempt = 0; attempt < 30; attempt += 1) {
       const { thread } = yield* call(
         "t3_thread_read",
@@ -657,9 +675,19 @@ const runSample = Effect.fn("botPreparation.runSample")(function* (
     ...(runThreads === undefined ? {} : { runThreads }),
     tools,
     tasks: tasks.map(
-      ({ status, origin, returnToHome, modelSelection, diagnosis, workThreadId, baseBranch }) => ({
+      ({
+        status,
+        origin,
+        returnToHome,
+        modelSelection,
+        diagnosis,
         workThreadId,
         baseBranch,
+        acceptance,
+      }) => ({
+        workThreadId,
+        baseBranch,
+        acceptance,
         status,
         origin,
         returnToHome,
@@ -703,7 +731,10 @@ const main = Effect.gen(function* () {
   }
   const selected = CASES.filter((c) => values.case === undefined || values.case.includes(c.id));
   const samples = Number(values.samples);
-  const work = NodePath.resolve(values.work ?? NodePath.join(out, "work"));
+  // Outside this repository: a task that may write would otherwise get a worktree of T3 Code itself.
+  const work = NodePath.resolve(
+    values.work ?? NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-bot-preparation-")),
+  );
   const commit = NodeChildProcess.execFileSync("git", ["describe", "--always", "--dirty"], {
     encoding: "utf8",
   }).trim();

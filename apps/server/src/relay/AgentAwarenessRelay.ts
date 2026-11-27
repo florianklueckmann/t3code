@@ -595,7 +595,10 @@ export const make = Effect.gen(function* () {
           digest.projectId === null
             ? Option.none<Project>()
             : yield* projects.getById(ProjectId.make(digest.projectId));
-        const held = digest.held === 1 ? "1 alert" : `${digest.held} alerts`;
+        const held =
+          digest.needYou === digest.held
+            ? `${digest.held} ${digest.held === 1 ? "result needs" : "results need"} you`
+            : `${digest.held === 1 ? "1 alert" : `${digest.held} alerts`} held`;
         yield* publishState({
           projectId: digest.projectId,
           state: {
@@ -604,11 +607,13 @@ export const make = Effect.gen(function* () {
             projectTitle: Option.isSome(project) ? project.value.title : digest.botName,
             modelTitle: digest.botName,
             // Phones show the title and the phase, so the title carries the count.
-            threadTitle: `${digest.botName}: ${held} held`,
+            threadTitle: `${digest.botName}: ${held}`,
             phase: digest.allFailed ? "failed" : "completed",
-            headline: `${held} held`,
+            headline: held,
             detail:
-              "Held for quiet hours or the daily limit. Review them in the Bot's conversation.",
+              digest.needYou === digest.held
+                ? "Review them under Waiting on you in the Bot's conversation."
+                : "Held for quiet hours or the daily limit. Review them in the Bot's conversation.",
             updatedAt: digest.digestAt,
             deepLink: buildAgentAwarenessDeepLink({ environmentId, threadId: digest.homeThreadId }),
           },
@@ -689,10 +694,11 @@ export const make = Effect.gen(function* () {
       }
       return state;
     };
-    // The run a proactive task works on or saved as its result; its alerts go through the budget.
+    // The run a proactive task works on or saved as its result; its alerts go through the budget,
+    // as does any result that waits for the user.
     const budgetedRunId =
       task !== undefined &&
-      !task.byHand &&
+      (!task.byHand || task.needsYou) &&
       Option.isSome(thread) &&
       task.projectId === thread.value.projectId &&
       thread.value.latestRunId !== null &&
@@ -715,6 +721,7 @@ export const make = Effect.gen(function* () {
         workThreadId: task.workThreadId,
         homeThreadId: task.homeThreadId,
         phase: state.phase,
+        gather: state.phase === "completed" && task.needsYou,
         // A saved result alerts as of its save, which can come long after the run ended.
         endedAt:
           state.phase === "completed" && savedResultAt !== undefined

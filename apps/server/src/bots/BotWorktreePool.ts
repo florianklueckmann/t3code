@@ -15,7 +15,10 @@ import * as ProjectService from "../project/ProjectService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as BotDatabase from "./persistence/BotDatabase.ts";
 
-/** Worktrees one project keeps for Bot tasks, in use and free. T3B-122 replaces it with a per-Bot limit. */
+/**
+ * Worktrees one project keeps for Bot tasks, in use and free, shared by every Bot and routine there.
+ * It bounds disk use; how many tasks one Bot runs is its own task limit, checked before this.
+ */
 export const BOT_WORKTREE_POOL_LIMIT = 5;
 /** A free worktree unused this long is removed. */
 export const BOT_WORKTREE_IDLE_DAYS = 7;

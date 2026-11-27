@@ -1,4 +1,9 @@
-import { BOT_TASK_RESULT_UNSUPPORTED, botTaskResultNotice } from "@t3tools/client-runtime/bots";
+import {
+  BOT_TASK_RESULT_UNSUPPORTED,
+  botTaskAcceptanceLines,
+  botTaskResultNotice,
+  isBotTaskWaitingOnYou,
+} from "@t3tools/client-runtime/bots";
 import type { BotTaskSummary, EnvironmentId, ThreadId } from "@t3tools/contracts";
 import type { ReactNode } from "react";
 import { ScrollView, View } from "react-native";
@@ -85,6 +90,7 @@ export function BotTaskResult(props: {
         </Text>
         <BotTaskStatusLine
           status={data?.task.status ?? props.task.status}
+          needsYou={isBotTaskWaitingOnYou(data?.task ?? props.task)}
           trailing={`Final response of this run · ${props.when}`}
         />
         {detail === null ? null : (
@@ -92,6 +98,11 @@ export function BotTaskResult(props: {
             {detail}
           </Text>
         )}
+        {botTaskAcceptanceLines(data?.task ?? props.task).map((line) => (
+          <Text key={line} selectable className="text-sm text-foreground-muted">
+            {line}
+          </Text>
+        ))}
         {/* Kept above the answer so it stays reachable without scrolling a long result. */}
         {workThreadId === null ? null : (
           <View className="flex-row">
