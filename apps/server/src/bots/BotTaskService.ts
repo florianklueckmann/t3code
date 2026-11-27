@@ -2,7 +2,9 @@ import {
   BOT_TASK_TERMINAL_STATUSES,
   BOT_WORK_THREAD_ID_PREFIX,
   type BotCancelTaskInput,
+  type BotClearWorktreePoolResult,
   BotError,
+  type BotWorktreePool as BotWorktreePoolView,
   type BotId,
   type BotStartTaskInput,
   BotTaskId,
@@ -31,8 +33,10 @@ import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 import * as Predicate from "effect/Predicate";
 import * as PubSub from "effect/PubSub";
+import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -57,6 +61,8 @@ import * as FailureDiagnosis from "./BotFailureDiagnosis.ts";
 import * as BotProviderSupport from "./BotProviderSupport.ts";
 import * as BotStore from "./BotStore.ts";
 import * as BotWatch from "./BotWatch.ts";
+import * as BotWorktreePool from "./BotWorktreePool.ts";
+import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
 import { isDirectHomeInput, isUserHomeInput, latestDirectHomeInput } from "./homeReturn.ts";
 
 const LIST_LIMIT = 50;
@@ -100,6 +106,13 @@ interface BotTaskRow {
   readonly watch: number;
   /** 1 once a watch run ended with nothing new: no card, no unread mark, no alert. */
   readonly quiet: number;
+  /** The branch of a writing task's own worktree; null for one in the project folder. */
+  readonly branch: string | null;
+  /** The branch the task named to start from; null starts from the default branch. */
+  readonly base_branch: string | null;
+  readonly worktree_state: "root" | "held" | "released" | null;
+  /** 1 once uncommitted work in the worktree was saved as a commit on the branch. */
+  readonly unfinished_work: number;
   readonly created_at: string;
   readonly updated_at: string;
 }
@@ -122,6 +135,24 @@ const decodeSummary = Schema.decodeUnknownEffect(
 const isBotError = Schema.is(BotError);
 
 const isTerminal = (status: BotTaskStatus) => BOT_TASK_TERMINAL_STATUSES.has(status);
+
+/** Direct tasks and Changes allowed routines; No changes routines, watches and diagnoses only read. */
+const writesFiles = (row: Pick<BotTaskRow, "origin" | "allow_changes" | "watch">) =>
+  !isNoChangesTask(row) && row.watch !== 1;
+
+/** Stable per task, so a retried dispatch names the same branch. */
+export const taskBranchName = (row: Pick<BotTaskRow, "task_id" | "title">) => {
+  const slug = row.title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 40)
+    .replace(/-+$/, "");
+  // From the whole id: routine ids differ only in timestamps whose last digits repeat.
+  let hash = 0x811c9dc5;
+  for (const character of row.task_id) hash = Math.imul(hash ^ character.charCodeAt(0), 0x01000193);
+  return `bot/${slug === "" ? "task" : slug}-${(hash >>> 0).toString(16).padStart(8, "0")}`;
+};
 
 /**
  * The task's status from its work thread's persisted runs. A completed run whose background work
@@ -221,8 +252,17 @@ export class BotTaskService extends Context.Service<
       readonly botId: BotId;
       readonly projectId?: ProjectId | undefined;
     }) => Effect.Effect<void, BotError>;
-    /** Starts admitted work a crash left, records status changes and publishes results once. */
+    /**
+     * Starts admitted work a crash left or a wait held back, records status changes, publishes
+     * results once, and gives finished tasks' worktrees back to the pool.
+     */
     readonly reconcile: Effect.Effect<void, BotError>;
+    /** The project's Bot task worktrees: how many are free, in use, and their disk use. */
+    readonly worktreePool: (projectId: ProjectId) => Effect.Effect<BotWorktreePoolView, BotError>;
+    /** Removes the project's free worktrees; ones in use stay. */
+    readonly clearWorktreePool: (
+      projectId: ProjectId,
+    ) => Effect.Effect<BotClearWorktreePoolResult, BotError>;
     /** Ids of tasks whose status changed. */
     /**
      * Subscribes now and streams the ids of tasks whose status changed, so nothing published
@@ -267,6 +307,9 @@ const make = Effect.gen(function* () {
   const main = yield* SqlClient.SqlClient;
   const scheduler = yield* Scheduler.Scheduler;
   const random = yield* SecureRandom.SecureRandom;
+  const worktrees = yield* BotWorktreePool.BotWorktreePool;
+  const path = yield* Path.Path;
+  const dispatching = yield* Ref.make<ReadonlySet<string>>(new Set());
   const changes = yield* PubSub.sliding<{
     readonly taskId: BotTaskId;
     readonly workThreadId: string | null;
@@ -405,6 +448,9 @@ const make = Effect.gen(function* () {
               workThreadId: row.diagnoses_work_thread_id,
             },
           }),
+      ...(row.branch === null ? {} : { branch: row.branch }),
+      ...(row.base_branch === null ? {} : { baseBranch: row.base_branch }),
+      ...(row.unfinished_work === 1 ? { unfinishedWork: true } : {}),
     }).pipe(Effect.mapError(storageError));
 
   const summaryRows = sql`
@@ -490,13 +536,114 @@ const make = Effect.gen(function* () {
       );
   });
 
+  /** Leaves the task admitted but not started, saying why; a later reconcile pass tries again. */
+  const waitFor = Effect.fn("BotTaskService.waitFor")(function* (row: BotTaskRow, reason: string) {
+    if (row.detail === reason) return;
+    yield* sql`
+      UPDATE bot_tasks SET detail = ${reason}, updated_at = ${yield* nowIso}
+      WHERE task_id = ${row.task_id} AND dispatched_at IS NULL AND cancel_requested_at IS NULL
+    `.pipe(Effect.mapError(storageError));
+    yield* publish(row);
+  });
+
+  /**
+   * Where the work thread runs: a task that may change files gets a pooled worktree on its own
+   * branch, or the project folder one at a time when the project has no Git. Null while it waits.
+   */
+  const claimWorkspace = Effect.fn("BotTaskService.claimWorkspace")(function* (
+    row: BotTaskRow,
+    workThreadId: ThreadId,
+  ) {
+    if (!writesFiles(row)) return { workspaceStrategy: { type: "root" } } as const;
+    const branch = row.branch ?? taskBranchName(row);
+    const claim = yield* worktrees.take({
+      projectId: ProjectId.make(row.project_id),
+      workThreadId,
+      branch,
+      baseBranch: row.base_branch,
+    });
+    switch (claim._tag) {
+      case "full":
+        yield* waitFor(
+          row,
+          `Waiting for a free worktree: ${BotWorktreePool.BOT_WORKTREE_POOL_LIMIT} tasks in this project are working.`,
+        );
+        return null;
+      case "no-git": {
+        const started = yield* sql
+          .withTransaction(
+            Effect.gen(function* () {
+              const busy = yield* sql`
+                SELECT task_id FROM bot_tasks
+                WHERE project_id = ${row.project_id} AND worktree_state = 'root'
+                  AND completed_at IS NULL AND task_id <> ${row.task_id} LIMIT 1
+              `;
+              if (busy.length > 0) return false;
+              yield* sql`UPDATE bot_tasks SET worktree_state = 'root' WHERE task_id = ${row.task_id}`;
+              return true;
+            }),
+          )
+          .pipe(Effect.mapError(storageError));
+        if (!started) {
+          yield* waitFor(
+            row,
+            "Waiting for another task that may change files in this folder to finish.",
+          );
+          return null;
+        }
+        return { workspaceStrategy: { type: "root" } } as const;
+      }
+      case "pooled":
+      case "create": {
+        if (row.branch !== branch)
+          yield* sql`UPDATE bot_tasks SET branch = ${branch} WHERE task_id = ${row.task_id}`.pipe(
+            Effect.mapError(storageError),
+          );
+        return claim._tag === "create"
+          ? ({ workspaceStrategy: { type: "worktree", baseRef: claim.baseRef, branch } } as const)
+          : ({
+              workspaceStrategy: {
+                type: "existing_worktree",
+                worktreePath: claim.worktreePath,
+                branch,
+              },
+              setupScript: claim.setupNeeded ? ("await" as const) : ("skip" as const),
+            } as const);
+      }
+    }
+  });
+
   /**
    * Launches the work thread. The same ids make a retried launch replay instead of duplicating.
    * A cancel can land while the launch runs, so the cancel flag is checked again after it.
    */
   const dispatch = Effect.fn("BotTaskService.dispatch")(function* (stale: BotTaskRow) {
+    // The start call and a reconcile pass can both find a task not yet launched. One claims its
+    // worktree and launches; the other leaves it to that one.
+    const entered = yield* Ref.modify(dispatching, (current) =>
+      current.has(stale.task_id) ? [false, current] : [true, new Set(current).add(stale.task_id)],
+    );
+    if (!entered) return;
+    yield* launchWork(stale).pipe(
+      Effect.ensuring(
+        Ref.update(dispatching, (current) => {
+          const next = new Set(current);
+          next.delete(stale.task_id);
+          return next;
+        }),
+      ),
+    );
+  });
+
+  const launchWork = Effect.fn("BotTaskService.launchWork")(function* (stale: BotTaskRow) {
     const row = yield* readRow(stale.task_id);
-    if (row === undefined || row.completed_at !== null || row.cancel_requested_at !== null) return;
+    if (
+      row === undefined ||
+      row.completed_at !== null ||
+      row.cancel_requested_at !== null ||
+      row.dispatched_at !== null
+    )
+      return;
     const bot = yield* store.getBot(row.bot_id).pipe(Effect.mapError(storageError));
     if (bot === undefined || row.work_thread_id === null) return;
     const modelSelection =
@@ -505,16 +652,21 @@ const make = Effect.gen(function* () {
         : yield* BotStore.decodeModelSelection(row.model_selection_json).pipe(
             Effect.mapError(storageError),
           );
-    const launched = yield* threadLaunch
-      .launch({
+    const workThreadId = ThreadId.make(row.work_thread_id);
+    const launched = yield* Effect.gen(function* () {
+      const workspace = yield* claimWorkspace(row, workThreadId);
+      if (workspace === null) return "waiting" as const;
+      // A cancel during the claim ended the task already; its release frees the claim.
+      if ((yield* readRow(row.task_id))?.cancel_requested_at != null) return "waiting" as const;
+      yield* threadLaunch.launch({
         commandId: CommandId.make(`bot-task-launch:${row.task_id}`),
-        threadId: ThreadId.make(row.work_thread_id),
+        threadId: workThreadId,
         projectId: row.project_id as ProjectId,
         title: row.title,
         modelSelection,
         runtimeMode: row.runtime_mode as RuntimeMode,
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-        workspaceStrategy: { type: "root" },
+        ...workspace,
         initialMessage: {
           messageId: MessageId.make(`bot-task-message:${row.task_id}`),
           text: row.prompt,
@@ -522,12 +674,16 @@ const make = Effect.gen(function* () {
         },
         createdBy: row.origin === "direct" ? "user" : "system",
         creationSource: "server",
-      })
-      .pipe(Effect.exit);
+      });
+      return "launched" as const;
+    }).pipe(Effect.exit);
+    if (launched._tag === "Success" && launched.value === "waiting") return;
     const now = yield* nowIso;
     if (launched._tag === "Success") {
+      // A wait the task went through is over; a cancel's reason stays.
       yield* sql`
-        UPDATE bot_tasks SET dispatched_at = ${now}, updated_at = ${now}
+        UPDATE bot_tasks SET dispatched_at = ${now}, updated_at = ${now},
+          detail = CASE WHEN cancel_requested_at IS NULL THEN NULL ELSE detail END
         WHERE task_id = ${row.task_id} AND dispatched_at IS NULL
       `.pipe(Effect.mapError(storageError));
       const after = yield* readRow(row.task_id);
@@ -553,7 +709,8 @@ const make = Effect.gen(function* () {
         scheduled_task_id, occurrence_key, occurrence_due_at, session_at, allow_changes, runtime_mode, status,
         detail, dispatched_at, cancel_requested_at, result_run_id, completed_at, notified_at,
         created_at, updated_at, return_home_run_id, return_home_message_id, return_finished_at,
-        model_selection_json, diagnoses_task_id, diagnoses_run_id, by_hand, watch, quiet
+        model_selection_json, diagnoses_task_id, diagnoses_run_id, by_hand, watch, quiet,
+        branch, base_branch, worktree_state, unfinished_work
       ) VALUES (
         ${row.task_id}, ${row.bot_id}, ${row.project_id}, ${row.home_thread_id},
         ${row.work_thread_id}, ${row.origin}, ${row.title}, ${row.prompt},
@@ -563,7 +720,8 @@ const make = Effect.gen(function* () {
         ${row.completed_at}, ${row.notified_at}, ${row.created_at}, ${row.updated_at},
         ${row.return_home_run_id}, ${row.return_home_message_id}, ${row.return_finished_at},
         ${row.model_selection_json}, ${row.diagnoses_task_id}, ${row.diagnoses_run_id},
-        ${row.by_hand}, ${row.watch}, ${row.quiet}
+        ${row.by_hand}, ${row.watch}, ${row.quiet},
+        ${row.branch}, ${row.base_branch}, ${row.worktree_state}, ${row.unfinished_work}
       )
       ON CONFLICT DO NOTHING
     `;
@@ -612,6 +770,10 @@ const make = Effect.gen(function* () {
     by_hand: 0,
     watch: input.occurrence?.watch === true ? 1 : 0,
     quiet: 0,
+    branch: null,
+    base_branch: null,
+    worktree_state: null,
+    unfinished_work: 0,
     created_at: input.now,
     updated_at: input.now,
   });
@@ -790,6 +952,7 @@ const make = Effect.gen(function* () {
         return_home_message_id: returnHomeMessageId,
         model_selection_json: BotStore.encodeModelSelection(modelSelection),
         by_hand: byHand ? 1 : 0,
+        base_branch: input.baseBranch ?? null,
       };
       yield* sql
         .withTransaction(
@@ -1228,7 +1391,7 @@ const make = Effect.gen(function* () {
           homeRunId: RunId.make(row.return_home_run_id),
           homeMessageId: MessageId.make(row.return_home_message_id),
           messageId: MessageId.make(returnId),
-          text: `Bot work run completed. Task fulfillment is unverified; existing user instructions and permissions still apply.\nTask: ${row.task_id}\nWork thread: ${row.work_thread_id}\nSaved run: ${row.result_run_id}\n\n${text.slice(0, 16000)}${text.length > 16000 ? "\n[Result truncated; the full saved result remains available on the task.]" : ""}`,
+          text: `Bot work run completed. Task fulfillment is unverified; existing user instructions and permissions still apply.\nTask: ${row.task_id}\nWork thread: ${row.work_thread_id}\nSaved run: ${row.result_run_id}\n${row.branch === null ? "" : `Branch: ${row.branch}\n`}\n${text.slice(0, 16000)}${text.length > 16000 ? "\n[Result truncated; the full saved result remains available on the task.]" : ""}`,
         },
         (commit) =>
           sql
@@ -1484,6 +1647,8 @@ const make = Effect.gen(function* () {
           }),
         )
         .pipe(Effect.mapError(storageError));
+      // Before the status goes out, so a client reading the pool for it sees the worktree free.
+      if (terminal && row.worktree_state === "held") yield* releaseWorktreeLogged(row);
       yield* publish(row);
       if (!terminal) return;
     }
@@ -1571,6 +1736,135 @@ const make = Effect.gen(function* () {
       .pipe(Effect.mapError(storageError));
   });
 
+  /** A finished task's work thread with no run and no background work left. */
+  const workThreadIdle = (shell: OrchestrationV2ThreadShell | null) =>
+    shell === null ||
+    shell.deletedAt !== null ||
+    (shell.status !== "idle" &&
+      (shell.pendingBackgroundTasks?.length ?? 0) === 0 &&
+      isTerminal(deriveTaskStatus({ cancelRequested: false, shell })));
+
+  /**
+   * Gives a finished task's worktree back to the pool once its work thread is idle: after the task
+   * ended, and again after each follow-up. Under the workspace lease, as turn start, so a follow-up
+   * that starts meanwhile either finds the worktree in place or restores it after.
+   */
+  const releaseWorktree = Effect.fn("BotTaskService.releaseWorktree")(function* (row: BotTaskRow) {
+    // A dispatch still under way owns the claim it is launching into.
+    if (row.work_thread_id === null || (yield* Ref.get(dispatching)).has(row.task_id)) return;
+    const workThreadId = ThreadId.make(row.work_thread_id);
+    const readShell = threads
+      .getThreadShell(workThreadId)
+      .pipe(Effect.mapError(botError("Failed to read the Bot task's work thread.")));
+    const shell = yield* readShell;
+    if (!workThreadIdle(shell)) return;
+    const released = sql`
+      UPDATE bot_tasks SET worktree_state = 'released' WHERE task_id = ${row.task_id}
+    `.pipe(Effect.mapError(storageError));
+    // A task that failed before its launch recorded the worktree still holds its claim.
+    const worktreePath =
+      shell?.worktreePath ??
+      (yield* worktrees
+        .claimedPath(workThreadId)
+        .pipe(Effect.mapError((cause) => botError(cause.message)(cause))));
+    if (worktreePath === null) return yield* released;
+    const branch = row.branch ?? taskBranchName(row);
+    const savedWork = yield* withWorkspaceLease(
+      path.resolve(worktreePath),
+      Effect.gen(function* () {
+        // Setup finishes before the agent starts, so a run that never started may have left the
+        // install unfinished; the next task in this worktree runs it again.
+        const current = yield* readShell;
+        if (!workThreadIdle(current)) return null;
+        if (current?.latestRunStartedAt == null)
+          yield* sql`UPDATE bot_tasks SET setup_signature = NULL WHERE task_id = ${row.task_id}`.pipe(
+            Effect.mapError(storageError),
+          );
+        const parked = yield* worktrees
+          .park({
+            projectId: ProjectId.make(row.project_id),
+            workThreadId,
+            worktreePath,
+            commitMessage: `WIP: ${row.title}\n\nSaved by T3 Code when the Bot task's work stopped.`,
+            wipBranch: `${branch}-wip-${DateTime.toEpochMillis(yield* DateTime.now)}`,
+          })
+          .pipe(Effect.mapError((cause) => botError(cause.message)(cause)));
+        yield* sql`
+          UPDATE bot_tasks SET worktree_state = 'released',
+            unfinished_work = MAX(unfinished_work, ${parked.savedWork ? 1 : 0}),
+            branch = COALESCE(${parked.savedOn}, branch)
+          WHERE task_id = ${row.task_id}
+        `.pipe(Effect.mapError(storageError));
+        // Work saved from a detached HEAD is on its own branch; the card and a follow-up use it.
+        if (parked.savedOn !== null)
+          yield* threads
+            .dispatch({
+              type: "thread.metadata.update",
+              commandId: CommandId.make(`bot-task-wip-branch:${row.task_id}:${parked.savedOn}`),
+              threadId: workThreadId,
+              branch: parked.savedOn,
+            })
+            .pipe(Effect.mapError(botError("Failed to record the Bot task's WIP branch.")));
+        return parked.savedWork;
+      }),
+    );
+    if (savedWork === true) yield* publish(row);
+  });
+
+  // A failed release leaves the worktree held; the next pass tries again.
+  const releaseWorktreeLogged = (row: BotTaskRow) =>
+    releaseWorktree(row).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("Bot task worktree release failed", { taskId: row.task_id, cause }),
+      ),
+    );
+
+  const releaseWorktrees = Effect.gen(function* () {
+    const held = yield* sql<BotTaskRow>`
+      SELECT * FROM bot_tasks WHERE worktree_state = 'held' AND completed_at IS NOT NULL
+    `.pipe(Effect.mapError(storageError));
+    yield* Effect.forEach(held, releaseWorktreeLogged, { discard: true });
+    yield* worktrees.expire.pipe(
+      Effect.catchCause((cause) => Effect.logWarning("Bot worktree expiry failed", { cause })),
+    );
+  }).pipe(Effect.withSpan("BotTaskService.releaseWorktrees"));
+
+  const worktreePool: BotTaskService["Service"]["worktreePool"] = Effect.fn(
+    "BotTaskService.worktreePool",
+  )(function* (projectId) {
+    const parked = yield* worktrees
+      .parkedPaths(projectId)
+      .pipe(Effect.mapError((cause) => botError(cause.message)(cause)));
+    const held = yield* sql<{ readonly work_thread_id: string }>`
+      SELECT work_thread_id FROM bot_tasks
+      WHERE project_id = ${projectId} AND worktree_state = 'held' AND work_thread_id IS NOT NULL
+    `.pipe(Effect.mapError(storageError));
+    const inUse = yield* Effect.forEach(held, (row) =>
+      threads.getThreadShell(ThreadId.make(row.work_thread_id)).pipe(
+        Effect.map((shell) => shell?.worktreePath ?? null),
+        Effect.orElseSucceed(() => null),
+      ),
+    );
+    return {
+      projectId,
+      parked: parked.length,
+      inUse: held.length,
+      bytes: yield* worktrees.measure([
+        ...parked,
+        ...inUse.filter((worktreePath) => worktreePath !== null),
+      ]),
+    };
+  });
+
+  const clearWorktreePool: BotTaskService["Service"]["clearWorktreePool"] = Effect.fn(
+    "BotTaskService.clearWorktreePool",
+  )(function* (projectId) {
+    const removed = yield* worktrees
+      .clear(projectId)
+      .pipe(Effect.mapError((cause) => botError(cause.message)(cause)));
+    return { removed, pool: yield* worktreePool(projectId) };
+  });
+
   const reconcile: BotTaskService["Service"]["reconcile"] = Effect.gen(function* () {
     const open = yield* sql<BotTaskRow>`
       SELECT * FROM bot_tasks WHERE completed_at IS NULL OR notified_at IS NULL
@@ -1588,6 +1882,8 @@ const make = Effect.gen(function* () {
         ),
       { discard: true },
     );
+    // After the tasks: one that ended in this pass gives its worktree back in the same pass.
+    yield* releaseWorktrees;
   }).pipe(Effect.withSpan("BotTaskService.reconcile"));
 
   yield* scheduler.register("bot-tasks", reconcile);
@@ -1605,6 +1901,8 @@ const make = Effect.gen(function* () {
     cancel,
     cancelForContext,
     reconcile,
+    worktreePool,
+    clearWorktreePool,
     changes: PubSub.subscribe(changes).pipe(
       Effect.map((subscription) =>
         Stream.fromSubscription(subscription).pipe(Stream.map((change) => change.taskId)),

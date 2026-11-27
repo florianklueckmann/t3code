@@ -29,6 +29,7 @@ import { useSelectWorkspaceDetail } from "../layout/workspace/useSelectWorkspace
 import { useBotEditor, startBotEditor, startNewBotEditor } from "./bot-editor";
 import { BotContinuationSection } from "./BotContinuationSection";
 import { BotFailureDiagnosisSection } from "./BotFailureDiagnosisSection";
+import { BotWorktreePoolSection } from "./BotWorktreePoolSection";
 import { BotAttentionSection } from "./BotAttentionSection";
 import { BotHomeCheckSection } from "./BotHomeCheckSection";
 import { BotMaintenanceSection } from "./BotMaintenanceSection";
@@ -698,6 +699,13 @@ function BotForm({
                 onDraftChange={(unsaved) =>
                   onSettingDraftChange(`${project.projectId}:diagnosis`, unsaved)
                 }
+              />
+            ) : null}
+            {baseline.projects.some((saved) => saved.projectId === project.projectId) ? (
+              <BotWorktreePoolSection
+                environmentId={environmentId}
+                projectId={project.projectId}
+                title={`${projectTitle(project.projectId)} · Task worktrees`}
               />
             ) : null}
             {routinesSupported &&

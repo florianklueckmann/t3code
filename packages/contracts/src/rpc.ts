@@ -442,6 +442,9 @@ import {
   BotTaskListInput,
   BotTaskListResult,
   BotTaskSummary,
+  BotWorktreePool,
+  BotWorktreePoolInput,
+  BotClearWorktreePoolResult,
 } from "./bot.ts";
 import { SecretRequestAnswerInput, SecretRequestError } from "./secretRequest.ts";
 import {
@@ -669,6 +672,8 @@ export const WS_METHODS = {
   botsGetTaskResult: "bots.getTaskResult",
   botsStartTask: "bots.startTask",
   botsCancelTask: "bots.cancelTask",
+  botsGetWorktreePool: "bots.getWorktreePool",
+  botsClearWorktreePool: "bots.clearWorktreePool",
   botsRecordLearning: "bots.recordLearning",
   botsDecideLearning: "bots.decideLearning",
   botsRetireLearning: "bots.retireLearning",
@@ -2361,6 +2366,18 @@ const WsBotsCancelTaskRpc = Rpc.make(WS_METHODS.botsCancelTask, {
   error: BotRpcError,
 });
 
+const WsBotsGetWorktreePoolRpc = Rpc.make(WS_METHODS.botsGetWorktreePool, {
+  payload: BotWorktreePoolInput,
+  success: BotWorktreePool,
+  error: BotRpcError,
+});
+
+const WsBotsClearWorktreePoolRpc = Rpc.make(WS_METHODS.botsClearWorktreePool, {
+  payload: BotWorktreePoolInput,
+  success: BotClearWorktreePoolResult,
+  error: BotRpcError,
+});
+
 const WsBotsRecordLearningRpc = Rpc.make(WS_METHODS.botsRecordLearning, {
   payload: BotRecordLearningInput,
   success: BotDetail,
@@ -2588,6 +2605,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsBotsGetTaskResultRpc,
   WsBotsStartTaskRpc,
   WsBotsCancelTaskRpc,
+  WsBotsGetWorktreePoolRpc,
+  WsBotsClearWorktreePoolRpc,
   WsBotsRecordLearningRpc,
   WsBotsDecideLearningRpc,
   WsBotsRetireLearningRpc,

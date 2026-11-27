@@ -130,6 +130,8 @@ const RPC_AGGREGATES = {
   [WS_METHODS.botsGetTaskResult]: "bots",
   [WS_METHODS.botsStartTask]: "bots",
   [WS_METHODS.botsCancelTask]: "bots",
+  [WS_METHODS.botsGetWorktreePool]: "bots",
+  [WS_METHODS.botsClearWorktreePool]: "bots",
   [WS_METHODS.botsRecordLearning]: "bots",
   [WS_METHODS.botsDecideLearning]: "bots",
   [WS_METHODS.botsRetireLearning]: "bots",

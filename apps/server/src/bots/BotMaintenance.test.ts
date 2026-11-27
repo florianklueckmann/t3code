@@ -427,6 +427,16 @@ it.effect(
     Effect.gen(function* () {
       yield* seed;
       const bots = yield* BotDatabase.BotDatabase;
+      yield* bots`DROP TABLE bot_worktrees`;
+      yield* bots`DROP INDEX idx_bot_tasks_worktree`;
+      for (const column of [
+        "branch",
+        "base_branch",
+        "worktree_state",
+        "unfinished_work",
+        "setup_signature",
+      ])
+        yield* bots`ALTER TABLE bot_tasks DROP COLUMN ${bots(column)}`;
       yield* bots`DROP TABLE bot_watch_posts`;
       yield* bots`ALTER TABLE bot_tasks DROP COLUMN watch`;
       yield* bots`ALTER TABLE bot_tasks DROP COLUMN quiet`;
@@ -459,7 +469,7 @@ it.effect(
         readonly migration_id: number;
         readonly name: string;
       }>`SELECT migration_id, name FROM effect_sql_migrations ORDER BY migration_id`;
-      assert.deepEqual(history.slice(-16), [
+      assert.deepEqual(history.slice(-17), [
         { migration_id: 11, name: "BotMaintenance" },
         { migration_id: 12, name: "BotMaintenanceReceipts" },
         { migration_id: 13, name: "BotMaintenanceNightly" },
@@ -476,6 +486,7 @@ it.effect(
         { migration_id: 24, name: "BotMcpCalendarChoice" },
         { migration_id: 25, name: "BotLearningSuggestions" },
         { migration_id: 26, name: "BotWatch" },
+        { migration_id: 27, name: "BotWorktrees" },
       ]);
       const maintenance = yield* BotMaintenance.BotMaintenance;
       const view = yield* maintenance.get(scope);

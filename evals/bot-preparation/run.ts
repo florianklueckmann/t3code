@@ -77,7 +77,10 @@ export interface SampleRun {
   readonly runThreads?: ReadonlyArray<string>;
   readonly tools: ReadonlyArray<ToolActivity>;
   readonly tasks: ReadonlyArray<
-    Pick<BotTaskSummary, "status" | "origin" | "returnToHome" | "modelSelection" | "diagnosis"> & {
+    Pick<
+      BotTaskSummary,
+      "status" | "origin" | "returnToHome" | "modelSelection" | "diagnosis" | "baseBranch"
+    > & {
       readonly workThreadId?: string | null;
     }
   >;
@@ -233,6 +236,13 @@ export const gradeSample = (testCase: PreparationCase, run: SampleRun) => {
     );
     add("bounded Home turns", run.homeRuns === (testCase.returnToHome ? 2 : 1));
   }
+  if (testCase.startsTask)
+    add(
+      testCase.taskBaseBranch === undefined
+        ? "task names no base branch"
+        : `task starts from ${testCase.taskBaseBranch}`,
+      run.tasks[0]?.baseBranch === testCase.taskBaseBranch,
+    );
   if (testCase.taskEffort !== undefined) {
     const { created, after } = run.botSelection ?? {};
     const task = run.tasks[0]?.modelSelection;
@@ -647,8 +657,9 @@ const runSample = Effect.fn("botPreparation.runSample")(function* (
     ...(runThreads === undefined ? {} : { runThreads }),
     tools,
     tasks: tasks.map(
-      ({ status, origin, returnToHome, modelSelection, diagnosis, workThreadId }) => ({
+      ({ status, origin, returnToHome, modelSelection, diagnosis, workThreadId, baseBranch }) => ({
         workThreadId,
+        baseBranch,
         status,
         origin,
         returnToHome,

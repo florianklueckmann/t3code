@@ -13,6 +13,7 @@ import {
   type BotAttentionView,
   type BotFailureDiagnosisView,
   type BotRecordLearningInput,
+  type BotWorktreePool,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import * as Option from "effect/Option";
@@ -1271,6 +1272,28 @@ export function canToggleBotFailureDiagnosis(
 ): boolean {
   return view.enabled || (!formLocked && view.writable && view.unavailableReason === null);
 }
+/** Where a task that may change files did its work, for its card; null for one in the project folder. */
+export function botTaskBranchLabel(task: BotTaskSummary): string | null {
+  if (task.branch === undefined) return null;
+  return task.unfinishedWork === true
+    ? `Branch ${task.branch} holds unfinished work, saved as a WIP commit.`
+    : `Works on branch ${task.branch}.`;
+}
+
+export const BOT_WORKTREE_POOL_DESCRIPTION =
+  "Tasks that may change files work in worktrees of their own. A finished task's worktree stays for the next one, with its installed dependencies; one unused for 7 days is removed.";
+/** Settings caption for a project's task worktrees. */
+export function botWorktreePoolLabel(pool: BotWorktreePool): string {
+  if (pool.parked + pool.inUse === 0) return "No worktrees yet";
+  const size =
+    pool.bytes === null
+      ? "size unknown"
+      : pool.bytes >= 1024 ** 3
+        ? `${(pool.bytes / 1024 ** 3).toFixed(1)} GB`
+        : `${Math.max(1, Math.round(pool.bytes / 1024 ** 2))} MB`;
+  return `${pool.parked} free · ${pool.inUse} in use · ${size}`;
+}
+
 /** Why a diagnostic task started, for its Home card; null for other tasks. */
 export function botTaskDiagnosisLabel(task: BotTaskSummary): string | null {
   return task.diagnosis === undefined

@@ -108,6 +108,7 @@ import { stackedThreadToast, toastManager } from "../ui/toast";
 import { BotAppearancePicker } from "./BotAppearancePicker";
 import { BotContinuationNotes } from "./BotContinuationNotes";
 import { BotFailureDiagnosisSetting } from "./BotFailureDiagnosisSetting";
+import { BotWorktreePoolSetting } from "./BotWorktreePoolSetting";
 import { BotAttentionSetting } from "./BotAttentionSetting";
 import { BotHomeCheckSetting } from "./BotHomeCheckSetting";
 import { BotMcpGrantsSetting } from "./BotMcpGrantsSetting";
@@ -909,6 +910,11 @@ function BotEditorForm({
                   projectId={context.projectId}
                   title={titleOf(context.projectId)}
                   formLocked={saving || archived}
+                />
+                <BotWorktreePoolSetting
+                  environmentId={environmentId}
+                  projectId={context.projectId}
+                  title={titleOf(context.projectId)}
                 />
               </Fragment>
             ))}

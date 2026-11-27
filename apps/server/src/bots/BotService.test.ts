@@ -44,6 +44,7 @@ import * as BotProjectGuard from "./BotProjectGuard.ts";
 import * as BotService from "./BotService.ts";
 import * as BotDatabase from "./persistence/BotDatabase.ts";
 import * as BotTaskService from "./BotTaskService.ts";
+import * as BotWorktreePool from "./BotWorktreePool.ts";
 import * as BotTurnContext from "./BotTurnContext.ts";
 
 const campaignA = ProjectId.make("project-campaign-a");
@@ -151,6 +152,12 @@ const layerSupport = Layer.mergeAll(
   ServerSettings.layerTest(),
   // Routine pausing is covered with the real scheduled task service in BotTaskService.test.ts.
   Layer.mock(ScheduledTaskService.ScheduledTaskService)({ pauseBotRoutines: () => Effect.void }),
+  // Task worktrees are covered in BotTaskService.test.ts and BotWorktreePool.test.ts.
+  Layer.mock(BotWorktreePool.BotWorktreePool)({
+    take: () => Effect.succeed({ _tag: "create", baseRef: "main" }),
+    claimedPath: () => Effect.succeed(null),
+    expire: Effect.void,
+  }),
 );
 
 const layerDatabase = SqlitePersistence.layerMemory.pipe(

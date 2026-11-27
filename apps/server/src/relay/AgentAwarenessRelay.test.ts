@@ -381,6 +381,8 @@ const makeTestRelay = Effect.fnUntraced(function* (
       cancel: unused,
       cancelForContext: unused,
       reconcile: Effect.void,
+      worktreePool: unused,
+      clearWorktreePool: unused,
       changes: Effect.succeed(options.taskChanges ?? Stream.empty),
       getAwarenessTasks: (threadId) =>
         Effect.succeed(

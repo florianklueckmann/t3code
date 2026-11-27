@@ -1,6 +1,7 @@
 import * as WorktreeSetupTracker from "../project/WorktreeSetupTracker.ts";
 import * as ProjectCloneTracker from "../project/ProjectCloneTracker.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
+import { ThreadWorktreeRestore } from "../workspace/restoreMissingWorktree.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
   CommandId,
@@ -20,6 +21,7 @@ import {
   type RuntimeMode,
   type ScheduledTaskId,
   ThreadId,
+  mayBeBotWorkThreadId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -93,6 +95,11 @@ export interface ThreadLaunchInput {
   readonly runtimeMode: RuntimeMode;
   readonly interactionMode: ProviderInteractionMode;
   readonly workspaceStrategy: ThreadLaunchWorkspaceStrategy;
+  /**
+   * "skip" leaves out the project's setup script: the worktree already has what it installs.
+   * "await" runs it in an existing worktree as a new one does, and the agent starts after it.
+   */
+  readonly setupScript?: "skip" | "await";
   readonly initialMessage?: ThreadLaunchInitialMessage;
   readonly importedNativeThread?: {
     readonly ref: {
@@ -114,7 +121,7 @@ export interface ThreadLaunchInput {
 
 type PreparationInput = Pick<
   ThreadLaunchInput,
-  "commandId" | "projectId" | "workspaceStrategy" | "initialMessage"
+  "commandId" | "projectId" | "workspaceStrategy" | "initialMessage" | "setupScript"
 > & {
   readonly reusedWorktree?: { readonly baseRef: string };
 };
@@ -260,6 +267,7 @@ const make = Effect.gen(function* () {
   const threads = yield* ThreadManagement.ThreadManagementService;
   const eventSink = yield* EventSink.EventSinkV2;
   const managedFolders = yield* ManagedProjectFolders.ManagedProjectFolders;
+  const worktreeRestore = yield* Effect.serviceOption(ThreadWorktreeRestore);
   // A project-folder launch that names no branch records the folder's checkout, as the composer does.
   const launchBranch = (strategy: ThreadLaunchWorkspaceStrategy, workspaceRoot: string) =>
     strategy.type === "root" && strategy.branch === undefined
@@ -515,7 +523,10 @@ const make = Effect.gen(function* () {
     );
 
     const reused = input.reusedWorktree;
-    const tracked = input.workspaceStrategy.type === "worktree" || reused !== undefined;
+    const tracked =
+      input.workspaceStrategy.type === "worktree" ||
+      reused !== undefined ||
+      input.setupScript === "await";
     let createdWorktreePath: string | null = null;
     let createdBranch: string | null = null;
     let setupTerminalId: string | null = null;
@@ -531,11 +542,11 @@ const make = Effect.gen(function* () {
         stages: ["fetch", "checkout", "submodules", "setup-script", "agent"],
         fiber: yield* Effect.fiber,
       });
-    } else if (reused !== undefined) {
+    } else if (reused !== undefined || input.setupScript === "await") {
       yield* setupTracker.begin({
         threadId,
         branch: input.workspaceStrategy.branch ?? null,
-        baseRef: reused.baseRef,
+        baseRef: reused?.baseRef ?? null,
         stages: ["setup-script", "agent"],
         fiber: yield* Effect.fiber,
       });
@@ -910,7 +921,7 @@ const make = Effect.gen(function* () {
       }
       yield* setupTracker.stageStatus(threadId, "setup-script", "running");
       const setup =
-        worktreePath === null
+        worktreePath === null || input.setupScript === "skip"
           ? ({ status: "no-script" } as const)
           : yield* setupScripts
               .runForThread({
@@ -1124,7 +1135,9 @@ const make = Effect.gen(function* () {
       const prepare = prepareInBackground(input, threadId, runId);
       if (
         runId === null ||
-        (input.workspaceStrategy.type !== "worktree" && input.reusedWorktree === undefined)
+        (input.workspaceStrategy.type !== "worktree" &&
+          input.reusedWorktree === undefined &&
+          input.setupScript !== "await")
       ) {
         return yield* prepare;
       }
@@ -1487,12 +1500,19 @@ const make = Effect.gen(function* () {
             reusedWorktree: { baseRef: workspacePreparation.baseRef },
           }
         : null;
+    // A Bot task's worktree went back to the pool when its setup failed, whether the task made it
+    // or took it from the pool; a retry takes one again and waits for setup, as the launch did.
+    const botPooled =
+      mayBeBotWorkThreadId(thread.id) &&
+      (reuse !== null || workspacePreparation.type === "existing_worktree");
+    if (botPooled && Option.isSome(worktreeRestore)) yield* worktreeRestore.value.restore(thread);
     return yield* schedulePreparation(
       {
         commandId: input.commandId,
         projectId: thread.projectId,
         workspaceStrategy: reuse?.strategy ?? workspacePreparation,
         ...(reuse === null ? {} : { reusedWorktree: reuse.reusedWorktree }),
+        ...(botPooled ? { setupScript: "await" as const } : {}),
         ...(message === undefined
           ? {}
           : {

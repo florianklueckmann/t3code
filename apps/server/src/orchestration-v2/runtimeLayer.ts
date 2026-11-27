@@ -14,6 +14,7 @@ import * as BotService from "../bots/BotService.ts";
 import * as BotRuntimePolicy from "../bots/BotRuntimePolicy.ts";
 import * as BotTaskService from "../bots/BotTaskService.ts";
 import * as BotTurnContext from "../bots/BotTurnContext.ts";
+import * as BotWorktreePool from "../bots/BotWorktreePool.ts";
 import * as Layer from "effect/Layer";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as OrchestrationCommandReceipts from "../persistence/OrchestrationCommandReceipts.ts";
@@ -123,6 +124,7 @@ export const layerProjectService = ProjectService.layer.pipe(
     ),
   ),
 );
+const layerBotWorktreePoolProvided = BotWorktreePool.layer.pipe(Layer.provide(layerProjectService));
 
 const layerProviderEventIngestorProvided = ProviderEventIngestor.layer.pipe(
   Layer.provide(
@@ -317,6 +319,8 @@ const layerThreadLaunchProvided = ThreadLaunchService.layer.pipe(
       layerCommandReceiptStoreProvided,
       layerEventSink,
       IdAllocator.layer,
+      // Retrying a Bot task's failed setup takes a pooled worktree again.
+      layerThreadWorktreeRestore,
     ).pipe(Layer.provideMerge(layerProjectService)),
   ),
 );
@@ -324,7 +328,13 @@ const layerSecretRequestsProvided = SecretRequests.layer.pipe(
   Layer.provide(layerThreadManagementProvided),
 );
 const layerBotTaskProvided = BotTaskService.layer.pipe(
-  Layer.provide(Layer.mergeAll(layerThreadLaunchProvided, layerThreadManagementProvided)),
+  Layer.provide(
+    Layer.mergeAll(
+      layerThreadLaunchProvided,
+      layerThreadManagementProvided,
+      layerBotWorktreePoolProvided,
+    ),
+  ),
 );
 const layerScheduledTaskProvided = ScheduledTaskService.layer.pipe(
   Layer.provide(
@@ -485,6 +495,8 @@ export const layerProduction = Layer.mergeAll(
   EffectOutbox.layerPruneWorker.pipe(Layer.provide(EffectOutbox.layer)),
 ).pipe(
   Layer.provide(ResourceCleanupService.layer.pipe(Layer.provide(layerScheduledTaskProvided))),
+  // Turn start and send read it when present to restore a released Bot task worktree from the pool.
+  Layer.provide(layerBotWorktreePoolProvided),
   Layer.provideMerge(layerProjectService),
   // Merged so the relay's digest registers with the same scheduler as the Bot sources.
   Layer.provideMerge(Scheduler.layer),
