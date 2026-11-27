@@ -40,6 +40,8 @@ const ungrantedBotSubagentThread = ThreadId.make("subagent-of-ungranted-codex-bo
 const orphanThread = ThreadId.make("subagent-of-lost-parent");
 const ownServersBotThread = ThreadId.make("bot-home:own-servers:campaign");
 const ownServersOnlyBotThread = ThreadId.make("subagent-of-own-servers-codex-bot");
+const readHomeThread = ThreadId.make("bot-home:companion:bot-home-companion");
+const fullHomeThread = ThreadId.make("bot-home:full:bot-home-full");
 const privateMail = McpConnectionId.make("2a2a2a2a-0000-4000-8000-00000000002a");
 const calendarChoices = {
   "bot-home:calendar-all:campaign": undefined,
@@ -69,7 +71,17 @@ const mcpAccessOf = (id: ThreadId): BotTurnContext.BotMcpAccess => {
       connectionIds,
       ownCodexMcpServers,
     }) as const;
-  if ([botThread, workThread, noChangesThread, botForkThread, botSubagentThread].includes(id))
+  if (
+    [
+      botThread,
+      workThread,
+      noChangesThread,
+      botForkThread,
+      botSubagentThread,
+      readHomeThread,
+      fullHomeThread,
+    ].includes(id)
+  )
     return bot([privateMail]);
   if (id === ownServersBotThread) return bot([privateMail], true);
   if (id === ownServersOnlyBotThread) return bot([], true);
@@ -89,7 +101,7 @@ const activeScope = (id: ThreadId) =>
       botId: BotId.make("companion"),
       projectId: ProjectId.make("campaign"),
       homeThreadId: botThread,
-      taskId: id === botThread ? null : BotTaskId.make("bot-task:1"),
+      taskId: id === workThread || id === noChangesThread ? BotTaskId.make("bot-task:1") : null,
     },
   }) as const;
 
@@ -159,7 +171,9 @@ const usePolicy = <A, E>(
                 id === botThread ||
                 id === workThread ||
                 id === noChangesThread ||
-                id === ungrantedBotThread
+                id === ungrantedBotThread ||
+                id === readHomeThread ||
+                id === fullHomeThread
                   ? Effect.succeed(activeScope(id))
                   : id === archivedBotThread || id === archivedNoChangesThread
                     ? Effect.succeed({ _tag: "inactive", message: "archived" } as const)
@@ -172,11 +186,13 @@ const usePolicy = <A, E>(
               forThread: (id) =>
                 id === noChangesThread || id === archivedNoChangesThread
                   ? Effect.succeed("no-changes")
-                  : id === unreadableTaskThread
-                    ? Effect.fail(
-                        new BotStore.BotStoreError({ operation: "read-task", cause: "x" }),
-                      )
-                    : Effect.succeed("standard"),
+                  : id === readHomeThread
+                    ? Effect.succeed("home-read")
+                    : id === unreadableTaskThread
+                      ? Effect.fail(
+                          new BotStore.BotStoreError({ operation: "read-task", cause: "x" }),
+                        )
+                      : Effect.succeed("standard"),
             }),
           ),
         ),
@@ -365,6 +381,36 @@ it.effect("keeps a Codex Bot on Windows on Codex's own MCP setup unless it has g
     assert.isFalse(Object.hasOwn(policy, "mcpConnections"));
     assert.equal(policy.nativeMemory, "disabled");
   }),
+);
+
+it.effect(
+  "seals the Bot-level Home with read access, and gives full access the ordinary policy",
+  () =>
+    Effect.gen(function* () {
+      // In this suite the instance id "codex" runs the Claude driver.
+      for (const instanceId of ["codex_work", "codex"]) {
+        const read = yield* resolveFor(readHomeThread, { instanceId });
+        assert.equal(read.nativeTools, "readOnlyT3Bot", instanceId);
+        assert.equal(read.nativeMemory, "disabled");
+        assert.deepEqual(read.mcpConnections, [privateMail]);
+      }
+      for (const [options, reason] of [
+        [{ instanceId: "pi" }, "provider"],
+        [{ instanceId: "missing" }, "provider"],
+        [{ platform: "linux" }, "platform"],
+        [{ instanceId: "codex", platform: "linux" }, "platform"],
+      ] as const) {
+        const refused = yield* resolveFor(readHomeThread, options).pipe(Effect.flip);
+        assert.equal(refused._tag, "RuntimePolicyUnsupportedError");
+        assert.equal(refused._tag === "RuntimePolicyUnsupportedError" && refused.reason, reason);
+        assert.include(refused.message, "This Bot's Home has read access");
+      }
+      for (const instanceId of ["codex_work", "codex", "pi"]) {
+        const full = yield* resolveFor(fullHomeThread, { instanceId });
+        assert.isUndefined(full.nativeTools, instanceId);
+        assert.deepEqual(full.mcpConnections, [privateMail]);
+      }
+    }),
 );
 
 it.effect("seals a restricted run only in an active Bot Home on Codex or Claude and macOS", () =>

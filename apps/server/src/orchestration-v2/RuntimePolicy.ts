@@ -68,6 +68,12 @@ const restrictionUnsupportedText: Record<typeof NoChangesUnsupportedReason.Type,
   home: "it only runs in an active Bot's own conversation",
 };
 
+const botHomeReadUnsupportedText: Record<typeof NoChangesUnsupportedReason.Type, string> = {
+  provider: "only Codex and Claude can enforce",
+  platform: "is only verified on macOS",
+  home: "only applies to an active Bot conversation",
+};
+
 /** A run that may change nothing would reach a provider that cannot enforce it. Never retried. */
 export class RuntimePolicyUnsupportedError extends Schema.TaggedError<RuntimePolicyUnsupportedError>()(
   "RuntimePolicyUnsupportedError",
@@ -76,9 +82,13 @@ export class RuntimePolicyUnsupportedError extends Schema.TaggedError<RuntimePol
     providerInstanceId: ProviderInstanceId,
     reason: NoChangesUnsupportedReason,
     restriction: Schema.optional(OrchestrationV2RunRestriction),
+    /** Set for a Bot-level Home with read access. */
+    botHomeAccess: Schema.optional(Schema.Literal("read")),
   },
 ) {
   override get message(): string {
+    if (this.botHomeAccess === "read")
+      return `This Bot's Home has read access, which ${botHomeReadUnsupportedText[this.reason]}, so nothing ran. Switch the Home to full access in Settings → Bots, or use a Codex or Claude model on a macOS server.`;
     return this.restriction === undefined
       ? `This routine task is set to No changes, which ${noChangesUnsupportedText[this.reason]}, so nothing ran. To make changes, ask the Bot directly, or allow changes on the routine for its next run.`
       : `This Bot maintenance turn can't be restricted because ${restrictionUnsupportedText[this.reason]}, so nothing ran.`;

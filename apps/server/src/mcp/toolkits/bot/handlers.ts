@@ -376,7 +376,14 @@ export const layer = McpToolAccess.toLayer(BotToolkit, {
     McpToolAccess.either(
       (input) => input.action === "save_continuation",
       McpToolAccess.writesOwnHomeNote((input) => write(input)),
-      McpToolAccess.writesEnvironment((input) => write(input)),
+      McpToolAccess.either(
+        (input) =>
+          input.action === "start_task" ||
+          input.action === "cancel_task" ||
+          input.action === "learn",
+        McpToolAccess.writesBotTasks((input) => write(input)),
+        McpToolAccess.writesEnvironment((input) => write(input)),
+      ),
     ),
   ),
 });

@@ -5927,6 +5927,107 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       ),
   );
 
+  it.effect("loads the read Home like No changes, with only t3_bot callable without approval", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const scenario = "codex-read-home-seal";
+        const nativeThreadId = `native-${scenario}-thread`;
+        const homeNativeThreadId = `native-${scenario}-home`;
+        const homeThreadId = ThreadId.make(`thread-${scenario}-home`);
+        const seal = codexHomeSealReplay(scenario, nativeThreadId);
+        const { step, configRead, readOnlyLoad } = seal;
+        yield* (yield* McpProviderSessions.McpProviderSessions).set({
+          environmentId: EnvironmentId.make(`environment-${scenario}`),
+          threadId: homeThreadId,
+          providerSessionId: `provider-session-${scenario}`,
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          endpoint: "http://127.0.0.1:43123/mcp",
+          authorizationHeader: "Bearer home-token",
+          browserToolsAvailable: false,
+        });
+        const preamble = seal.onMeasuredVersion(
+          codexReplayPreamble({
+            nativeThreadId,
+            nativeTurnId: "unused-turn",
+            prompt: "unused-prompt",
+          }).slice(0, 5),
+        );
+        const ordinaryStart = preamble[4] as { frame: { result: { thread: object } } };
+        const homeStart = {
+          ...ordinaryStart.frame.result,
+          thread: { ...ordinaryStart.frame.result.thread, id: homeNativeThreadId },
+        };
+        const readConfig = (id: number) =>
+          step(id, "config/read", { includeLayers: false, cwd: "/workspace" }, configRead);
+        const transcript = makeCodexReplayTranscript({
+          scenario,
+          entries: [
+            ...preamble,
+            ...readConfig(3),
+            ...step(4, "thread/start", readOnlyLoad, homeStart),
+            ...readConfig(5),
+          ],
+        });
+        const loadParams: Array<unknown> = [];
+        const harness = yield* makeCodexReplayHarness(transcript, undefined, (method, params) =>
+          Effect.sync(() => {
+            if (method === "thread/start") loadParams.push(params);
+          }),
+        );
+        const homeThread = yield* harness.runtime.ensureThread({
+          threadId: homeThreadId,
+          modelSelection: CODEX_TEST_MODEL_SELECTION,
+          runtimePolicy: { ...seal.readOnlyPolicy, nativeTools: "readOnlyT3Bot" },
+        });
+        // An ordinary turn is refused in the words of the seal the thread is held in.
+        const turn = makeCodexTestTurnInput({
+          threadId: homeThreadId,
+          providerThread: homeThread,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make("read-home-seal-check"),
+          text: "edit the readme",
+        });
+        const refused = yield* harness.runtime
+          .startTurn({ ...turn, runtimePolicy: CODEX_TEST_RUNTIME_POLICY })
+          .pipe(Effect.flip);
+        assert.equal(refused._tag, "ProviderAdapterSealRefusedError");
+        assert.include(refused.message, "This Bot's Home has read access");
+
+        const t3Server = {
+          url: "http://127.0.0.1:43123/mcp",
+          tool_timeout_sec: 65 * 60,
+          http_headers: { Authorization: "Bearer home-token" },
+        };
+        assert.deepEqual(
+          (loadParams.at(-1) as { config: { mcp_servers: unknown } }).config.mcp_servers,
+          {
+            ...seal.disabledUserServers,
+            "t3-code": {
+              ...t3Server,
+              disabled_tools: ["t3_thread_wait", "delegate_task"],
+              tools: { t3_bot: { approval_mode: "approve" } },
+            },
+            "t3-code-direct": {
+              ...t3Server,
+              enabled_tools: ["t3_thread_wait", "delegate_task"],
+              omit_tools_from: ["code_mode", "deferred"],
+            },
+          },
+        );
+      }).pipe(
+        Effect.provideService(HostProcess.Platform, "darwin"),
+        Effect.provide(
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            NodeCrypto.layer,
+          ),
+        ),
+      ),
+    ),
+  );
+
   it.effect("releases and refuses a sealed load a user MCP server joined while it loaded", () =>
     Effect.scoped(
       Effect.gen(function* () {

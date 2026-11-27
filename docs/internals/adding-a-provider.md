@@ -107,7 +107,10 @@ produce catches them.
   [`BotProviderSupport`](../../apps/server/src/bots/BotProviderSupport.ts), and every thread of a
   Bot's lineage on another driver is refused at turn start. A driver joins that list once its
   adapter delivers these instructions, loads no MCP server but T3 Code's own for a Bot thread, and
-  refuses the sealed run modes and MCP grants it cannot enforce instead of ignoring them.
+  refuses the sealed run modes and MCP grants it cannot enforce instead of ignoring them. The
+  read-only modes keep T3 Code's MCP server, whose writes the server refuses itself; the Bot-level
+  Home's mode (`readOnlyT3Bot`) must also let `t3_bot` run without an approval prompt, because a
+  provider that refuses MCP writes in a read-only turn would stop the Home starting tasks.
 - **Paths and environment.** Test a symlinked workspace, such as macOS `/tmp`; an agent that
   compares canonical paths fails every turn there. Drop inherited credentials the instance did not
   configure. Report unknown sign-in as unknown rather than as signed in.

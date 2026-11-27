@@ -644,6 +644,35 @@ it.effect.each(["botNote", "botWaiting"] as const)(
     }),
 );
 
+it.effect("the Bot-level Home with read access starts tasks, learns and saves its note only", () =>
+  Effect.gen(function* () {
+    const readHome = (params: BotToolInput) =>
+      callTool(params, undefined, { botId, projectId: campaignA }, false, { changes: "botTasks" });
+    for (const [params, call] of [
+      [{ action: "start_task", botId, task: "Prepare." }, "start:null"],
+      [{ action: "cancel_task", botId, taskId: "bot-task:1" }, "cancel"],
+      [learnFromHome, "learn:project-campaign-a:correction:thread:bots"],
+      [saveNote, "save_continuation"],
+    ] as const) {
+      expect((yield* readHome(params as BotToolInput)).calls, params.action).toEqual([call]);
+    }
+    for (const params of [
+      { action: "update", botId, projectId: campaignA, guidance: "Changed." },
+      { action: "attach", botId, projectId: campaignA },
+      { action: "archive", botId },
+      { action: "open_home", botId },
+      { action: "remove_home", botId },
+    ] as const) {
+      const refused = yield* readHome(params as BotToolInput);
+      expect(refused.result, params.action).toMatchObject({
+        code: "capability_denied",
+        message: expect.stringContaining("read access"),
+      });
+      expect(refused.calls).toEqual([]);
+    }
+  }),
+);
+
 it.effect("a sealed load's call never gets ordinary authority once its Home is ordinary", () =>
   Effect.gen(function* () {
     // A native child of a restricted run keeps the sealed load's credential after the run ends.

@@ -27,7 +27,7 @@ export function botDriverSupport(driver: string | undefined) {
   return {
     mcpGrants: mcpIsolation,
     ownMcpServers: codex,
-    /** No changes ("readOnly"): routines and failure diagnosis. */
+    /** No changes ("readOnly"): routines and failure diagnosis; "readOnlyT3Bot": the read Home. */
     readOnlySeal: seals,
     /** The Home's scoped turns ("t3BotOnly"): the Home check and maintenance's note refresh. */
     homeSeal: seals,

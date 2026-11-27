@@ -1544,6 +1544,12 @@ describe("ClaudeAdapterV2 append-system-prompt-file launch argument", () => {
       "This Bot maintenance turn can't be restricted here because it is only verified on macOS",
     ],
     [
+      { nativeTools: "readOnlyT3Bot", mcpConnections: [] },
+      "linux",
+      "ProviderAdapterSealRefusedError",
+      "This Bot's Home has read access, which its provider can't enforce here because it is only verified on macOS",
+    ],
+    [
       { nativeTools: "t3BotOnly", mcpConnections: [] },
       "darwin",
       "ProviderAdapterSealRefusedError",
@@ -1711,6 +1717,63 @@ describe("ClaudeAdapterV2 append-system-prompt-file launch argument", () => {
   );
 
   it.effect(
+    "seals the read Home like No changes, with t3_bot callable and its writes left to T3",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const cwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-read-home-" });
+          const { exit, opened } = yield* startTurnWithLaunchArgs(
+            "--tools Bash,Write --allowedTools Bash,mcp__t3-code__* --permission-mode bypassPermissions",
+            cwd,
+            "disabled",
+            {
+              policy: { nativeTools: "readOnlyT3Bot", mcpConnections: [] },
+              applicationInstructions: "Distribute the work.",
+              claudeCodeVersion: "2.1.332",
+              mcpSession: true,
+            },
+          );
+          assert.isTrue(Exit.isSuccess(exit));
+          const options = opened[0] ?? assert.fail("Claude did not open");
+          assert.deepEqual(options.tools, [...ClaudeAdapterV2.CLAUDE_SEALED_TOOLS]);
+          assert.equal(options.permissionMode, "dontAsk");
+          assert.isUndefined(options.allowDangerouslySkipPermissions);
+          assert.deepEqual(options.allowedTools, [
+            ...ClaudeAdapterV2.CLAUDE_SEALED_TOOLS,
+            "mcp__t3-code__t3_bot",
+            ...ClaudeAdapterV2.CLAUDE_READ_ONLY_T3_MCP_ALLOWED_TOOLS,
+          ]);
+          // Not a Home seal: T3 Code's server offers its whole toolset and refuses the writes itself.
+          const t3Server = options.mcpServers?.["t3-code"] as { headers?: Record<string, string> };
+          assert.isUndefined(t3Server.headers?.["t3-sealed-load"]);
+          assert.isTrue(options.strictMcpConfig);
+          const canUseTool = options.canUseTool ?? assert.fail("no permission callback");
+          for (const tool of ["Bash", "Write", "mcp__t3-code__t3_thread_send"]) {
+            const decision = yield* Effect.promise(() =>
+              canUseTool(tool, {}, {
+                signal: new AbortController().signal,
+                toolUseID: `toolu-${tool}`,
+              } as never),
+            );
+            assert.equal(decision?.behavior, "deny", tool);
+            assert.include(decision?.behavior === "deny" && decision.message, "read access");
+          }
+        }).pipe(
+          Effect.provideService(HostProcess.Platform, "darwin"),
+          Effect.provide(
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              NodeCrypto.layer,
+            ),
+          ),
+        ),
+      ),
+  );
+
+  it.effect(
     "seals a Home turn to T3 Code's sealed tools alone, whatever launch flags or settings ask",
     () =>
       Effect.scoped(
@@ -1853,6 +1916,7 @@ describe("ClaudeAdapterV2 append-system-prompt-file launch argument", () => {
     ["readOnly", "absent"],
     ["t3BotOnly", "2.1.326"],
     ["t3BotOnly", "absent"],
+    ["readOnlyT3Bot", "2.1.331"],
   ] as const)(
     "closes a %s process on Claude Code %s before any prompt reaches it",
     ([nativeTools, claudeCodeVersion]) =>
