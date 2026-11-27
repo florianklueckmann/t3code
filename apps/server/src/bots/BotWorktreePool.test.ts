@@ -403,6 +403,56 @@ it.effect("starts from the remote's current default branch, not a stale origin/H
   ),
 );
 
+it.effect("saves work from a detached HEAD on a branch of its own", () =>
+  withRepository((world) =>
+    Effect.gen(function* () {
+      let parked: { readonly savedOn: string | null } | undefined;
+      const thread = ThreadId.make(`${BOT_WORK_THREAD_ID_PREFIX}detached`);
+      const sql = yield* BotDatabase.BotDatabase;
+      yield* sql`INSERT INTO bot_tasks (task_id, bot_id, project_id, home_thread_id, work_thread_id,
+          origin, title, prompt, runtime_mode, status, created_at, updated_at)
+        VALUES ('detached', 'bot', ${projectId}, 'home', ${thread}, 'direct', 'Task', 'Do it',
+          'full-access', 'accepted', ${NOW}, ${NOW})`;
+      const claim = yield* world.pool.take({
+        projectId,
+        workThreadId: thread,
+        branch: "bot/detached",
+        baseBranch: null,
+      });
+      assert.equal(claim._tag, "create");
+      const worktreePath = `${world.worktrees}/detached`;
+      yield* world.git(world.root, "worktree", "add", "-b", "bot/detached", worktreePath, "main");
+      yield* world.git(worktreePath, "switch", "-q", "--detach");
+      yield* world.write(`${worktreePath}/draft.txt`, "draft\n");
+      parked = yield* world.pool.park({
+        projectId,
+        workThreadId: thread,
+        worktreePath,
+        commitMessage: "WIP: Task",
+        wipBranch: "bot/detached-wip-1",
+      });
+      assert.equal(parked.savedOn, "bot/detached-wip-1");
+      assert.equal(
+        yield* world.git(world.root, "log", "-1", "--format=%s", "bot/detached-wip-1"),
+        "WIP: Task",
+      );
+    }),
+  ),
+);
+
+it.effect("starts from a local base branch even when a tag has its name", () =>
+  withRepository((world) =>
+    Effect.gen(function* () {
+      yield* world.git(world.root, "branch", "local-only", "main");
+      yield* world.git(world.root, "commit", "-q", "--allow-empty", "-m", "later");
+      yield* world.git(world.root, "tag", "local-only");
+      const { claim } = yield* world.runTask(1, { baseBranch: "local-only" });
+      assert.deepEqual(claim, { _tag: "create", baseRef: "refs/heads/local-only" });
+      assert.equal((yield* world.runTask(2, { baseBranch: "local-only" })).claim._tag, "pooled");
+    }),
+  ),
+);
+
 it.effect("keeps a new task waiting while the pool is full", () =>
   withRepository((world) =>
     Effect.gen(function* () {

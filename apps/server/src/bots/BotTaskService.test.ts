@@ -395,7 +395,7 @@ const makeThreadWorld = Effect.gen(function* () {
       park: (input) =>
         Ref.update(poolParks, (all) => [...all, input.worktreePath]).pipe(
           Effect.andThen(Ref.get(poolSavesWork)),
-          Effect.map((savedWork) => ({ savedWork })),
+          Effect.map((savedWork) => ({ savedWork, savedOn: null })),
         ),
       claimedPath: () => Effect.succeed(null),
       expire: Effect.void,

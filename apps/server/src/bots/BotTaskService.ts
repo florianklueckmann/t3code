@@ -1786,14 +1786,25 @@ const make = Effect.gen(function* () {
             workThreadId,
             worktreePath,
             commitMessage: `WIP: ${row.title}\n\nSaved by T3 Code when the Bot task's work stopped.`,
-            wipBranch: `${branch}-wip`,
+            wipBranch: `${branch}-wip-${DateTime.toEpochMillis(yield* DateTime.now)}`,
           })
           .pipe(Effect.mapError((cause) => botError(cause.message)(cause)));
         yield* sql`
           UPDATE bot_tasks SET worktree_state = 'released',
-            unfinished_work = MAX(unfinished_work, ${parked.savedWork ? 1 : 0})
+            unfinished_work = MAX(unfinished_work, ${parked.savedWork ? 1 : 0}),
+            branch = COALESCE(${parked.savedOn}, branch)
           WHERE task_id = ${row.task_id}
         `.pipe(Effect.mapError(storageError));
+        // Work saved from a detached HEAD is on its own branch; the card and a follow-up use it.
+        if (parked.savedOn !== null)
+          yield* threads
+            .dispatch({
+              type: "thread.metadata.update",
+              commandId: CommandId.make(`bot-task-wip-branch:${row.task_id}:${parked.savedOn}`),
+              threadId: workThreadId,
+              branch: parked.savedOn,
+            })
+            .pipe(Effect.mapError(botError("Failed to record the Bot task's WIP branch.")));
         return parked.savedWork;
       }),
     );

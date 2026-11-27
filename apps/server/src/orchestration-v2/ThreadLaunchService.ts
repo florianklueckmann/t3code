@@ -1,6 +1,7 @@
 import * as WorktreeSetupTracker from "../project/WorktreeSetupTracker.ts";
 import * as ProjectCloneTracker from "../project/ProjectCloneTracker.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
+import { ThreadWorktreeRestore } from "../workspace/restoreMissingWorktree.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
   CommandId,
@@ -20,6 +21,7 @@ import {
   type RuntimeMode,
   type ScheduledTaskId,
   ThreadId,
+  mayBeBotWorkThreadId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -265,6 +267,7 @@ const make = Effect.gen(function* () {
   const threads = yield* ThreadManagement.ThreadManagementService;
   const eventSink = yield* EventSink.EventSinkV2;
   const managedFolders = yield* ManagedProjectFolders.ManagedProjectFolders;
+  const worktreeRestore = yield* Effect.serviceOption(ThreadWorktreeRestore);
   // A project-folder launch that names no branch records the folder's checkout, as the composer does.
   const launchBranch = (strategy: ThreadLaunchWorkspaceStrategy, workspaceRoot: string) =>
     strategy.type === "root" && strategy.branch === undefined
@@ -1484,6 +1487,11 @@ const make = Effect.gen(function* () {
       messageIds: [run.userMessageId],
     });
     const message = messages.find((candidate) => candidate.id === run.userMessageId);
+    // A Bot task's pooled worktree went back to the pool when its setup failed; a retry takes
+    // one again and waits for setup, as the task's own launch did.
+    const botPooled =
+      workspacePreparation.type === "existing_worktree" && mayBeBotWorkThreadId(thread.id);
+    if (botPooled && Option.isSome(worktreeRestore)) yield* worktreeRestore.value.restore(thread);
     const reuse =
       workspacePreparation.type === "worktree" &&
       thread.worktreePath !== null &&
@@ -1503,6 +1511,7 @@ const make = Effect.gen(function* () {
         projectId: thread.projectId,
         workspaceStrategy: reuse?.strategy ?? workspacePreparation,
         ...(reuse === null ? {} : { reusedWorktree: reuse.reusedWorktree }),
+        ...(botPooled ? { setupScript: "await" as const } : {}),
         ...(message === undefined
           ? {}
           : {

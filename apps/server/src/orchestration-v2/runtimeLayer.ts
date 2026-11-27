@@ -319,6 +319,8 @@ const layerThreadLaunchProvided = ThreadLaunchService.layer.pipe(
       layerCommandReceiptStoreProvided,
       layerEventSink,
       IdAllocator.layer,
+      // Retrying a Bot task's failed setup takes a pooled worktree again.
+      layerThreadWorktreeRestore,
     ).pipe(Layer.provideMerge(layerProjectService)),
   ),
 );

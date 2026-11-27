@@ -100,7 +100,14 @@ export class BotWorktreePool extends Context.Service<
       readonly commitMessage: string;
       /** Branch for work saved from a detached HEAD. */
       readonly wipBranch: string;
-    }) => Effect.Effect<{ readonly savedWork: boolean }, BotWorktreePoolError>;
+    }) => Effect.Effect<
+      {
+        readonly savedWork: boolean;
+        /** `wipBranch` when the work was saved from a detached HEAD onto it. */
+        readonly savedOn: string | null;
+      },
+      BotWorktreePoolError
+    >;
     /**
      * Puts a released work thread's worktree back at its path on its branch, from the pool when one
      * is free. False for any other thread. Runs under the path's workspace lease, as turn start does.
@@ -246,7 +253,7 @@ const make = Effect.gen(function* () {
           .hasCommit({ cwd, refName: `refs/heads/${candidate}` })
           .pipe(Effect.orElseSucceed(() => false)))
       )
-        return candidate;
+        return `refs/heads/${candidate}`;
     }
     if (
       baseBranch === null &&
@@ -423,17 +430,20 @@ const make = Effect.gen(function* () {
     function* (input) {
       const root = yield* repositoryOf(input.projectId);
       const target = input.worktreePath;
-      if (root === null || !(yield* exists(target))) return { savedWork: false };
+      if (root === null || !(yield* exists(target))) return { savedWork: false, savedOn: null };
       const status = yield* run("status", target, [
         "status",
         "--porcelain",
         "--untracked-files=all",
       ]);
       let savedWork = false;
+      let savedOn: string | null = null;
       if (status.stdout.trim() !== "") {
         const onBranch = yield* read("current-branch", target, ["symbolic-ref", "-q", "HEAD"]);
-        if (onBranch.stdout.trim() === "")
+        if (onBranch.stdout.trim() === "") {
           yield* run("wip-branch", target, ["switch", "-c", input.wipBranch]);
+          savedOn = input.wipBranch;
+        }
         yield* run("stage", target, ["add", "-A"]);
         // Edits inside a submodule stage nothing here; they are kept by not removing the checkout.
         savedWork = (yield* read("staged", target, ["diff", "--cached", "--quiet"])).exitCode !== 0;
@@ -466,7 +476,7 @@ const make = Effect.gen(function* () {
         ])).stdout.trim() !== "";
       if (unsaved) {
         yield* forget;
-        return { savedWork };
+        return { savedWork, savedOn };
       }
       // Tracked files back to the commit, untracked ones gone, ignored ones kept for the next task.
       yield* run("reset", target, ["reset", "--hard", "--quiet"]);
@@ -485,7 +495,7 @@ const make = Effect.gen(function* () {
       if (!room) {
         yield* removeWorktree(root, target);
         yield* forget;
-        return { savedWork };
+        return { savedWork, savedOn };
       }
       const id =
         claimed[0]?.worktree_id ??
@@ -501,7 +511,7 @@ const make = Effect.gen(function* () {
         ));
       if (!moved) {
         yield* forget;
-        return { savedWork };
+        return { savedWork, savedOn };
       }
       yield* sql`
         INSERT INTO bot_worktrees (worktree_id, project_id, path, claimed_by, setup_signature, parked_at)
@@ -509,7 +519,7 @@ const make = Effect.gen(function* () {
         ON CONFLICT (worktree_id) DO UPDATE SET path = excluded.path, claimed_by = NULL,
           setup_signature = excluded.setup_signature, parked_at = excluded.parked_at
       `.pipe(Effect.mapError(storage));
-      return { savedWork };
+      return { savedWork, savedOn };
     },
   );
 
