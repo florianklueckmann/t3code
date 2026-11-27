@@ -64,6 +64,7 @@ import {
   ThreadId,
   isOrchestrationV2WorkActive,
   latestProviderTurnForAttempt,
+  isBotHomeProjectId,
   resolveProjectProviderInstanceEnabled,
   SECRET_REQUEST_UNSAVED_NOTE,
 } from "@t3tools/contracts";
@@ -2269,6 +2270,12 @@ const make = Effect.gen(function* () {
     scheduleTask: Effect.fn("OrchestratorMcpService.scheduleTask")(function* (scope, input) {
       const { parent, limits } = yield* loadCaller(scope, ["runs"]);
       const projectId = yield* resolveProjectTarget(parent, input.projectId);
+      if (isBotHomeProjectId(projectId)) {
+        return yield* failure(
+          "invalid_request",
+          "This project holds a Bot's own Home, which runs no scheduled tasks. Pass projectId of one of the Bot's attached projects.",
+        );
+      }
       yield* assertLiveCallerForOtherProject(scope, parent, projectId);
       const project = yield* requireProject(projectId);
       if (input.sessionAt !== undefined && input.botId === undefined) {

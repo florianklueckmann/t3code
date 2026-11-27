@@ -1,6 +1,8 @@
 import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
 import { expect, it } from "@effect/vitest";
 import {
+  BotId,
+  botHomeProjectId,
   EnvironmentId,
   GitCommandError,
   ProjectId,
@@ -1077,8 +1079,8 @@ const callProjectMutation = Effect.fn("test.callProjectMutation")(function* (
   name: "t3_project_update" | "t3_project_delete",
   updateFields: Record<string, unknown> = { title: "Renamed" },
   callerChanges: McpCallerChangesValue = "allowed",
+  projectId = ProjectId.make("project:target"),
 ) {
-  const projectId = ProjectId.make("project:target");
   const threadId = ThreadId.make("thread:caller");
   const reached = yield* Ref.make<ReadonlyArray<unknown>>([]);
   const reach = (method: string, input?: unknown) =>
@@ -1145,6 +1147,20 @@ it.effect.each(["t3_project_update", "t3_project_delete"] as const)(
         expect(reached).toEqual([name === "t3_project_update" ? "update" : "delete"]);
       }),
     ),
+);
+
+it.effect("t3_project_update refuses a Bot's hidden Home project before its service", () =>
+  callProjectMutation(
+    "t3_project_update",
+    undefined,
+    "allowed",
+    botHomeProjectId(BotId.make("bot")),
+  ).pipe(
+    Effect.map(({ result, reached }) => {
+      expect(reached).toEqual([]);
+      expect(result).toMatchObject({ message: expect.stringContaining("Bot's own Home") });
+    }),
+  ),
 );
 
 it.effect.each([

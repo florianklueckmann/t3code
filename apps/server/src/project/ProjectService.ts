@@ -1,5 +1,6 @@
 import {
   CommandId,
+  isBotHomeProjectId,
   type OrchestrationProjectShell,
   ProjectId,
   type Project,
@@ -673,7 +674,9 @@ export const make = Effect.gen(function* () {
 
   const listPage: ProjectService["Service"]["listPage"] = Effect.fn("ProjectService.listPage")(
     function* ({ cursor, limit }) {
-      const rows = (yield* listRows).filter((project) => project.deletedAt === null);
+      const rows = (yield* listRows).filter(
+        (project) => project.deletedAt === null && !isBotHomeProjectId(project.projectId),
+      );
       const projects = yield* Effect.forEach(
         rows.slice(cursor, cursor + limit),
         (row) =>

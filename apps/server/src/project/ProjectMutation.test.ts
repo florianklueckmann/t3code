@@ -1,5 +1,12 @@
 import { describe, expect, it } from "@effect/vitest";
-import { CommandId, type Project, ProjectId } from "@t3tools/contracts";
+import {
+  BotId,
+  botHomeProjectId,
+  CommandId,
+  type Project,
+  ProjectId,
+  type ProjectMutation,
+} from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -25,6 +32,32 @@ const deletedProject: Project = {
 };
 
 describe("mutateProjectWithClone", () => {
+  it.effect.each(["project.create", "project.update", "project.delete"] as const)(
+    "refuses %s on a Bot's hidden Home project before the service",
+    (type) =>
+      Effect.gen(function* () {
+        const hidden = botHomeProjectId(BotId.make("companion"));
+        const refused = yield* mutateProjectWithClone(
+          {
+            create: () => Effect.die("unused"),
+            update: () => Effect.die("unused"),
+            delete: () => Effect.die("unused"),
+          },
+          { discard: () => Effect.die("unused") },
+          {
+            type,
+            commandId: CommandId.make(`hidden-${type}`),
+            projectId: hidden,
+            title: "Mine",
+            workspaceRoot: "/bots/companion",
+            force: true,
+          } as ProjectMutation,
+        ).pipe(Effect.flip);
+
+        expect(refused).toMatchObject({ _tag: "ProjectInvalidError", projectId: hidden });
+      }),
+  );
+
   it.effect("keeps the clone when deletion is rejected", () =>
     Effect.gen(function* () {
       const rejected = new ProjectNotEmptyError({ projectId });

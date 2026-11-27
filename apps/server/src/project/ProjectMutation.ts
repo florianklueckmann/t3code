@@ -1,15 +1,25 @@
-import { type ProjectMutation } from "@t3tools/contracts";
+import { isBotHomeProjectId, type ProjectMutation } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
 import { type ProjectCloneTracker } from "./ProjectCloneTracker.ts";
-import { type ProjectService } from "./ProjectService.ts";
+import { ProjectInvalidError, type ProjectService } from "./ProjectService.ts";
 
 type ProjectMutations = Pick<ProjectService["Service"], "create" | "delete" | "update">;
+
+export const BOT_HOME_PROJECT_REFUSAL =
+  "This project holds a Bot's own Home and is managed by T3 Code, so it cannot be created, changed or deleted here.";
 
 export const projectMutationOperation = Effect.fn("projectMutationOperation")(function* (
   projects: ProjectMutations,
   mutation: ProjectMutation,
 ) {
+  // Only BotHomeFolders creates these, through ProjectService directly.
+  if (isBotHomeProjectId(mutation.projectId)) {
+    return yield* new ProjectInvalidError({
+      projectId: mutation.projectId,
+      detail: BOT_HOME_PROJECT_REFUSAL,
+    });
+  }
   switch (mutation.type) {
     case "project.create":
       return yield* projects.create({

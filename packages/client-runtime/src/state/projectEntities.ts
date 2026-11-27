@@ -1,10 +1,11 @@
-import type {
-  EnvironmentId,
-  OrchestrationProjectShell,
-  OrchestrationV2ShellSnapshot,
-  ProjectId,
-  ScopedProjectRef,
-  ServerConfig,
+import {
+  type EnvironmentId,
+  isBotHomeProjectId,
+  type OrchestrationProjectShell,
+  type OrchestrationV2ShellSnapshot,
+  type ProjectId,
+  type ScopedProjectRef,
+  type ServerConfig,
 } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
 
@@ -43,13 +44,13 @@ export function createEnvironmentProjectAtoms(input: {
     }).pipe(Atom.withLabel(`environment-project-index:${environmentId}`)),
   );
 
+  // A Bot's hidden project stays out of every list; `projectAtom` still resolves it.
   const environmentProjectRefsAtom = Atom.family((environmentId: EnvironmentId) => {
     let previous: ReadonlyArray<ScopedProjectRef> = [];
     return Atom.make((get) => {
-      const next = get(environmentProjectsAtom(environmentId)).map((project) => ({
-        environmentId,
-        projectId: project.id,
-      }));
+      const next = get(environmentProjectsAtom(environmentId)).flatMap((project) =>
+        isBotHomeProjectId(project.id) ? [] : [{ environmentId, projectId: project.id }],
+      );
       if (projectRefsEqual(previous, next)) {
         return previous;
       }

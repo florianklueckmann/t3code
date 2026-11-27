@@ -6,6 +6,7 @@ import {
   type BotDetail,
   BotError,
   BotId,
+  botHomeProjectId,
   BotTaskId,
   MAC_CALENDAR_CONNECTION_ID,
   McpConnectionId,
@@ -40,6 +41,7 @@ import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as BotAttention from "./BotAttention.ts";
+import * as BotHomeFolders from "./BotHomeFolders.ts";
 import * as BotProjectGuard from "./BotProjectGuard.ts";
 import * as BotService from "./BotService.ts";
 import * as BotDatabase from "./persistence/BotDatabase.ts";
@@ -64,6 +66,9 @@ const makeThreadWorld = Effect.gen(function* () {
   const threads = yield* Ref.make(new Map<ThreadId, FakeThread>());
   const commands = yield* Ref.make<ReadonlyArray<string>>([]);
   const failNext = yield* Ref.make<string | null>(null);
+  const launches = yield* Ref.make<ReadonlyArray<ThreadLaunchService.ThreadLaunchInput>>([]);
+  /** Stops the server right after the next launch created its thread. */
+  const crashAfterLaunch = yield* Ref.make(false);
 
   const setThread = (threadId: ThreadId, update: (thread: FakeThread) => FakeThread) =>
     Ref.update(threads, (current) => {
@@ -110,6 +115,7 @@ const makeThreadWorld = Effect.gen(function* () {
     Layer.mock(ThreadLaunchService.ThreadLaunchService)({
       launch: Effect.fn("FakeThreads.launch")(function* (input) {
         const threadId = input.threadId ?? ThreadId.make("unexpected");
+        yield* Ref.update(launches, (current) => [...current, input]);
         yield* Ref.update(commands, (current) => [...current, "thread.create"]);
         yield* Ref.update(threads, (current) =>
           current.has(threadId)
@@ -120,11 +126,14 @@ const makeThreadWorld = Effect.gen(function* () {
                 model: input.modelSelection.model,
               }),
         );
+        if (yield* Ref.getAndSet(crashAfterLaunch, false)) {
+          return yield* Effect.die("injected crash after the launch");
+        }
         return { threadId, resumed: false } as never;
       }),
     }),
   );
-  return { threads, commands, failNext, threadLayer };
+  return { threads, commands, failNext, launches, crashAfterLaunch, threadLayer };
 });
 
 const layerSupport = Layer.mergeAll(
@@ -148,6 +157,12 @@ const layerSupport = Layer.mergeAll(
   // Task selections are covered in BotTaskService.test.ts.
   Layer.mock(ProviderRegistry.ProviderRegistry)({}),
   BotProjectGuard.layer,
+  // The folder and its own repository are covered in BotHomeFolders.test.ts.
+  Layer.mock(BotHomeFolders.BotHomeFolders)({
+    root: "/bots",
+    ensureProject: (id) =>
+      Effect.succeed({ projectId: botHomeProjectId(id), workspaceRoot: `/bots/${id}` }),
+  }),
   Scheduler.layer,
   ServerSettings.layerTest(),
   // Routine pausing is covered with the real scheduled task service in BotTaskService.test.ts.
@@ -197,6 +212,7 @@ const withServices = <A, E>(
     readonly continuation: BotContinuation.BotContinuation["Service"];
     readonly settings: ServerSettings.ServerSettingsService["Service"];
     readonly attention: BotAttention.BotAttention["Service"];
+    readonly guard: BotProjectGuard.BotProjectGuard["Service"];
   }) => Effect.Effect<A, E>,
 ) =>
   Effect.gen(function* () {
@@ -205,7 +221,8 @@ const withServices = <A, E>(
     const continuation = yield* BotContinuation.BotContinuation;
     const settings = yield* ServerSettings.ServerSettingsService;
     const attention = yield* BotAttention.BotAttention;
-    return yield* body({ bots, turnContext, continuation, settings, attention });
+    const guard = yield* BotProjectGuard.BotProjectGuard;
+    return yield* body({ bots, turnContext, continuation, settings, attention, guard });
   }).pipe(
     Effect.provide(
       // The same layer the server shares, so the list hears this instance's alert decisions.
@@ -457,6 +474,151 @@ it.effect("finishes an interrupted archive when the request is repeated", () =>
 
         yield* bots.setArchived({ botId, archived: true });
         assert.isTrue((yield* Ref.get(world.threads)).get(home)?.archived);
+      }),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
+const homeProject = botHomeProjectId(botId);
+
+it.effect(
+  "opens, removes and reopens the Bot-level Home in its hidden project, apart from the attached projects",
+  () =>
+    Effect.gen(function* () {
+      yield* seedProjects;
+      const world = yield* makeThreadWorld;
+      yield* withServices(world.threadLayer, ({ bots, turnContext }) =>
+        Effect.gen(function* () {
+          yield* createCampaignBot(bots);
+          yield* bots.attachProject({ botId, projectId: campaignA });
+          const opened = yield* bots.openHome({ botId });
+          const home = opened.home ?? assert.fail("no Home");
+          assert.deepInclude(home, {
+            projectId: homeProject,
+            homeThreadId: ThreadId.make(`bot-home:${botId}:${homeProject}`),
+            detachedAt: null,
+            access: "read",
+          });
+          const launch = (yield* Ref.get(world.launches)).at(-1);
+          assert.equal(launch?.projectId, homeProject);
+          assert.deepStrictEqual(launch?.workspaceStrategy, { type: "root" });
+          assert.deepStrictEqual(
+            opened.projects.map((project) => project.projectId),
+            [campaignA],
+          );
+          assert.equal((yield* bots.resolveProject({ botId })).projectId, campaignA);
+          const [summary] = (yield* bots.list).bots;
+          assert.deepStrictEqual(
+            summary?.projects.map((project) => project.projectId),
+            [campaignA],
+          );
+          assert.equal(summary?.home?.homeThreadId, home.homeThreadId);
+          assert.include(
+            yield* instructionsFor(turnContext, home.homeThreadId),
+            "campaign companion",
+          );
+
+          const removed = yield* bots.removeHome({ botId });
+          assert.isNotNull(removed.home?.detachedAt);
+          assert.isTrue((yield* Ref.get(world.threads)).get(home.homeThreadId)?.archived);
+          assert.equal(yield* instructionsFor(turnContext, home.homeThreadId), "inactive");
+
+          const reopened = yield* bots.openHome({ botId, access: "full" });
+          assert.deepInclude(reopened.home, {
+            homeThreadId: home.homeThreadId,
+            detachedAt: null,
+            access: "full",
+          });
+          assert.isFalse((yield* Ref.get(world.threads)).get(home.homeThreadId)?.archived);
+        }),
+      );
+      const homeLaunches = (yield* Ref.get(world.launches)).filter(
+        (launch) => launch.projectId === homeProject,
+      );
+      assert.lengthOf(homeLaunches, 1);
+    }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect("adopts the Home thread a crash left before its row on the next open", () =>
+  Effect.gen(function* () {
+    yield* seedProjects;
+    const world = yield* makeThreadWorld;
+    yield* withServices(world.threadLayer, ({ bots }) =>
+      Effect.gen(function* () {
+        yield* createCampaignBot(bots);
+        yield* Ref.set(world.crashAfterLaunch, true);
+        yield* bots.openHome({ botId }).pipe(Effect.exit);
+        assert.isNull((yield* bots.get({ botId })).home);
+      }),
+    );
+    yield* withServices(world.threadLayer, ({ bots }) =>
+      Effect.gen(function* () {
+        const home = (yield* bots.openHome({ botId })).home ?? assert.fail("no Home");
+        const launches = yield* Ref.get(world.launches);
+        assert.lengthOf(launches, 2);
+        assert.equal(launches[0]?.commandId, launches[1]?.commandId);
+        assert.equal(launches[0]?.threadId, home.homeThreadId);
+        assert.lengthOf([...(yield* Ref.get(world.threads)).keys()], 1);
+      }),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect("keeps every Bot's project actions off a hidden project, and its delete guarded", () =>
+  Effect.gen(function* () {
+    yield* seedProjects;
+    const world = yield* makeThreadWorld;
+    yield* withServices(world.threadLayer, ({ bots, guard }) =>
+      Effect.gen(function* () {
+        yield* createCampaignBot(bots);
+        yield* bots.openHome({ botId });
+        const other = BotId.make("barovia-companion");
+        yield* createCampaignBot(bots, other);
+        for (const id of [botId, other]) {
+          const refused = yield* bots
+            .attachProject({ botId: id, projectId: homeProject })
+            .pipe(Effect.flip);
+          assert.include(refused.message, "holds a Bot's own Home");
+        }
+        const detach = yield* bots
+          .detachProject({ botId, projectId: homeProject })
+          .pipe(Effect.flip);
+        assert.include(detach.message, "Remove the Home instead");
+        const guidance = yield* bots
+          .updateProjectContext({ botId, projectId: homeProject, guidance: "Distribute." })
+          .pipe(Effect.flip);
+        assert.include(guidance.message, "not attached");
+        const task = yield* bots
+          .resolveProject({ botId, projectId: homeProject })
+          .pipe(Effect.flip);
+        assert.include(task.message, "never in its own Home's project");
+        assert.deepStrictEqual(yield* guard.attachedBotNames(homeProject), ["Faerun Companion"]);
+      }),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect("archive, restore and a model change reach the Bot-level Home", () =>
+  Effect.gen(function* () {
+    yield* seedProjects;
+    const world = yield* makeThreadWorld;
+    yield* withServices(world.threadLayer, ({ bots, turnContext }) =>
+      Effect.gen(function* () {
+        yield* createCampaignBot(bots);
+        const home = (yield* bots.openHome({ botId })).home?.homeThreadId ?? assert.fail();
+
+        yield* bots.update({ botId, modelSelection: { ...codex, model: "gpt-5.5" } });
+        assert.equal((yield* Ref.get(world.threads)).get(home)?.model, "gpt-5.5");
+
+        yield* bots.setArchived({ botId, archived: true });
+        assert.isTrue((yield* Ref.get(world.threads)).get(home)?.archived);
+        assert.equal(yield* instructionsFor(turnContext, home), "inactive");
+        const reopen = yield* bots.openHome({ botId }).pipe(Effect.flip);
+        assert.include(reopen.message, "archived");
+
+        yield* bots.setArchived({ botId, archived: false });
+        assert.isFalse((yield* Ref.get(world.threads)).get(home)?.archived);
+        assert.include(yield* instructionsFor(turnContext, home), "campaign companion");
       }),
     );
   }).pipe(Effect.provide(layerDatabase)),

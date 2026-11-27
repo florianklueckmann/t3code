@@ -1,6 +1,7 @@
 import {
   BotAppearance,
   BotDetail,
+  type BotHomeAccess,
   type BotId,
   type BotLearningPolicy,
   BotLearningSource,
@@ -22,6 +23,9 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as BotDatabase from "./persistence/BotDatabase.ts";
 
+/** The columns a Bot create or update writes. */
+export type BotProfileRow = Omit<BotRow, "home_access">;
+
 /** A pending archive or unarchive of a home thread, recorded before the thread command runs. */
 export type BotThreadSync = "archive" | "unarchive";
 
@@ -36,12 +40,18 @@ export interface BotRow {
   readonly created_at: string;
   readonly updated_at: string;
   readonly archived_at: string | null;
+  /** A `BotHomeAccess`; set only through `setHomeAccess`. */
+  readonly home_access: string;
 }
+
+/** project: a Home in an attached project. bot: the Bot-level Home in the Bot's hidden project. */
+export type BotContextKind = "project" | "bot";
 
 export interface BotContextRow {
   readonly home_thread_id: string;
   readonly bot_id: string;
   readonly project_id: string;
+  readonly kind: BotContextKind;
   readonly guidance: string;
   readonly sources_json: string;
   readonly revision: number;
@@ -118,7 +128,12 @@ export class BotStore extends Context.Service<
   {
     readonly listBots: Effect.Effect<ReadonlyArray<BotRow>, BotStoreError>;
     readonly getBot: (botId: string) => Effect.Effect<BotRow | undefined, BotStoreError>;
+    /** The Bot's project Homes, or every Bot's; never a Bot-level Home. */
     readonly listContexts: (
+      botId?: string,
+    ) => Effect.Effect<ReadonlyArray<BotContextRow>, BotStoreError>;
+    /** Bot-level Homes, one per Bot at most, attached or removed. */
+    readonly listHomes: (
       botId?: string,
     ) => Effect.Effect<ReadonlyArray<BotContextRow>, BotStoreError>;
     readonly getContext: (
@@ -128,8 +143,12 @@ export class BotStore extends Context.Service<
     readonly getContextByThread: (
       threadId: ThreadId,
     ) => Effect.Effect<BotContextRow | undefined, BotStoreError>;
-    readonly insertBot: (row: BotRow) => Effect.Effect<void, BotStoreError>;
-    readonly updateBot: (row: BotRow) => Effect.Effect<void, BotStoreError>;
+    readonly insertBot: (row: BotProfileRow) => Effect.Effect<void, BotStoreError>;
+    readonly updateBot: (row: BotProfileRow) => Effect.Effect<void, BotStoreError>;
+    readonly setHomeAccess: (
+      botId: BotId,
+      access: BotHomeAccess,
+    ) => Effect.Effect<void, BotStoreError>;
     readonly upsertContext: (row: BotContextRow) => Effect.Effect<void, BotStoreError>;
     /** Clears a sync only if no newer transition replaced it. */
     readonly clearThreadSync: (input: {
@@ -264,6 +283,7 @@ export const toDetail = Effect.fn("BotStore.toDetail")(function* (
   contexts: ReadonlyArray<BotContextRow>,
   learning: ReadonlyArray<BotLearningRow>,
   mcpGrants?: BotMcpGrants,
+  home?: BotContextRow,
 ) {
   const projects = yield* Effect.forEach(contexts, (context) =>
     decodeSources(context.sources_json).pipe(
@@ -290,6 +310,16 @@ export const toDetail = Effect.fn("BotStore.toDetail")(function* (
     updatedAt: bot.updated_at,
     archivedAt: bot.archived_at,
     projects,
+    home:
+      home === undefined
+        ? null
+        : {
+            projectId: home.project_id,
+            homeThreadId: home.home_thread_id,
+            attachedAt: home.attached_at,
+            detachedAt: home.detached_at,
+            access: bot.home_access,
+          },
     learning: yield* toLearningEntries(learning),
     pendingLearning: learning.filter((row) => row.status === "pending").length,
   });
@@ -305,7 +335,7 @@ export function botRow(input: {
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly archivedAt: string | null;
-}): BotRow {
+}): BotProfileRow {
   return {
     bot_id: input.botId,
     name: input.name,
@@ -337,14 +367,26 @@ export const layer = Layer.effect(
       function* (botId?: string) {
         return botId === undefined
           ? yield* sql<BotContextRow>`
-            SELECT * FROM bot_project_contexts ORDER BY attached_at, project_id
+            SELECT * FROM bot_project_contexts WHERE kind = 'project'
+            ORDER BY attached_at, project_id
           `
           : yield* sql<BotContextRow>`
             SELECT * FROM bot_project_contexts
-            WHERE bot_id = ${botId} ORDER BY attached_at, project_id
+            WHERE bot_id = ${botId} AND kind = 'project' ORDER BY attached_at, project_id
           `;
       },
       Effect.mapError(fail("list-contexts")),
+    );
+
+    const listHomes = Effect.fn("BotStore.listHomes")(
+      function* (botId?: string) {
+        return yield* sql<BotContextRow>`
+          SELECT * FROM bot_project_contexts
+          WHERE kind = 'bot' AND (${botId ?? null} IS NULL OR bot_id = ${botId ?? null})
+          ORDER BY bot_id
+        `;
+      },
+      Effect.mapError(fail("list-homes")),
     );
 
     const getContext = Effect.fn("BotStore.getContext")(
@@ -368,7 +410,7 @@ export const layer = Layer.effect(
     );
 
     const insertBot = Effect.fn("BotStore.insertBot")(
-      function* (row: BotRow) {
+      function* (row: BotProfileRow) {
         yield* sql`
         INSERT INTO bots (
           bot_id, name, instructions, model_selection_json, learning_policy, appearance_json,
@@ -384,7 +426,7 @@ export const layer = Layer.effect(
     );
 
     const updateBot = Effect.fn("BotStore.updateBot")(
-      function* (row: BotRow) {
+      function* (row: BotProfileRow) {
         yield* sql`
         UPDATE bots SET
           name = ${row.name},
@@ -404,10 +446,10 @@ export const layer = Layer.effect(
       function* (row: BotContextRow) {
         yield* sql`
         INSERT INTO bot_project_contexts (
-          home_thread_id, bot_id, project_id, guidance, sources_json, revision, thread_sync,
+          home_thread_id, bot_id, project_id, kind, guidance, sources_json, revision, thread_sync,
           attached_at, detached_at, updated_at
         ) VALUES (
-          ${row.home_thread_id}, ${row.bot_id}, ${row.project_id}, ${row.guidance},
+          ${row.home_thread_id}, ${row.bot_id}, ${row.project_id}, ${row.kind}, ${row.guidance},
           ${row.sources_json}, ${row.revision}, ${row.thread_sync}, ${row.attached_at},
           ${row.detached_at}, ${row.updated_at}
         )
@@ -422,6 +464,13 @@ export const layer = Layer.effect(
       `;
       },
       Effect.mapError(fail("upsert-context")),
+    );
+
+    const setHomeAccess = Effect.fn("BotStore.setHomeAccess")(
+      function* (botId: BotId, access: BotHomeAccess) {
+        yield* sql`UPDATE bots SET home_access = ${access} WHERE bot_id = ${botId}`;
+      },
+      Effect.mapError(fail("set-home-access")),
     );
 
     const clearThreadSync = Effect.fn("BotStore.clearThreadSync")(
@@ -712,10 +761,12 @@ export const layer = Layer.effect(
       ),
       getBot,
       listContexts,
+      listHomes,
       getContext,
       getContextByThread,
       insertBot,
       updateBot,
+      setHomeAccess,
       upsertContext,
       clearThreadSync,
       pendingThreadSyncs: sql<BotContextRow>`

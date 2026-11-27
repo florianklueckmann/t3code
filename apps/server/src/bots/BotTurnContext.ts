@@ -344,7 +344,10 @@ export const layer = Layer.effect(
       if (context.detached_at !== null) {
         return {
           _tag: "inactive",
-          message: `${bot.name} is detached from this project. Reattach it to continue this conversation.`,
+          message:
+            context.kind === "bot"
+              ? `${bot.name}'s Home was removed. Open it again to continue this conversation.`
+              : `${bot.name} is detached from this project. Reattach it to continue this conversation.`,
         } as const;
       }
       return { _tag: "active", bot, context, task } as const;

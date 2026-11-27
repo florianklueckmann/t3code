@@ -40,11 +40,13 @@ export const batchFor = (testCase: MaintenanceCase): Evidence.Batch => {
         created_at: AT,
         updated_at: AT,
         archived_at: null,
+        home_access: "read",
       },
       context: {
         home_thread_id: `bot-home:${WORLD.botId}:${WORLD.projectId}`,
         bot_id: WORLD.botId,
         project_id: WORLD.projectId,
+        kind: "project",
         guidance: WORLD.guidance,
         sources_json: "[]",
         revision: 1,

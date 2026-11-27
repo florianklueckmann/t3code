@@ -55,6 +55,7 @@ const seed = Effect.gen(function* () {
     home_thread_id: home,
     bot_id: "bot",
     project_id: "project",
+    kind: "project",
     guidance: "",
     sources_json: "[]",
     revision: 1,
@@ -651,7 +652,7 @@ it.effect(
           readonly migration_id: number;
           readonly name: string;
         }>`SELECT migration_id, name FROM effect_sql_migrations ORDER BY migration_id`;
-        assert.deepEqual(history.at(-1), { migration_id: 28, name: "BotLearningReinforced" });
+        assert.deepEqual(history.at(-1), { migration_id: 29, name: "BotHome" });
       }).pipe(Effect.provide(connection), Effect.scoped);
     }).pipe(Effect.provide(NodeServices.layer)),
 );

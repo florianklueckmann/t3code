@@ -126,6 +126,8 @@ const RPC_AGGREGATES = {
   [WS_METHODS.botsAttachProject]: "bots",
   [WS_METHODS.botsUpdateProjectContext]: "bots",
   [WS_METHODS.botsDetachProject]: "bots",
+  [WS_METHODS.botsOpenHome]: "bots",
+  [WS_METHODS.botsRemoveHome]: "bots",
   [WS_METHODS.botsSubscribeTasks]: "bots",
   [WS_METHODS.botsGetTaskResult]: "bots",
   [WS_METHODS.botsStartTask]: "bots",

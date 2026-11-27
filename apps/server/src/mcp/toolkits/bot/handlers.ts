@@ -293,6 +293,11 @@ const write = Effect.fn("mcp.bot.write")(function* (input: BotToolInput) {
     const archived = bots.setArchived({ botId, archived: input.action === "archive" });
     return { bot: yield* archived.pipe(Effect.mapError(botFailure)) };
   }
+  if (input.action === "open_home" || input.action === "remove_home") {
+    const changed =
+      input.action === "open_home" ? bots.openHome({ botId }) : bots.removeHome({ botId });
+    return { bot: yield* changed.pipe(Effect.mapError(botFailure)) };
+  }
   const projectId = yield* requireProjectId(input);
   const changed =
     input.action === "update"

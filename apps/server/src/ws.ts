@@ -128,6 +128,7 @@ import * as DocumentText from "./provider/DocumentText.ts";
 import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
 import * as BotAttention from "./bots/BotAttention.ts";
 import * as BotHomeCheck from "./bots/BotHomeCheck.ts";
+import * as BotHomeFolders from "./bots/BotHomeFolders.ts";
 import * as BotFailureDiagnosis from "./bots/BotFailureDiagnosis.ts";
 import * as BotMaintenance from "./bots/BotMaintenance.ts";
 import * as BotService from "./bots/BotService.ts";
@@ -1452,6 +1453,7 @@ export const layerWsRpc = (
       const projectStore = yield* ProjectStore.ProjectStoreV2;
       const projectService = yield* ProjectService.ProjectService;
       const managedFolders = yield* ManagedProjectFolders.ManagedProjectFolders;
+      const botHomeFolders = yield* BotHomeFolders.BotHomeFolders;
       const scratchThreadPromotion = yield* ScratchThreadPromotion.ScratchThreadPromotion;
       const eventLoopMonitor = yield* EventLoopMonitor.EventLoopMonitor;
       const threadSearch = yield* ThreadSearch.ThreadSearch;
@@ -1918,6 +1920,7 @@ export const layerWsRpc = (
             onNone: () => ({}),
             onSome: (root) => ({ scratchWorkspaceRoot: root }),
           }),
+          botHomesRoot: botHomeFolders.root,
           newProjectsRoot: managedFolders.namedProjectsRoot,
           ...(lastEventLoopStall === undefined ? {} : { lastEventLoopStall }),
           serverTime: DateTime.formatIso(yield* DateTime.now),
@@ -2353,6 +2356,8 @@ export const layerWsRpc = (
         [WS_METHODS.botsAttachProject]: (input) => bots.attachProject(input),
         [WS_METHODS.botsUpdateProjectContext]: (input) => bots.updateProjectContext(input),
         [WS_METHODS.botsDetachProject]: (input) => bots.detachProject(input),
+        [WS_METHODS.botsOpenHome]: (input) => bots.openHome(input),
+        [WS_METHODS.botsRemoveHome]: (input) => bots.removeHome(input),
         [WS_METHODS.botsSubscribeTasks]: (input) => botTasks.subscribeList(input),
         [WS_METHODS.botsGetTaskResult]: (input) => botTasks.getResult(input),
         [WS_METHODS.botsStartTask]: (input) => botTasks.start(input),

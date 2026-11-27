@@ -209,6 +209,8 @@ describe("command permissions", () => {
     WS_METHODS.scheduledTasksDelete,
     ORCHESTRATION_V2_WS_METHODS.stopWorkflow,
     WS_METHODS.botsSaveContinuation,
+    WS_METHODS.botsOpenHome,
+    WS_METHODS.botsRemoveHome,
     WS_METHODS.botsConfigureMaintenance,
     WS_METHODS.botsRunMaintenance,
     WS_METHODS.botsConfigureHomeCheck,

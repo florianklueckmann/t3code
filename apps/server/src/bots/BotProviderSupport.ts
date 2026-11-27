@@ -49,5 +49,6 @@ export function botCapabilities(driver: string | undefined): BotCapabilities {
     maintenance: reason(support.homeSeal && support.sealedGeneration),
     homeCheck: reason(support.homeSeal),
     failureDiagnosis: reason(support.readOnlySeal),
+    home: reason(support.readOnlySeal),
   };
 }

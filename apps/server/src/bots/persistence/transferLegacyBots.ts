@@ -128,11 +128,14 @@ export const transferLegacyBots = Effect.fn("BotDatabase.transferLegacyBots")(fu
             const expected = targetColumns.filter(
               (row) =>
                 !(table === "bots" && head < 79 && row.name === "appearance_json") &&
-                // Legacy Bots had no MCP grants.
+                // Legacy Bots had no MCP grants and no Home of their own.
                 !(
                   table === "bots" &&
-                  (row.name === "mcp_grant_revision" || row.name === "mcp_own_codex_servers")
+                  (row.name === "mcp_grant_revision" ||
+                    row.name === "mcp_own_codex_servers" ||
+                    row.name === "home_access")
                 ) &&
+                !(table === "bot_project_contexts" && row.name === "kind") &&
                 !(table === "bot_tasks" && head < 83 && row.name === "allow_changes") &&
                 !(
                   table === "bot_tasks" &&
@@ -188,7 +191,9 @@ export const transferLegacyBots = Effect.fn("BotDatabase.transferLegacyBots")(fu
               if (table === "bots") {
                 row.mcp_grant_revision = 0;
                 row.mcp_own_codex_servers = 0;
+                row.home_access = "read";
               }
+              if (table === "bot_project_contexts") row.kind = "project";
               if (table === "bot_tasks" && head < 83) row.allow_changes = 0;
               if (table === "bot_tasks") {
                 row.return_home_run_id = null;
