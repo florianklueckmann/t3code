@@ -148,6 +148,8 @@ import {
 } from "./delegatedTaskModes.ts";
 import {
   assertManagesScheduledTask,
+  scheduledTaskAccess,
+  scheduledTaskFailure,
   assertTargetWithinLimits,
   isLiveCallerShell,
   threadNotFound,
@@ -2400,12 +2402,9 @@ const make = Effect.gen(function* () {
         .upsert(
           upsertInput,
           parent === undefined ? undefined : { createdByThreadId: parent.thread.id },
+          scheduledTaskAccess(scheduledTaskOwners, scope.thread?.threadId),
         )
-        .pipe(
-          Effect.mapError((error) =>
-            failure("orchestration_error", `Could not schedule task: ${error.message}`),
-          ),
-        );
+        .pipe(Effect.mapError((error) => scheduledTaskFailure(error, "Could not schedule task: ")));
       return yield* summarizeScheduledTask(scope, { parent, limits }, task);
     }),
     listScheduledTasks: Effect.fn("OrchestratorMcpService.listScheduledTasks")(
@@ -2496,6 +2495,7 @@ const make = Effect.gen(function* () {
             : yield* scheduledTaskWorkspaceStrategy(threadId !== null, existing.projectId);
         const upsertInput: ScheduledTaskUpsertInput = {
           id: existing.id,
+          requireExisting: true,
           title: input.title ?? existing.title,
           prompt: input.prompt ?? existing.prompt,
           enabled: input.enabled ?? existing.enabled,
@@ -2533,10 +2533,14 @@ const make = Effect.gen(function* () {
               }),
         };
         const { task } = yield* scheduledTasks
-          .upsert(upsertInput)
+          .upsert(
+            upsertInput,
+            undefined,
+            scheduledTaskAccess(scheduledTaskOwners, scope.thread?.threadId),
+          )
           .pipe(
             Effect.mapError((error) =>
-              failure("orchestration_error", `Could not update scheduled task: ${error.message}`),
+              scheduledTaskFailure(error, "Could not update scheduled task: "),
             ),
           );
         return scheduledTaskSummary(task, false);
@@ -2552,10 +2556,13 @@ const make = Effect.gen(function* () {
         });
         yield* assertLiveCallerForOtherProject(scope, parent, existing.projectId);
         yield* scheduledTasks
-          .delete({ id: existing.id })
+          .delete(
+            { id: existing.id },
+            scheduledTaskAccess(scheduledTaskOwners, scope.thread?.threadId),
+          )
           .pipe(
             Effect.mapError((error) =>
-              failure("orchestration_error", `Could not delete scheduled task: ${error.message}`),
+              scheduledTaskFailure(error, "Could not delete scheduled task: "),
             ),
           );
         return { scheduledTaskId: existing.id, deleted: true };

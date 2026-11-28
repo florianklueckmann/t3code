@@ -11,11 +11,13 @@ import {
   type ProviderInteractionMode,
   type RuntimeMode,
   type ScheduledTaskId,
+  ScheduledTaskError,
   ThreadId,
   type OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 
 import type * as BotService from "../bots/BotService.ts";
 import type { OrchestratorV2Error } from "../orchestration-v2/Orchestrator.ts";
@@ -275,8 +277,12 @@ interface ScheduledTaskOwners {
 const creatorOwnerOf = Effect.fn("mcp.creatorOwnerOf")(function* (
   services: ScheduledTaskOwners,
   id: ScheduledTaskId,
+  createdByThreadId?: ThreadId | null,
 ) {
-  const creator = yield* services.scheduledTasks.creatorOf(id).pipe(Effect.mapError(unavailable));
+  const creator =
+    createdByThreadId === undefined
+      ? yield* services.scheduledTasks.creatorOf(id).pipe(Effect.mapError(unavailable))
+      : createdByThreadId;
   if (creator === null) return undefined;
   // A creator whose line cannot be placed belongs to no Bot.
   return yield* ownerOfThread(services.bots, creator).pipe(Effect.orElseSucceed(() => undefined));
@@ -289,7 +295,11 @@ const creatorOwnerOf = Effect.fn("mcp.creatorOwnerOf")(function* (
 export const assertManagesScheduledTask = Effect.fn("mcp.assertManagesScheduledTask")(function* (
   services: ScheduledTaskOwners,
   callerThreadId: ThreadId | undefined,
-  task: { readonly botId: BotId | undefined; readonly id?: ScheduledTaskId | undefined },
+  task: {
+    readonly botId: BotId | undefined;
+    readonly id?: ScheduledTaskId | undefined;
+    readonly createdByThreadId?: ThreadId | null;
+  },
 ) {
   if (callerThreadId === undefined) return;
   const owner = yield* ownerOfThread(services.bots, callerThreadId);
@@ -297,7 +307,8 @@ export const assertManagesScheduledTask = Effect.fn("mcp.assertManagesScheduledT
   const owned =
     task.botId !== undefined
       ? task.botId === owner
-      : task.id === undefined || (yield* creatorOwnerOf(services, task.id)) === owner;
+      : task.id === undefined ||
+        (yield* creatorOwnerOf(services, task.id, task.createdByThreadId)) === owner;
   if (owned) return;
   return yield* new OrchestratorMcpFailure({
     code: "capability_denied",
@@ -305,6 +316,23 @@ export const assertManagesScheduledTask = Effect.fn("mcp.assertManagesScheduledT
       "A Bot conversation can only manage its own Bot's routines and the schedules its Bot set up. Message the other Bot's Home to ask it for help.",
   });
 });
+
+export const scheduledTaskAccess =
+  (
+    services: ScheduledTaskOwners,
+    threadId: ThreadId | undefined,
+  ): ScheduledTaskService.ScheduledTaskAccess =>
+  (task) =>
+    assertManagesScheduledTask(services, threadId, task).pipe(
+      Effect.mapError((cause) => new ScheduledTaskError({ message: cause.message, cause })),
+    );
+
+const isMcpFailure = Schema.is(OrchestratorMcpFailure);
+
+export const scheduledTaskFailure = (error: ScheduledTaskError, prefix = "") =>
+  isMcpFailure(error.cause)
+    ? error.cause
+    : new OrchestratorMcpFailure({ code: "orchestration_error", message: prefix + error.message });
 
 export const SCHEDULED_TASKS_STAY_LOCAL =
   "A Bot can only manage scheduled tasks in its own environment.";

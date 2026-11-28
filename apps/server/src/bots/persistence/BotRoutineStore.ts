@@ -11,7 +11,7 @@ import type { SqlError } from "effect/sql/SqlError";
 
 import * as BotDatabase from "./BotDatabase.ts";
 
-interface Routine {
+export interface Routine {
   readonly task_id: string;
   readonly created_by_thread_id: string | null;
   readonly bot_id: string | null;
@@ -43,7 +43,11 @@ export class BotRoutineStore extends Context.Service<
     readonly get: (
       id: string,
     ) => Effect.Effect<Routine | undefined, SqlError | Migrator.MigrationError>;
-    readonly mutate: <A extends object>(
+    readonly withCurrent: <A, E>(
+      id: string,
+      use: (current: Routine | undefined) => Effect.Effect<A, E>,
+    ) => Effect.Effect<A, E | SqlError | Migrator.MigrationError>;
+    readonly mutate: <A extends object, E = never>(
       statement: Statement.Statement<A>,
       input: {
         readonly taskId: string;
@@ -59,7 +63,8 @@ export class BotRoutineStore extends Context.Service<
         readonly bump: boolean;
         readonly removing?: boolean;
       },
-    ) => Effect.Effect<ReadonlyArray<A>, SqlError | Migrator.MigrationError>;
+      check?: (current: Routine | undefined) => Effect.Effect<unknown, E>,
+    ) => Effect.Effect<ReadonlyArray<A>, E | SqlError | Migrator.MigrationError>;
   }
 >()("t3/bots/persistence/BotRoutineStore") {}
 
@@ -155,14 +160,16 @@ export const layer = Layer.effect(
         }),
       ),
     );
-    const mutate: BotRoutineStore["Service"]["mutate"] = <A extends object>(
+    const withCurrent: BotRoutineStore["Service"]["withCurrent"] = (id, use) =>
+      lock.withPermit(recover().pipe(Effect.andThen(read(id)), Effect.flatMap(use)));
+    const mutate: BotRoutineStore["Service"]["mutate"] = <A extends object, E = never>(
       statement: Statement.Statement<A>,
       input: Parameters<BotRoutineStore["Service"]["mutate"]>[1],
+      check?: (current: Routine | undefined) => Effect.Effect<unknown, E>,
     ) =>
-      lock.withPermit(
+      withCurrent(input.taskId, (current) =>
         Effect.gen(function* () {
-          yield* recover();
-          const current = yield* read(input.taskId);
+          if (check) yield* check(current);
           if (!current && !input.target && input.createdByThreadId === undefined) {
             if (!input.removing) return yield* statement;
             return yield* sql.withTransaction(
@@ -210,6 +217,6 @@ export const layer = Layer.effect(
       // Waits for the change in flight, or finishes one an earlier run left behind.
       return yield* lock.withPermit(recover().pipe(Effect.andThen(read(id))));
     });
-    return BotRoutineStore.of({ get, mutate });
+    return BotRoutineStore.of({ get, mutate, withCurrent });
   }),
 );

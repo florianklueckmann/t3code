@@ -70,9 +70,12 @@ import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import { buildUnavailableProviderSnapshot } from "../provider/unavailableProviderSnapshot.ts";
+import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
+import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import { BotRoutineTarget } from "../scheduledTasks/BotRoutineTarget.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
+import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
@@ -4030,6 +4033,7 @@ describe("OrchestratorMcpService provider resolution", () => {
         mcp: OrchestratorMcpService.OrchestratorMcpService["Service"],
         scope: McpInvocationScope,
       ) => Effect.Effect<unknown, OrchestratorMcpFailure>,
+      scheduler?: ScheduledTaskService.ScheduledTaskService["Service"],
     ) =>
       Effect.gen(function* () {
         const writes = yield* Ref.make(0);
@@ -4076,17 +4080,20 @@ describe("OrchestratorMcpService provider resolution", () => {
                         threadId === botWork || threadId === botHome ? ownBot : undefined,
                       ),
                   }),
-                  Layer.mock(ScheduledTaskService.ScheduledTaskService)({
-                    list: () => Effect.succeed({ tasks: Object.values(ownership) }),
-                    creatorOf: (id) => Effect.succeed(id === ownership.botMade.id ? botHome : null),
-                    upsert: (input) =>
-                      write.pipe(
-                        Effect.as({
-                          task: { ...existing, id: input.id ?? existing.id, bot: input.bot },
-                        }),
-                      ),
-                    delete: (input) => write.pipe(Effect.as({ id: input.id })),
-                  }),
+                  scheduler === undefined
+                    ? Layer.mock(ScheduledTaskService.ScheduledTaskService)({
+                        list: () => Effect.succeed({ tasks: Object.values(ownership) }),
+                        creatorOf: (id) =>
+                          Effect.succeed(id === ownership.botMade.id ? botHome : null),
+                        upsert: (input) =>
+                          write.pipe(
+                            Effect.as({
+                              task: { ...existing, id: input.id ?? existing.id, bot: input.bot },
+                            }),
+                          ),
+                        delete: (input) => write.pipe(Effect.as({ id: input.id })),
+                      })
+                    : Layer.succeed(ScheduledTaskService.ScheduledTaskService, scheduler),
                 ),
               ),
             ),
@@ -4116,6 +4123,117 @@ describe("OrchestratorMcpService provider resolution", () => {
       ...(botId === undefined ? {} : { botId }),
     });
     const update = (task: ScheduledTask) => ({ scheduledTaskId: task.id, title: "Renamed" });
+
+    it.effect.each([["create replay"], ["update"], ["delete"], ["update after deletion"]] as const)(
+      "protects a client routine change from a Bot's %s",
+      ([operation]) =>
+        Effect.gen(function* () {
+          const scheduler = yield* ScheduledTaskService.ScheduledTaskService;
+          const input = {
+            ...createRoutine(ownBot),
+            clientRequestId: "routine-owner-change",
+            title: "Original",
+          };
+          const created = yield* Ref.make<ScheduledTaskId | undefined>(undefined);
+          yield* ownershipCall(
+            botWork,
+            (mcp, scope) =>
+              mcp
+                .scheduleTask(scope, input)
+                .pipe(Effect.tap(({ scheduledTaskId }) => Ref.set(created, scheduledTaskId))),
+            scheduler,
+          );
+          const id = yield* Ref.get(created);
+          if (id === undefined) return yield* Effect.die("Could not create the original routine.");
+          const newOwner = ownership.other.bot.botId;
+          const reassign = scheduler.upsert({
+            id,
+            requireExisting: true,
+            title: "Client edit",
+            prompt: "Summarize today's work.",
+            enabled: true,
+            schedule: input.schedule,
+            projectId,
+            workspaceStrategy: { type: "root" },
+            modelSelection: existing.modelSelection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            bot: { botId: newOwner },
+          });
+          if (operation === "create replay") yield* reassign;
+          const result = yield* ownershipCall(
+            botWork,
+            (mcp, scope) => {
+              switch (operation) {
+                case "create replay":
+                  return mcp.scheduleTask(scope, input);
+                case "update":
+                case "update after deletion":
+                  return mcp.updateScheduledTask(scope, {
+                    scheduledTaskId: id,
+                    title: "Agent edit",
+                  });
+                case "delete":
+                  return mcp.deleteScheduledTask(scope, { scheduledTaskId: id });
+              }
+            },
+            operation === "create replay"
+              ? scheduler
+              : {
+                  ...scheduler,
+                  list: () =>
+                    scheduler
+                      .list()
+                      .pipe(
+                        Effect.tap(() =>
+                          operation === "update after deletion"
+                            ? scheduler.delete({ id }).pipe(Effect.asVoid)
+                            : reassign.pipe(Effect.asVoid),
+                        ),
+                      ),
+                },
+          );
+          const { tasks } = yield* scheduler.list();
+          if (operation === "update after deletion") {
+            assert.deepEqual(
+              tasks.map((task) => task.title),
+              [],
+            );
+            return;
+          }
+          assert.deepEqual(
+            { result: result.result, tasks: tasks.map((task) => [task.title, task.bot?.botId]) },
+            { result: "capability_denied", tasks: [["Client edit", newOwner]] },
+          );
+        }).pipe(
+          Effect.provide(
+            ScheduledTaskService.layer.pipe(
+              Layer.provide(
+                Layer.mergeAll(
+                  SqlitePersistence.layerMemory,
+                  NodeCrypto.layer,
+                  Scheduler.layer,
+                  ManagedPolicy.layerTest(),
+                  Layer.mock(ThreadLaunchService.ThreadLaunchService)({
+                    isNonGitProject: () => Effect.succeed(false),
+                  }),
+                  Layer.mock(ThreadManagementService.ThreadManagementService)({}),
+                  Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+                    namedProjectsRoot: "/projects",
+                    isScratchProject: () => Effect.succeed(false),
+                  }),
+                  Layer.mock(SecretRequests.SecretRequests)({}),
+                  Layer.succeed(BotRoutineTarget, {
+                    requireRunnable: () =>
+                      Effect.succeed({ modelSelection: existing.modelSelection }),
+                    admit: () => Effect.die("unused"),
+                  }),
+                ),
+              ),
+            ),
+          ),
+        ),
+    );
 
     const outcome = (expected: "done" | "denied") =>
       expected === "done"

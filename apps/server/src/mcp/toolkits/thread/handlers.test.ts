@@ -1,7 +1,9 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { expect, it } from "@effect/vitest";
 import {
+  BotError,
   BotId,
+  CommandId,
   EnvironmentId,
   ProjectId,
   ProviderInstanceId,
@@ -17,9 +19,16 @@ import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 
 import * as BotService from "../../../bots/BotService.ts";
+import * as ThreadLaunch from "../../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as ThreadSearch from "../../../orchestration-v2/ThreadSearch.ts";
+import * as Sqlite from "../../../persistence/Sqlite.ts";
+import * as ManagedPolicy from "../../../policy/ManagedPolicy.ts";
+import * as ManagedProjectFolders from "../../../project/ManagedProjectFolders.ts";
+import { BotRoutineTarget } from "../../../scheduledTasks/BotRoutineTarget.ts";
 import * as ScheduledTasks from "../../../scheduledTasks/ScheduledTaskService.ts";
+import * as Scheduler from "../../../scheduling/Scheduler.ts";
+import * as SecretRequests from "../../../secrets/SecretRequests.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import {
@@ -35,10 +44,13 @@ const mailHome = ThreadId.make("thread:mail-home");
 const workHome = ThreadId.make("thread:work-home");
 const plainThread = ThreadId.make("thread:plain");
 const mailWork = ThreadId.make("thread:mail-work");
+const refusedThread = ThreadId.make("thread:refused");
+const removedCreator = ThreadId.make("thread:removed-creator");
 const mailRoutine = ScheduledTaskId.make("routine:mail");
 const workRoutine = ScheduledTaskId.make("routine:work");
 const plainSchedule = ScheduledTaskId.make("schedule:plain");
 const mailMadeSchedule = ScheduledTaskId.make("schedule:mail-made");
+const removedCreatorSchedule = ScheduledTaskId.make("schedule:removed-creator");
 const mailBot = BotId.make("mail");
 const ownerOf = new Map([
   [mailHome, mailBot],
@@ -50,8 +62,14 @@ const scheduledTasks = [
   { id: workRoutine, bot: { botId: BotId.make("work") } },
   { id: plainSchedule },
   { id: mailMadeSchedule },
+  { id: removedCreatorSchedule },
 ];
-const call = (name: string, params: unknown, callerThread = caller) =>
+const call = (
+  name: string,
+  params: unknown,
+  callerThread: ThreadId | null = caller,
+  scheduler?: ScheduledTasks.ScheduledTaskService["Service"],
+) =>
   Effect.gen(function* () {
     const reached = yield* Ref.make<ReadonlyArray<string>>([]);
     // Recorded, then refused, so no result needs encoding; only reaching the service counts.
@@ -73,12 +91,22 @@ const call = (name: string, params: unknown, callerThread = caller) =>
               Layer.succeed(McpInvocationContext.McpInvocationContext, {
                 environmentId: EnvironmentId.make("environment:here"),
                 requestNamespace: "provider:caller",
-                thread: {
-                  threadId: callerThread,
-                  providerSessionId: "provider:caller",
-                  providerInstanceId: ProviderInstanceId.make("codex"),
-                },
-                client: undefined,
+                thread:
+                  callerThread === null
+                    ? undefined
+                    : {
+                        threadId: callerThread,
+                        providerSessionId: "provider:caller",
+                        providerInstanceId: ProviderInstanceId.make("codex"),
+                      },
+                client:
+                  callerThread === null
+                    ? {
+                        sessionId: "approved-test-client",
+                        label: "Test client",
+                        access: "full-access",
+                      }
+                    : undefined,
                 capabilities: new Set(["orchestration" as const]),
                 issuedAt: 0,
               }),
@@ -97,13 +125,44 @@ const call = (name: string, params: unknown, callerThread = caller) =>
                     }),
                   ),
               }),
-              Layer.mock(ScheduledTasks.ScheduledTaskService)({
-                list: () => Effect.succeed({ tasks: scheduledTasks } as never),
-                creatorOf: (id) => Effect.succeed(id === mailMadeSchedule ? mailHome : null),
-                runNow: () => reach("runNow", new ScheduledTaskError({ message: "runNow" })),
-              }),
+              scheduler === undefined
+                ? Layer.mock(ScheduledTasks.ScheduledTaskService)({
+                    list: () => Effect.succeed({ tasks: scheduledTasks } as never),
+                    creatorOf: (id) =>
+                      Effect.succeed(
+                        id === mailMadeSchedule
+                          ? mailHome
+                          : id === removedCreatorSchedule
+                            ? removedCreator
+                            : null,
+                      ),
+                    runNow: ({ id }, options) =>
+                      Effect.gen(function* () {
+                        const task = scheduledTasks.find((entry) => entry.id === id);
+                        yield* (
+                          options?.authorize?.({
+                            id,
+                            botId: task?.bot?.botId,
+                            createdByThreadId:
+                              id === mailMadeSchedule
+                                ? mailHome
+                                : id === removedCreatorSchedule
+                                  ? removedCreator
+                                  : null,
+                          }) ?? Effect.void
+                        );
+                        return yield* reach(
+                          "runNow",
+                          new ScheduledTaskError({ message: "runNow" }),
+                        );
+                      }),
+                  })
+                : Layer.succeed(ScheduledTasks.ScheduledTaskService, scheduler),
               Layer.mock(BotService.BotService)({
-                writeOwnerOfThread: (threadId) => Effect.succeed(ownerOf.get(threadId)),
+                writeOwnerOfThread: (threadId) =>
+                  threadId === refusedThread
+                    ? Effect.fail(new BotError({ message: "Cannot resolve the parent thread." }))
+                    : Effect.succeed(ownerOf.get(threadId)),
               }),
               Layer.mock(ThreadSearch.ThreadSearch)({}),
             ),
@@ -157,6 +216,9 @@ it.effect.each([
   ["run_scheduled_task_now", { taskId: mailMadeSchedule }, "reached", mailWork],
   ["run_scheduled_task_now", { taskId: workRoutine }, "capability_denied", mailWork],
   ["run_scheduled_task_now", { taskId: plainSchedule }, "capability_denied", mailWork],
+  ["run_scheduled_task_now", { taskId: removedCreatorSchedule }, "capability_denied", mailWork],
+  ["run_scheduled_task_now", { taskId: mailRoutine }, "invalid_request", refusedThread],
+  ["run_scheduled_task_now", { taskId: workRoutine }, "reached", null],
   [
     "run_scheduled_task_now",
     { taskId: mailRoutine, environmentId: EnvironmentId.make("environment:peer") },
@@ -172,4 +234,66 @@ it.effect.each([
   call(name, params, callerThread).pipe(
     Effect.map((result) => expect(outcome(result)).toBe(expected)),
   ),
+);
+
+it.effect("refuses Run now after a client saves a new routine owner", () =>
+  Effect.gen(function* () {
+    const modelSelection = { instanceId: codex, model: "test-model" };
+    const admitted = yield* Ref.make<ReadonlyArray<BotId>>([]);
+    const dependencies = Layer.mergeAll(
+      NodeCrypto.layer,
+      Scheduler.layer,
+      ManagedPolicy.layerTest(),
+      Layer.mock(ThreadLaunch.ThreadLaunchService)({}),
+      Layer.mock(ThreadManagement.ThreadManagementService)({}),
+      Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+        namedProjectsRoot: "/projects",
+        isScratchProject: () => Effect.succeed(false),
+      }),
+      Layer.mock(SecretRequests.SecretRequests)({}),
+      Layer.succeed(BotRoutineTarget, {
+        requireRunnable: () => Effect.succeed({ modelSelection }),
+        admit: ({ botId }) =>
+          Ref.update(admitted, (owners) => [...owners, botId]).pipe(
+            Effect.as({ _tag: "skipped" as const, reason: "Fixture" }),
+          ),
+      }),
+    );
+    yield* Effect.gen(function* () {
+      const scheduler = yield* ScheduledTasks.ScheduledTaskService;
+      const input = {
+        commandId: CommandId.make("review:routine-owner-change"),
+        title: "Daily summary",
+        prompt: "Summarize today's work.",
+        enabled: true,
+        schedule: { type: "interval", everyMs: 3_600_000 },
+        projectId: ProjectId.make("project:mcp-test"),
+        workspaceStrategy: { type: "root" },
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        bot: { botId: mailBot },
+      } as const;
+      const { task } = yield* scheduler.upsert(input);
+      const newOwner = BotId.make("work");
+      const result = yield* call("run_scheduled_task_now", { taskId: task.id }, mailWork, {
+        ...scheduler,
+        list: () =>
+          scheduler.list().pipe(
+            Effect.tap(() =>
+              scheduler.upsert({
+                ...input,
+                id: task.id,
+                requireExisting: true,
+                bot: { botId: newOwner },
+              }),
+            ),
+          ),
+      });
+      expect({ result: outcome(result) ?? "done", admitted: yield* Ref.get(admitted) }).toEqual({
+        result: "capability_denied",
+        admitted: [],
+      });
+    }).pipe(Effect.provide(ScheduledTasks.layer.pipe(Layer.provide(dependencies))));
+  }).pipe(Effect.provide(Sqlite.layerMemory)),
 );
