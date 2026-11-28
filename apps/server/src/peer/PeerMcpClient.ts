@@ -220,11 +220,12 @@ const make = Effect.gen(function* () {
                 shortened(botOrigin.botName),
               ]),
             };
-      const sessionKey = `${input.environmentId} ${resolved.url}`;
-      const callOnce = (sessionId: string) =>
+      const sessionKey = (route: PeerLinks.ResolvedPeerLink) =>
+        `${input.environmentId} ${route.url}`;
+      const callOnce = (route: PeerLinks.ResolvedPeerLink, sessionId: string) =>
         post(
-          resolved.url,
-          resolved.token,
+          route.url,
+          route.token,
           {
             jsonrpc: "2.0",
             id: 1,
@@ -239,24 +240,27 @@ const make = Effect.gen(function* () {
             "mcp-protocol-version": PROTOCOL_VERSION,
           },
         );
-      const existing = (yield* Ref.get(sessions)).get(sessionKey);
+      const existing = (yield* Ref.get(sessions)).get(sessionKey(resolved));
       const sessionId = existing ?? (yield* openSession(resolved.url, resolved.token, limitHeader));
       // The initialized session outlives a tool request, including a long wait or cancellation.
       if (existing === undefined) {
-        yield* Ref.update(sessions, (current) => new Map(current).set(sessionKey, sessionId));
+        yield* Ref.update(sessions, (current) =>
+          new Map(current).set(sessionKey(resolved), sessionId),
+        );
       }
-      let response = yield* callOnce(sessionId);
+      let response = yield* callOnce(resolved, sessionId);
       if (response.status === 404) {
-        // A peer that lost the session may have restarted on another version.
-        if (limitedBot !== undefined) {
-          const restarted = yield* links
-            .resolve(input.environmentId)
-            .pipe(Effect.mapError(fromLinkError));
-          if (!restarted.keepsBotLimits) return cannotKeepBotLimits(restarted, limitedBot.botName);
-        }
-        const renewed = yield* openSession(resolved.url, resolved.token, limitHeader);
-        yield* Ref.update(sessions, (current) => new Map(current).set(sessionKey, renewed));
-        response = yield* callOnce(renewed);
+        // A peer that lost the session may have restarted on another version, and resolving it
+        // again can pick another address: the renewed call goes to the route just checked.
+        const route =
+          limitedBot === undefined
+            ? resolved
+            : yield* links.resolve(input.environmentId).pipe(Effect.mapError(fromLinkError));
+        if (limitedBot !== undefined && !route.keepsBotLimits)
+          return cannotKeepBotLimits(route, limitedBot.botName);
+        const renewed = yield* openSession(route.url, route.token, limitHeader);
+        yield* Ref.update(sessions, (current) => new Map(current).set(sessionKey(route), renewed));
+        response = yield* callOnce(route, renewed);
       }
       if (response.status === 401) {
         return yield* new OrchestratorMcpFailure({

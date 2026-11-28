@@ -48,6 +48,7 @@ const workHome = ThreadId.make("thread:work-home");
 const plainThread = ThreadId.make("thread:plain");
 const mailWork = ThreadId.make("thread:mail-work");
 const refusedThread = ThreadId.make("thread:refused");
+const stampedThread = ThreadId.make("thread:stamped");
 const removedCreator = ThreadId.make("thread:removed-creator");
 const mailRoutine = ScheduledTaskId.make("routine:mail");
 const workRoutine = ScheduledTaskId.make("routine:work");
@@ -138,9 +139,27 @@ const call = (
               layerCallerChangesAllowed,
               NodeCrypto.layer,
               Layer.mock(ThreadManagement.ThreadManagementService)({
-                getThreadShell: (id) => Effect.succeed(liveThreadShell(id)),
-                getProjectThreadRecords: ({ threadId }) =>
-                  Effect.succeed(idleThreadProjection(liveThreadShell(threadId))),
+                getThreadShell: (id) =>
+                  Effect.succeed({
+                    ...liveThreadShell(id),
+                    ...(id === stampedThread
+                      ? {
+                          linkOrigin: {
+                            sessionId: "laptop",
+                            label: "Laptop",
+                            access: "full-access" as const,
+                          },
+                        }
+                      : {}),
+                  }),
+                getProjectThreadRecords: ({ threadId }) => {
+                  const projection = idleThreadProjection(liveThreadShell(threadId));
+                  return Effect.succeed(
+                    threadId === stampedThread
+                      ? { ...projection, thread: { ...projection.thread, botOrigin: laptopBot } }
+                      : projection,
+                  );
+                },
                 dispatch: (command) =>
                   reach(
                     command.type === "thread.fork" && command.botOrigin !== undefined
@@ -186,10 +205,17 @@ const call = (
                   })
                 : Layer.succeed(ScheduledTasks.ScheduledTaskService, scheduler),
               Layer.mock(BotService.BotService)({
-                writeOwnerOfThread: (threadId) =>
-                  threadId === refusedThread
-                    ? Effect.fail(new BotError({ message: "Cannot resolve the parent thread." }))
-                    : Effect.succeed(ownerOf.get(threadId)),
+                writeOwnerOfThread: (threadId) => {
+                  if (threadId === stampedThread)
+                    return Effect.fail(
+                      new BotError({ message: "This Bot is on another machine." }),
+                    );
+                  if (threadId === refusedThread)
+                    return Effect.fail(
+                      new BotError({ message: "Cannot resolve the parent thread." }),
+                    );
+                  return Effect.succeed(ownerOf.get(threadId));
+                },
               }),
               Layer.mock(ThreadSearch.ThreadSearch)({}),
             ),
@@ -379,6 +405,16 @@ it.effect("a link runs schedules here, but not for its machine's Bot", () =>
         linkScope(laptopBot),
       );
       expect(outcome(forBot), taskId).toBe("capability_denied");
+      const stamped = yield* call("run_scheduled_task_now", runNow, stampedThread);
+      expect(outcome(stamped), taskId).toBe("invalid_request");
     }
+  }),
+);
+
+it.effect("a stamped caller's fork of an ordinary source carries its Bot", () =>
+  Effect.gen(function* () {
+    const fork = { action: "fork", threadId: plainThread };
+    const result = yield* call("t3_thread_transfer", fork, stampedThread);
+    expect(result.reached).toEqual(["thread.fork for Researcher"]);
   }),
 );

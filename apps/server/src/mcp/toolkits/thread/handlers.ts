@@ -208,8 +208,15 @@ const handlers = {
             return { sequence: result.sequence, targetThreadId };
           }
           const targetThreadId = ThreadId.make(`${commandId}:fork`);
-          // A fork is new work, so a link's fork for its Bot is that Bot's work, like a launch.
-          const botOrigin = callerBotOrigin(yield* readCaller());
+          // A fork is new work, so a fork for another machine's Bot is that Bot's, like a launch,
+          // whichever source it copies.
+          const context = yield* readCaller();
+          const botOrigin =
+            context.caller === undefined
+              ? callerBotOrigin(context)
+              : context.caller.id === projection.thread.id
+                ? projection.thread.botOrigin
+                : (yield* readThread(context.caller.id)).projection.thread.botOrigin;
           const result = yield* threads
             .dispatch({
               type: "thread.fork",

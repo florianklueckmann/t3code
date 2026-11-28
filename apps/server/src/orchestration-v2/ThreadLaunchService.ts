@@ -117,7 +117,6 @@ export interface ThreadLaunchInput {
   readonly linkOrigin?: OrchestrationV2LinkOrigin;
   /** The parent there, when that environment's agent delegated this as a task. */
   readonly delegatedFrom?: OrchestrationV2DelegatedFrom;
-  /** The Bot there whose work this is, when that environment named one. */
   readonly botOrigin?: OrchestrationV2BotOrigin;
   /** The thread whose agent launched this one, if one did. */
   readonly createdByThreadId?: ThreadId;

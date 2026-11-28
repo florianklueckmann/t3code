@@ -61,7 +61,6 @@ export interface ThreadForkServiceV2Shape {
     readonly targetThreadId: ThreadId;
     readonly title?: string;
     readonly sideChat?: boolean;
-    /** The other machine's Bot that asked for this fork, which makes the fork its work. */
     readonly botOrigin?: OrchestrationV2BotOrigin;
     readonly createdBy: OrchestrationV2Actor;
     readonly creationSource: OrchestrationV2CreationSource;
