@@ -1,10 +1,11 @@
-import type {
-  EditorId,
-  EnvironmentId,
-  ProjectId,
-  ProjectScript,
-  ResolvedKeybindingsConfig,
-  ThreadId,
+import {
+  type EditorId,
+  type EnvironmentId,
+  isBotHomeProjectId,
+  type ProjectId,
+  type ProjectScript,
+  type ResolvedKeybindingsConfig,
+  type ThreadId,
 } from "@t3tools/contracts";
 
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
@@ -166,7 +167,9 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
       {(density) => {
         // Section flags follow the rows that will render, so no empty section steals the divider rule.
         const show = {
-          environment: density === "full" && visible.environment,
+          // A Bot's own Home always runs in its own folder, so there is no checkout to choose.
+          environment:
+            density === "full" && visible.environment && !isBotHomeProjectId(props.projectId),
           openIn: density !== "essential" && visible.openIn && props.showOpenInPicker,
           scripts: visible.scripts && props.activeProjectScripts !== undefined,
           branch: offersGit && props.isGitRepo && visible.branch,
