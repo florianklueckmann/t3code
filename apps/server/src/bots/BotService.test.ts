@@ -978,7 +978,7 @@ it.effect(
             createdAt: "2026-11-03T00:02:00.000Z",
           });
           for (const [taskId, status, cancelRequestedAt] of [
-            ["task-done", "completed", undefined],
+            ["task-failed", "failed", undefined],
             ["task-cancelled", "cancelled", "2026-11-04T00:00:00.000Z"],
             ["task-stopping", "running", "2026-11-04T00:00:00.000Z"],
           ] as const) {
@@ -992,6 +992,7 @@ it.effect(
             });
           }
           yield* db`UPDATE bot_tasks SET detail = 'Cancelled by the user.' WHERE task_id = 'task-cancelled'`;
+          yield* db`UPDATE bot_tasks SET detail = 'No commit to start from.' WHERE task_id = 'task-failed'`;
           const needsYou = (question: string): BotTaskAcceptanceValue => ({
             state: "needs_you",
             missing: ["The result names no evidence."],
@@ -1096,7 +1097,7 @@ it.effect(
           assert.notInclude(instructionParts.lasting, "task-waiting");
           assert.include(
             turn,
-            `- "Task task-waiting" · project "Faerun" · waiting · 2026-11-03T00:00:00.000Z (taskId "task-waiting", projectId "${campaignB}")\n  Question waiting for the user: Which changelog format should both repos use?`,
+            `- "Task task-waiting" · project "Faerun" · recorded status: waiting · started 2026-11-03T00:00:00.000Z (taskId "task-waiting", projectId "${campaignB}")\n  Question waiting for the user: Which changelog format should both repos use?`,
           );
           assert.notInclude(turn, "Should the old format stay?");
           assert.include(turn, "You started 30 of the tasks below in this Home");
@@ -1105,7 +1106,7 @@ it.effect(
           assert.isBelow(turn.indexOf('"task-waiting"'), turn.indexOf('"task-31"'));
           assert.isBelow(turn.indexOf('"task-31"'), turn.indexOf('"task-30"'));
           assert.include(turn, "(6 more ended tasks: use list_tasks.)");
-          assert.include(turn, '"task-done"');
+          assert.match(turn, /"Task task-failed".*failed.*No commit to start from/);
           assert.match(turn, /"Task task-cancelled".*cancelled by the user/i);
           assert.match(turn, /"Task task-stopping".*cancellation requested/);
           assert.match(turn, /"Task task-needs-you".*needs you.*The result names no evidence/);

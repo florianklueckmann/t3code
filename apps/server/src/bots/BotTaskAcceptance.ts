@@ -118,6 +118,17 @@ export function decideAcceptance(
   };
 }
 
+export function evidenceSummary(acceptance: BotTaskAcceptance): string {
+  const evidence = acceptance.report?.evidence ?? [];
+  if (!evidence.length) return "none cited";
+  return evidence
+    .map(
+      ({ text, check }) =>
+        `${text} (${check === "found" ? "exists" : check === "link" ? "link, unchecked" : check})`,
+    )
+    .join(", ");
+}
+
 /** One Waiting item for a result that needs the user: what is missing, then its questions. */
 export function waitingText(title: string, acceptance: BotTaskAcceptance): string {
   const questions = acceptance.report?.openQuestions ?? [];

@@ -1569,16 +1569,16 @@ it.effect("the Bot's own Home is told once of each task it started that ends or 
       assert.equal<string>(send.commandId, send.messageId);
     }
     const [done, unproven, failed, asking] = sent.map((send) => send.text);
-    assert.include(done, "a task you started finished.");
+    assert.include(done, "Recorded status: completed");
     assert.include(done, "Project: Title of project-campaign (project-campaign)");
-    assert.include(done, "Result: Prepared the notes.");
-    assert.include(done, "Result check: passed.");
+    assert.include(done, "Worker report: Prepared the notes.");
+    assert.include(done, "Evidence: file: notes/prep.md (exists)");
     assert.notInclude(done, "T3_RESULT");
-    assert.include(unproven, "finished, but its result waits for the user");
-    assert.include(unproven, "Result check: not done. “branch: bot/missing” does not exist.");
-    assert.include(failed, "a task you started failed.");
+    assert.include(unproven, "Recorded status: completed · needs you");
+    assert.include(unproven, "Evidence: branch: bot/missing (missing)");
+    assert.include(failed, "Recorded status: failed");
     assert.include(failed, "What went wrong: Codex exited with code 1.");
-    assert.include(asking, "is waiting for the user");
+    assert.include(asking, "Recorded status: waiting");
     assert.include(asking, "Question: Which branch should I use?");
     // What waits for the user is noted in the Home that started it.
     const [waitingNote] = yield* sql<{ readonly home_thread_id: string }>`
@@ -1613,7 +1613,7 @@ it.effect("the Bot's own Home is told once of each task it started that ends or 
     const after = yield* updates;
     assert.lengthOf(after, 5);
     assert.include(after[4]?.text, "“Asking”");
-    assert.include(after[4]?.text, "finished");
+    assert.include(after[4]?.text, "Recorded status: completed");
   }).pipe(Effect.provide(layerDatabase)),
 );
 

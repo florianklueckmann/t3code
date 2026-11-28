@@ -210,7 +210,8 @@ function buildBotHomeInstructions(input: {
       `- Then start one task per piece of work, in the attached project the piece belongs to: call t3_bot with action "start_task", botId "${input.botId}", that project's projectId, a short \`title\` and a brief as \`task\`. A request that touches two projects becomes at least one task in each. Never start a task with this Home's projectId "${input.projectId}".`,
       '- A task\'s work thread sees only its brief and its project, not this conversation. Write each brief so it stands alone: what to do, the context it needs, and a last line "Done when: …" that states the condition for done.',
       "- Then tell the user which tasks you started, in which project, and when each counts as done.",
-      "- Report each Task update once, naming its project and task. Ask its open question in that update only. The user answers a task's question in that task's work thread, through its card; tell them so instead of answering it yourself.",
+      "- Build recaps and status reports from every task row this Home started in the requested period, including before a fresh conversation. Use chat and working notes only for detail. Keep the recorded status and state any doubt beside it.",
+      "- Report each Task update once, naming its project and task. Ask the full question only in its update. Later, say the task waits for an answer in its card.",
     ].join("\n"),
     earlierConversationSection,
     learnedSection("Learned for this Home and all your projects", input.activeLearning),
@@ -257,9 +258,9 @@ const QUESTION_CHARS = 300;
 function homeTasksSection({ shown, omittedAttention, omittedEnded }: HomeTasks): string {
   if (shown.length === 0) return "Your task records across projects: none.";
   return [
-    `You started ${shown.filter((task) => task.startedHere).length} of the tasks below in this Home. A fresh conversation keeps that work: include each matching row in a recap. Check the conversation and working notes before repeating a question. Leave user cancellations in place.`,
+    `You started ${shown.filter((task) => task.startedHere).length} of the tasks below in this Home. Leave user cancellations in place.`,
     ...shown.flatMap((task) => [
-      `- "${task.title}" · project "${task.projectTitle}" · ${task.status}${task.startedHere ? "" : " · started by another Home"} · ${task.createdAt} (taskId "${task.taskId}", projectId "${task.projectId}")`,
+      `- "${task.title}" · project "${task.projectTitle}" · recorded status: ${task.status}${task.startedHere ? "" : " · started by another Home"} · started ${task.createdAt} (taskId "${task.taskId}", projectId "${task.projectId}")`,
       ...(task.question === null ? [] : [`  Question waiting for the user: ${task.question}`]),
     ]),
     ...(omittedAttention
@@ -278,13 +279,17 @@ function homeTaskStatus(
   },
   replied: boolean,
 ) {
-  if (row.status === "cancelled") return row.detail ? `cancelled · ${row.detail}` : "cancelled";
+  if (row.status === "cancelled" || row.status === "failed")
+    return row.detail ? `${row.status} · ${row.detail.slice(0, QUESTION_CHARS)}` : row.status;
   if (row.cancel_requested_at !== null) return `${row.status} (cancellation requested)`;
   const reply = replied ? " · Home replied to this update" : "";
   if (row.status === "waiting") return row.status + reply;
   if (row.status !== "completed" || row.acceptance_json === null) return row.status;
   const acceptance = Option.getOrUndefined(decodeAcceptance(row.acceptance_json));
-  if (acceptance?.state !== "needs_you") return row.status;
+  if (!acceptance) return row.status;
+  const report = acceptance.report;
+  const detail = ` · Evidence: ${BotTaskAcceptance.evidenceSummary(acceptance).slice(0, QUESTION_CHARS)}${report ? ` · Worker report: ${report.result.slice(0, QUESTION_CHARS)}` : ""}`;
+  if (acceptance.state === "done") return row.status + detail;
   const questions = acceptance.report?.openQuestions ?? [];
   const questionText = questions
     .map((question) => `Open question: ${question}`)
@@ -296,7 +301,7 @@ function homeTaskStatus(
     questions.length > 1 && questionText.length > QUESTION_CHARS
       ? ` · ${questions.length} open questions. Read them in the work thread.`
       : "";
-  return `needs you · ${reasons.slice(0, QUESTION_CHARS) || "Review the result."}${more}${questions.length ? reply : ""}`;
+  return `completed · needs you · ${reasons.slice(0, QUESTION_CHARS) || "Review the result."}${more}${questions.length ? reply : ""}${detail}`;
 }
 
 const earlierConversationSection = [

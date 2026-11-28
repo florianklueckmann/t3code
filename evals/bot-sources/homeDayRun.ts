@@ -345,6 +345,7 @@ export const runDaySample = Effect.fn("botSources.runDaySample")(function* (
   const records: ReadonlyArray<DayRecord> = finalTasks.map((task) => ({
     id: task.id,
     title: task.title,
+    detail: task.detail,
     brief: briefs.get(task.id) ?? null,
     projectId: task.projectId,
     status: task.status,

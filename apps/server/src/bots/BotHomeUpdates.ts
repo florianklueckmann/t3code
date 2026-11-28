@@ -29,6 +29,7 @@ import * as ThreadManagementService from "../orchestration-v2/ThreadManagementSe
 import * as ProjectService from "../project/ProjectService.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import { forkParked } from "../serverActivation.ts";
+import { evidenceSummary } from "./BotTaskAcceptance.ts";
 import * as BotTaskService from "./BotTaskService.ts";
 import * as BotDatabase from "./persistence/BotDatabase.ts";
 
@@ -100,34 +101,24 @@ function updateText(input: {
 }) {
   const { task } = input;
   const acceptance = task.acceptance;
-  const what =
-    task.status === "completed"
-      ? acceptance?.state === "needs_you"
-        ? "finished, but its result waits for the user"
-        : "finished"
-      : task.status === "failed"
-        ? "failed"
-        : task.status === "interrupted"
-          ? "stopped before it finished, for example because the server restarted"
-          : "is waiting for the user";
   const questions = acceptance?.report?.openQuestions ?? [];
   const failure =
     task.status === "failed" || task.status === "interrupted"
       ? (task.detail ?? input.runError)
       : null;
   return [
-    `T3 Code: a task you started ${what}. This is a status update from the server, not a message from the user.`,
+    "T3 Code: task update from the server.",
+    `Recorded status: ${task.status}${acceptance?.state === "needs_you" ? " · needs you" : ""}`,
     `Task: “${task.title}” (${task.id})`,
     `Project: ${input.projectTitle} (${task.projectId})`,
     task.workThreadId === null ? null : `Work thread: ${task.workThreadId}`,
     task.branch === undefined ? null : `Branch: ${task.branch}`,
     acceptance === undefined
       ? null
-      : acceptance.state === "done"
-        ? "Result check: passed."
-        : `Result check: not done. ${acceptance.missing.length === 0 ? "It has open questions." : acceptance.missing.join(" ")}`,
+      : `Evidence: ${clip(evidenceSummary(acceptance), DETAIL_CHARS)}`,
+    acceptance?.missing.length ? `Needs review: ${acceptance.missing.join(" ")}` : null,
     questions.length === 0 ? null : `Open questions: ${questions.join(" ")}`,
-    input.result === null ? null : `Result: ${clip(input.result, RESULT_CHARS)}`,
+    input.result === null ? null : `Worker report: ${clip(input.result, RESULT_CHARS)}`,
     failure == null ? null : `What went wrong: ${clip(failure, DETAIL_CHARS)}`,
     input.question === null ? null : `Question: ${clip(input.question, DETAIL_CHARS)}`,
     "",

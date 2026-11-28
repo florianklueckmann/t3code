@@ -51,7 +51,7 @@ import {
   type ProjectKey,
   TWIN_SOURCES,
 } from "./cases.ts";
-import { DAY_CASE_ID, DAY_WORKER_MODEL, gradeDay } from "./homeDay.ts";
+import { DAY_CASE_ID, DAY_WORKER_MODEL, gradeDay, invalidDay } from "./homeDay.ts";
 import { type DayUsage, runDaySample } from "./homeDayRun.ts";
 
 export interface SampleRun {
@@ -497,6 +497,7 @@ const daySummary = (
     | { readonly pass: boolean; readonly error: string }
     | {
         readonly pass: boolean;
+        readonly invalid: string | null;
         readonly checks: ReadonlyArray<{ readonly check: string; readonly pass: boolean }>;
         readonly usage: DayUsage;
       }
@@ -504,18 +505,28 @@ const daySummary = (
 ) => {
   if (days.length === 0) return [];
   const rows = days.map((day, sample) => {
-    if ("error" in day) return `| ${sample} | error | | | | | ${day.error.slice(0, 80)} |`;
+    if ("error" in day) return `| ${sample + 1} | error | | | | ${day.error.slice(0, 80)} |`;
     const { usage } = day;
     const failed = day.checks.filter((check) => !check.pass).map((check) => check.check);
-    const scenario = day.checks.find((check) => check.check.startsWith("scenario held"))?.pass;
-    return `| ${sample} | ${day.pass ? "pass" : "fail"} | ${scenario ? "yes" : "no"} | ${usage.homeTurns} | ${usage.inputTokens} (${usage.cachedInputTokens} cached) | ${usage.outputTokens} | ${failed.join("; ")} |`;
+    return `| ${sample + 1} | ${day.invalid ? "invalid" : day.pass ? "pass" : "fail"} | ${usage.homeTurns} | ${usage.inputTokens} (${usage.cachedInputTokens} cached) | ${usage.outputTokens} | ${day.invalid ?? failed.join("; ")} |`;
   });
+  const scored = days.flatMap((day) => ("error" in day || day.invalid !== null ? [] : [day]));
+  const names = new Set(scored.flatMap((day) => day.checks.map((check) => check.check)));
   return [
-    `${DAY_CASE_ID}: ${days.filter((day) => day.pass).length}/${days.length} passed.`,
+    `${DAY_CASE_ID}: ${scored.filter((day) => day.pass).length}/${scored.length} valid samples passed.`,
     "",
-    "| Sample | Result | Scenario held | Home turns | Home input tokens | Home output tokens | Failed checks |",
-    "| ------ | ------ | ------------- | ---------- | ----------------- | ------------------ | ------------- |",
+    "| Sample | Result | Home turns | Home input tokens | Home output tokens | Failed checks or invalid reason |",
+    "| --- | --- | --- | --- | --- | --- |",
     ...rows,
+    "",
+    "| Check | " + days.map((_, i) => `Sample ${i + 1}`).join(" | ") + " | Total |",
+    "| --- | " + days.map(() => "---").join(" | ") + " | --- |",
+    ...Array.from(names, (name) => {
+      const results = days.map((day) =>
+        "error" in day ? undefined : day.checks.find((check) => check.check === name)?.pass,
+      );
+      return `| ${name} | ${results.map((pass) => (pass === undefined ? "—" : pass ? "pass" : "fail")).join(" | ")} | ${results.filter(Boolean).length}/${results.filter((pass) => pass !== undefined).length} |`;
+    }),
     "",
   ];
 };
@@ -593,8 +604,16 @@ const main = Effect.gen(function* () {
             runDaySample(call, { work, baseDir, modelSelection, workerSelection }),
           ),
           Effect.map((run) => {
-            const checks = gradeDay(run);
-            return { id: DAY_CASE_ID, sample, pass: checks.every((c) => c.pass), checks, ...run };
+            const invalid = invalidDay(run);
+            const checks = invalid === null ? gradeDay(run) : [];
+            return {
+              id: DAY_CASE_ID,
+              sample,
+              invalid,
+              pass: invalid === null && checks.every((c) => c.pass),
+              checks,
+              ...run,
+            };
           }),
           Effect.catch((error) =>
             Effect.succeed({ id: DAY_CASE_ID, sample, pass: false, error: error.message }),
