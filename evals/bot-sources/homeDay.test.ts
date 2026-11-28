@@ -259,6 +259,38 @@ it("fails an update turn that calls the failed task done", () => {
   expect(failed(day({ homeRuns: runs }))).toEqual(["deploy-key is not reported as done"]);
 });
 
+it("does not credit an unfinished task as finished", () => {
+  const unfinished = summaryOf().replace(
+    "round half-up to whole cents (Storefront): done",
+    "round half-up to whole cents (Storefront): unfinished",
+  );
+  expect(failed(day({}, unfinished))).toEqual(["summary gives cart-rounding as done"]);
+  expect(failed(day({}, `${summaryOf()}\nCart rounding remains unfinished.`))).toEqual([
+    "summary gives cart-rounding as done",
+  ]);
+  expect(failed(day({}, `${summaryOf()}\nThe orders documentation is unfinished.`))).toEqual([]);
+  expect(statusOfLine("Orders docs: unfinished, the result supplied no evidence")).toBe(
+    "needs_you",
+  );
+});
+
+it("does not attribute a completed prerequisite to the failed task", () => {
+  const update = (text: string) =>
+    day({
+      homeRuns: day().homeRuns.map((run) =>
+        run.runId === "run-deploy"
+          ? { ...run, answer: "Deploy key rotation failed.\n" + text }
+          : run,
+      ),
+    });
+  const followUp =
+    "Make a first commit. Once that’s done, tell me and I’ll start a new rotation task.";
+  expect(failed(update(followUp))).toEqual([]);
+  expect(failed(update(followUp + " The deploy key rotation is now done."))).toContain(
+    "deploy-key is not reported as done",
+  );
+});
+
 it("credits a done report when the record is done, whatever the script said", () => {
   const proven = records.map((record) =>
     record.id === "bot-task:orders-docs" ? { ...record, ...STATUS.done } : record,

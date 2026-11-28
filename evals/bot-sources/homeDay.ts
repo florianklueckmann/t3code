@@ -275,7 +275,8 @@ const SCRIPTED_CATEGORY: Readonly<Record<DayOutcome, DayCategory>> = {
 };
 
 // In priority order: a line that says "finished, but waits for you" needs the user.
-const STATUS_WORDS: ReadonlyArray<readonly [DayCategory, RegExp]> = [
+type SummaryStatus = DayCategory | "unfinished";
+const STATUS_WORDS: ReadonlyArray<readonly [SummaryStatus, RegExp]> = [
   ["cancelled", /cancel/i],
   [
     "failed",
@@ -286,14 +287,23 @@ const STATUS_WORDS: ReadonlyArray<readonly [DayCategory, RegExp]> = [
     /needs? (you|your|verification|review|evidence)|review (is )?(still )?needed|(waits?|waiting|awaits?|awaiting) (for |on )?(you|your)|question|not done|unproven|unverified|not verified|unconfirmed|no evidence|without evidence|evidence (is )?missing|missing evidence|blocked|decision|your (answer|input|call|review)/i,
   ],
   ["open", /running|in progress|queued|still working|waiting for a (free )?slot/i],
-  ["done", /\bdone\b|complete|finished|✅|merged|\bfixed\b|\bupdated\b|\bremoved\b|\braised\b/i],
+  ["unfinished", /\b(unfinished|incomplete)\b/i],
+  [
+    "done",
+    /\bdone\b|\b(completed?|finished)\b|✅|merged|\bfixed\b|\bupdated\b|\bremoved\b|\braised\b/i,
+  ],
 ];
 // Phrases that deny a status rather than state it.
 const DENIALS = /\bno (open )?questions?\b|nothing (else )?(needs|needed from) you|no errors?/gi;
 
 /** The status a line of the Home's answer gives, if any. */
-export const statusOfLine = (line: string): DayCategory | undefined => {
-  const text = line.replace(DENIALS, "");
+export const statusOfLine = (line: string): SummaryStatus | undefined => {
+  const text = line
+    .replace(DENIALS, "")
+    .replace(
+      /\b(?:once|when|if)\s+(?:that|it|this)(?:['’]s| is| has been)\s+(?:done|finished|completed?)\b/gi,
+      "",
+    );
   return STATUS_WORDS.find(([, pattern]) => pattern.test(text))?.[0];
 };
 
@@ -431,7 +441,10 @@ export const gradeDay = (run: DayRun) => {
     const mentions = summaryStatuses(task, lines);
     add(
       `summary gives ${task.key} as ${expected}`,
-      mentions.length > 0 && mentions.every((status) => status === expected),
+      mentions.includes(expected) &&
+        mentions.every(
+          (status) => status === expected || (status === "unfinished" && expected !== "done"),
+        ),
     );
     // From the record, not the script: a worker that strayed into a proven result is done.
     if (expected === "failed" || expected === "cancelled" || expected === "needs_you") {
