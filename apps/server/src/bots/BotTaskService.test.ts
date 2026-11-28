@@ -314,7 +314,8 @@ const makeThreadWorld = Effect.gen(function* () {
       deletedAt: null,
       modelSelection: codex,
       runtimeMode: thread.runtimeMode,
-      status: thread.status,
+      // A shell takes its latest run's status.
+      status: thread.queuedRunId === undefined ? thread.status : "queued",
       pendingRuntimeRequest: thread.blockingRequest
         ? { id: "request" as never, kind: "user_input" as never, createdAt: DateTime.makeUnsafe(0) }
         : null,
@@ -1421,24 +1422,31 @@ it.effect("the Bot's own Home is told once of each task it started that ends or 
         yield* endRun(world, work(tasks.failed), "failed");
         yield* world.update(work(tasks.failed), { lastError: "Codex exited with code 1." });
         yield* world.update(work(tasks.asking), { status: "running", blockingRequest: true });
-        yield* Ref.update(world.records, (all) =>
-          new Map(all).set(work(tasks.asking), {
-            thread: { id: work(tasks.asking), projectId: campaign, deletedAt: null } as never,
-            runs: [],
-            messages: [],
-            turnItems: [
-              {
-                type: "user_input_request",
-                requestId: "request",
-                questions: [{ question: "Which branch should I use?" }],
-              } as never,
-            ],
-          }),
-        );
+        const card = (status: string) =>
+          Ref.update(world.records, (all) =>
+            new Map(all).set(work(tasks.asking), {
+              thread: { id: work(tasks.asking), projectId: campaign, deletedAt: null } as never,
+              runs: [],
+              messages: [],
+              turnItems: [
+                {
+                  type: "user_input_request",
+                  requestId: "request",
+                  status,
+                  questions: [{ question: "Which branch should I use?" }],
+                } as never,
+              ],
+            }),
+          );
+        // Answered after the shell was read: no update for a question nobody waits on.
+        yield* card("completed");
         yield* services.tasks.cancel({ taskId: tasks.cancelled.id });
         yield* finishRun(world, work(tasks.own), DONE_RESULT);
         yield* services.tasks.reconcile;
         yield* services.tasks.reconcile;
+        yield* services.updates.deliverOwed;
+        assert.lengthOf(yield* updates, 3);
+        yield* card("waiting");
         yield* services.updates.deliverOwed;
         yield* services.updates.deliverOwed;
         return { home, tasks };

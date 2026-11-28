@@ -900,9 +900,9 @@ const make = Effect.gen(function* () {
       home.projectId !== input.projectId ||
       home.deletedAt !== null ||
       home.archivedAt !== null ||
-      home.status !== "running" ||
       home.activeRunId === null ||
-      (!queuedBehind && home.activeRunId !== home.latestRunId)
+      // A queued run is the latest and gives the shell its status; the active run's own counts.
+      (!queuedBehind && (home.status !== "running" || home.activeRunId !== home.latestRunId))
     )
       return undefined;
     const runId = home.activeRunId;
