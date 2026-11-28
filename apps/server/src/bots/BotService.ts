@@ -227,9 +227,7 @@ const make = Effect.gen(function* () {
   const turnContext = yield* BotTurnContext.BotTurnContext;
   const random = yield* SecureRandom.SecureRandom;
   const main = yield* SqlClient.SqlClient;
-  // Subscribers re-read the full list, so only the newest change signal matters.
-  const changes = yield* PubSub.sliding<void>(1);
-  const notifyChanged = PubSub.publish(changes, undefined).pipe(Effect.asVoid);
+  const notifyChanged = store.notifyListChanged;
   // Names the Bot whose learning committed, so a Home's notices reread only for their own Bot.
   const learningChanges = yield* PubSub.unbounded<BotId>();
 
@@ -401,7 +399,7 @@ const make = Effect.gen(function* () {
     Stream.unwrap(
       Effect.gen(function* () {
         // Subscribe before reading so a change during the first read is not lost.
-        const subscription = yield* PubSub.subscribe(changes);
+        const subscription = yield* store.subscribeListChanges;
         return Stream.concat(
           Stream.fromEffect(list),
           Stream.fromSubscription(subscription).pipe(Stream.mapEffect(() => list)),

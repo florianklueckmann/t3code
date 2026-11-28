@@ -555,14 +555,16 @@ export const layer = Layer.effect(
         homeContext ??
         (task === null ? undefined : yield* store.getContext(task.botId, task.projectId));
       if (context === undefined) {
-        const deleted = yield* sql`
-          SELECT 1 FROM deleted_bot_homes WHERE home_thread_id = ${task?.homeThreadId ?? threadId}
-        `.pipe(
-          Effect.mapError(
-            (cause) => new BotStore.BotStoreError({ operation: "read-deleted-home", cause }),
-          ),
-        );
-        if (deleted.length === 0) return undefined;
+        if (task === null) {
+          const deleted = yield* sql`
+            SELECT 1 FROM deleted_bot_homes WHERE home_thread_id = ${threadId}
+          `.pipe(
+            Effect.mapError(
+              (cause) => new BotStore.BotStoreError({ operation: "read-deleted-home", cause }),
+            ),
+          );
+          if (deleted.length === 0) return undefined;
+        }
         return {
           _tag: "inactive",
           message: "This Bot conversation's project is no longer available.",
