@@ -10,6 +10,7 @@ import { isUserGivenHomeInput } from "../../../bots/homeReturn.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
+import { localBotWritesOnly } from "../../threadAccess.ts";
 import { type BotHistorySearchInput, BotToolkit, type BotToolInput } from "./tools.ts";
 
 const botFailure = (error: BotError) =>
@@ -392,18 +393,9 @@ const searchHistory = Effect.fn("mcp.bot.searchHistory")(function* (input: BotHi
 
 const make = Effect.gen(function* () {
   const bots = yield* BotService.BotService;
-  const localBotWritesOnly = writeOwner(bots).pipe(
-    Effect.flatMap((owner) =>
-      owner === undefined
-        ? Effect.void
-        : Effect.fail(
-            new OrchestratorMcpFailure({
-              code: "capability_denied",
-              message:
-                "A Bot can only change its own Bot in this environment. Message the other Bot's Home to ask it for help.",
-            }),
-          ),
-    ),
+  const botWritesStayLocal = localBotWritesOnly(
+    bots,
+    "A Bot can only change its own Bot in this environment. Message the other Bot's Home to ask it for help.",
   );
   return {
     t3_bot_history_search: McpToolAccess.readsAsCaller(searchHistory),
@@ -427,7 +419,7 @@ const make = Effect.gen(function* () {
             McpToolAccess.writesEnvironment((input) => write(input)),
           ),
         ),
-        localBotWritesOnly,
+        botWritesStayLocal,
       ),
     ),
   } satisfies McpToolAccess.Handlers<typeof BotToolkit.tools>;

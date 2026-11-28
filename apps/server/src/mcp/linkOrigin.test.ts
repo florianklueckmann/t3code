@@ -43,7 +43,7 @@ import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 import * as SourceControlRepositoryService from "../sourceControl/SourceControlRepositoryService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
-import { layerCallerChangesAllowed } from "./McpToolAccess.testkit.ts";
+import { layerCallerChangesAllowed, layerNoBotOwners } from "./McpToolAccess.testkit.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import * as ThreadSearch from "../orchestration-v2/ThreadSearch.ts";
@@ -121,9 +121,10 @@ const layerTools = Layer.mergeAll(
   McpHttpServer.layerProjectRegistration,
 ).pipe(
   Layer.provide(
-    Layer.merge(
+    Layer.mergeAll(
       DocumentText.layer.pipe(Layer.provideMerge(NodeServices.layer)),
       layerCallerChangesAllowed,
+      layerNoBotOwners,
     ),
   ),
   Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),

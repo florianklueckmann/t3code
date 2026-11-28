@@ -14,6 +14,7 @@ import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 
+import * as BotService from "../../../bots/BotService.ts";
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as PeerLinkRequests from "../../../peer/PeerLinkRequests.ts";
 import * as PeerLinks from "../../../peer/PeerLinks.ts";
@@ -35,8 +36,10 @@ const mailRoutine = ScheduledTaskId.make("routine:mail");
 const workRoutine = ScheduledTaskId.make("routine:work");
 const plainSchedule = ScheduledTaskId.make("schedule:plain");
 const once = { type: "once", runAt: "2026-12-01T09:00:00Z" } as const;
+const mailWork = ThreadId.make("thread:mail-work");
+const mailBot = BotId.make("mail-bot");
 
-const call = (name: string, params: unknown) =>
+const call = (name: string, params: unknown, callerThread = threadId) =>
   Effect.gen(function* () {
     const reached = yield* Ref.make<ReadonlyArray<string>>([]);
     // Recorded, then refused, so no result needs encoding; only reaching the service counts.
@@ -61,7 +64,7 @@ const call = (name: string, params: unknown) =>
                 environmentId,
                 requestNamespace: "provider:caller",
                 thread: {
-                  threadId,
+                  threadId: callerThread,
                   providerSessionId: "provider:caller",
                   providerInstanceId: ProviderInstanceId.make("codex"),
                 },
@@ -91,6 +94,9 @@ const call = (name: string, params: unknown) =>
               }),
               Layer.mock(ThreadMetadataMcpService.ThreadMetadataMcpService)({
                 update: () => reach("update"),
+              }),
+              Layer.mock(BotService.BotService)({
+                writeOwnerOfThread: (id) => Effect.succeed(id === mailWork ? mailBot : undefined),
               }),
               Layer.mock(PeerLinks.PeerLinks)({}),
               Layer.mock(PeerLinkRequests.PeerLinkRequests)({}),
@@ -133,4 +139,17 @@ it.effect.each([
   ),
 ] as const)("%s %o reaches its service", ([name, params]) =>
   call(name, params).pipe(Effect.map((result) => expect(outcome(result)).toBe("reached"))),
+);
+
+const peer = EnvironmentId.make("environment:peer");
+it.effect.each([
+  ["schedule_task", { prompt: "Mail", schedule: once, botId: mailBot, environmentId: peer }],
+  ["schedule_task", { scheduledTaskId: mailRoutine, prompt: "Mail", environmentId: peer }],
+  ["delete_scheduled_task", { scheduledTaskId: mailRoutine, environmentId: peer }],
+] as const)("%s %o goes to a linked environment only from outside a Bot", ([name, params]) =>
+  Effect.gen(function* () {
+    // This test environment cannot reach links, so a call that passes the checks ends there.
+    expect(outcome(yield* call(name, params))).toBe("orchestration_error");
+    expect(outcome(yield* call(name, params, mailWork))).toBe("capability_denied");
+  }),
 );

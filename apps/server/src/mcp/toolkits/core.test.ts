@@ -72,6 +72,7 @@ import * as PeerLinks from "../../peer/PeerLinks.ts";
 const layerOrchestratorToolkit = McpHttpServer.layerOrchestratorToolkit.pipe(
   Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
   Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
+  Layer.provide(McpToolAccessTestkit.layerNoBotOwners),
 );
 
 const declaredFailure = (result: McpSchema.CallToolResult) => {
@@ -92,6 +93,7 @@ const layerThreadToolkit = McpHttpServer.layerThreadToolkit.pipe(
   Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
   Layer.provide(Layer.mock(PeerLinkRequests.PeerLinkRequests)({})),
   Layer.provide(Layer.mock(PeerLinks.PeerLinks)({})),
+  Layer.provide(McpToolAccessTestkit.layerNoBotOwners),
 );
 
 const threadId = ThreadId.make("mcp-core-thread");
@@ -887,6 +889,7 @@ it.effect("search names the calling thread, so an agent can tell its own match a
     Effect.provide(
       McpHttpServer.layerThreadToolkit.pipe(
         Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+        Layer.provide(McpToolAccessTestkit.layerNoBotOwners),
         Layer.provide(McpToolAccessTestkit.layerCallerChangesAllowed),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(McpToolAccessTestkit.liveThreadsLayer),
@@ -1135,6 +1138,7 @@ it.effect.each([
     Effect.provide(
       McpHttpServer.layerThreadToolkit.pipe(
         Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+        Layer.provide(McpToolAccessTestkit.layerNoBotOwners),
         Layer.provide(McpToolAccessTestkit.layerCallerChangesAllowed),
         Layer.provideMerge(McpToolAccessTestkit.layerCallerChangesAllowed),
         Layer.provide(NodeCrypto.layer),
@@ -1179,6 +1183,7 @@ it.effect("run_scheduled_task_now reports why a started run failed to dispatch",
     Effect.provide(
       McpHttpServer.layerThreadToolkit.pipe(
         Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+        Layer.provide(McpToolAccessTestkit.layerNoBotOwners),
         Layer.provide(McpToolAccessTestkit.layerCallerChangesAllowed),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(Layer.mock(ThreadManagement.ThreadManagementService)({})),

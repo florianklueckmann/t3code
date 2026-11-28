@@ -12,6 +12,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
+import * as BotService from "../bots/BotService.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as McpCallerChanges from "./McpCallerChanges.ts";
 
@@ -59,6 +60,11 @@ export const liveThreadShell = (
     deletedAt: null,
   };
 };
+
+/** Callers of tests that are not about Bots belong to no Bot. */
+export const layerNoBotOwners = Layer.mock(BotService.BotService)({
+  writeOwnerOfThread: () => Effect.undefined,
+});
 
 /** Callers of tests that are not about No changes may change things. */
 export const layerCallerChangesAllowed = Layer.succeed(McpCallerChanges.McpCallerChanges, {

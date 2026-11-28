@@ -2,11 +2,12 @@ import { OrchestratorMcpFailure } from "@t3tools/contracts";
 import { OrchestratorToolkit } from "./tools.ts";
 import * as Effect from "effect/Effect";
 
+import * as BotService from "../../../bots/BotService.ts";
 import * as PeerForwarding from "../../../peer/PeerForwarding.ts";
 import * as PeerLinkRequests from "../../../peer/PeerLinkRequests.ts";
 import * as PeerLinks from "../../../peer/PeerLinks.ts";
 import * as RemoteDelegation from "../../../peer/RemoteDelegation.ts";
-import { readCaller } from "../../threadAccess.ts";
+import { localBotWritesOnly, readCaller, SCHEDULED_TASKS_STAY_LOCAL } from "../../threadAccess.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import * as OrchestratorMcpService from "../../OrchestratorMcpService.ts";
@@ -251,4 +252,23 @@ const handlers = {
   ),
 } satisfies McpToolAccess.Handlers<typeof OrchestratorToolkit.tools>;
 
-export const layer = McpToolAccess.toLayer(OrchestratorToolkit, handlers);
+export const layer = McpToolAccess.toLayer(
+  OrchestratorToolkit,
+  Effect.gen(function* () {
+    const scheduledTasksStayLocal = localBotWritesOnly(
+      yield* BotService.BotService,
+      SCHEDULED_TASKS_STAY_LOCAL,
+    );
+    return {
+      ...handlers,
+      schedule_task: McpToolAccess.beforeForwarding(
+        handlers.schedule_task,
+        scheduledTasksStayLocal,
+      ),
+      delete_scheduled_task: McpToolAccess.beforeForwarding(
+        handlers.delete_scheduled_task,
+        scheduledTasksStayLocal,
+      ),
+    } satisfies McpToolAccess.Handlers<typeof OrchestratorToolkit.tools>;
+  }),
+);

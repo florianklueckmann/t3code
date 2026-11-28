@@ -282,6 +282,8 @@ export class ScheduledTaskService extends Context.Service<
       input: ScheduledTaskUpsertInput,
       provenance?: { readonly createdByThreadId: ThreadId },
     ) => Effect.Effect<ScheduledTaskMutationResult, ScheduledTaskError>;
+    /** The thread whose turn created the task; null when a client or an outside agent did. */
+    readonly creatorOf: (id: ScheduledTaskId) => Effect.Effect<ThreadId | null, ScheduledTaskError>;
     readonly setEnabled: (
       input: ScheduledTaskSetEnabledInput,
     ) => Effect.Effect<ScheduledTaskMutationResult, ScheduledTaskError>;
@@ -694,6 +696,10 @@ export const layer = Layer.effect(
 
     const findTask = Effect.fn("ScheduledTaskService.findTask")(function* (id: ScheduledTaskId) {
       return (yield* findStoredTask(id))?.task ?? null;
+    });
+
+    const creatorOf = Effect.fn("ScheduledTaskService.creatorOf")(function* (id: ScheduledTaskId) {
+      return (yield* findStoredTask(id))?.createdByThreadId ?? null;
     });
 
     const findWebhookCredentials = (id: ScheduledTaskId) =>
@@ -2932,6 +2938,7 @@ export const layer = Layer.effect(
       list,
       subscribeList,
       upsert,
+      creatorOf,
       setEnabled,
       delete: deleteTask,
       deleteForThread,
