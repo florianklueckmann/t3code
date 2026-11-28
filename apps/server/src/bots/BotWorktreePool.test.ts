@@ -653,6 +653,29 @@ it.effect("names commits made on a detached HEAD on a branch of their own", () =
   ),
 );
 
+it.effect("keeps the WIP mark when release resumes before the worktree moved", () =>
+  withRepository((world) =>
+    Effect.gen(function* () {
+      const sql = yield* BotDatabase.BotDatabase;
+      const thread = yield* insertTask("retry");
+      const claim = yield* world.take("retry");
+      if (claim._tag !== "pooled") return assert.fail();
+      yield* world.write(`${claim.worktreePath}/README.md`, "draft\n");
+      yield* world.git(claim.worktreePath, "commit", "-qam", "WIP: Task");
+      yield* sql`UPDATE bot_tasks SET unfinished_work = 1 WHERE work_thread_id = ${thread}`;
+
+      assert.deepEqual(yield* world.release("retry"), {
+        savedWork: false,
+        savedOn: null,
+        kept: null,
+      });
+      const [task] = yield* sql<{ readonly unfinished_work: number }>`
+        SELECT unfinished_work FROM bot_tasks WHERE work_thread_id = ${thread}`;
+      assert.equal(task?.unfinished_work, 1);
+    }),
+  ),
+);
+
 it.effect("starts from a local base branch even when a tag has its name", () =>
   withRepository((world) =>
     Effect.gen(function* () {

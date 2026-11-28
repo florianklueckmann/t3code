@@ -487,7 +487,8 @@ const makeThreadWorld = Effect.gen(function* () {
           yield* Ref.update(poolKept, without);
           // The pool records saved work on the task itself, before the worktree moves.
           const savedWork = yield* Ref.get(poolSavesWork);
-          yield* botSql`UPDATE bot_tasks SET unfinished_work = ${savedWork ? 1 : 0}
+          if (savedWork)
+            yield* botSql`UPDATE bot_tasks SET unfinished_work = 1
               WHERE work_thread_id = ${input.workThreadId}`.pipe(Effect.orDie);
           return { savedWork, savedOn: null, kept: null };
         }),
@@ -3693,7 +3694,7 @@ it.effect(
             // Once a run started, the install it set up is trusted.
             yield* sql`UPDATE bot_tasks SET setup_signature = 'lock-a' WHERE task_id = ${task.id}`;
             yield* world.update(thread, { started: true });
-            yield* sql`UPDATE bot_tasks SET worktree_state = 'held' WHERE task_id = ${task.id}`;
+            yield* sql`UPDATE bot_tasks SET worktree_state = 'held', unfinished_work = 0 WHERE task_id = ${task.id}`;
             yield* Ref.update(world.poolHeld, (all) => new Map(all).set(thread, worktreePath));
             yield* Ref.set(world.poolSavesWork, false);
             yield* world.update(thread, { status: "running" });

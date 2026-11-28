@@ -2098,8 +2098,7 @@ const make = Effect.gen(function* () {
         // From the task row, so a release a restart interrupted still tells the thread, and before
         // the task counts as released, which ends these passes. Only a WIP branch: a branch the
         // agent switched to is one the thread already follows.
-        const updated = yield* readRow(row.task_id);
-        const saved = updated?.branch ?? null;
+        const saved = (yield* readRow(row.task_id))?.branch ?? null;
         if (
           saved !== null &&
           saved.startsWith(`${taskBranchName(row)}-wip-`) &&
@@ -2117,11 +2116,8 @@ const make = Effect.gen(function* () {
         yield* sql`UPDATE bot_tasks SET worktree_state = 'released' WHERE task_id = ${row.task_id}`.pipe(
           Effect.mapError(storageError),
         );
-        return (
-          parked.savedWork ||
-          parked.savedOn !== null ||
-          updated?.unfinished_work !== row.unfinished_work
-        );
+        // Claiming a follow-up can clear its WIP mark before this release sees the task.
+        return row.worktree_state === "held" || parked.savedWork || parked.savedOn !== null;
       }),
     );
     if (shouldPublish) yield* publish(row);

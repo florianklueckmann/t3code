@@ -689,7 +689,8 @@ const make = Effect.gen(function* () {
       WHERE project_id = ${projectId} AND claimed_by IS NULL AND kept_reason IS NULL
     `.pipe(Effect.map((rows) => rows[0]?.count ?? 0));
   const markHeld = (workThreadId: ThreadId) =>
-    sql`UPDATE bot_tasks SET worktree_state = 'held' WHERE work_thread_id = ${workThreadId}`;
+    sql`UPDATE bot_tasks SET worktree_state = 'held', unfinished_work = 0
+        WHERE work_thread_id = ${workThreadId} AND worktree_state IS NOT 'held'`;
   const readRow = (worktreeId: string) =>
     sql<WorktreeRow>`SELECT * FROM bot_worktrees WHERE worktree_id = ${worktreeId}`.pipe(
       Effect.map((rows) => rows[0]),
@@ -1084,7 +1085,7 @@ const make = Effect.gen(function* () {
           saved = yield* saveWork(located.at, input);
           // Before the worktree moves, so a restart after the move still names the saved work.
           yield* sql`
-            UPDATE bot_tasks SET unfinished_work = ${saved.savedWork ? 1 : 0},
+            UPDATE bot_tasks SET unfinished_work = MAX(unfinished_work, ${saved.savedWork ? 1 : 0}),
               branch = COALESCE(${saved.savedOn}, branch)
             WHERE work_thread_id = ${input.workThreadId}
           `.pipe(Effect.mapError(storage));
