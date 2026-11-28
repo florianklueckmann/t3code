@@ -33,7 +33,7 @@ export interface DayTask {
   readonly question?: {
     readonly text: string;
     readonly match: string;
-    readonly choice: RegExp;
+    readonly alternatives: readonly string[];
     readonly parts: readonly RegExp[];
   };
   /** A file the work thread names as evidence, present in the fixture. */
@@ -60,8 +60,8 @@ export const DAY_TASKS: ReadonlyArray<DayTask> = [
     question: {
       text: "Should decorative product images get an empty alt attribute or a short description?",
       match: "decorative",
+      alternatives: ["Empty alt attribute", "Short description"],
       parts: [/empty|blank|alt=["']{2}/i, /descri[bp]/i],
-      choice: /empty|blank|description|descriptive|short|alt=""/i,
     },
     evidence: "src/products.ts",
   },
@@ -118,8 +118,8 @@ export const DAY_TASKS: ReadonlyArray<DayTask> = [
     question: {
       text: "Should the old `usr` name keep working as an alias, and for how long?",
       match: "alias",
+      alternatives: ["Remove the old name", "Keep it as an alias and decide for how long"],
       parts: [/alias/i, /how long|duration|period|until when|for what length/i],
-      choice: /keep|retain|support|compatib|how long|duration|old|legacy/i,
     },
     evidence: "src/routes/users.ts",
   },
@@ -336,7 +336,9 @@ export function invalidDay(run: DayRun): string | null {
   const starts = routing(run);
   const ids = starts.flatMap(({ records }) => records.map((record) => record.id));
   if (
-    starts.some(({ records }) => records.length !== 1) ||
+    starts.some(
+      ({ task, records }) => records.length !== 1 || !records[0]!.title.includes(`[${task.key}]`),
+    ) ||
     new Set(ids).size !== DAY_TASKS.length ||
     run.records.length !== DAY_TASKS.length
   )
@@ -395,7 +397,19 @@ function recap(answer: string) {
   const prose = [];
   let table = false;
   let header = false;
+  let tables = 0;
+  let fence = "";
   for (const line of answer.split("\n")) {
+    const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    if (fence) {
+      if (marker && marker[1]!.startsWith(fence) && !marker[2]!.trim()) fence = "";
+      continue;
+    }
+    if (marker) {
+      fence = marker[1]!;
+      table = header = false;
+      continue;
+    }
     const cells = line
       .trim()
       .replace(/^\||\|$/g, "")
@@ -407,6 +421,7 @@ function recap(answer: string) {
       continue;
     }
     if (header && cells.length === 5 && cells.every((cell) => /^:?-{3,}:?$/.test(cell))) {
+      tables++;
       table = true;
       header = false;
       continue;
@@ -423,10 +438,10 @@ function recap(answer: string) {
       rows.push({ project, id, title, status, review, valid: table && cells.length === 5 });
     }
   }
-  return { rows, prose: prose.join("\n") };
+  return { rows, tables, prose: prose.join("\n") };
 }
 
-function cellMatches(cell: string | undefined, expected: string) {
+function cellMatches(cell: string | undefined, expected: string, record: DayRecord) {
   if (cell === expected) return true;
   if (!cell?.startsWith(expected)) return false;
   if (!/^\s*(?:\(.+\)|[-–—]\s*.+)$/.test(cell.slice(expected.length))) return false;
@@ -441,11 +456,18 @@ function cellMatches(cell: string | undefined, expected: string) {
     "needs you": /^(?:finished with an unresolved result|missing evidence|open question)$/,
     running: /^in progress$/,
   };
+  const report = record.acceptance?.report;
+  if (qualifier === "file exists")
+    return report?.evidence.some((item) => item.check === "found") === true;
+  if (qualifier === "missing evidence") return report?.evidence.length === 0;
+  if (qualifier === "open question") return (report?.openQuestions.length ?? 0) > 0;
+  if (qualifier === "no initial commit")
+    return /no commit|branch "main" was not found/i.test(record.detail ?? "");
   return allowed[expected]?.test(qualifier) === true;
 }
 
 const deniesDay =
-  /(?:today.s|today (?:you|we)|from today|today were)\s+(?:only\s+)?(?:four|4) tasks|(?:four|4) tasks (?:came from you|from) today|(?:older tasks|other tasks|first batch).{0,50}before today|(?:didn.t|did not) ask (?:about )?them today/i;
+  /(?:four|4) are from your message today.{0,100}(?:six|6) were started earlier|(?:today.s|today (?:you|we)|from today|today were)\s+(?:only\s+)?(?:four|4) tasks|(?:four|4) tasks (?:came from you|from) today|(?:older tasks|other tasks|first batch).{0,50}before today|(?:didn.t|did not) ask (?:about )?them today/i;
 
 // Only direct assertions count in free text. A review recommendation gives no new recorded status.
 function claims(text: string, task: DayTask, standalone: boolean, unprovenUpdate = false) {
@@ -493,7 +515,7 @@ function claims(text: string, task: DayTask, standalone: boolean, unprovenUpdate
     )
       continue;
     const status =
-      /\b(failed|cancelled)\s*[.!]?$/i.exec(clause)?.[1] ??
+      /\b(failed|cancelled)(?:\s+because\b|\s*[.!]?$)/i.exec(clause)?.[1] ??
       /(?:\b(?:is|was|has been|remains)\s+(?:now\s+)?|[:—]\s*|^)(done|completed|finished|cancelled|failed|blocked|running)\b/.exec(
         clause,
       )?.[1];
@@ -509,7 +531,18 @@ function completeDecision(question: NonNullable<DayTask["question"]>, text: stri
   return matches(question.match, text) && question.parts.every((part) => part.test(text));
 }
 
-function questionCount(answer: string, question: NonNullable<DayTask["question"]>) {
+const questionWords = (value: string) =>
+  value
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+function questionCount(
+  answer: string,
+  question: NonNullable<DayTask["question"]>,
+  recorded: string,
+) {
   const sentences = normalize(answer)
     .split(/(?<=[.!?;])\s+|\n+/)
     .filter(Boolean);
@@ -527,10 +560,24 @@ function questionCount(answer: string, question: NonNullable<DayTask["question"]
       /which (?:one|option|approach|of (?:these|those)) (?:do|would|should)|which (?:do|would) you (?:prefer|choose)/.test(
         sentence,
       );
-    if (!completeDecision(question, sentence + " " + setup)) return false;
+    if (/(?:ruled out|already decided|not an option)/.test(setup + " " + sentence)) return false;
+    if (questionWords(recorded) !== questionWords(question.text))
+      return questionWords(sentence).includes(questionWords(recorded));
+    const choice = refersToChoices ? setup : sentence;
+    if (!aboutQuestion && !aboutSetup) return false;
+    if (question.match === "alias")
+      return (
+        completeDecision(question, choice) &&
+        /(?:should|whether|do you want|would you like).{0,55}(?:remain|keep|retain|support|preserve|continue|still work)/.test(
+          choice,
+        )
+      );
+    const imageTreatment =
+      /(?:decorative (?:product )?images? (?:should |could )?(?:get|have|use|receive|take)|(?:use|give|choose(?: between)?) (?:an? )?(?:empty|blank|short)|^(?:empty|blank) alt)/;
     return (
-      (question.choice.test(sentence) && (aboutQuestion || aboutSetup)) ||
-      (aboutSetup && question.choice.test(setup) && refersToChoices)
+      imageTreatment.test(choice) &&
+      question.parts.every((part) => part.test(choice)) &&
+      /\b(?:or|versus|vs|between)\b/.test(choice)
     );
   }).length;
 }
@@ -548,30 +595,37 @@ const requestDetails: Record<string, RegExp[]> = {
   "changelog-links": [/changelog/i, /link/i],
 };
 
-export function gradeBriefs(run: DayRun) {
+export type ChoiceDecision = { settled: boolean; quote: string };
+export type DayDecisions = Readonly<Record<string, ChoiceDecision>>;
+
+export function openBriefs(run: DayRun) {
+  return DAY_TASKS.flatMap((task) => {
+    const records = run.records.filter((record) => requestsOf(record).includes(task));
+    const record = records[0];
+    if (records.length !== 1 || !record?.brief || !task.question) return [];
+    return [
+      {
+        id: record.id,
+        brief: record.brief,
+        question: record.acceptance?.report?.openQuestions[0] ?? task.question.text,
+        alternatives: task.question.alternatives,
+      },
+    ];
+  });
+}
+
+export function gradeBriefs(run: DayRun, decisions: DayDecisions) {
   return DAY_TASKS.map((task) => {
     const records = run.records.filter((record) => requestsOf(record).includes(task));
     const record = records.length === 1 ? records[0] : undefined;
     const brief = record?.brief ?? "";
-    const directives = brief
-      .split(/(?<=[.!?])\s+|\n+/)
-      .filter(
-        (line) =>
-          !/\?|\b(?:ask|clarify|confirm|decide) whether|leave.{0,28}(?:open|user)/i.test(line),
-      )
-      .join("\n");
-    const settled =
-      task.key === "usr-param"
-        ? /(?:do not|don't|never)\s+(?:add|keep|retain|support).{0,45}(?:fallback|alias|old name)|(?:keep|retain|preserve|remove|drop)\s+(?:the\s+)?(?:old\s+)?(?:\x60?usr\x60?|alias|backward compatib)|no (?:reference|support).{0,45}(?:old|usr)|no longer (?:reads?|accepts?) [`]?usr|no .{0,20}alias.{0,45}(?:do not|don.t) add one/i.test(
-            directives,
-          )
-        : task.key === "alt-text"
-          ? /(?:give|use|set|leave|use an?).{0,28}(?:empty|blank|short description).{0,45}decorative|decorative.{0,35}(?:must|should|receive|use|get|leave).{0,18}(?:empty|blank|short description)|every product image(?: in the storefront)? has (?:a non-empty alt|descriptive alt text)/i.test(
-              directives,
-            )
-          : false;
+    const decision = record && task.question && brief ? decisions[record.id] : undefined;
+    if (record && task.question && brief && !decision)
+      throw new Error("Missing choice judgment for " + record.id);
+    const settled = decision?.settled ?? false;
     return {
       task: task.key,
+      decision,
       project: record?.projectId === run.ids.projectIds[task.project],
       request: !settled && requestDetails[task.key]!.every((pattern) => pattern.test(brief)),
       doneCondition:
@@ -591,12 +645,14 @@ export const gradeDay = (run: DayRun) => {
   const starts = routing(run);
   const ids = starts.flatMap(({ records }) => records.map((record) => record.id));
   const summary = run.homeRuns.find((home) => home.runId === run.summaryRunId)?.answer ?? "";
-  const { rows, prose } = recap(summary);
+  const { rows, prose, tables } = recap(summary);
   add("day ran to the summary", run.incomplete === null && summary !== "");
   for (const { task, records } of starts)
     add(
       `started ${task.key} exactly once`,
-      records.length === 1 && records[0]?.batch === task.batch,
+      records.length === 1 &&
+        records[0]?.batch === task.batch &&
+        records[0].title.includes(`[${task.key}]`),
     );
   add("gave every request a task of its own", new Set(ids).size === ids.length);
   add(
@@ -614,17 +670,17 @@ export const gradeDay = (run: DayRun) => {
     "recap names every open question or points to its card",
     starts.every(({ task, records }) => {
       const question = task.question;
-      if (!question || !records.some((record) => record.acceptance?.report?.openQuestions.length))
-        return true;
+      const recorded = records[0]?.acceptance?.report?.openQuestions[0];
+      if (!question || !recorded) return true;
       return (
         summary
           .split("\n")
           .some(
             (line) =>
-              completeDecision(question, line) ||
+              questionCount(line, question, recorded) > 0 ||
               (matches(task.match, line) &&
                 /\b(?:cards?|work threads?)\b|t3-thread:\/\//i.test(line)),
-          ) || questionCount(prose, question) > 0
+          ) || questionCount(prose, question, recorded) > 0
       );
     }),
   );
@@ -637,16 +693,30 @@ export const gradeDay = (run: DayRun) => {
     add(
       `summary gives ${task.key} as ${expected}`,
       mentions.length === 1 &&
+        tables === 1 &&
         mentions[0]?.valid === true &&
         mentions[0].title === normalize(record.title) &&
-        cellMatches(mentions[0].status, record.status) &&
+        cellMatches(mentions[0].status, record.status, record) &&
         mentions[0].project === title &&
         claims(prose, task, false).every((status) => status === expected),
     );
     add(
       `summary gives ${task.key} its review state`,
       mentions.length === 1 &&
-        cellMatches(mentions[0]?.review, record.acceptance?.state.replace("_", " ") ?? "none"),
+        tables === 1 &&
+        mentions[0]?.valid === true &&
+        cellMatches(
+          mentions[0]?.review,
+          record.acceptance?.state.replace("_", " ") ?? "none",
+          record,
+        ) &&
+        (!record.acceptance ||
+          !prose
+            .split(/[.!?\n]/)
+            .some(
+              (line) =>
+                matches(task.match, line) && /\b(?:has|with) no acceptance record\b/i.test(line),
+            )),
     );
     if (expected === "failed" || expected === "cancelled" || expected === "needs_you") {
       const updates = run.homeRuns.filter((home) => home.updateTaskIds.includes(record.id));
@@ -668,10 +738,8 @@ export const gradeDay = (run: DayRun) => {
       );
     }
     const question = task.question;
-    if (
-      question &&
-      record.acceptance?.report?.openQuestions.some((text) => completeDecision(question, text))
-    ) {
+    const recorded = record.acceptance?.report?.openQuestions[0];
+    if (question && recorded) {
       const asked = run.homeRuns
         .filter(
           (home) =>
@@ -679,7 +747,7 @@ export const gradeDay = (run: DayRun) => {
             !(home.prompt === "follow-up" && task.key === "alt-text"),
         )
         .flatMap((home) =>
-          Array.from({ length: questionCount(home.answer, question) }, () => home),
+          Array.from({ length: questionCount(home.answer, question, recorded) }, () => home),
         );
       const inUpdate = asked.filter((home) => home.updateTaskIds.includes(record.id));
       add(`question of ${task.key} passed on once`, asked.length === 1 && inUpdate.length === 1);
@@ -724,9 +792,9 @@ export const gradeDay = (run: DayRun) => {
 };
 
 /** Used for both live samples and replaying saved task records. */
-export function scoreDay(run: DayRun) {
+export function scoreDay(run: DayRun, decisions: DayDecisions) {
   const invalid = run.incomplete ?? invalidDay(run);
   const checks = gradeDay(run);
-  const briefs = gradeBriefs(run);
+  const briefs = gradeBriefs(run, decisions);
   return { invalid, checks, briefs, pass: invalid === null && checks.every((check) => check.pass) };
 }

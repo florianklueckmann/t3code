@@ -1,0 +1,13 @@
+{
+  "type": "object",
+  "properties": {
+    "settled": {
+      "type": "boolean"
+    },
+    "quote": {
+      "type": "string"
+    }
+  },
+  "required": ["settled", "quote"],
+  "additionalProperties": false
+}

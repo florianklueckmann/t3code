@@ -37,10 +37,13 @@ import {
   readItems,
   requireBotModel,
   runTurn,
+  SampleError,
   type ToolActivity,
   toolActivity,
   withTools,
 } from "../shared/devServerTools.ts";
+import { judgeDay, verifyDayHomes } from "./dayJudge.ts";
+import { daySummary, dayLedger } from "./daySummary.ts";
 import { dayWorkerArgs, dayWorkerServer } from "./dayWorker.ts";
 import { withRpc } from "../shared/devServerRpc.ts";
 import { noteOf } from "../shared/botHome.ts";
@@ -56,7 +59,7 @@ import {
   TWIN_SOURCES,
 } from "./cases.ts";
 import { DAY_CASE_ID, DAY_WORKER_MODEL, scoreDay } from "./homeDay.ts";
-import { type DayUsage, runDaySample } from "./homeDayRun.ts";
+import { runDaySample } from "./homeDayRun.ts";
 
 export interface SampleRun {
   readonly answers: ReadonlyArray<string>;
@@ -495,56 +498,6 @@ const runSample = Effect.fn("botSources.runSample")(function* (
   };
 });
 
-/** The day case's rows: pass, scenario and the Home's turns and tokens per sample. */
-const daySummary = (
-  days: ReadonlyArray<
-    | { readonly pass: boolean; readonly error: string }
-    | {
-        readonly pass: boolean;
-        readonly invalid: string | null;
-        readonly briefs: ReturnType<typeof scoreDay>["briefs"];
-        readonly checks: ReadonlyArray<{ readonly check: string; readonly pass: boolean }>;
-        readonly usage: DayUsage;
-      }
-  >,
-) => {
-  if (days.length === 0) return [];
-  const rows = days.map((day, sample) => {
-    if ("error" in day) return `| ${sample + 1} | error | | | | ${day.error.slice(0, 80)} |`;
-    const { usage } = day;
-    const failed = day.checks.filter((check) => !check.pass).map((check) => check.check);
-    return `| ${sample + 1} | ${day.invalid ? "invalid" : day.pass ? "pass" : "fail"} | ${usage.homeTurns} | ${usage.inputTokens} (${usage.cachedInputTokens} cached) | ${usage.outputTokens} | ${day.invalid?.replace(/\s+/g, " ").replaceAll("|", "\\|") ?? failed.join("; ")} |`;
-  });
-  const scored = days.flatMap((day) => ("error" in day ? [] : [day]));
-  const names = new Set(scored.flatMap((day) => day.checks.map((check) => check.check)));
-  return [
-    `${DAY_CASE_ID}: ${scored.filter((day) => day.pass).length}/${days.length} samples passed. Invalid: ${scored.filter((day) => day.invalid !== null).length}. Errors: ${days.length - scored.length}.`,
-    "",
-    "| Sample | Result | Home turns | Home input tokens | Home output tokens | Failed checks or invalid reason |",
-    "| --- | --- | --- | --- | --- | --- |",
-    ...rows,
-    "",
-    "| Brief criterion | Count |",
-    "| --- | --- |",
-    ...(["project", "request", "doneCondition", "baseBranch", "settled"] as const).map((key) => {
-      const briefs = scored
-        .flatMap((day) => day.briefs)
-        .filter((brief) => key !== "settled" || brief.openChoice);
-      return `| ${key} | ${briefs.filter((brief) => brief[key]).length}/${briefs.length} |`;
-    }),
-    "",
-    "| Check | " + days.map((_, i) => `Sample ${i + 1}`).join(" | ") + " | Total |",
-    "| --- | " + days.map(() => "---").join(" | ") + " | --- |",
-    ...Array.from(names, (name) => {
-      const results = days.map((day) =>
-        "error" in day ? undefined : day.checks.find((check) => check.check === name)?.pass,
-      );
-      return `| ${name} | ${results.map((pass) => (pass === undefined ? "—" : pass ? "pass" : "fail")).join(" | ")} | ${results.filter(Boolean).length}/${results.filter((pass) => pass !== undefined).length} |`;
-    }),
-    "",
-  ];
-};
-
 const main = Effect.gen(function* () {
   const { values } = NodeUtil.parseArgs({
     options: {
@@ -613,6 +566,8 @@ const main = Effect.gen(function* () {
   if (live && values.case?.includes(DAY_CASE_ID))
     throw new Error("Run the live integration separately.");
   const dayJobs = live ? 1 : values.case?.includes(DAY_CASE_ID) ? samples : 0;
+  if (dayJobs) verifyDayHomes();
+  const ledger = dayJobs ? dayLedger(out, live) : undefined;
   const replayId = "dayReplay-" + NodeCrypto.randomUUID();
   let release: ((taskId: string, text: string) => void) | undefined;
   if (dayJobs && !live) {
@@ -667,20 +622,29 @@ const main = Effect.gen(function* () {
   const runDays = (call: Call, modelSelection: BotModelSelection) =>
     Effect.forEach(
       Array.from({ length: dayJobs }, (_, sample) => sample),
-      (sample) =>
-        (live
-          ? requireBotModel(call, DAY_WORKER_MODEL)
-          : Effect.succeed({ instanceId: replayId, model: "fixed", options: [] })
+      (sample) => {
+        const id = live ? liveCase : DAY_CASE_ID;
+        const attemptId = NodeCrypto.randomUUID();
+        ledger!.write({ id, sample, attemptId, phase: "started" });
+        return (
+          live
+            ? requireBotModel(call, DAY_WORKER_MODEL)
+            : Effect.succeed({ instanceId: replayId, model: "fixed", options: [] })
         ).pipe(
           Effect.flatMap((workerSelection) =>
             runDaySample(call, { work, baseDir, modelSelection, workerSelection, release }),
           ),
-          Effect.map((run) => ({
-            id: live ? liveCase : DAY_CASE_ID,
-            sample,
-            ...scoreDay(run),
-            ...run,
-          })),
+          Effect.flatMap((run) =>
+            Effect.tryPromise({
+              try: () => judgeDay(run, work),
+              catch: (cause) => new SampleError({ message: "Choice judge: " + String(cause) }),
+            }).pipe(
+              Effect.map((decisions) => ({ ...run, ...scoreDay(run, decisions), decisions })),
+              Effect.catch((error) =>
+                Effect.succeed({ ...run, pass: false, error: error.message }),
+              ),
+            ),
+          ),
           Effect.catch((error) =>
             Effect.succeed({
               id: live ? liveCase : DAY_CASE_ID,
@@ -690,11 +654,10 @@ const main = Effect.gen(function* () {
             }),
           ),
           Effect.tap((row) =>
-            Effect.sync(() =>
-              NodeFS.appendFileSync(NodePath.join(out, "results.jsonl"), `${encodeJson(row)}\n`),
-            ),
+            Effect.sync(() => ledger!.write({ ...row, id, attemptId, sample, phase: "finished" })),
           ),
-        ),
+        );
+      },
       { concurrency: Number(values.concurrency) },
     );
   const results = yield* withTools(baseDir, "bot-sources", (call) =>
@@ -705,8 +668,8 @@ const main = Effect.gen(function* () {
         effort: values.effort,
       });
       const caseRows = yield* runJobs(call, modelSelection);
-      const days = yield* runDays(call, modelSelection);
-      return { caseRows, days };
+      yield* runDays(call, modelSelection);
+      return { caseRows };
     }),
   );
   const rows = results.caseRows;
@@ -724,9 +687,8 @@ const main = Effect.gen(function* () {
     "| ---- | ---- | ------ | ------ | ----------------------- |",
     ...lines,
     "",
-    ...(live
-      ? ["Live-worker integration (excluded from pass counts). See results.jsonl."]
-      : daySummary(results.days)),
+    ...(live ? ["Live-worker integration (excluded from pass counts)."] : []),
+    ...daySummary(ledger?.days() ?? []),
   ].join("\n");
   NodeFS.writeFileSync(NodePath.join(out, "summary.md"), summary);
   yield* Effect.log(summary);

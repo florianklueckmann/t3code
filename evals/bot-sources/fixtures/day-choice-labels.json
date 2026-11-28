@@ -1,0 +1,194 @@
+[
+  {
+    "model": "luna",
+    "sample": 1,
+    "task": "alt-text",
+    "brief": "Add appropriate alt text to all product images in the Storefront. Inspect the project to find all product image markup/data and provide useful image descriptions.\nDone when: every product image has appropriate alt text.",
+    "settled": true,
+    "borderline": true
+  },
+  {
+    "model": "luna",
+    "sample": 1,
+    "task": "usr-param",
+    "brief": "In the Orders API project, rename the /users query parameter from `usr` to `user` and update relevant implementation and references. Done when: /users accepts the `user` parameter in place of `usr`, with relevant references updated.",
+    "settled": false,
+    "borderline": false
+  },
+  {
+    "model": "luna",
+    "sample": 2,
+    "task": "alt-text",
+    "brief": "In Storefront, add alt text to all product images. Start from main. Done when: every product image has appropriate alt text and the change is ready for review.",
+    "settled": false,
+    "borderline": false
+  },
+  {
+    "model": "luna",
+    "sample": 2,
+    "task": "usr-param",
+    "brief": "Rename the `usr` query parameter on the `/users` endpoint to `user`. Update relevant implementation and usage documentation or tests as appropriate for this API change.\nDone when: `/users` accepts and uses `user` as the query parameter.",
+    "settled": false,
+    "borderline": false
+  },
+  {
+    "model": "luna",
+    "sample": 3,
+    "task": "alt-text",
+    "brief": "Add appropriate alt text to all product images in the Storefront. Inspect the product image rendering/data sources and ensure meaningful images have descriptive text while decorative images are handled accessibly. Done when: every product image has suitable accessible alt text and relevant checks pass.",
+    "settled": false,
+    "borderline": false
+  },
+  {
+    "model": "luna",
+    "sample": 3,
+    "task": "usr-param",
+    "brief": "In the Orders API project, rename the `usr` query parameter on `/users` to `user`. Update relevant parsing, validation, and references so `/users?user=...` is used consistently. Done when: `/users` accepts the `user` query parameter in place of `usr` and relevant references are updated.",
+    "settled": false,
+    "borderline": false
+  },
+  {
+    "model": "haiku",
+    "sample": 1,
+    "task": "alt-text",
+    "brief": "Add alt text to all product images in the storefront. Find every place a product image is rendered, and give each image a meaningful alt attribute based on the product name (or existing product data), not an empty string or a file name. Decorative images should use an empty alt explicitly. Keep the change minimal. Done when: every product image in the storefront has alt text, existing tests pass, and the change is committed on a branch from main.",
+    "settled": true,
+    "borderline": false
+  },
+  {
+    "model": "haiku",
+    "sample": 1,
+    "task": "usr-param",
+    "brief": "In this Orders API repository, rename the `usr` query parameter on the /users endpoint to `user`. Update the handler that reads the parameter, its validation, the tests that use it, and any docs or internal callers in this repository that send `usr` to /users. Do not change other endpoints or other parameters. Work from the main branch. This is a breaking change for external callers that send `usr`; do not add a fallback unless one already exists, but state in your report whether this repository contains any other place that still depends on `usr`. Done when: /users reads `user`, no code, test or doc in this repository still uses `usr` for /users, and the tests pass. Report the files you changed.",
+    "settled": true,
+    "borderline": false
+  },
+  {
+    "model": "haiku",
+    "sample": 2,
+    "task": "alt-text",
+    "brief": "Add alt text to all product images in the storefront. Find every product image render (components, templates, or pages that output product images) and give each a meaningful alt attribute that describes the product, using the product name or data already available on the item. Do not leave any product image with an empty or missing alt attribute unless it is purely decorative, and say which ones, if any, you treated as decorative. Run the project's tests and linter and report the results. Work on your own branch from main.\n\nDone when: every product image in the storefront has a non-empty alt attribute, the tests and linter pass, and the branch is committed with a list of the changed files reported.",
+    "settled": true,
+    "borderline": false
+  },
+  {
+    "model": "haiku",
+    "sample": 2,
+    "task": "usr-param",
+    "brief": "Orders API repository, branch main. Rename the `usr` query parameter on the /users endpoint to `user`. Change the parameter name in the handler, validation, any request parsing, the API docs or OpenAPI spec if present, and the tests. Search the whole repository for other uses of `usr` tied to this endpoint, including client code and scripts in the repo, and update them. Do not rename unrelated uses of the word. Do not keep `usr` as an alias unless the repository already has a deprecation pattern for renamed parameters; if you find one, follow it and say so. Run the existing tests and report the results. Commit on your task branch and report the commit hash and the files changed. In your final message, list any places outside this repository that may still send `usr`, if you can tell from the code.\n\nDone when: /users reads `user` and no longer reads `usr`, the tests pass, and the final message lists the changed files and any remaining callers you could not verify.",
+    "settled": true,
+    "borderline": false
+  },
+  {
+    "model": "haiku",
+    "sample": 3,
+    "task": "alt-text",
+    "brief": "Add meaningful alt text to every product image in the storefront. Find all places that render product images (img tags, image components, or templates), and give each one an alt attribute. Use the product name and, where useful, a short description of what the image shows, based on the product data available in the codebase. Do not leave alt empty for product images unless the image is purely decorative, and note any such exception in your final message. Keep the change focused on alt text. Commit on your own branch.\n\nDone when: every product image in the storefront has an alt attribute, the build or tests pass, and your final message lists the files changed and any images left without alt text with the reason.",
+    "settled": false,
+    "borderline": false
+  },
+  {
+    "model": "haiku",
+    "sample": 3,
+    "task": "usr-param",
+    "brief": "Orders API repo. Rename the `usr` query parameter on the /users endpoint to `user`. Update the route handler, validation, and any internal code that reads the parameter. Search the repo for other references to `usr` on /users (tests, docs, OpenAPI or similar specs, example requests) and update them too. Do not change unrelated uses of the word `usr`. Run the existing tests and fix anything your change broke. Commit on your task branch with a clear English commit message, and note in the commit body that clients sending `usr` will need to switch to `user`.\n\nDone when: /users reads `user` and no longer reads `usr`, all references in code and docs are updated, tests pass, and the change is committed on the task branch.",
+    "settled": true,
+    "borderline": false
+  },
+  {
+    "model": "terra",
+    "sample": 1,
+    "task": "alt-text",
+    "brief": "Add appropriate alt text to all product images in the storefront.\nDone when: all product images have appropriate alt text.",
+    "settled": false,
+    "borderline": false
+  },
+  {
+    "model": "terra",
+    "sample": 1,
+    "task": "usr-param",
+    "brief": "Rename the `usr` query parameter on /users to `user`, updating relevant uses and documentation as needed.\nDone when: /users uses `user` as its query parameter and relevant checks pass.",
+    "settled": false,
+    "borderline": false
+  },
+  {
+    "model": "terra",
+    "sample": 2,
+    "task": "alt-text",
+    "brief": "Add meaningful alt text to all product images in the storefront.\nDone when: All product images have appropriate alt text.",
+    "settled": false,
+    "borderline": false
+  },
+  {
+    "model": "terra",
+    "sample": 2,
+    "task": "usr-param",
+    "brief": "Rename the `usr` query parameter on /users to `user`, updating relevant implementation and usage.\nDone when: /users uses `user` as the query parameter and relevant checks pass.",
+    "settled": false,
+    "borderline": false
+  },
+  {
+    "model": "terra",
+    "sample": 3,
+    "task": "alt-text",
+    "brief": "Add appropriate alt text to all product images in the storefront.\nDone when: all product images have appropriate alt text.",
+    "settled": false,
+    "borderline": false
+  },
+  {
+    "model": "terra",
+    "sample": 3,
+    "task": "usr-param",
+    "brief": "Rename the usr query parameter on /users to user, updating relevant implementation and tests or documentation.\nDone when: /users uses user as its query parameter instead of usr.",
+    "settled": false,
+    "borderline": false
+  },
+  {
+    "model": "sonnet",
+    "sample": 1,
+    "task": "alt-text",
+    "brief": "In the Storefront project, add alt text to all product images. The text should describe the product shown, based on information available in the project.\n\nDone when: every product image has meaningful alt text and the change is committed on this task's branch. Report the branch, commit and any images you could not describe.",
+    "settled": true,
+    "borderline": false
+  },
+  {
+    "model": "sonnet",
+    "sample": 1,
+    "task": "usr-param",
+    "brief": "In the Orders API project, rename the `usr` query parameter on the /users endpoint to `user`. Update the tests, docs and in-repo callers that use it. No backward-compatible alias for `usr` was requested, so don't add one; mention in your report any caller that could break. Report the branch, commit and changed files.\nDone when: /users reads `user` instead of `usr`, in-repo references are updated, existing tests (if any) pass, and the change is committed on the task branch.",
+    "settled": true,
+    "borderline": false
+  },
+  {
+    "model": "sonnet",
+    "sample": 2,
+    "task": "alt-text",
+    "brief": "In the Storefront project, add alt text to all product images (src/products.ts may be a starting point; check the whole project). Alt text should describe the product shown. If an image's content cannot be determined from the project, say so instead of inventing details. Commit the change on your task branch and report the commit and which images you covered.\n\nDone when: every product image has meaningful alt text and the change is committed.",
+    "settled": true,
+    "borderline": false
+  },
+  {
+    "model": "sonnet",
+    "sample": 2,
+    "task": "usr-param",
+    "brief": "In this Orders API repository, rename the `usr` query parameter on the /users endpoint to `user`. Update the tests, docs and in-repo callers that use it. Do not add a backward-compatible `usr` alias, since only a rename was requested; if you find callers that this would break, name them in your report. If you cannot find the parameter, stop and report that. Use English for code, comments and commits. Commit your change on this task's branch.\n\nDone when: /users reads `user` instead of `usr`, no in-repo use of the old parameter remains, any existing tests pass, and the change is committed; report the commit, changed files and test results.",
+    "settled": true,
+    "borderline": false
+  },
+  {
+    "model": "sonnet",
+    "sample": 3,
+    "task": "alt-text",
+    "brief": "In the Storefront project, add alt text to all product images. Report the branch, commit and which images you covered.\nDone when: every product image has descriptive alt text and the change is committed on the task branch.",
+    "settled": true,
+    "borderline": false
+  },
+  {
+    "model": "sonnet",
+    "sample": 3,
+    "task": "usr-param",
+    "brief": "In the Orders API, rename the `usr` query parameter on the /users endpoint to `user`. Update all uses in this repository, including tests and docs. Don't add a fallback for the old name unless the repository requires backward compatibility; if it does, stop and ask. Report any sign of callers outside this repository that still send `usr`. Commit the change on your task branch.\n\nDone when: /users reads `user`, no use of the `usr` query parameter remains in the repository, existing tests (if any) pass, and the change is committed. Report the commit and changed files.",
+    "settled": true,
+    "borderline": false
+  }
+]
