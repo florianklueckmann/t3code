@@ -102,6 +102,7 @@ const withRepository = <A, E>(
       name: string,
       worktreePath?: string | null,
       reuse?: boolean,
+      inUse?: Effect.Effect<string | null>,
     ) => Effect.Effect<BotWorktreePool.BotWorktreeRelease, BotWorktreePool.BotWorktreePoolError>;
     readonly runTask: (
       n: number,
@@ -197,7 +198,12 @@ const withRepository = <A, E>(
         branch: `bot/${name}`,
         baseBranch: baseBranch ?? null,
       });
-    const release = (name: string, worktreePath: string | null = null, reuse = true) =>
+    const release = (
+      name: string,
+      worktreePath: string | null = null,
+      reuse = true,
+      inUse: Effect.Effect<string | null> = Effect.succeed(null),
+    ) =>
       pool.release({
         projectId,
         workThreadId: threadOf(name),
@@ -206,6 +212,7 @@ const withRepository = <A, E>(
         commitMessage: "WIP: Task",
         wipBranch: `bot/${name}-wip-1`,
         reuse,
+        inUse,
       });
     const runTask = Effect.fnUntraced(function* (
       n: number,
@@ -757,6 +764,34 @@ it.effect("a worktree kept for an open terminal is neither handed out nor counte
       assert.isFalse(
         yield* world.exists(reclaimed._tag === "pooled" ? reclaimed.worktreePath : ""),
       );
+      assert.lengthOf((yield* world.pool.inventory(projectId)).free, 1);
+    }),
+  ),
+);
+
+it.effect("a terminal that opened while release moved the worktree keeps it out of the pool", () =>
+  withRepository((world) =>
+    Effect.gen(function* () {
+      const thread = yield* insertTask("terminal");
+      const claim = yield* world.take("terminal");
+      const worktreePath = claim._tag === "pooled" ? claim.worktreePath : "";
+      // The caller found no terminal before; one opened in the folder while the worktree moved.
+      const opened = Effect.gen(function* () {
+        assert.isFalse(yield* world.exists(worktreePath));
+        return "has a terminal open in it";
+      });
+      const released = yield* world.release("terminal", null, true, opened);
+      assert.equal(released.kept, "has a terminal open in it");
+      yield* markReleased(thread);
+      assert.deepEqual(yield* world.pool.keptClaims, [
+        { path: worktreePath, workThreadId: thread, reason: "has a terminal open in it" },
+      ]);
+      yield* insertTask("next");
+      assert.equal((yield* world.take("next"))._tag, "pooled");
+      assert.equal(yield* world.worktreeCount, 2);
+      // Once the terminal is gone, it is freed where it rests.
+      yield* world.release("terminal");
+      assert.deepEqual(yield* world.pool.keptClaims, []);
       assert.lengthOf((yield* world.pool.inventory(projectId)).free, 1);
     }),
   ),

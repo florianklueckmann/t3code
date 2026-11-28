@@ -157,7 +157,12 @@ sees terminals the way storage cleanup does
 ([liveTerminals](../../apps/server/src/terminal/liveTerminals.ts)): while a shell
 works in the worktree, by the thread's folder or its own working folder, the
 worktree stays where it is as kept, outside the count, and each pass releases it
-once that terminal is gone. Nothing closes the user's terminal. The pool cap applies
+once that terminal is gone. Nothing closes the user's terminal. Terminal startup
+leases only its own folder, so a shell can still open inside the worktree while
+release moves it; release asks again once the worktree is at rest and keeps it
+claimed if one did, since the shell follows the folder. A shell that opens while
+release removes the worktree loses its folder, which harms no other task, so that
+window is accepted rather than making every terminal wait for releases around it. The pool cap applies
 to starting tasks; a follow-up still gets a worktree when the pool is full, and
 release removes the extra one.
 

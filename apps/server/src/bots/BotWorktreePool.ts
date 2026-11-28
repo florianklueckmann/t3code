@@ -171,6 +171,11 @@ export class BotWorktreePool extends Context.Service<
       readonly wipBranch: string;
       /** False removes the worktree instead of parking it. */
       readonly reuse: boolean;
+      /**
+       * Asked once the worktree is at rest, right before it is freed: a reason to keep it claimed
+       * instead, as for a terminal that opened in its old folder while it moved.
+       */
+      readonly inUse: Effect.Effect<string | null>;
     }) => Effect.Effect<BotWorktreeRelease, BotWorktreePoolError>;
     /**
      * Puts a work thread's worktree at its folder on its branch: the one it holds or kept, a
@@ -1126,6 +1131,10 @@ const make = Effect.gen(function* () {
             return { kept: null };
           }
         }
+        // A shell follows its folder through the move; one that opened meanwhile would write into
+        // the next task's checkout.
+        const busy = yield* input.inUse;
+        if (busy !== null) return { kept: busy };
         const [task] = yield* sql<{ readonly setup_signature: string | null }>`
           SELECT setup_signature FROM bot_tasks WHERE work_thread_id = ${input.workThreadId}
         `.pipe(Effect.mapError(storage));

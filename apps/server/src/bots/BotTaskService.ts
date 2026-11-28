@@ -2062,6 +2062,9 @@ const make = Effect.gen(function* () {
             commitMessage: `WIP: ${row.title}\n\nSaved by T3 Code when the Bot task's work stopped.`,
             wipBranch: `${branch}-wip-${DateTime.toEpochMillis(yield* DateTime.now)}`,
             reuse: started,
+            inUse: terminalIn(worktreePath).pipe(
+              Effect.map((open) => (open ? TERMINAL_OPEN : null)),
+            ),
           })
           .pipe(Effect.mapError((cause) => botError(cause.message)(cause)));
         // Work saved from a detached HEAD is on its own branch; the card and a follow-up use it.

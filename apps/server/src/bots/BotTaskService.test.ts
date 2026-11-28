@@ -222,6 +222,8 @@ const makeThreadWorld = Effect.gen(function* () {
   const poolHeld = yield* Ref.make(new Map<ThreadId, string>());
   /** Worktrees the pool keeps for a thread, with why. */
   const poolKept = yield* Ref.make(new Map<ThreadId, string>());
+  /** What happens while a release moves the worktree, before the pool asks whether it is in use. */
+  const poolMoving = yield* Ref.make<Effect.Effect<void>>(Effect.void);
   /** TerminalManager's metadata listeners; `terminalEvent` feeds them as it would. */
   const terminalListeners: Array<(event: TerminalMetadataStreamEvent) => Effect.Effect<void>> = [];
   const terminalEvent = (event: TerminalMetadataStreamEvent) =>
@@ -468,6 +470,12 @@ const makeThreadWorld = Effect.gen(function* () {
         Effect.gen(function* () {
           const held = (yield* Ref.get(poolHeld)).get(input.workThreadId);
           if (held === undefined) return { savedWork: false, savedOn: null, kept: null };
+          yield* yield* Ref.get(poolMoving);
+          const busy = yield* input.inUse;
+          if (busy !== null) {
+            yield* Ref.update(poolKept, (all) => new Map(all).set(input.workThreadId, busy));
+            return { savedWork: false, savedOn: null, kept: busy };
+          }
           yield* Ref.update(poolParks, (all) => [...all, input.reuse ? held : `${held} (removed)`]);
           const without = (all: ReadonlyMap<ThreadId, string>) => {
             const next = new Map(all);
@@ -561,6 +569,7 @@ const makeThreadWorld = Effect.gen(function* () {
     poolTakes,
     poolHeld,
     poolKept,
+    poolMoving,
     terminalEvent,
     poolParks,
     poolSavesWork,
@@ -4054,22 +4063,20 @@ it.effect("keeps a worktree a terminal works in out of the pool until that termi
         const thread = task.workThreadId ?? assert.fail();
         const worktreePath = (yield* Ref.get(world.poolHeld)).get(thread) ?? assert.fail();
         // A shell the user opened in another thread, working in a folder of this worktree.
-        yield* world.terminalEvent({
-          type: "upsert",
-          terminal: {
-            threadId: "user-thread",
-            terminalId: "zsh",
-            cwd: `${worktreePath}/src`,
-            worktreePath: null,
-            status: "running",
-            pid: 4242,
-            exitCode: null,
-            exitSignal: null,
-            hasRunningSubprocess: false,
-            label: "zsh",
-            updatedAt: "2026-01-01T00:00:00.000Z",
-          },
-        });
+        const shell = {
+          threadId: "user-thread",
+          terminalId: "zsh",
+          cwd: `${worktreePath}/src`,
+          worktreePath: null,
+          status: "running",
+          pid: 4242,
+          exitCode: null,
+          exitSignal: null,
+          hasRunningSubprocess: false,
+          label: "zsh",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        } as const;
+        yield* world.terminalEvent({ type: "upsert", terminal: shell });
         yield* world.update(thread, { status: "completed", started: true });
         yield* services.tasks.reconcile;
         // Kept in place and out of the count; the terminal is left alone.
@@ -4090,6 +4097,32 @@ it.effect("keeps a worktree a terminal works in out of the pool until that termi
         yield* services.tasks.reconcile;
         assert.deepEqual(yield* Ref.get(world.poolParks), [worktreePath]);
         assert.deepEqual([...(yield* Ref.get(world.poolKept))], []);
+
+        // A shell that opens after the check, while the worktree moves, keeps it all the same.
+        const next = yield* services.tasks.start({
+          botId,
+          projectId: campaign,
+          prompt: "Fix another typo.",
+        });
+        const nextThread = next.workThreadId ?? assert.fail();
+        const nextPath = (yield* Ref.get(world.poolHeld)).get(nextThread) ?? assert.fail();
+        yield* Ref.set(
+          world.poolMoving,
+          world.terminalEvent({ type: "upsert", terminal: { ...shell, cwd: `${nextPath}/src` } }),
+        );
+        yield* world.update(nextThread, { status: "completed", started: true });
+        yield* services.tasks.reconcile;
+        yield* Ref.set(world.poolMoving, Effect.void);
+        assert.deepEqual(yield* Ref.get(world.poolParks), [worktreePath]);
+        assert.deepEqual(
+          [...(yield* Ref.get(world.poolKept))],
+          [[nextThread, "has a terminal open in it"]],
+        );
+        yield* services.tasks.reconcile;
+        assert.deepEqual(yield* Ref.get(world.poolParks), [worktreePath]);
+        yield* world.terminalEvent({ type: "remove", threadId: "user-thread", terminalId: "zsh" });
+        yield* services.tasks.reconcile;
+        assert.deepEqual(yield* Ref.get(world.poolParks), [worktreePath, nextPath]);
       }),
     );
   }).pipe(Effect.provide(layerDatabase)),
