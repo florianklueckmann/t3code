@@ -17,6 +17,7 @@ import { MessageSquareIcon } from "lucide-react";
 import { type ReactNode, type Ref, useState } from "react";
 
 import { useEnvironment } from "../../state/environments";
+import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { buildThreadRouteParams } from "../../threadRoutes";
@@ -66,8 +67,12 @@ export function BotOwnHomeSetting({
   const canRemove = useAtomValue(serverEnvironment.removeBotHome.permissionAtom(environmentId));
   const [busy, setBusy] = useState(false);
   const [confirmingRemoval, setConfirmingRemoval] = useState(false);
-  if (bot.home === undefined) return null;
-  const home = bot.home;
+  // The live summary follows a change from another client; the editor's detail does not.
+  const liveBot = useEnvironmentQuery(
+    serverEnvironment.botsLive({ environmentId, input: {} }),
+  ).data?.bots.find((entry) => entry.id === bot.id);
+  const home = liveBot === undefined ? bot.home : liveBot.home;
+  if (home === undefined) return null;
   const open = home !== null && home.detachedAt === null;
   const readUnavailable = botOwnHomeReadUnavailableLabel({
     capabilities: bot.capabilities,

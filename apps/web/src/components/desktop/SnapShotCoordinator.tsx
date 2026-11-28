@@ -2,6 +2,7 @@ import {
   type DesktopBridge,
   type DesktopPendingSnapShot,
   type DesktopSnapShotEvent,
+  isBotHomeProjectId,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
   type ScopedThreadRef,
@@ -245,12 +246,14 @@ export function SnapShotCoordinator() {
     lastUsedProjectKeySchema,
   );
   const currentProject = activeThread ?? activeDraftThread;
-  const currentProjectKey = currentProject
-    ? scopedProjectKey({
-        environmentId: currentProject.environmentId,
-        projectId: currentProject.projectId,
-      })
-    : null;
+  // A Bot's own Home sits in a hidden project that new threads can't use.
+  const currentProjectKey =
+    currentProject && !isBotHomeProjectId(currentProject.projectId)
+      ? scopedProjectKey({
+          environmentId: currentProject.environmentId,
+          projectId: currentProject.projectId,
+        })
+      : null;
   const rememberProject = useEffectEvent((projectKey: string) => {
     if (projectKey !== lastUsedProjectKey) setLastUsedProjectKey(projectKey);
   });

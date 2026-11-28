@@ -15,7 +15,7 @@ import {
   isBotOwnHome,
 } from "@t3tools/client-runtime/bots";
 import { isShownUnderParent } from "@t3tools/client-runtime/state/threads";
-import { THREAD_JUMP_KEYBINDING_COMMANDS } from "@t3tools/contracts";
+import { isBotHomeProjectId, THREAD_JUMP_KEYBINDING_COMMANDS } from "@t3tools/contracts";
 import {
   foldSearchQuery,
   PALETTE_MESSAGE_LIMIT,
@@ -410,10 +410,16 @@ export function CommandPalette(props: {
       });
     }
     if (activeThreadRef) {
+      // A Bot's own Home has no project folder to browse, run or review.
+      const projectActions = isBotHomeProjectId(activeThread?.projectId ?? "")
+        ? []
+        : ([
+            ["files", "Go to file", ["open", "files", "browse", "search"]],
+            ["terminal", "Open terminal", ["shell", "console"]],
+            ["review", "Review changes", ["diff", "git", "pull request"]],
+          ] as const);
       const threadActions = [
-        ["files", "Go to file", ["open", "files", "browse", "search"]],
-        ["terminal", "Open terminal", ["shell", "console"]],
-        ["review", "Review changes", ["diff", "git", "pull request"]],
+        ...projectActions,
         ["copyThreadReference", "Copy PR link or thread", ["reference", "clipboard"]],
       ] as const;
       actions.push(

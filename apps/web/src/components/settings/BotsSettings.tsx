@@ -48,6 +48,7 @@ import {
 import {
   BOT_TASK_LIMIT_MAX,
   BotId,
+  botHomeProjectId,
   isBotHomeProjectId,
   CommandId,
   type BotAppearance,
@@ -919,16 +920,14 @@ function BotEditorForm({
               disabled={saving || archived}
               onChanged={refreshDetail}
               learning={
-                current.home == null ? null : (
-                  <BotLearningList
-                    environmentId={environmentId}
-                    bot={current}
-                    projectId={current.home.projectId}
-                    titleOf={titleOf}
-                    disabled={saving || archived}
-                    onChanged={refreshDetail}
-                  />
-                )
+                <BotLearningList
+                  environmentId={environmentId}
+                  bot={current}
+                  projectId={botHomeProjectId(current.id)}
+                  titleOf={titleOf}
+                  disabled={saving || archived}
+                  onChanged={refreshDetail}
+                />
               }
             />
           ) : null}

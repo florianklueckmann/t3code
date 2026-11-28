@@ -14,6 +14,7 @@ import {
   type ReactNode,
 } from "react";
 
+import { isBotHomeProjectId } from "@t3tools/contracts";
 import { copyThreadReference } from "../../lib/copyThreadReference";
 import {
   firstWorkspaceDetailOpen,
@@ -57,6 +58,8 @@ export function HardwareKeyboardCommandProvider({
   const closePalette = useCallback(() => setPaletteOpen(false), []);
   const activeThreadRef = useMemo(() => parseActiveThreadPath(pathname), [pathname]);
   const activeThread = useThreadShell(activeThreadRef);
+  // A Bot's own Home runs in its hidden project's folder, which holds none of the user's work.
+  const botOwnHomeThread = isBotHomeProjectId(activeThread?.projectId ?? "");
   const copyTarget = useMemo(
     () =>
       activeThreadRef === null
@@ -115,14 +118,16 @@ export function HardwareKeyboardCommandProvider({
     }
     if (pathname !== "/" || navigation.canGoBack()) commands.add("back");
     if (activeThreadRef !== null) {
-      commands.add("files");
-      commands.add("terminal");
-      commands.add("review");
+      if (!botOwnHomeThread) {
+        commands.add("files");
+        commands.add("terminal");
+        commands.add("review");
+      }
       if (pathname.split("/")[4] !== "terminal") commands.add("copyThreadReference");
     }
     return [...commands];
     // oxlint-disable-next-line react/memo-dependencies -- registrationVersion invalidates the snapshot of the external keyboard-command registry.
-  }, [activeThreadRef, pathname, registrationVersion, navigation]);
+  }, [activeThreadRef, botOwnHomeThread, pathname, registrationVersion, navigation]);
 
   const onCommand = useCallback(
     (command: HardwareKeyboardCommand) => {
@@ -130,6 +135,11 @@ export function HardwareKeyboardCommandProvider({
         setPaletteOpen(true);
         return;
       }
+      if (
+        botOwnHomeThread &&
+        (command === "files" || command === "terminal" || command === "review")
+      )
+        return;
       if (dispatchHardwareKeyboardCommand(command)) return;
 
       if (command === "copyThreadReference") {
@@ -182,7 +192,7 @@ export function HardwareKeyboardCommandProvider({
         navigation.navigate("ThreadReview", thread);
       }
     },
-    [copyTarget, navigation, pathname, showCopyFeedback],
+    [botOwnHomeThread, copyTarget, navigation, pathname, showCopyFeedback],
   );
 
   const palette = useMemo(
