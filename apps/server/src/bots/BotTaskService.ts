@@ -28,6 +28,10 @@ import {
   ThreadId,
   RunId,
 } from "@t3tools/contracts";
+// Effect's FileSystem resolves `..` before links; the kernel, as a shell's folder, does not.
+// @effect-diagnostics-next-line nodeBuiltinImport:off
+import * as NodeFSP from "node:fs/promises";
+
 import { invalidOptionSelections } from "@t3tools/shared/model";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -1979,14 +1983,30 @@ const make = Effect.gen(function* () {
       .getThreadShell(workThreadId)
       .pipe(Effect.mapError(botError("Failed to read the Bot task's work thread.")));
 
-  // A moved-away folder no longer resolves; its nearest parent that still exists does.
-  const realSpelling = (target: string): Effect.Effect<string> =>
-    fs.realPath(target).pipe(
+  /**
+   * Where a folder physically is, also once it moved away: a link that points nowhere now is
+   * followed to where it pointed, and a missing folder is its nearest existing parent's, with the
+   * rest appended. Links are resolved before `..`, as the shell's own folder was.
+   */
+  const realSpelling = (target: string, links = 0): Effect.Effect<string> =>
+    Effect.tryPromise({
+      try: () => NodeFSP.realpath(target),
+      catch: () => "unresolved" as const,
+    }).pipe(
+      Effect.catch(() =>
+        Effect.gen(function* () {
+          if (links >= 40) return yield* Effect.fail("too many links" as const);
+          const to = yield* fs.readLink(target);
+          return yield* realSpelling(path.resolve(path.dirname(target), to), links + 1);
+        }),
+      ),
       Effect.catch(() => {
         const parent = path.dirname(target);
         return parent === target
           ? Effect.succeed(target)
-          : realSpelling(parent).pipe(Effect.map((real) => path.join(real, path.basename(target))));
+          : realSpelling(parent, links).pipe(
+              Effect.map((real) => path.join(real, path.basename(target))),
+            );
       }),
     );
 
@@ -1996,7 +2016,7 @@ const make = Effect.gen(function* () {
    */
   const terminalIn = Effect.fn("BotTaskService.terminalIn")(function* (worktreePath: string) {
     const spellings = (target: string) =>
-      realSpelling(path.resolve(target)).pipe(Effect.map((real) => [path.resolve(target), real]));
+      realSpelling(target).pipe(Effect.map((real) => [path.resolve(target), real]));
     const roots = yield* spellings(worktreePath);
     const within = (root: string, target: string) => {
       const relative = path.relative(root, target);

@@ -4142,6 +4142,70 @@ it.effect("keeps a worktree a terminal works in out of the pool until that termi
   }).pipe(Effect.provide(layerDatabase)),
 );
 
+it.effect("finds a terminal in a worktree whose folder it names through a link into it", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(START);
+    yield* seedProject;
+    const world = yield* makeThreadWorld;
+    const fs = yield* FileSystem.FileSystem;
+    yield* withServices(world, (services) =>
+      Effect.gen(function* () {
+        yield* attachBot(services);
+        const tmp = yield* fs.realPath(
+          yield* fs.makeTempDirectoryScoped({ prefix: "bot-task-link-" }),
+        );
+        const terminal = (cwd: string) => ({
+          threadId: "user-thread",
+          terminalId: "zsh",
+          cwd,
+          worktreePath: null,
+          status: "running" as const,
+          pid: 4242,
+          exitCode: null,
+          exitSignal: null,
+          hasRunningSubprocess: false,
+          label: "zsh",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        });
+        const finish = Effect.fn(function* (worktreePath: string) {
+          yield* Ref.set(world.poolClaims, [{ _tag: "pooled", worktreePath, setupNeeded: true }]);
+          const task = yield* services.tasks.start({ botId, projectId: campaign, prompt: "Fix." });
+          const thread = task.workThreadId ?? assert.fail();
+          yield* world.update(thread, { status: "completed", started: true });
+          yield* services.tasks.reconcile;
+          return thread;
+        });
+
+        // `link/..` with the link pointing into the worktree is inside it, not beside the link.
+        yield* fs.makeDirectory(`${tmp}/first/src`, { recursive: true });
+        yield* fs.symlink(`${tmp}/first/src`, `${tmp}/shell-link`);
+        yield* world.terminalEvent({ type: "upsert", terminal: terminal(`${tmp}/shell-link/..`) });
+        const first = yield* finish(`${tmp}/first`);
+        assert.deepEqual(yield* Ref.get(world.poolParks), []);
+        assert.deepEqual(
+          [...(yield* Ref.get(world.poolKept))],
+          [[first, "has a terminal open in it"]],
+        );
+        yield* world.terminalEvent({ type: "remove", threadId: "user-thread", terminalId: "zsh" });
+
+        // A link straight into a worktree that moved away points nowhere, but still into it.
+        yield* fs.symlink(`${tmp}/second`, `${tmp}/into-second`);
+        yield* Ref.set(
+          world.poolMoving,
+          world.terminalEvent({ type: "upsert", terminal: terminal(`${tmp}/into-second/src`) }),
+        );
+        const second = yield* finish(`${tmp}/second`);
+        yield* Ref.set(world.poolMoving, Effect.void);
+        assert.deepEqual(yield* Ref.get(world.poolParks), [`${tmp}/first`]);
+        assert.deepEqual(
+          [...(yield* Ref.get(world.poolKept))],
+          [[second, "has a terminal open in it"]],
+        );
+      }),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
 it.effect("leaves a worktree from before the pool held while a terminal works in it", () =>
   Effect.gen(function* () {
     yield* TestClock.setTime(START);
