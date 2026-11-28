@@ -82,7 +82,7 @@ const invalid = (message: string) =>
   new OrchestratorMcpFailure({ code: "invalid_request", message });
 
 /** Provenance comes from the caller, never from ids the caller supplies. */
-const learningCaller = Effect.fn("mcp.bot.learningCaller")(function* () {
+const writeCaller = Effect.fn("mcp.bot.writeCaller")(function* () {
   const bots = yield* BotService.BotService;
   const scope = yield* McpInvocationContext.McpInvocationContext;
   if (scope.thread === undefined) {
@@ -122,17 +122,16 @@ const homeTurnStartedByUser = Effect.fn("mcp.bot.homeTurnStartedByUser")(functio
   return isUserGivenHomeInput(messages[0]);
 });
 
-const changeLearning = Effect.fn("mcp.bot.changeLearning")(function* (input: BotToolInput) {
+const changeLearning = Effect.fn("mcp.bot.changeLearning")(function* (
+  input: BotToolInput,
+  caller: Effect.Success<ReturnType<typeof writeCaller>>,
+) {
   const bots = yield* BotService.BotService;
   const botId = yield* requireBotId(input);
-  const caller = yield* learningCaller();
   if (input.action === "learn") {
     const projectId = yield* requireProjectId(input);
     if (input.learning === undefined) return yield* invalid("`learn` needs `learning`.");
-    if (
-      caller.bot !== undefined &&
-      (caller.bot.botId !== botId || caller.bot.projectId !== projectId)
-    ) {
+    if (caller.bot !== undefined && caller.bot.projectId !== projectId) {
       return yield* invalid("A Bot records learning only in its own project conversation.");
     }
     const fromUser =
@@ -186,6 +185,12 @@ const changeLearning = Effect.fn("mcp.bot.changeLearning")(function* (input: Bot
   return { bot: yield* changed.pipe(Effect.mapError(botFailure)) };
 });
 
+const otherBotRefusal = new OrchestratorMcpFailure({
+  code: "capability_denied",
+  message:
+    "A Bot conversation can only change its own Bot. Message the other Bot's Home to ask it for help.",
+});
+
 const write = Effect.fn("mcp.bot.write")(function* (input: BotToolInput) {
   const bots = yield* BotService.BotService;
   const tasks = yield* BotTaskService.BotTaskService;
@@ -211,12 +216,19 @@ const write = Effect.fn("mcp.bot.write")(function* (input: BotToolInput) {
         .pipe(Effect.mapError(botFailure)),
     };
   }
+  const caller = yield* writeCaller();
+  if (caller.bot !== undefined && input.botId !== undefined && caller.bot.botId !== input.botId)
+    return yield* otherBotRefusal;
   if (input.action === "cancel_task") {
     if (input.taskId === undefined) {
       return yield* new OrchestratorMcpFailure({
         code: "invalid_request",
         message: "`cancel_task` needs `taskId`.",
       });
+    }
+    if (caller.bot !== undefined) {
+      const task = yield* tasks.get(input.taskId).pipe(Effect.mapError(botFailure));
+      if (task.botId !== caller.bot.botId) return yield* otherBotRefusal;
     }
     const cancelled = tasks.cancel({ taskId: input.taskId });
     return { task: yield* cancelled.pipe(Effect.mapError(botFailure)) };
@@ -228,7 +240,7 @@ const write = Effect.fn("mcp.bot.write")(function* (input: BotToolInput) {
     input.action === "retire" ||
     input.action === "reinstate"
   ) {
-    return yield* changeLearning(input);
+    return yield* changeLearning(input, caller);
   }
   const botId = yield* requireBotId(input);
   if (input.action === "start_task") {
@@ -241,8 +253,8 @@ const write = Effect.fn("mcp.bot.write")(function* (input: BotToolInput) {
     const project = yield* bots
       .resolveProject({ botId, projectId: input.projectId })
       .pipe(Effect.mapError(botFailure));
-    const caller = yield* McpInvocationContext.McpInvocationContext;
-    if (input.returnToHome === true && caller.thread === undefined) {
+    const scope = yield* McpInvocationContext.McpInvocationContext;
+    if (input.returnToHome === true && scope.thread === undefined) {
       return yield* invalid("`returnToHome` is available only from the Bot's Home conversation.");
     }
     const started = tasks.start(
@@ -255,8 +267,8 @@ const write = Effect.fn("mcp.bot.write")(function* (input: BotToolInput) {
         ...(input.baseBranch === undefined ? {} : { baseBranch: input.baseBranch }),
       },
       {
-        requestedIn: caller.thread?.threadId ?? null,
-        ...(input.returnToHome === true ? { returnToHomeFrom: caller.thread!.threadId } : {}),
+        requestedIn: scope.thread?.threadId ?? null,
+        ...(input.returnToHome === true ? { returnToHomeFrom: scope.thread!.threadId } : {}),
       },
     );
     return { task: yield* started.pipe(Effect.mapError(botFailure)) };

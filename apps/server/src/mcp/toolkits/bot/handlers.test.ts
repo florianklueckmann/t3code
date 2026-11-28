@@ -215,6 +215,8 @@ const callTool = (
                     Effect.andThen(Effect.fail(new BotError({ message: "This Bot is archived." }))),
                   ),
                 create: () => record("create"),
+                openHome: () => record("open_home"),
+                removeHome: () => record("remove_home"),
                 setArchived: (input) => record(input.archived ? "archive" : "restore"),
                 detachProject: () => record("detach"),
                 retireLearning: () => record("retire"),
@@ -250,6 +252,8 @@ const callTool = (
                   Ref.update(calls, (current) => [...current, "list_tasks"]).pipe(
                     Effect.as({ tasks: [] }),
                   ),
+                get: (id) =>
+                  Effect.succeed({ ...taskSummary, id, botId: id === ownTask ? botId : otherBot }),
                 cancel: () =>
                   Ref.update(calls, (current) => [...current, "cancel"]).pipe(
                     Effect.as(taskSummary),
@@ -447,6 +451,8 @@ const botChanges: ReadonlyArray<readonly [(bot: BotId) => BotToolInput, string]>
     (bot) => ({ action: "update", botId: bot, projectId: campaignA, guidance: "Changed." }),
     `project:${campaignA}:Changed.:undefined`,
   ],
+  [(bot) => ({ action: "open_home", botId: bot }), "open_home"],
+  [(bot) => ({ action: "remove_home", botId: bot }), "remove_home"],
   [(bot) => ({ action: "archive", botId: bot }), "archive"],
   [(bot) => ({ action: "restore", botId: bot }), "restore"],
   [(bot) => ({ action: "attach", botId: bot, projectId: campaignA }), `attach:${campaignA}`],
@@ -484,13 +490,7 @@ it.effect.each(
     const other = params(otherBot);
     return [
       [own, { botId, projectId: campaignA }, ownCall],
-      [
-        other,
-        { botId, projectId: campaignA },
-        other.action === "learn"
-          ? "invalid_request"
-          : (ordinaryCallerReaches[other.action] ?? ownCall),
-      ],
+      [other, { botId, projectId: campaignA }, "capability_denied"],
       [other, undefined, ordinaryCallerReaches[other.action] ?? ownCall],
     ] as const;
   }),
@@ -500,6 +500,25 @@ it.effect.each(
       expect(calls[0] ?? (result as { readonly code?: string } | undefined)?.code).toBe(expected),
     ),
   ),
+);
+
+it.effect("checks the task owner for Bot work threads and allows approved outside agents", () =>
+  Effect.gen(function* () {
+    const work = { botId, projectId: campaignA, taskId: ownTask };
+    for (const input of [
+      { action: "cancel_task", taskId: otherTask, botId },
+      { action: "start_task", botId: otherBot, task: "Prepare." },
+    ] as const) {
+      const refused = yield* callTool(input, undefined, work);
+      expect(refused.calls).toEqual([]);
+      expect(refused.result).toMatchObject({
+        code: "capability_denied",
+        message: expect.stringContaining("own Bot"),
+      });
+      const outside = yield* callTool(input, undefined, undefined, true);
+      expect(outside.calls).toEqual([input.action === "cancel_task" ? "cancel" : "start:null"]);
+    }
+  }),
 );
 
 it.effect("lets read-only clients read Bots but not change them", () =>
