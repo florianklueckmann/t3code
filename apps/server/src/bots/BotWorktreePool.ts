@@ -4,6 +4,10 @@ import {
   T3_PROJECT_FILE_NAME,
   type ThreadId,
 } from "@t3tools/contracts";
+// Effect's FileSystem reports no status-change time.
+// @effect-diagnostics-next-line nodeBuiltinImport:off
+import * as NodeFSP from "node:fs/promises";
+
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import {
   resolveProjectFileBackedSetting,
@@ -472,6 +476,16 @@ const make = Effect.gen(function* () {
       Effect.provideService(Path.Path, path),
     );
 
+  // The status-change time: unlike the modification time, no copy or unpack can set it back.
+  const changedAt = (file: string) =>
+    Effect.tryPromise({
+      try: () => NodeFSP.lstat(file, { bigint: true }),
+      catch: () => "unreadable" as const,
+    }).pipe(
+      Effect.map((info) => info.ctimeNs),
+      Effect.option,
+    );
+
   /**
    * Removes files under `entries`, ignored before the switch and untracked now, that are older
    * than the switch: the previous task's leftovers. A file a hook or anyone wrote since stays.
@@ -481,12 +495,9 @@ const make = Effect.gen(function* () {
     gitDir: string,
     entries: ReadonlyArray<string>,
   ) {
-    const stamp = yield* fs.stat(path.join(gitDir, SWITCH_STAMP)).pipe(
-      Effect.map((info) => Option.getOrNull(info.mtime)),
-      Effect.orElseSucceed(() => null),
-    );
+    const stamp = yield* changedAt(path.join(gitDir, SWITCH_STAMP));
     // Without the stamp nothing tells old from new; keeping them costs only leftovers.
-    if (stamp === null) return;
+    if (Option.isNone(stamp)) return;
     const untracked = (yield* run("leftovers", target, [
       "ls-files",
       "-z",
@@ -500,11 +511,8 @@ const make = Effect.gen(function* () {
       .filter((file) => file !== "" && !file.endsWith("/"));
     for (const file of untracked) {
       const full = path.join(target, file);
-      const modified = Option.flatMap(
-        yield* fs.lstat(full).pipe(Effect.option),
-        (info) => info.mtime,
-      );
-      if (Option.isSome(modified) && modified.value.getTime() < stamp.getTime())
+      const changed = yield* changedAt(full);
+      if (Option.isSome(changed) && changed.value < stamp.value)
         yield* fs
           .remove(full)
           .pipe(Effect.mapError((cause) => fail("clean", `Could not remove ${file}.`)(cause)));

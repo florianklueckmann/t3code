@@ -90,6 +90,8 @@ const withRepository = <A, E>(
     readonly exists: (file: string) => Effect.Effect<boolean>;
     readonly remove: (folder: string) => Effect.Effect<void>;
     readonly chmod: (file: string, mode: number) => Effect.Effect<void>;
+    /** Gives the file an old modification time, as `cp -p` or an unpacked archive does. */
+    readonly backdate: (file: string) => Effect.Effect<void>;
     readonly link: (target: string, at: string) => Effect.Effect<void>;
     readonly worktreeCount: Effect.Effect<number>;
     readonly take: (
@@ -239,6 +241,7 @@ const withRepository = <A, E>(
       exists: (file) => fs.exists(file).pipe(Effect.orElseSucceed(() => false)),
       remove: (folder) => fs.remove(folder, { recursive: true }).pipe(Effect.orDie),
       chmod: (file, mode) => fs.chmod(file, mode).pipe(Effect.orDie),
+      backdate: (file) => fs.utimes(file, 0, 0).pipe(Effect.orDie),
       link: (target, at) => fs.symlink(target, at).pipe(Effect.orDie),
       worktreeCount: git(root, "worktree", "list", "--porcelain").pipe(
         Effect.map(
@@ -795,8 +798,10 @@ it.effect("a claim a restart stopped after its switch still cleans up before the
       const gitDir = yield* world.git(target, "rev-parse", "--absolute-git-dir");
       yield* world.write(`${gitDir}/t3-bot-switch`, "");
       yield* world.git(target, "switch", "-q", "-c", "bot/task-2", "origin/main");
-      // Written after the switch, as by a post-checkout hook: not a leftover.
+      // Written after the switch, as by a post-checkout hook: not a leftover, even when copied
+      // with its old modification time.
       yield* world.write(`${target}/generated/fresh.txt`, "from the hook\n");
+      yield* world.backdate(`${target}/generated/fresh.txt`);
 
       assert.equal((yield* world.take("task-2"))._tag, "pooled");
       assert.isFalse(yield* world.exists(`${target}/generated/out.txt`));
@@ -1050,7 +1055,7 @@ it.effect("never takes or removes a free worktree that changed after it was park
   ),
 );
 
-it.effect("the upgrade gives a claimed worktree its resting place beside its thread's folder", () =>
+it.effect("the upgrade keeps claims for their threads and leaves free worktrees from before", () =>
   Effect.gen(function* () {
     const sql = yield* BotDatabase.BotDatabase;
     for (const column of ["claimed_path", "git_dir", "kept_reason", "parked_head", "pending_clean"])
@@ -1068,14 +1073,14 @@ it.effect("the upgrade gives a claimed worktree its resting place beside its thr
         readonly git_dir: string | null;
       }>`SELECT path, claimed_path, git_dir FROM bot_worktrees ORDER BY worktree_id`,
       [
-        // Carried-over claims are found where their thread had them, not only at rest.
+        // Unmarked, so the pool takes no checkout by path for them; release adopts a verified one.
         { path: "/w/project/bot-pool-a1", claimed_path: "/w/project/bot-task-1", git_dir: "" },
         {
           path: "C:\\w\\project\\bot-pool-b2",
           claimed_path: "C:\\w\\project\\bot-task-2",
           git_dir: "",
         },
-        { path: "/w/project/bot-pool-c3", claimed_path: null, git_dir: null },
+        // A free one could since be anyone's checkout at that path: it stays on disk, unpooled.
       ],
     );
   }).pipe(Effect.provide(database)),

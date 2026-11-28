@@ -140,9 +140,10 @@ keeps:
   picks it up again, and Clear retries it. A commit only the worktree holds, as when
   its task branch was deleted while it was parked, gets a ref under
   `refs/t3/bot-worktrees/` before HEAD moves on.
-- What the previous branch ignored is removed after a claim's switch only when it is
-  older than a stamp written just before the switch, so what a post-checkout hook or
-  the agent writes is kept, also when a restart resumes the clean-up.
+- What the previous branch ignored is removed after a claim's switch only when its
+  status-change time is older than a stamp written just before the switch. Unlike the
+  modification time, a copy cannot set that back, so what a post-checkout hook or the
+  agent writes is kept, also when a restart resumes the clean-up.
 - A worktree stays held until its work thread, every thread sharing its path (side
   chats) and its setup script have finished. An awaited setup holds the agent back
   even when the script is async, so a run that started means the install succeeded.
