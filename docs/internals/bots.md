@@ -127,7 +127,9 @@ keeps:
 
 - Before any checkout, clean, move or removal, the folder must be the top of a
   linked worktree of the project's repository, registered at that folder, with the
-  expected Git directory. A move never targets an existing folder, since Git would
+  expected Git directory and the pool's mark (`t3-bot-worktree`) in it. Git reuses
+  an admin directory for a checkout recreated at the same path, so the directory alone
+  does not identify it. A move never targets an existing folder, since Git would
   move into it. A checkout of the thread's own branch at its folder, recreated there
   for a terminal or a side chat, joins the pool on the next turn; anything else there
   fails the turn rather than run in it.
@@ -138,6 +140,9 @@ keeps:
   picks it up again, and Clear retries it. A commit only the worktree holds, as when
   its task branch was deleted while it was parked, gets a ref under
   `refs/t3/bot-worktrees/` before HEAD moves on.
+- What the previous branch ignored is removed after a claim's switch only when it is
+  older than a stamp written just before the switch, so what a post-checkout hook or
+  the agent writes is kept, also when a restart resumes the clean-up.
 - A worktree stays held until its work thread, every thread sharing its path (side
   chats) and its setup script have finished. An awaited setup holds the agent back
   even when the script is async, so a run that started means the install succeeded.
