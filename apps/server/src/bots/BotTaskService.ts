@@ -1979,17 +1979,24 @@ const make = Effect.gen(function* () {
       .getThreadShell(workThreadId)
       .pipe(Effect.mapError(botError("Failed to read the Bot task's work thread.")));
 
+  // A moved-away folder no longer resolves; its nearest parent that still exists does.
+  const realSpelling = (target: string): Effect.Effect<string> =>
+    fs.realPath(target).pipe(
+      Effect.catch(() => {
+        const parent = path.dirname(target);
+        return parent === target
+          ? Effect.succeed(target)
+          : realSpelling(parent).pipe(Effect.map((real) => path.join(real, path.basename(target))));
+      }),
+    );
+
   /**
    * Whether a shell still works in the worktree, as storage cleanup asks: one opened for it, or
-   * one whose folder is inside it, by the stored and the real path. A cwd in a moved folder no
-   * longer resolves, so the stored spelling counts too.
+   * one whose folder is inside it, by the stored and the real path.
    */
   const terminalIn = Effect.fn("BotTaskService.terminalIn")(function* (worktreePath: string) {
     const spellings = (target: string) =>
-      fs.realPath(target).pipe(
-        Effect.orElseSucceed(() => path.resolve(target)),
-        Effect.map((real) => [path.resolve(target), real]),
-      );
+      realSpelling(path.resolve(target)).pipe(Effect.map((real) => [path.resolve(target), real]));
     const roots = yield* spellings(worktreePath);
     const within = (root: string, target: string) => {
       const relative = path.relative(root, target);

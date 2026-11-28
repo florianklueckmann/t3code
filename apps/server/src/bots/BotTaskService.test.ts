@@ -40,6 +40,7 @@ import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Option from "effect/Option";
@@ -4052,6 +4053,7 @@ it.effect("keeps a worktree a terminal works in out of the pool until that termi
     yield* seedProject;
     const world = yield* makeThreadWorld;
     const sql = yield* BotDatabase.BotDatabase;
+    const fs = yield* FileSystem.FileSystem;
     yield* withServices(world, (services) =>
       Effect.gen(function* () {
         yield* attachBot(services);
@@ -4098,17 +4100,29 @@ it.effect("keeps a worktree a terminal works in out of the pool until that termi
         assert.deepEqual(yield* Ref.get(world.poolParks), [worktreePath]);
         assert.deepEqual([...(yield* Ref.get(world.poolKept))], []);
 
-        // A shell that opens after the check, while the worktree moves, keeps it all the same.
+        // A shell that opens after the check, while the worktree moves, keeps it all the same,
+        // also when it names the folder that is gone by another spelling, through a symlink.
+        const tmp = yield* fs.realPath(
+          yield* fs.makeTempDirectoryScoped({ prefix: "bot-task-alias-" }),
+        );
+        yield* fs.makeDirectory(`${tmp}/real`);
+        yield* fs.symlink(`${tmp}/real`, `${tmp}/alias`);
+        const nextPath = `${tmp}/alias/bot-next`;
+        yield* Ref.set(world.poolClaims, [
+          { _tag: "pooled", worktreePath: nextPath, setupNeeded: true },
+        ]);
         const next = yield* services.tasks.start({
           botId,
           projectId: campaign,
           prompt: "Fix another typo.",
         });
         const nextThread = next.workThreadId ?? assert.fail();
-        const nextPath = (yield* Ref.get(world.poolHeld)).get(nextThread) ?? assert.fail();
         yield* Ref.set(
           world.poolMoving,
-          world.terminalEvent({ type: "upsert", terminal: { ...shell, cwd: `${nextPath}/src` } }),
+          world.terminalEvent({
+            type: "upsert",
+            terminal: { ...shell, cwd: `${tmp}/real/bot-next/src` },
+          }),
         );
         yield* world.update(nextThread, { status: "completed", started: true });
         yield* services.tasks.reconcile;
