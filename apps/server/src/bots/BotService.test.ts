@@ -109,8 +109,9 @@ const makeThreadWorld = Effect.gen(function* () {
         if (thread === undefined) return null;
         const shell: Pick<
           OrchestrationV2ThreadShell,
-          "archivedAt" | "deletedAt" | "modelSelection"
+          "archivedAt" | "deletedAt" | "modelSelection" | "projectId"
         > = {
+          projectId: thread.projectId,
           archivedAt: thread.archived ? DateTime.makeUnsafe(0) : null,
           deletedAt: null,
           modelSelection: { ...codex, model: thread.model },
@@ -558,46 +559,152 @@ it.effect(
     }).pipe(Effect.provide(layerDatabase)),
 );
 
-it.effect("a remove during an open leaves the Home detached and its thread archived", () =>
+const makeGate = Effect.gen(function* () {
+  const entered = yield* Deferred.make<void>();
+  const resume = yield* Deferred.make<void>();
+  return {
+    pause: Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(resume))),
+    entered: Deferred.await(entered),
+    release: Deferred.succeed(resume, undefined),
+  };
+});
+
+it.effect("removal waits for the first Home open to finish", () =>
   Effect.gen(function* () {
     const world = yield* makeThreadWorld;
-    yield* withServices(world.threadLayer, ({ bots, guard }) =>
+    const launch = yield* makeGate;
+    yield* Ref.set(world.afterNextLaunch, launch.pause);
+    yield* withServices(world.threadLayer, ({ bots }) =>
       Effect.gen(function* () {
         yield* createCampaignBot(bots);
-        const accessRead = yield* Deferred.make<void>();
-        const resume = yield* Deferred.make<void>();
-        const clock = yield* Clock.Clock;
-        // Queue two first opens before either can create the binding.
-        const [first, opening] = yield* guard.withProjectLock(
-          homeProject,
-          Effect.gen(function* () {
-            const first = yield* bots
-              .openHome({ botId })
-              .pipe(Effect.forkChild({ startImmediately: true }));
-            const opening = yield* bots.openHome({ botId, access: "full" }).pipe(
-              Effect.provideService(Clock.Clock, {
-                ...clock,
-                // Attach reads the binding before asking for its update timestamp.
-                currentTimeMillis: Deferred.succeed(accessRead, undefined).pipe(
-                  Effect.andThen(Deferred.await(resume)),
-                  Effect.andThen(clock.currentTimeMillis),
-                ),
-              }),
-              Effect.ensuring(Deferred.succeed(accessRead, undefined)),
-              Effect.forkChild({ startImmediately: true }),
-            );
-            return [first, opening] as const;
-          }),
-        );
-        const home = (yield* Fiber.join(first)).home ?? assert.fail();
-        yield* Deferred.await(accessRead);
+        const opening = yield* Effect.forkChild(bots.openHome({ botId, access: "full" }));
+        yield* launch.entered;
         const removing = yield* bots
           .removeHome({ botId })
           .pipe(Effect.forkChild({ startImmediately: true }));
-        yield* Deferred.succeed(resume, undefined);
-        yield* Fiber.join(opening);
+        assert.isUndefined(removing.pollUnsafe());
+        yield* launch.release;
+        const home = (yield* Fiber.join(opening)).home ?? assert.fail();
+        assert.isNotNull((yield* Fiber.join(removing)).home?.detachedAt);
+        assert.isTrue((yield* Ref.get(world.threads)).get(home.homeThreadId)?.archived);
+      }),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect("an archive racing a profile save leaves the Bot archived", () =>
+  Effect.gen(function* () {
+    const world = yield* makeThreadWorld;
+    yield* withServices(world.threadLayer, ({ bots }) =>
+      Effect.gen(function* () {
+        yield* createCampaignBot(bots);
+        const home = (yield* bots.openHome({ botId })).home ?? assert.fail();
+        const saving = yield* makeGate;
+        const clock = yield* Clock.Clock;
+        const profile = yield* bots.update({ botId, name: "Renamed" }).pipe(
+          Effect.provideService(Clock.Clock, {
+            ...clock,
+            currentTimeMillis: saving.pause.pipe(Effect.andThen(clock.currentTimeMillis)),
+          }),
+          Effect.forkChild,
+        );
+        yield* saving.entered;
+        const archiving = yield* bots
+          .setArchived({ botId, archived: true })
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* saving.release;
+        yield* Fiber.join(profile);
+        yield* Fiber.join(archiving);
+        const detail = yield* bots.get({ botId });
+        assert.equal(detail.name, "Renamed");
+        assert.isNotNull(detail.archivedAt);
+        assert.isTrue((yield* Ref.get(world.threads)).get(home.homeThreadId)?.archived);
+      }),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect("a model change during the first Home launch reaches its thread", () =>
+  Effect.gen(function* () {
+    const world = yield* makeThreadWorld;
+    const launch = yield* makeGate;
+    yield* Ref.set(world.afterNextLaunch, launch.pause);
+    yield* withServices(world.threadLayer, ({ bots }) =>
+      Effect.gen(function* () {
+        yield* createCampaignBot(bots);
+        const opening = yield* Effect.forkChild(bots.openHome({ botId }));
+        yield* launch.entered;
+        const updating = yield* bots
+          .update({ botId, modelSelection: { ...codex, model: "gpt-5.5" } })
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* launch.release;
+        const home = (yield* Fiber.join(opening)).home ?? assert.fail();
+        yield* Fiber.join(updating);
+        assert.equal((yield* Ref.get(world.threads)).get(home.homeThreadId)?.model, "gpt-5.5");
+      }),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect("archive recovers the Home thread left by an interrupted first open", () =>
+  Effect.gen(function* () {
+    const world = yield* makeThreadWorld;
+    const launch = yield* makeGate;
+    yield* Ref.set(world.afterNextLaunch, launch.pause);
+    yield* withServices(world.threadLayer, ({ bots }) =>
+      Effect.gen(function* () {
+        yield* createCampaignBot(bots);
+        const opening = yield* Effect.forkChild(bots.openHome({ botId }));
+        yield* launch.entered;
+        const archiving = yield* bots
+          .setArchived({ botId, archived: true })
+          .pipe(Effect.exit, Effect.forkChild({ startImmediately: true }));
+        yield* Ref.set(world.failNext, "thread.archive");
+        yield* Fiber.interrupt(opening);
+        yield* Fiber.join(archiving);
+        const recovered = (yield* bots.get({ botId })).home ?? assert.fail("missing Home binding");
+        assert.isFalse((yield* Ref.get(world.threads)).get(recovered.homeThreadId)?.archived);
+        yield* bots.setArchived({ botId, archived: true });
+        assert.isTrue((yield* Ref.get(world.threads)).get(recovered.homeThreadId)?.archived);
+        yield* bots.setArchived({ botId, archived: false });
+        assert.isFalse((yield* Ref.get(world.threads)).get(recovered.homeThreadId)?.archived);
+      }),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect.each(["attach", "guidance"] as const)("a racing project %s cannot undo detach", (save) =>
+  Effect.gen(function* () {
+    const world = yield* makeThreadWorld;
+    yield* withServices(world.threadLayer, ({ bots }) =>
+      Effect.gen(function* () {
+        yield* createCampaignBot(bots);
+        const input = { botId, projectId: campaignA };
+        const home = (yield* bots.attachProject(input)).projects[0] ?? assert.fail();
+        const saving = yield* makeGate;
+        const clock = yield* Clock.Clock;
+        const update = save === "attach" ? bots.attachProject : bots.updateProjectContext;
+        const writing = yield* update({ ...input, guidance: "New guidance" }).pipe(
+          Effect.provideService(Clock.Clock, {
+            ...clock,
+            currentTimeMillis: saving.pause.pipe(Effect.andThen(clock.currentTimeMillis)),
+          }),
+          Effect.forkChild,
+        );
+        yield* saving.entered;
+        const removing = yield* bots
+          .detachProject(input)
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* saving.release;
+        yield* Fiber.join(writing);
         yield* Fiber.join(removing);
-        assert.isNotNull((yield* bots.get({ botId })).home?.detachedAt);
+        const detached = (yield* bots.get({ botId })).projects[0] ?? assert.fail();
+        assert.isNotNull(detached.detachedAt);
+        assert.equal(detached.guidance, "New guidance");
+        const refused = yield* bots
+          .updateProjectContext({ ...input, guidance: "Late save" })
+          .pipe(Effect.flip);
+        assert.include(refused.message, "not attached");
         assert.isTrue((yield* Ref.get(world.threads)).get(home.homeThreadId)?.archived);
       }),
     );
@@ -607,21 +714,17 @@ it.effect("a remove during an open leaves the Home detached and its thread archi
 it.effect("archiving during the first Home launch archives the new thread", () =>
   Effect.gen(function* () {
     const world = yield* makeThreadWorld;
-    const launched = yield* Deferred.make<void>();
-    const resume = yield* Deferred.make<void>();
-    yield* Ref.set(
-      world.afterNextLaunch,
-      Deferred.succeed(launched, undefined).pipe(Effect.andThen(Deferred.await(resume))),
-    );
+    const launch = yield* makeGate;
+    yield* Ref.set(world.afterNextLaunch, launch.pause);
     yield* withServices(world.threadLayer, ({ bots }) =>
       Effect.gen(function* () {
         yield* createCampaignBot(bots);
         const opening = yield* Effect.forkChild(bots.openHome({ botId }));
-        yield* Deferred.await(launched);
+        yield* launch.entered;
         const archiving = yield* bots
           .setArchived({ botId, archived: true })
           .pipe(Effect.forkChild({ startImmediately: true }));
-        yield* Deferred.succeed(resume, undefined);
+        yield* launch.release;
         const home = (yield* Fiber.join(opening)).home ?? assert.fail();
         yield* Fiber.join(archiving);
         assert.isTrue((yield* Ref.get(world.threads)).get(home.homeThreadId)?.archived);
