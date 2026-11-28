@@ -240,19 +240,21 @@ export const runDaySample = Effect.fn("botSources.runDaySample")(function* (
     );
   });
   const owesUpdate = (task: BotTaskSummary) => ended(task) && task.status !== "cancelled";
-  /** Polls until `done`, or gives up after `timeoutMs` and reports that it did. */
+  /** Polls until `done`; a phase that never settles fails the sample. */
   const settle = Effect.fn("botSources.settle")(function* (
+    phase: string,
     done: (tasks: ReadonlyArray<BotTaskSummary>) => Effect.Effect<boolean, SampleError>,
     timeoutMs: number,
   ) {
     for (let waited = 0; waited < timeoutMs; waited += POLL_MS) {
-      if (yield* done(yield* listTasks)) return true;
+      if (yield* done(yield* listTasks)) return;
       yield* Effect.sleep(POLL_MS);
     }
-    return false;
+    return yield* new SampleError({ message: `${phase} did not settle in ${timeoutMs} ms` });
   });
 
   let userCancelled: string | null = null;
+  let summaryRunId = "";
   const timeline: Array<string> = [];
   const mark = (event: string) =>
     DateTime.now.pipe(
@@ -263,13 +265,17 @@ export const runDaySample = Effect.fn("botSources.runDaySample")(function* (
   const day = Effect.gen(function* () {
     yield* mark("batch 1");
     yield* runTurn(call, homeThreadId, DAY_PROMPTS.batch1);
-    const midday = yield* settle((tasks) => {
-      const endedTasks = tasks.filter(ended);
-      return endedTasks.length < MIDDAY_ENDED
-        ? Effect.succeed(false)
-        : homeSettled(endedTasks.filter(owesUpdate));
-    }, MIDDAY_TIMEOUT_MS);
-    yield* mark(`midday settled: ${midday}`);
+    yield* settle(
+      "midday",
+      (tasks) => {
+        const endedTasks = tasks.filter(ended);
+        return endedTasks.length < MIDDAY_ENDED
+          ? Effect.succeed(false)
+          : homeSettled(endedTasks.filter(owesUpdate));
+      },
+      MIDDAY_TIMEOUT_MS,
+    );
+    yield* mark("midday settled");
     yield* runTurn(call, homeThreadId, DAY_PROMPTS.batch2, { freshContext: true });
     yield* mark("batch 2 answered");
     // The user changes their mind about one task, from its card.
@@ -286,20 +292,26 @@ export const runDaySample = Effect.fn("botSources.runDaySample")(function* (
       userCancelled = target.id;
     }
     yield* mark(`user cancelled: ${userCancelled}`);
-    const evening = yield* settle(
+    yield* settle(
+      "evening",
       (tasks) =>
         tasks.every(ended) ? homeSettled(tasks.filter(owesUpdate)) : Effect.succeed(false),
       EVENING_TIMEOUT_MS,
     );
-    yield* mark(`evening settled: ${evening}`);
-    yield* runTurn(call, homeThreadId, DAY_PROMPTS.summary);
+    yield* mark("evening settled");
+    summaryRunId = yield* runTurn(call, homeThreadId, DAY_PROMPTS.summary);
     yield* mark("summary answered");
   });
   const cancelOpen = Effect.gen(function* () {
     for (const task of (yield* listTasks).filter((task) => !ended(task)))
       yield* call("t3_bot", { action: "cancel_task", botId, taskId: task.id }, Schema.Unknown);
   });
-  yield* day.pipe(Effect.ensuring(Effect.ignore(cancelOpen)));
+  // A day that stops early still reports what the Home spent; its row fails on `incomplete`.
+  const incomplete = yield* day.pipe(
+    Effect.as(null),
+    Effect.catchTags({ SampleError: (error) => Effect.succeed(error.message) }),
+    Effect.ensuring(Effect.ignore(cancelOpen)),
+  );
 
   const tools = toolActivity(yield* readItems(call, homeThreadId, "activity"));
   const briefs = startedBriefs(tools);
@@ -333,6 +345,9 @@ export const runDaySample = Effect.fn("botSources.runDaySample")(function* (
   const run: DayRun = {
     records,
     homeRuns: homeRuns(yield* readItems(call, homeThreadId, "messages")),
+    incomplete,
+    summaryRunId,
+    userCancelled,
     tools,
     checkoutsUnchanged: checkouts().every((status, index) => status === before[index]),
     ids: { botId, projectIds },
@@ -340,7 +355,6 @@ export const runDaySample = Effect.fn("botSources.runDaySample")(function* (
   return {
     ...run,
     homeThreadId,
-    userCancelled,
     timeline,
     models,
     usage: homeUsage(options.baseDir, homeThreadId),

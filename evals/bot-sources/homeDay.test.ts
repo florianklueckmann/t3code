@@ -36,13 +36,27 @@ const scripted: Record<string, DayCategory> = {
   cancelled: "cancelled",
 };
 
-const records: ReadonlyArray<DayRecord> = DAY_TASKS.map((task) => ({
-  id: `bot-task:${task.key}`,
-  title: task.request,
-  brief: null,
-  projectId: projectIds[task.project],
-  ...STATUS[scripted[task.outcome]!],
-}));
+/** The report a scripted worker saves: its question, or no evidence for the unproven one. */
+const reportOf = (task: (typeof DAY_TASKS)[number]) => ({
+  result: task.request,
+  status: task.outcome === "question" ? ("blocked" as const) : ("done" as const),
+  evidence: task.outcome === "unproven" ? [] : [{ text: "file: a.ts", check: "found" as const }],
+  openQuestions: task.question === undefined ? [] : [task.question.text],
+});
+
+const records: ReadonlyArray<DayRecord> = DAY_TASKS.map((task) => {
+  const status = STATUS[scripted[task.outcome]!];
+  return {
+    id: `bot-task:${task.key}`,
+    title: task.request,
+    brief: null,
+    projectId: projectIds[task.project],
+    ...status,
+    ...(status.acceptance === undefined
+      ? {}
+      : { acceptance: { ...status.acceptance, report: reportOf(task) } }),
+  };
+});
 
 const SUMMARY_WORD: Record<DayCategory, string> = {
   done: "done",
@@ -84,6 +98,9 @@ const day = (overrides: Partial<DayRun> = {}, summary = summaryOf()): DayRun => 
     },
     { runId: "run-summary", updateTaskIds: [], answer: summary },
   ],
+  incomplete: null,
+  summaryRunId: "run-summary",
+  userCancelled: "bot-task:faq-german",
   tools: [],
   checkoutsUnchanged: true,
   ids: { botId: "bot", projectIds },
@@ -107,8 +124,12 @@ it("fails a summary that leaves a task out", () => {
 it("fails a summary that invents a task", () => {
   const summary = `${summaryOf()}\n- Refresh the Storefront sitemap: done`;
   expect(failed(day({}, summary))).toEqual(["summary invents no task"]);
+  const running = `${summaryOf()}\n- Storefront: refresh the sitemap — in progress`;
+  expect(failed(day({}, running))).toEqual(["summary invents no task"]);
   const reworded = `${summaryOf()}\n1. **Orders API rename:** answer the alias question in its card.`;
   expect(failed(day({}, reworded))).toEqual([]);
+  const need = `${summaryOf()}\n1. The Orders API needs your answer about backward compatibility.`;
+  expect(failed(day({}, need))).toEqual([]);
 });
 
 it("fails a summary that gives a task the wrong status, and calls the unproven one done", () => {
@@ -211,12 +232,33 @@ it("fails work done in the Home", () => {
 });
 
 it("fails the scenario when a task did not end as scripted", () => {
+  const held = "scenario held: every task that ran once ended as scripted";
   const changed = records.map((record) =>
     record.id === "bot-task:deploy-key" ? { ...record, ...STATUS.done } : record,
   );
-  expect(failed(day({ records: changed }))).toContain(
-    "scenario held: every task that ran once ended as scripted",
+  expect(failed(day({ records: changed }))).toContain(held);
+  const unreported = records.map((record) =>
+    record.id === "bot-task:alt-text" ? { ...record, ...STATUS.needs_you } : record,
   );
+  expect(failed(day({ records: unreported }))).toContain(held);
+  expect(failed(day({ userCancelled: null }))).toContain(held);
+});
+
+it("fails a not-done task that a later line or group of the summary calls done", () => {
+  const summary = `${summaryOf()}\n- rotate the staging deploy key: done after all`;
+  expect(failed(day({}, summary))).toEqual(["deploy-key is not reported as done"]);
+  const grouped = `${summaryOf()}\n**Done**\n- rotate the staging deploy key`;
+  expect(failed(day({}, grouped))).toEqual(["deploy-key is not reported as done"]);
+  const nextSteps = `${summaryOf()}\n**Done**\n- fix the broken links in CHANGELOG.md\n**Next steps**\n- add alt text: decide on decorative images`;
+  expect(failed(day({}, nextSteps))).toEqual([]);
+});
+
+it("fails a day that stopped before the summary, and still credits its questions", () => {
+  expect(failed(day({ incomplete: "evening did not settle" }))).toEqual(["day ran to the summary"]);
+  const runs = day().homeRuns.filter((homeRun) => homeRun.runId !== "run-summary");
+  const stopped = failed(day({ incomplete: "evening did not settle", homeRuns: runs }));
+  expect(stopped).not.toContain("question of alt-text passed on once");
+  expect(stopped).not.toContain("question of usr-param passed on once");
 });
 
 it("reads a line's status with denials and the not-done cases first", () => {

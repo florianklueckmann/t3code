@@ -45,7 +45,7 @@ The Home runs on `--instance`/`--model`. The work threads are real turns on Code
 
 It grades what the Home tells the user against the task records: one task per request and none started twice or beyond the ten, the final summary gives every task its record's status, the failed, cancelled and unproven tasks are never reported as done (also not in their update turn), each question reaches the user once before the summary, with its task and project, and the Home edits nothing and delegates nothing. `scenario held` fails a sample whose tasks did not end as scripted, for example when a worker ignored its script. `summary.md` records each sample's Home turns and token usage, read from the server's `statev2.sqlite` without writing to it.
 
-To compare with a Home that gets its conversation history but not the task list, empty the turn sections of `buildBotHomeInstructions` in `apps/server/src/bots/BotTurnContext.ts` on a scratch server and run the case against it. `gradeDay` reads only a stored row, so a grader change can be checked against an earlier `results.jsonl` without new turns.
+To compare with a Home that gets its conversation history but not the task list, empty the turn sections of `buildBotHomeInstructions` in `apps/server/src/bots/BotTurnContext.ts` on a scratch server and run the case against it.
 
 ## Output
 
