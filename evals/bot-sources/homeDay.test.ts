@@ -120,6 +120,7 @@ it("uses each task's line when an overview groups decisions and outcomes", () =>
   const overview =
     "Four need you: the usr alias, alt text, /orders review and German FAQ. The rest finished or failed.";
   expect(failed(day({}, `${overview}\n${summaryOf()}`))).toEqual([]);
+  expect(failed(day({}, summaryOf().replace(": done", ". Completed.")))).toEqual([]);
   const homeRuns = day().homeRuns.map((run) =>
     run.runId === "run-batch-1"
       ? {

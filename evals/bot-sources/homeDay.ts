@@ -359,15 +359,15 @@ const summaryStatuses = (task: DayTask, lines: ReadonlyArray<string>) => {
       .find(
         (above) => !isTaskLine(above) && (statusOfLine(above) !== undefined || HEADING.test(above)),
       );
-    const sentence = line.split(/(?<=[.!?])\s+/).find((part) => matches(task.match, part)) ?? line;
-    const grouped = DAY_TASKS.some(
-      (other) => other.key !== task.key && matches(other.match, sentence),
-    );
+    const grouped = DAY_TASKS.some((other) => other.key !== task.key && matches(other.match, line));
+    const description = grouped
+      ? (line.split(/(?<=[.!?])\s+/).find((part) => matches(task.match, part)) ?? line)
+      : line;
     return [
       {
         grouped,
         status:
-          statusOfLine(sentence) ?? (heading === undefined ? undefined : statusOfLine(heading)),
+          statusOfLine(description) ?? (heading === undefined ? undefined : statusOfLine(heading)),
       },
     ];
   });
