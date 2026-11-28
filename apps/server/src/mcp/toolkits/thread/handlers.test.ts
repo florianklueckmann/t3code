@@ -13,7 +13,9 @@ import {
   ScheduledTaskId,
   ThreadId,
 } from "@t3tools/contracts";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
@@ -236,10 +238,15 @@ it.effect.each([
   ),
 );
 
-it.effect("refuses Run now after a client saves a new routine owner", () =>
+it.effect.each([
+  ["refuses Run now after a client saves a new routine owner", false],
+  ["denies Run now while another Bot's routine is running", true],
+] as const)("%s", ([, busy]) =>
   Effect.gen(function* () {
     const modelSelection = { instanceId: codex, model: "test-model" };
     const admitted = yield* Ref.make<ReadonlyArray<BotId>>([]);
+    const started = yield* Deferred.make<void>();
+    const finish = yield* Deferred.make<void>();
     const dependencies = Layer.mergeAll(
       NodeCrypto.layer,
       Scheduler.layer,
@@ -255,6 +262,8 @@ it.effect("refuses Run now after a client saves a new routine owner", () =>
         requireRunnable: () => Effect.succeed({ modelSelection }),
         admit: ({ botId }) =>
           Ref.update(admitted, (owners) => [...owners, botId]).pipe(
+            Effect.andThen(Deferred.succeed(started, undefined)),
+            Effect.andThen(busy ? Deferred.await(finish) : Effect.void),
             Effect.as({ _tag: "skipped" as const, reason: "Fixture" }),
           ),
       }),
@@ -276,6 +285,29 @@ it.effect("refuses Run now after a client saves a new routine owner", () =>
       } as const;
       const { task } = yield* scheduler.upsert(input);
       const newOwner = BotId.make("work");
+      if (busy) {
+        yield* scheduler.upsert({
+          ...input,
+          id: task.id,
+          requireExisting: true,
+          bot: { botId: newOwner },
+        });
+        const currentRun = yield* scheduler.runNow({ id: task.id }).pipe(Effect.forkChild);
+        yield* Deferred.await(started);
+        const result = yield* call(
+          "run_scheduled_task_now",
+          { taskId: task.id },
+          mailWork,
+          scheduler,
+        );
+        yield* Deferred.succeed(finish, undefined);
+        yield* Fiber.join(currentRun);
+        expect({ result: outcome(result), admitted: yield* Ref.get(admitted) }).toEqual({
+          result: "capability_denied",
+          admitted: [newOwner],
+        });
+        return;
+      }
       const result = yield* call("run_scheduled_task_now", { taskId: task.id }, mailWork, {
         ...scheduler,
         list: () =>
