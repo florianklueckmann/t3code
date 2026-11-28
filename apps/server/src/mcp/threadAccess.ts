@@ -294,15 +294,23 @@ const creatorOwnerOf = Effect.fn("mcp.creatorOwnerOf")(function* (
  */
 export const assertManagesScheduledTask = Effect.fn("mcp.assertManagesScheduledTask")(function* (
   services: ScheduledTaskOwners,
-  callerThreadId: ThreadId | undefined,
+  caller: Pick<McpInvocationContext.McpInvocationScope, "thread" | "client">,
   task: {
     readonly botId: BotId | undefined;
     readonly id?: ScheduledTaskId | undefined;
     readonly createdByThreadId?: ThreadId | null;
   },
 ) {
-  if (callerThreadId === undefined) return;
-  const owner = yield* ownerOfThread(services.bots, callerThreadId);
+  if (caller.thread === undefined) {
+    // A link's request for its machine's Bot owns nothing here, as `writeOwnerOfThread` says.
+    const origin = caller.client?.botOrigin;
+    if (origin === undefined) return;
+    return yield* new OrchestratorMcpFailure({
+      code: "capability_denied",
+      message: `This request works for ${origin.botName}, a Bot on another machine, so it cannot manage scheduled tasks here.`,
+    });
+  }
+  const owner = yield* ownerOfThread(services.bots, caller.thread.threadId);
   if (owner === undefined) return;
   const owned =
     task.botId !== undefined
@@ -320,10 +328,10 @@ export const assertManagesScheduledTask = Effect.fn("mcp.assertManagesScheduledT
 export const scheduledTaskAccess =
   (
     services: ScheduledTaskOwners,
-    threadId: ThreadId | undefined,
+    caller: Pick<McpInvocationContext.McpInvocationScope, "thread" | "client">,
   ): ScheduledTaskService.ScheduledTaskAccess =>
   (task) =>
-    assertManagesScheduledTask(services, threadId, task).pipe(
+    assertManagesScheduledTask(services, caller, task).pipe(
       Effect.mapError((cause) => new ScheduledTaskError({ message: cause.message, cause })),
     );
 

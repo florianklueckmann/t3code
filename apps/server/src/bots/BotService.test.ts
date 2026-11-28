@@ -9,6 +9,7 @@ import {
   botHomeProjectId,
   type BotTaskAcceptance as BotTaskAcceptanceValue,
   BotTaskId,
+  EnvironmentId,
   MAC_CALENDAR_CONNECTION_ID,
   McpConnectionId,
   type OrchestrationV2AppThreadLineage,
@@ -1586,7 +1587,7 @@ it.effect("grants Calendar (this Mac) on a Mac only, with the read level", () =>
 );
 
 it.effect(
-  "gives forks and subagents of a Bot thread that Bot's grants, and refuses lost lines",
+  "gives a Bot's forks and subagents its grants, another machine's Bot none, and refuses lost lines",
   () =>
     Effect.gen(function* () {
       yield* seedProjects;
@@ -1600,6 +1601,7 @@ it.effect(
         relationship: "fork" | "subagent" | null,
         createdBy?: string,
         projectId = campaignA,
+        linked?: { readonly linkOrigin: object; readonly botOrigin?: object },
       ) =>
         Effect.gen(function* () {
           const lineage = {
@@ -1616,7 +1618,7 @@ it.effect(
             created_at, updated_at, payload_json
           ) VALUES (
             ${id}, ${projectId}, ${id}, 'codex', 'full-access', 'default',
-            '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', ${JSON.stringify({ lineage, createdByThreadId })}
+            '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', ${JSON.stringify({ lineage, createdByThreadId, ...linked })}
           )
         `;
         });
@@ -1647,14 +1649,60 @@ it.effect(
           yield* thread("launched-fork", "launched", "fork");
           yield* thread("launched-by-plain", null, null, "plain");
           yield* thread("launched-by-deleted", null, null, "deleted-parent");
+          // Work a linked laptop started here: for its Bot, and for an ordinary thread there.
+          const fromLaptop = {
+            sessionId: "session:laptop",
+            label: "Laptop",
+            access: "full-access",
+          };
+          const laptopBot = {
+            environmentId: EnvironmentId.make("environment-laptop"),
+            botId,
+            botName: "Laptop Researcher",
+          };
+          yield* thread("stamped", null, null, undefined, campaignB, {
+            linkOrigin: fromLaptop,
+            botOrigin: laptopBot,
+          });
+          yield* thread("stamped-launched", null, null, "stamped", campaignB);
+          yield* thread("stamped-fork", "stamped", "fork", undefined, campaignB);
+          yield* thread("stamped-helper", "stamped-fork", "subagent", undefined, campaignB);
+          yield* thread("link-plain", null, null, undefined, campaignB, { linkOrigin: fromLaptop });
           const access = (id: string) => {
             const createdByThreadId = creators.get(id);
             return turnContext.mcpAccessForThread({
               id: ThreadId.make(id),
               lineage: lineages.get(id)!,
               ...(createdByThreadId === undefined ? {} : { createdByThreadId }),
+              ...(id === "stamped" ? { botOrigin: laptopBot } : {}),
             });
           };
+          // A Bot of another machine, even one with a local Bot's id, gets nothing here.
+          const foreign = {
+            _tag: "bot",
+            botId,
+            botName: "Laptop Researcher",
+            connectionIds: [],
+            ownCodexMcpServers: false,
+            environmentId: laptopBot.environmentId,
+          } as const;
+          for (const id of ["stamped", "stamped-launched", "stamped-fork", "stamped-helper"]) {
+            assert.deepEqual(yield* access(id), foreign, id);
+            assert.deepEqual(
+              yield* turnContext.mcpAccessForThreadId(ThreadId.make(id)),
+              foreign,
+              id,
+            );
+          }
+          assert.deepEqual(yield* access("link-plain"), { _tag: "none" });
+          const foreignWrite = yield* Effect.flip(
+            bots.writeOwnerOfThread(ThreadId.make("stamped-launched")),
+          );
+          assert.include(foreignWrite.message, "Laptop Researcher, a Bot on another machine");
+          // The stamp outlives its thread's deletion, so the line it started keeps the Bot.
+          yield* sql`UPDATE orchestration_v2_projection_threads
+            SET deleted_at = '2026-02-01T00:00:00.000Z' WHERE thread_id = 'stamped'`;
+          assert.deepEqual(yield* access("stamped-helper"), foreign);
           const granted = {
             _tag: "bot",
             botId,

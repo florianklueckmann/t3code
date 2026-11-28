@@ -2,6 +2,7 @@ import {
   ContextTransferId,
   OrchestrationV2Actor,
   OrchestrationV2AppThread,
+  OrchestrationV2BotOrigin,
   OrchestrationV2ContextSourcePoint,
   OrchestrationV2ContextTransfer,
   OrchestrationV2CreationSource,
@@ -60,6 +61,7 @@ export interface ThreadForkServiceV2Shape {
     readonly targetThreadId: ThreadId;
     readonly title?: string;
     readonly sideChat?: boolean;
+    readonly botOrigin?: OrchestrationV2BotOrigin;
     readonly createdBy: OrchestrationV2Actor;
     readonly creationSource: OrchestrationV2CreationSource;
     readonly createdAt: DateTime.Utc;
@@ -111,6 +113,7 @@ export const layer: Layer.Layer<ThreadForkServiceV2> = Layer.succeed(
         creationSource: input.creationSource,
         id: input.targetThreadId,
         title: input.title ?? `${input.sourceProjection.thread.title} fork`,
+        ...(input.botOrigin === undefined ? {} : { botOrigin: input.botOrigin }),
         // The source's title job completes only on the source thread.
         titleRegeneration: null,
         activeProviderThreadId: null,

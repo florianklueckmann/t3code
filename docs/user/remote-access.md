@@ -385,6 +385,10 @@ an address you trust: the code is sent there.
   access, the link's agents can change only threads it started, not that
   machine's own threads, projects or settings, and they skip its project setup
   scripts.
+- A Bot's work keeps that Bot's limits on the other machine: it uses none of
+  that machine's MCP connections or provider memory, and it changes no Bot
+  there. Both machines need this version; until the other one is updated, a
+  Bot can only read and stop work there.
 - The link shows up in that machine's **Settings → Sharing & access** like any
   outside agent. Revoke it there to end it. **Forget** on this machine only
   removes it here.

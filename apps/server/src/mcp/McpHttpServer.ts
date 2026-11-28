@@ -21,6 +21,7 @@ import {
   ProviderInteractionMode,
   type RunId,
   RuntimeMode,
+  OrchestrationV2BotOrigin,
   OrchestrationV2LinkedSender,
   ThreadId,
 } from "@t3tools/contracts";
@@ -235,6 +236,37 @@ const withSenderThread = (
     : { ...invocation, client: { ...invocation.client, senderThread: decoded.value } };
 };
 
+const decodeBotOrigin = Schema.decodeUnknownOption(OrchestrationV2BotOrigin);
+
+const invalidBotOrigin = HttpServerResponse.jsonUnsafe(
+  {
+    error: "invalid_bot_origin",
+    message: "T3-Bot-Origin must be <environmentId>/<botId>/<botName>, each URI-encoded.",
+  },
+  { status: 400, headers: { "cache-control": "no-store" } },
+);
+
+/** Records the Bot a linked environment calls for; undefined when the header is malformed. */
+const withBotOrigin = (
+  invocation: McpInvocationContext.McpInvocationScope,
+  request: HttpServerRequest.HttpServerRequest,
+): McpInvocationContext.McpInvocationScope | undefined => {
+  const header = request.headers[McpInvocationContext.BOT_ORIGIN_HEADER];
+  if (header === undefined || invocation.client?.linked !== true) return invocation;
+  let parts: ReadonlyArray<string>;
+  try {
+    parts = header.trim().split("/").map(decodeURIComponent);
+  } catch {
+    return undefined;
+  }
+  const [environmentId, botId, botName, ...rest] = parts;
+  const decoded =
+    rest.length > 0 ? Option.none() : decodeBotOrigin({ environmentId, botId, botName });
+  return Option.isNone(decoded)
+    ? undefined
+    : { ...invocation, client: { ...invocation.client, botOrigin: decoded.value } };
+};
+
 // The Linked environments beta is off here: links wait until it is on again.
 const linkedEnvironmentsOff = HttpServerResponse.jsonUnsafe(
   {
@@ -280,7 +312,10 @@ const makeMcpAuthMiddleware = Effect.gen(function* () {
         offerOAuth: Option.isSome(clients) && !looksLikeProviderToken(token),
       });
     }
-    const modeLimited = withModeLimit(withSenderThread(invocation, request), request);
+    // A Bot's origin only narrows, so a malformed one is refused rather than dropped.
+    const forBot = withBotOrigin(invocation, request);
+    if (forBot === undefined) return invalidBotOrigin;
+    const modeLimited = withModeLimit(withSenderThread(forBot, request), request);
     if (modeLimited === undefined) return invalidModeLimit;
     const asked =
       modeLimited.thread !== undefined &&

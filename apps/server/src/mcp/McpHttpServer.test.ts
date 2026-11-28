@@ -1799,11 +1799,12 @@ it.effect("lists pull request watch tools only to threads that are not delegated
 );
 
 it.effect(
-  "narrows an OAuth client's modes to the T3-Mode-Limit it sends, and never widens them",
+  "narrows an OAuth client to the T3-Mode-Limit and a link to the T3-Bot-Origin it sends",
   () =>
     Effect.scoped(
       Effect.gen(function* () {
         const clientToken = "client-payload.client-signature";
+        const linkToken = "link-payload.link-signature";
         const clientScope: McpInvocationContext.McpInvocationScope = {
           environmentId,
           requestNamespace: "client:linked",
@@ -1811,6 +1812,10 @@ it.effect(
           client: { sessionId: "linked", label: "T3 Code · laptop", access: "auto" },
           capabilities: new Set(["orchestration"]),
           issuedAt: 1,
+        };
+        const linkScope: McpInvocationContext.McpInvocationScope = {
+          ...clientScope,
+          client: { ...clientScope.client!, linked: true },
         };
         // Starts a thread at the modes the gate hands it, so the outcome is those modes.
         const StartsToolkit = Toolkit.make(
@@ -1837,13 +1842,19 @@ it.effect(
               starts: McpToolAccess.startsThreads(
                 (input) => input,
                 (_, modes) =>
-                  Effect.succeed({ modes: `${modes.runtimeMode}/${modes.interactionMode}` }),
+                  Effect.succeed({
+                    modes: `${modes.runtimeMode}/${modes.interactionMode}${
+                      modes.botOrigin === undefined
+                        ? ""
+                        : ` for ${modes.botOrigin.botName} of ${modes.botOrigin.environmentId}`
+                    }`,
+                  }),
                 "stamped",
               ),
             }),
           ),
         ).pipe(
-          Layer.provide(ServerSettings.layerTest()),
+          Layer.provide(ServerSettings.layerTest({ linkedEnvironmentsEnabled: true })),
           Layer.provide(McpToolAccessTestkit.liveThreadsLayer),
           Layer.provide(McpToolAccessTestkit.layerCallerChangesAllowed),
           Layer.provide(
@@ -1857,7 +1868,9 @@ it.effect(
                 Effect.succeed(
                   request.headers.authorization === `Bearer ${clientToken}`
                     ? clientScope
-                    : undefined,
+                    : request.headers.authorization === `Bearer ${linkToken}`
+                      ? linkScope
+                      : undefined,
                 ),
             }),
           ),
@@ -1884,12 +1897,17 @@ it.effect(
           ),
         );
         /** Starts a thread as the client, with `limit` as T3-Mode-Limit; the HTTP status or the outcome. */
-        const start = (limit: string | undefined, args: Record<string, string> = {}) =>
+        const start = (
+          limit: string | undefined,
+          args: Record<string, string> = {},
+          as: { readonly token?: string; readonly botOrigin?: string } = {},
+        ) =>
           Effect.gen(function* () {
             const headers = {
               accept: "application/json, text/event-stream",
-              authorization: `Bearer ${clientToken}`,
+              authorization: `Bearer ${as.token ?? clientToken}`,
               ...(limit === undefined ? {} : { "t3-mode-limit": limit }),
+              ...(as.botOrigin === undefined ? {} : { "t3-bot-origin": as.botOrigin }),
             };
             const initialize = yield* httpClient.post("/mcp", {
               headers,
@@ -1941,6 +1959,22 @@ it.effect(
         expect(yield* start("auto")).toBe(400);
         expect(yield* start("auto/default/extra")).toBe(400);
         expect(yield* start("root/default")).toBe(400);
+
+        // Only a link names the Bot its request works for, and only to narrow it.
+        const researcher = "environment-laptop/researcher/Research%20%26%20notes";
+        expect(yield* start(undefined, {}, { botOrigin: researcher })).toBe("auto/default");
+        expect(yield* start(undefined, {}, { token: linkToken, botOrigin: researcher })).toBe(
+          "auto/default for Research & notes of environment-laptop",
+        );
+        expect(yield* start(undefined, {}, { token: linkToken })).toBe("auto/default");
+        for (const malformed of [
+          "environment-laptop/researcher",
+          "environment-laptop/researcher/",
+          "a/bad:id/Name",
+          "a/b/c/d",
+        ]) {
+          expect(yield* start(undefined, {}, { token: linkToken, botOrigin: malformed })).toBe(400);
+        }
       }),
     ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );

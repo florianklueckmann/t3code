@@ -1178,7 +1178,7 @@ it.effect("run_scheduled_task_now reports why a started run failed to dispatch",
       lastRunStatus: "failed",
       lastRunError: "the provider is disabled",
     });
-    expect(requests).toEqual([{ requestedIn: null }]);
+    expect(requests).toMatchObject([{ requestedIn: null }]);
   }).pipe(
     Effect.provide(
       McpHttpServer.layerThreadToolkit.pipe(

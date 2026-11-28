@@ -69,6 +69,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as CommandReceiptStore from "../orchestration-v2/CommandReceiptStore.ts";
 import * as SourceControlRepositoryService from "../sourceControl/SourceControlRepositoryService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import * as BotTurnContext from "../bots/BotTurnContext.ts";
 import * as PeerForwarding from "./PeerForwarding.ts";
 import * as PeerLinks from "./PeerLinks.ts";
 import { descriptorOf, layerLinkingEnvironment, linkTo, servePeer } from "./PeerLinks.testkit.ts";
@@ -695,7 +696,7 @@ const makeLaptop = (
               }),
             ),
           ),
-          Layer.provideMerge(PeerForwarding.layer),
+          Layer.provideMerge(PeerForwarding.layer.pipe(Layer.provide(BotTurnContext.layerEmpty))),
           Layer.provide(
             Layer.mock(ProjectService.ProjectService)({
               // A cold enrichment cache: the project itself reports no identity yet.

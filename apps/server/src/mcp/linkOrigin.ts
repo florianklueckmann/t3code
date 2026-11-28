@@ -28,6 +28,26 @@ export const callerLinkOrigin = (
       }
     : undefined);
 
+/**
+ * The other environment's Bot a link's request works for. A thread here needs no stamp of its
+ * own: the Bot lookup follows it to the stamped thread it came from.
+ */
+export const callerBotOrigin = (caller: Pick<Caller, "scope" | "caller">) =>
+  caller.caller === undefined ? caller.scope.client?.botOrigin : undefined;
+
+/** Work for another environment's Bot starts only what can carry that Bot. */
+export const assertNoBotOrigin = (caller: Pick<Caller, "scope" | "caller">, what: string) => {
+  const origin = callerBotOrigin(caller);
+  return origin === undefined
+    ? Effect.void
+    : Effect.fail(
+        new OrchestratorMcpFailure({
+          code: "capability_denied",
+          message: `This request works for ${origin.botName}, a Bot on another machine, so it cannot ${what}.`,
+        }),
+      );
+};
+
 /** The link that fences a caller, if any: one paired below full access. */
 export const fencingLinkOrigin = (caller: Pick<Caller, "scope" | "caller">) => {
   const origin = callerLinkOrigin(caller);

@@ -1,5 +1,6 @@
 import {
   type EnvironmentId,
+  type OrchestrationV2BotOrigin,
   OrchestratorMcpFailure,
   type OrchestratorMcpEnvironmentLinksResult,
   OrchestratorMcpThreadInterruptInput,
@@ -10,6 +11,7 @@ import {
   OrchestratorMcpThreadWaitResult,
   type PeerLinkError,
   RuntimeMode,
+  type ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Digest from "effect/crypto/Digest";
@@ -19,8 +21,9 @@ import * as Hex from "effect/encoding/Hex";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import type * as Tool from "effect/ai/Tool";
+import * as Tool from "effect/ai/Tool";
 
+import * as BotTurnContext from "../bots/BotTurnContext.ts";
 import { runtimeModeRank } from "../mcp/delegatedTaskModes.ts";
 import { assertNotLinked } from "../mcp/linkOrigin.ts";
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
@@ -100,6 +103,41 @@ const make = Effect.gen(function* () {
   const links = yield* PeerLinks.PeerLinks;
   const crypto = yield* Digest.Digest;
   const threads = yield* ThreadManagement.ThreadManagementService;
+  const turns = yield* BotTurnContext.BotTurnContext;
+
+  /**
+   * The Bot whose work a call is, from this environment's own lookup, so its agent can neither
+   * set nor drop it. A line that cannot be followed may only read and stop work there.
+   */
+  const botOriginOf = Effect.fn("PeerForwarding.botOriginOf")(function* (
+    scope: Scope,
+    callerId: ThreadId | undefined,
+    readsOrStops: boolean,
+  ) {
+    if (callerId === undefined) return scope.client?.botOrigin;
+    const access = yield* turns.mcpAccessForThreadId(callerId).pipe(
+      Effect.orElseSucceed(
+        () =>
+          ({
+            _tag: "refused",
+            message: "This thread's Bot could not be read, so it cannot act on another machine.",
+          }) as const,
+      ),
+    );
+    if (access._tag === "none") return undefined;
+    if (access._tag === "refused") {
+      if (readsOrStops) return undefined;
+      return yield* new OrchestratorMcpFailure({
+        code: "capability_denied",
+        message: access.message,
+      });
+    }
+    return {
+      environmentId: access.environmentId ?? scope.environmentId,
+      botId: access.botId,
+      botName: access.botName,
+    } satisfies OrchestrationV2BotOrigin;
+  });
 
   /**
    * The caller's own limits and thread, which travel with every forwarded call: the peer sees only the
@@ -155,8 +193,10 @@ const make = Effect.gen(function* () {
     success: Schema.Top,
     environmentId: EnvironmentId,
     params: unknown,
+    readsOrStops: boolean,
   ) {
     const { caller, limits } = yield* forwardingCaller(scope);
+    const botOrigin = yield* botOriginOf(scope, caller?.id, readsOrStops);
     const encoded = (yield* Schema.encodeUnknownEffect(parameters as Schema.Encoder<unknown>)(
       params,
     ).pipe(Effect.mapError(unavailable))) as Record<string, unknown>;
@@ -187,6 +227,8 @@ const make = Effect.gen(function* () {
       arguments: args,
       limits,
       ...(sender === undefined ? {} : { sender }),
+      ...(botOrigin === undefined ? {} : { botOrigin }),
+      readsOrStops,
       success: success as Schema.Decoder<A>,
     });
   });
@@ -199,6 +241,7 @@ const make = Effect.gen(function* () {
       OrchestratorMcpThreadReadResult,
       environmentId,
       input,
+      true,
     );
 
   const interruptThread: PeerForwarding["Service"]["interruptThread"] = (
@@ -213,6 +256,7 @@ const make = Effect.gen(function* () {
       OrchestratorMcpThreadInterruptResult,
       environmentId,
       input,
+      true,
     );
 
   const waitForThread: PeerForwarding["Service"]["waitForThread"] = (scope, environmentId, input) =>
@@ -229,6 +273,7 @@ const make = Effect.gen(function* () {
           Math.max(1, input.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS),
         ),
       },
+      true,
     );
 
   // While the beta is off, agents start nothing over links. Tasks already running there keep
@@ -247,7 +292,15 @@ const make = Effect.gen(function* () {
           environmentId,
           params as OrchestratorMcpThreadWaitInput,
         ) as Effect.Effect<Tool.Success<typeof tool>, OrchestratorMcpFailure>)
-      : forward(scope, tool.name, tool.parametersSchema, tool.successSchema, environmentId, params);
+      : forward(
+          scope,
+          tool.name,
+          tool.parametersSchema,
+          tool.successSchema,
+          environmentId,
+          params,
+          Context.get(tool.annotations, Tool.Readonly) || tool.name === "t3_thread_interrupt",
+        );
     return Effect.andThen(requireEnabled, forwarded);
   };
 

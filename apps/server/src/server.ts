@@ -902,6 +902,7 @@ const layerMakeRoutes = Layer.mergeAll(
   // Links to other environments, shared by Settings (WebSocket) and agents (/mcp).
   Layer.provide(
     PeerForwarding.layer.pipe(
+      Layer.provide(BotTurnContext.layer),
       Layer.provideMerge(PeerMcpClient.layer),
       Layer.provideMerge(PeerLinks.layer),
     ),

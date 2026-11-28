@@ -10,6 +10,7 @@ import {
   type ModelSelection,
   type OrchestrationV2Actor,
   type OrchestrationV2CreationSource,
+  type OrchestrationV2BotOrigin,
   type OrchestrationV2DelegatedFrom,
   type OrchestrationV2LinkOrigin,
   type OrchestrationV2ProviderThreadNativeMetadata,
@@ -116,6 +117,7 @@ export interface ThreadLaunchInput {
   readonly linkOrigin?: OrchestrationV2LinkOrigin;
   /** The parent there, when that environment's agent delegated this as a task. */
   readonly delegatedFrom?: OrchestrationV2DelegatedFrom;
+  readonly botOrigin?: OrchestrationV2BotOrigin;
   /** The thread whose agent launched this one, if one did. */
   readonly createdByThreadId?: ThreadId;
 }
@@ -1313,6 +1315,7 @@ const make = Effect.gen(function* () {
                 ...(input.delegatedFrom === undefined
                   ? {}
                   : { delegatedFrom: input.delegatedFrom }),
+                ...(input.botOrigin === undefined ? {} : { botOrigin: input.botOrigin }),
                 ...(input.createdByThreadId === undefined
                   ? {}
                   : { createdByThreadId: input.createdByThreadId }),

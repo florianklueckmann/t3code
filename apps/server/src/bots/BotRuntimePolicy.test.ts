@@ -2,6 +2,7 @@ import { assert, it } from "@effect/vitest";
 import {
   BotId,
   BotTaskId,
+  EnvironmentId,
   MAC_CALENDAR_CONNECTION_ID,
   McpConnectionId,
   type OrchestrationV2AppThread,
@@ -34,6 +35,7 @@ const unreadableTaskThread = ThreadId.make("bot-work:bot-task:unreadable");
 // Forks and subagents are not Bot conversations, but their MCP access follows their Bot.
 const botForkThread = ThreadId.make("fork-of-bot-home");
 const ungrantedBotThread = ThreadId.make("bot-home:ungranted:campaign");
+const foreignBotThread = ThreadId.make("mcp:foreign-bot");
 const ungrantedBotForkThread = ThreadId.make("fork-of-ungranted-bot-home");
 const botSubagentThread = ThreadId.make("subagent-of-codex-bot-home");
 const ungrantedBotSubagentThread = ThreadId.make("subagent-of-ungranted-codex-bot-home");
@@ -85,6 +87,7 @@ const mcpAccessOf = (id: ThreadId): BotTurnContext.BotMcpAccess => {
     return bot([privateMail]);
   if (id === ownServersBotThread) return bot([privateMail], true);
   if (id === ownServersOnlyBotThread) return bot([], true);
+  if (id === foreignBotThread) return { ...bot([]), environmentId: EnvironmentId.make("peer") };
   if ([ungrantedBotThread, ungrantedBotForkThread, ungrantedBotSubagentThread].includes(id))
     return bot([]);
   if (id === archivedBotThread || id === archivedNoChangesThread || id === orphanThread)
@@ -373,13 +376,20 @@ it.effect.each([
     }),
 );
 
-it.effect("keeps a Codex Bot on Windows on Codex's own MCP setup unless it has grants", () =>
+it.effect("keeps a local Codex Bot's Windows fallback but requires isolation for a peer Bot", () =>
   Effect.gen(function* () {
     const refused = yield* resolveFor(botThread, { platform: "win32" }).pipe(Effect.flip);
     assert.include(refused.message, "only verified on macOS and Linux");
     const policy = yield* resolveFor(ungrantedBotThread, { platform: "win32" });
     assert.isFalse(Object.hasOwn(policy, "mcpConnections"));
     assert.equal(policy.nativeMemory, "disabled");
+    const foreign = yield* resolveFor(foreignBotThread, { platform: "win32" }).pipe(Effect.result);
+    if (foreign._tag === "Failure") {
+      assert.equal(foreign.failure._tag, "RuntimePolicyMcpUnsupportedError");
+    } else {
+      assert.deepEqual(foreign.success.mcpConnections, []);
+      assert.isUndefined(foreign.success.userMcpServers);
+    }
   }),
 );
 

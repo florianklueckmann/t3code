@@ -1,5 +1,6 @@
 import { expect, it } from "@effect/vitest";
 import {
+  BotId,
   CommandId,
   EnvironmentId,
   MessageId,
@@ -69,6 +70,11 @@ it("stamps authoritative provenance on commands that create threads or messages"
       threadId: ThreadId.make("thread:elsewhere"),
       title: "Somewhere else",
     },
+    botOrigin: {
+      environmentId: EnvironmentId.make("environment:elsewhere"),
+      botId: BotId.make("forged-bot"),
+      botName: "Somewhere else",
+    },
     // A client's message goes through intake; only the server folds one into the creation.
     initialMessage: {
       messageId: MessageId.make("message:thread-management:forged"),
@@ -87,8 +93,27 @@ it("stamps authoritative provenance on commands that create threads or messages"
   });
   expect(stamped).not.toHaveProperty("linkOrigin");
   expect(stamped).not.toHaveProperty("delegatedFrom");
+  expect(stamped).not.toHaveProperty("botOrigin");
   expect(stamped).not.toHaveProperty("initialMessage");
   expect(stamped).not.toHaveProperty("createdByThreadId");
+  const fork = ThreadManagementService.withCreationProvenance(
+    {
+      type: "thread.fork",
+      createdBy: "agent",
+      creationSource: "mcp",
+      commandId: CommandId.make("command:thread-management:fork"),
+      sourceThreadId: ThreadId.make("thread:thread-management:create"),
+      targetThreadId: ThreadId.make("thread:thread-management:fork"),
+      sourcePoint: { type: "latest_stable" },
+      botOrigin: {
+        environmentId: EnvironmentId.make("environment:elsewhere"),
+        botId: BotId.make("forged-bot"),
+        botName: "Somewhere else",
+      },
+    },
+    { createdBy: "user", creationSource: "web" },
+  );
+  expect(fork).not.toHaveProperty("botOrigin");
 
   // Only server maintenance sends a message that waits for an idle Home.
   const message = ThreadManagementService.withCreationProvenance(

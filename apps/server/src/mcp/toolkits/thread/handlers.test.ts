@@ -5,6 +5,7 @@ import {
   BotId,
   CommandId,
   EnvironmentId,
+  type OrchestrationV2BotOrigin,
   ProjectId,
   ProviderInstanceId,
   RunId,
@@ -47,6 +48,7 @@ const workHome = ThreadId.make("thread:work-home");
 const plainThread = ThreadId.make("thread:plain");
 const mailWork = ThreadId.make("thread:mail-work");
 const refusedThread = ThreadId.make("thread:refused");
+const stampedThread = ThreadId.make("thread:stamped");
 const removedCreator = ThreadId.make("thread:removed-creator");
 const mailRoutine = ScheduledTaskId.make("routine:mail");
 const workRoutine = ScheduledTaskId.make("routine:work");
@@ -66,11 +68,54 @@ const scheduledTasks = [
   { id: mailMadeSchedule },
   { id: removedCreatorSchedule },
 ];
+/** A thread here, or with `null` an approved outside client. */
+const callerScope = (callerThread: ThreadId | null): McpInvocationContext.McpInvocationScope => ({
+  environmentId: EnvironmentId.make("environment:here"),
+  requestNamespace: "provider:caller",
+  thread:
+    callerThread === null
+      ? undefined
+      : {
+          threadId: callerThread,
+          providerSessionId: "provider:caller",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+        },
+  client:
+    callerThread === null
+      ? {
+          sessionId: "approved-test-client",
+          label: "Test client",
+          access: "full-access",
+        }
+      : undefined,
+  capabilities: new Set(["orchestration" as const]),
+  issuedAt: 0,
+});
+/** A full-access link's call, with no thread here; `botOrigin` names the Bot it works for. */
+const linkScope = (
+  botOrigin?: OrchestrationV2BotOrigin,
+): McpInvocationContext.McpInvocationScope => ({
+  ...callerScope(null),
+  requestNamespace: "client:link",
+  client: {
+    sessionId: "session:link",
+    label: "T3 Code · Laptop",
+    access: "full-access",
+    linked: true,
+    ...(botOrigin === undefined ? {} : { botOrigin }),
+  },
+});
+const laptopBot = {
+  environmentId: EnvironmentId.make("environment-laptop"),
+  botId: mailBot,
+  botName: "Researcher",
+};
 const call = (
   name: string,
   params: unknown,
   callerThread: ThreadId | null = caller,
   scheduler?: ScheduledTasks.ScheduledTaskService["Service"],
+  scope = callerScope(callerThread),
 ) =>
   Effect.gen(function* () {
     const reached = yield* Ref.make<ReadonlyArray<string>>([]);
@@ -90,37 +135,36 @@ const call = (
         McpToolAccess.HandlersLayer.layer(ThreadHandlers.layer).pipe(
           Layer.provideMerge(
             Layer.mergeAll(
-              Layer.succeed(McpInvocationContext.McpInvocationContext, {
-                environmentId: EnvironmentId.make("environment:here"),
-                requestNamespace: "provider:caller",
-                thread:
-                  callerThread === null
-                    ? undefined
-                    : {
-                        threadId: callerThread,
-                        providerSessionId: "provider:caller",
-                        providerInstanceId: ProviderInstanceId.make("codex"),
-                      },
-                client:
-                  callerThread === null
-                    ? {
-                        sessionId: "approved-test-client",
-                        label: "Test client",
-                        access: "full-access",
-                      }
-                    : undefined,
-                capabilities: new Set(["orchestration" as const]),
-                issuedAt: 0,
-              }),
+              Layer.succeed(McpInvocationContext.McpInvocationContext, scope),
               layerCallerChangesAllowed,
               NodeCrypto.layer,
               Layer.mock(ThreadManagement.ThreadManagementService)({
-                getThreadShell: (id) => Effect.succeed(liveThreadShell(id)),
-                getProjectThreadRecords: ({ threadId }) =>
-                  Effect.succeed(idleThreadProjection(liveThreadShell(threadId))),
+                getThreadShell: (id) =>
+                  Effect.succeed({
+                    ...liveThreadShell(id),
+                    ...(id === stampedThread
+                      ? {
+                          linkOrigin: {
+                            sessionId: "laptop",
+                            label: "Laptop",
+                            access: "full-access" as const,
+                          },
+                        }
+                      : {}),
+                  }),
+                getProjectThreadRecords: ({ threadId }) => {
+                  const projection = idleThreadProjection(liveThreadShell(threadId));
+                  return Effect.succeed(
+                    threadId === stampedThread
+                      ? { ...projection, thread: { ...projection.thread, botOrigin: laptopBot } }
+                      : projection,
+                  );
+                },
                 dispatch: (command) =>
                   reach(
-                    command.type,
+                    command.type === "thread.fork" && command.botOrigin !== undefined
+                      ? `${command.type} for ${command.botOrigin.botName}`
+                      : command.type,
                     new ThreadManagement.ThreadManagementProviderInstanceDisabledError({
                       projectId: ProjectId.make("project:mcp-test"),
                       instanceId: ProviderInstanceId.make("codex"),
@@ -161,10 +205,17 @@ const call = (
                   })
                 : Layer.succeed(ScheduledTasks.ScheduledTaskService, scheduler),
               Layer.mock(BotService.BotService)({
-                writeOwnerOfThread: (threadId) =>
-                  threadId === refusedThread
-                    ? Effect.fail(new BotError({ message: "Cannot resolve the parent thread." }))
-                    : Effect.succeed(ownerOf.get(threadId)),
+                writeOwnerOfThread: (threadId) => {
+                  if (threadId === stampedThread)
+                    return Effect.fail(
+                      new BotError({ message: "This Bot is on another machine." }),
+                    );
+                  if (threadId === refusedThread)
+                    return Effect.fail(
+                      new BotError({ message: "Cannot resolve the parent thread." }),
+                    );
+                  return Effect.succeed(ownerOf.get(threadId));
+                },
               }),
               Layer.mock(ThreadSearch.ThreadSearch)({}),
             ),
@@ -328,4 +379,42 @@ it.effect.each([
       });
     }).pipe(Effect.provide(ScheduledTasks.layer.pipe(Layer.provide(dependencies))));
   }).pipe(Effect.provide(Sqlite.layerMemory)),
+);
+
+it.effect("a fork a link asks for on its Bot's behalf carries that Bot", () =>
+  Effect.gen(function* () {
+    const fork = { action: "fork", threadId: plainThread } as const;
+    const plain = yield* call("t3_thread_transfer", fork, null, undefined, linkScope());
+    expect(plain.reached).toEqual(["thread.fork"]);
+    const forBot = yield* call("t3_thread_transfer", fork, null, undefined, linkScope(laptopBot));
+    expect(forBot.reached).toEqual(["thread.fork for Researcher"]);
+  }),
+);
+
+it.effect("a link runs schedules here, but not for its machine's Bot", () =>
+  Effect.gen(function* () {
+    for (const taskId of [plainSchedule, mailRoutine]) {
+      const runNow = { taskId };
+      const plain = yield* call("run_scheduled_task_now", runNow, null, undefined, linkScope());
+      expect(outcome(plain), taskId).toBe("reached");
+      const forBot = yield* call(
+        "run_scheduled_task_now",
+        runNow,
+        null,
+        undefined,
+        linkScope(laptopBot),
+      );
+      expect(outcome(forBot), taskId).toBe("capability_denied");
+      const stamped = yield* call("run_scheduled_task_now", runNow, stampedThread);
+      expect(outcome(stamped), taskId).toBe("invalid_request");
+    }
+  }),
+);
+
+it.effect("a stamped caller's fork of an ordinary source carries its Bot", () =>
+  Effect.gen(function* () {
+    const fork = { action: "fork", threadId: plainThread };
+    const result = yield* call("t3_thread_transfer", fork, stampedThread);
+    expect(result.reached).toEqual(["thread.fork for Researcher"]);
+  }),
 );

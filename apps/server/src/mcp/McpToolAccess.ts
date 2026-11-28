@@ -1,5 +1,6 @@
 import {
   type EnvironmentId,
+  type OrchestrationV2BotOrigin,
   type OrchestrationV2LinkOrigin,
   OrchestratorMcpEnvironmentTarget,
   OrchestratorMcpFailure,
@@ -22,7 +23,13 @@ import {
   type DispatchModeRefusal,
 } from "../orchestration-v2/DispatchModeLimit.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
-import { assertNotLinked, assertSameLink, callerLinkOrigin } from "./linkOrigin.ts";
+import {
+  assertNoBotOrigin,
+  assertNotLinked,
+  assertSameLink,
+  callerBotOrigin,
+  callerLinkOrigin,
+} from "./linkOrigin.ts";
 import * as McpCallerChanges from "./McpCallerChanges.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import { resolveInteractionMode, resolveRuntimeMode } from "./delegatedTaskModes.ts";
@@ -328,6 +335,8 @@ export interface StartedModes {
   readonly interactionMode: ProviderInteractionMode;
   /** The linked environment the caller acts for. The thread must carry it. */
   readonly linkOrigin: OrchestrationV2LinkOrigin | undefined;
+  /** The linked environment's Bot the caller works for. The thread must carry it too. */
+  readonly botOrigin: OrchestrationV2BotOrigin | undefined;
 }
 
 /**
@@ -352,13 +361,17 @@ export const startsThreads = <P, A, E, R>(
         requested.interactionMode,
       ),
       linkOrigin: callerLinkOrigin(caller),
+      botOrigin: callerBotOrigin(caller),
     } satisfies StartedModes;
   });
   return declare(
     (params: P) =>
       Effect.gen(function* () {
         const caller = yield* writingCaller;
-        if (linked !== "stamped") yield* assertNotLinked(caller, linked.refused);
+        if (linked !== "stamped") {
+          yield* assertNotLinked(caller, linked.refused);
+          yield* assertNoBotOrigin(caller, linked.refused);
+        }
         return yield* handle(params, yield* started(caller, params));
       }),
     (params: P) => Effect.flatMap(writingCaller, (caller) => started(caller, params)),

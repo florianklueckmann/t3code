@@ -114,6 +114,7 @@ export class BotService extends Context.Service<
     readonly scopeOfThread: (
       threadId: ThreadId,
     ) => Effect.Effect<BotTurnContext.BotTurnScope | "inactive" | undefined, BotError>;
+    /** The Bot a thread may change. Fails for a refused line and for another machine's Bot. */
     readonly writeOwnerOfThread: (threadId: ThreadId) => Effect.Effect<BotId | undefined, BotError>;
     /** Records a standing instruction or proposes an inferred lesson, as the policy allows. */
     readonly recordLearning: (input: BotLearning.RecordLearningInput) => Effect.Effect<
@@ -196,6 +197,10 @@ function newHomeBinding(
     updated_at: now,
   } satisfies BotStore.BotContextRow;
 }
+
+/** What work for another machine's Bot hears when it tries to change a Bot here. */
+export const foreignBotWrites = (botName: string) =>
+  `This work is for ${botName}, a Bot on another machine, so it cannot change Bots or their tasks here.`;
 
 const botError = (message: string, botId?: BotId) => (cause?: unknown) =>
   new BotError({
@@ -1276,6 +1281,8 @@ const make = Effect.gen(function* () {
         .mcpAccessForThreadId(threadId)
         .pipe(Effect.mapError(storeError()));
       if (access._tag === "refused") return yield* new BotError({ message: access.message });
+      if (access._tag === "bot" && access.environmentId !== undefined)
+        return yield* new BotError({ message: foreignBotWrites(access.botName) });
       return access._tag === "bot" ? access.botId : undefined;
     }),
     recordLearning,

@@ -1,7 +1,9 @@
 import { NodeHttpServer } from "@effect/platform-node";
 import { expect, it } from "@effect/vitest";
 import {
+  BotId,
   EnvironmentId,
+  type OrchestrationV2BotOrigin,
   OrchestrationV2LinkedSender,
   OrchestratorMcpFailure,
   ThreadId,
@@ -48,7 +50,14 @@ const toolkit = Toolkit.make(
 );
 
 /** One `probe` call to a linked peer at a remote address, answered by `http`. */
-const probeThrough = Effect.fn(function* (http: HttpClient.HttpClient) {
+const probeThrough = Effect.fn(function* (
+  http: HttpClient.HttpClient,
+  options?: {
+    readonly keepsBotLimits: () => boolean;
+    readonly botOrigin?: OrchestrationV2BotOrigin;
+    readonly url?: () => string;
+  },
+) {
   const box = descriptorOf("environment-box", "Box");
   const context = yield* Layer.build(
     PeerMcpClient.layer.pipe(
@@ -57,7 +66,7 @@ const probeThrough = Effect.fn(function* (http: HttpClient.HttpClient) {
           Layer.succeed(HttpClient.HttpClient, http),
           Layer.mock(PeerLinks.PeerLinks)({
             resolve: () =>
-              Effect.succeed({
+              Effect.sync(() => ({
                 link: {
                   environmentId: box.environmentId,
                   label: box.label,
@@ -68,9 +77,10 @@ const probeThrough = Effect.fn(function* (http: HttpClient.HttpClient) {
                   lastReachedAt: null,
                   lastError: null,
                 },
-                url: "https://peer.example",
+                url: options?.url?.() ?? "https://peer.example",
                 token: "fixture",
-              }),
+                keepsBotLimits: options?.keepsBotLimits() ?? true,
+              })),
             recordOutcome: () => Effect.void,
           }),
         ),
@@ -82,6 +92,7 @@ const probeThrough = Effect.fn(function* (http: HttpClient.HttpClient) {
     tool: "probe",
     arguments: {},
     limits: { runtimeMode: "approval-required", interactionMode: "plan" },
+    ...(options?.botOrigin === undefined ? {} : { botOrigin: options.botOrigin }),
     success: Result,
   });
 });
@@ -299,6 +310,7 @@ it.effect("renews a missing peer session once and reuses its replacement", () =>
                   },
                   url: "https://peer.example",
                   token: "fixture",
+                  keepsBotLimits: false,
                 }),
               recordOutcome: (_, outcome) => Effect.sync(() => outcomes.push(outcome.error)),
             }),
@@ -339,6 +351,114 @@ it.effect("renews a missing peer session once and reuses its replacement", () =>
       "renewed",
       "renewed",
     ]);
+  }),
+);
+
+it.effect("checks Bot support again when a peer session disappears", () =>
+  Effect.gen(function* () {
+    let keepsBotLimits = true;
+    const statuses = [200, 202, 404, 200, 202, 200];
+    const requests: number[] = [];
+    const http = HttpClient.make((request) =>
+      Effect.sync(() => {
+        const status = statuses[requests.length];
+        if (status === undefined) throw new Error("Unexpected peer request");
+        requests.push(status);
+        if (status === 404) keepsBotLimits = false;
+        return HttpClientResponse.fromWeb(
+          request,
+          new Response(requests.length === statuses.length ? probeResult : "", {
+            status,
+            headers: { "mcp-session-id": keepsBotLimits ? "old" : "new" },
+          }),
+        );
+      }),
+    );
+    const probe = yield* probeThrough(http, {
+      keepsBotLimits: () => keepsBotLimits,
+      botOrigin: {
+        environmentId: EnvironmentId.make("environment-a"),
+        botId: BotId.make("test-bot"),
+        botName: "Test Bot",
+      },
+    });
+    expect(yield* Effect.result(probe)).toMatchObject({
+      _tag: "Failure",
+      failure: { code: "capability_denied" },
+    });
+  }),
+);
+
+it.effect("renews a Bot call on the route whose capability was checked", () =>
+  Effect.gen(function* () {
+    const original = "https://peer.example";
+    const replacement = "https://fallback.example";
+    let route = original;
+    const steps = [
+      { status: 200, route: original },
+      { status: 202, route: original },
+      { status: 404, route: original },
+      { status: 200, route: replacement },
+      { status: 202, route: replacement },
+      { status: 200, route: replacement },
+    ];
+    const requests: string[] = [];
+    const http = HttpClient.make((request) =>
+      Effect.sync(() => {
+        const step = steps[requests.length];
+        if (step === undefined) throw new Error("Unexpected peer request");
+        requests.push(new URL(request.url).origin);
+        if (step.status === 404) route = replacement;
+        return HttpClientResponse.fromWeb(
+          request,
+          new Response(requests.length === steps.length ? probeResult : "", {
+            status: step.status,
+            headers: { "mcp-session-id": route === original ? "old" : "renewed" },
+          }),
+        );
+      }),
+    );
+    const probe = yield* probeThrough(http, {
+      keepsBotLimits: () => true,
+      url: () => route,
+      botOrigin: {
+        environmentId: EnvironmentId.make("environment-a"),
+        botId: BotId.make("test-bot"),
+        botName: "Test Bot",
+      },
+    });
+    expect(yield* probe).toEqual({ modes: "approval-required/plan" });
+    expect(requests).toEqual(steps.map((step) => step.route));
+  }),
+);
+
+it.effect("returns a second peer session loss without renewing again", () =>
+  Effect.gen(function* () {
+    const statuses = [200, 202, 404, 200, 202, 404];
+    let requests = 0;
+    const http = HttpClient.make((request) =>
+      Effect.sync(() => {
+        const status = statuses[requests++];
+        if (status === undefined) throw new Error("Unexpected second renewal");
+        return HttpClientResponse.fromWeb(
+          request,
+          new Response("", { status, headers: { "mcp-session-id": `session-${requests}` } }),
+        );
+      }),
+    );
+    const probe = yield* probeThrough(http, {
+      keepsBotLimits: () => true,
+      botOrigin: {
+        environmentId: EnvironmentId.make("environment-a"),
+        botId: BotId.make("test-bot"),
+        botName: "Test Bot",
+      },
+    });
+    expect(yield* Effect.flip(probe)).toMatchObject({
+      code: "orchestration_error",
+      message: "The linked environment answered HTTP 404.",
+    });
+    expect(requests).toBe(statuses.length);
   }),
 );
 
