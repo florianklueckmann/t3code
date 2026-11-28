@@ -1741,6 +1741,10 @@ const AssistantMessagePhase = Schema.Literals(["commentary", "partial_answer", "
  */
 export const OrchestrationV2StopReach = Schema.Literals(["run", "background", "nothing"]);
 export type OrchestrationV2StopReach = typeof OrchestrationV2StopReach.Type;
+const OrchestrationV2StopEntry = Schema.Struct({
+  commandId: CommandId,
+  reached: OrchestrationV2StopReach,
+});
 
 const OrchestrationV2TurnItemBaseFields = {
   /** Wire-only cursor for collapsed work; persisted items keep their complete history. */
@@ -1974,9 +1978,10 @@ export const OrchestrationV2TurnItem = Schema.Union([
     message: Schema.String,
     /** Set when the provider did not confirm the stop in time; clients then offer Force stop. */
     unresponsiveAt: Schema.optionalKey(Schema.DateTimeUtc),
-    /** The Stop that wrote this request, and what it reached. A later Stop of the run replaces both. */
-    commandId: Schema.optionalKey(CommandId),
-    reached: Schema.optionalKey(OrchestrationV2StopReach),
+    /** Every Stop that reached this run, in order; a later Stop keeps the earlier entries. */
+    stops: Schema.optionalKey(Schema.Array(OrchestrationV2StopEntry)),
+    /** Set when a Stop ended background work the run left, not when that work finished on its own. */
+    backgroundStoppedAt: Schema.optionalKey(Schema.DateTimeUtc),
   }),
   Schema.Struct({
     ...OrchestrationV2TurnItemBaseFields,
@@ -2866,8 +2871,8 @@ export const OrchestrationV2TurnItemJson = Schema.Union([
     type: Schema.Literal("run_interrupt_request"),
     message: Schema.String,
     unresponsiveAt: Schema.optionalKey(Schema.DateTimeUtcFromString),
-    commandId: Schema.optionalKey(CommandId),
-    reached: Schema.optionalKey(OrchestrationV2StopReach),
+    stops: Schema.optionalKey(Schema.Array(OrchestrationV2StopEntry)),
+    backgroundStoppedAt: Schema.optionalKey(Schema.DateTimeUtcFromString),
   }),
   Schema.Struct({
     ...OrchestrationV2TurnItemJsonBaseFields,

@@ -12459,6 +12459,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     readonly now: DateTime.Utc;
   }) {
     const emitEvent = emit(input.events, input.command);
+    const emittedBefore = (yield* Ref.get(input.events)).length;
     const runOrdinals = new Map(input.projection.runs.map((run) => [run.id, run.ordinal]));
     const childThreadIds = new Set<ThreadId>();
     const liveness = new Map<string, boolean>();
@@ -12561,13 +12562,28 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         },
       });
     }
+    // Only when this ended work, so work that finished on its own keeps its result.
+    const run = input.projection.runs.find(
+      (candidate) => candidate.ordinal === input.throughRunOrdinal,
+    );
+    if (run === undefined || (yield* Ref.get(input.events)).length === emittedBefore) return;
+    const request = yield* runInterruptRequest(input.command, input.events, run.id);
+    if (request === undefined) return;
+    yield* emitEvent({
+      type: "turn-item.updated",
+      threadId: input.command.threadId,
+      runId: run.id,
+      ...(request.nodeId === null ? {} : { nodeId: request.nodeId }),
+      providerInstanceId: run.providerInstanceId,
+      occurredAt: input.now,
+      payload: { ...request, backgroundStoppedAt: input.now, updatedAt: input.now },
+    });
   });
 
-  const runInterruptReason = Effect.fnUntraced(function* (
-    command: Extract<
-      OrchestrationV2ServerCommand,
-      { readonly type: "run.interrupt" | "thread.background-work.settle" }
-    >,
+  const runInterruptRequest = Effect.fnUntraced(function* (
+    command: Pick<OrchestrationV2ServerCommand, "commandId" | "type"> & {
+      readonly threadId: ThreadId;
+    },
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
     runId: RunId,
   ) {
@@ -12578,14 +12594,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const pending = (yield* Ref.get(events))
       .flatMap((event) => (event.type === "turn-item.updated" ? [event.payload] : []))
       .findLast(isRequest);
-    if (pending !== undefined) return pending.message;
+    if (pending !== undefined) return pending;
     const { turnItems } = yield* projectionStore
       .getThreadRecords(command.threadId, ["turnItems"], {
         turnItemTypes: ["run_interrupt_request"],
         turnItemRunIds: [runId],
       })
       .pipe(mapDispatchError(command));
-    return turnItems.find(isRequest)?.message;
+    return turnItems.find(isRequest);
   });
 
   // A successful Stop may have no terminal event to ingest: the session or
@@ -12753,7 +12769,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           reason:
             (input.command.type === "thread.background-work.settle"
               ? input.command.reason
-              : undefined) ?? (yield* runInterruptReason(input.command, input.events, run.id)),
+              : undefined) ??
+            (yield* runInterruptRequest(input.command, input.events, run.id))?.message,
           completedAt: input.now,
         }),
       });
@@ -12844,8 +12861,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         updatedAt: now,
         type: "run_interrupt_request",
         message: command.reason ?? RunExecutionService.USER_STOP_REASON,
-        commandId: command.commandId,
-        reached,
+        stops: [{ commandId: command.commandId, reached }],
         ...(input.unanswered === true ? { unresponsiveAt: now } : {}),
       },
     });
@@ -13447,6 +13463,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           });
 
     const emitEvent = emit(events, command);
+    const earlierStops = (yield* runInterruptRequest(command, events, run.id))?.stops ?? [];
     const interruptRequestItem: OrchestrationV2TurnItem = {
       id: idAllocator.derive.runSignalTurnItem({
         runId: run.id,
@@ -13467,8 +13484,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       updatedAt: now,
       type: "run_interrupt_request",
       message: command.reason ?? RunExecutionService.USER_STOP_REASON,
-      commandId: command.commandId,
-      reached: isLiveRun(run) ? "run" : "background",
+      stops: [
+        ...earlierStops,
+        { commandId: command.commandId, reached: isLiveRun(run) ? "run" : "background" },
+      ],
     };
 
     const otherProviderInterrupts: Array<PendingOrchestrationEffectV2> = [];

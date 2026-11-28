@@ -23,6 +23,7 @@ import {
   ModelSelection,
   type OrchestrationV2ThreadShell,
   type OrchestrationV2TurnItem,
+  type OrchestrationV2StopReach,
   ProjectId,
   type RuntimeMode,
   ThreadId,
@@ -203,38 +204,46 @@ type InterruptRequest = Extract<
 
 const taskStopPrefix = (row: Pick<BotTaskRow, "task_id">) => `bot-task-cancel:${row.task_id}:`;
 
+type TaskStop = InterruptRequest & { readonly reached: OrchestrationV2StopReach };
+
 /**
- * The orchestrator's record of the task's latest stop, on whichever run that stop reached. None
- * before a stop was dispatched, and once a later Stop of the same run replaced it.
+ * The interrupt request of the run the task's latest stop reached, with what that stop reached.
+ * None before a stop was dispatched.
  */
 export const taskStop = (
   row: Pick<BotTaskRow, "task_id">,
   turnItems: ReadonlyArray<OrchestrationV2TurnItem>,
-) =>
-  turnItems.findLast(
-    (item): item is InterruptRequest =>
-      item.type === "run_interrupt_request" &&
-      item.commandId?.startsWith(taskStopPrefix(row)) === true,
-  );
+): TaskStop | undefined => {
+  for (const item of turnItems.toReversed()) {
+    if (item.type !== "run_interrupt_request") continue;
+    const own = item.stops?.findLast((stop) => stop.commandId.startsWith(taskStopPrefix(row)));
+    if (own !== undefined) return { ...item, reached: own.reached };
+  }
+  return undefined;
+};
 
 /**
  * The task's status from its work thread's persisted runs. A completed run whose background work
- * is still pending is not finished. After a cancel, `stop` says what the stop reached: a run that
- * ended on its own before it keeps its result, work the stop ended reads as cancelled.
+ * is still pending is not finished. After a cancel, `stop` says what the stop ended on the run it
+ * reached: work that finished before it took effect keeps its result, and it never classifies a
+ * newer run.
  */
 export function deriveTaskStatus(input: {
   readonly cancelRequested: boolean;
-  readonly stop?: Pick<InterruptRequest, "reached"> | undefined;
+  readonly stop?: Pick<TaskStop, "reached" | "runId" | "backgroundStoppedAt"> | undefined;
   readonly shell: Pick<
     OrchestrationV2ThreadShell,
-    "status" | "pendingRuntimeRequest" | "pendingBackgroundTasks" | "deletedAt"
+    "status" | "pendingRuntimeRequest" | "pendingBackgroundTasks" | "deletedAt" | "latestRunId"
   > | null;
 }): BotTaskStatus {
-  const { shell } = input;
+  const { shell, stop } = input;
   if (shell === null || shell.deletedAt !== null) {
     return input.cancelRequested ? "cancelled" : "interrupted";
   }
-  const stopped = input.cancelRequested && input.stop?.reached !== "nothing";
+  // Without a record, as before stops recorded what they reached: the cancel counts.
+  const stopped =
+    input.cancelRequested &&
+    (stop === undefined || (stop.runId === shell.latestRunId && stop.reached !== "nothing"));
   switch (shell.status) {
     case "idle":
     case "preparing":
@@ -249,7 +258,7 @@ export function deriveTaskStatus(input: {
       return "waiting";
     case "completed":
       if ((shell.pendingBackgroundTasks?.length ?? 0) > 0) return "running";
-      return stopped && input.stop?.reached === "background" ? "cancelled" : "completed";
+      return stopped && stop?.backgroundStoppedAt !== undefined ? "cancelled" : "completed";
     // A server restart also ends runs as cancelled, so only a stop someone asked for counts.
     case "interrupted":
     case "cancelled":
@@ -505,10 +514,7 @@ const make = Effect.gen(function* () {
       sessionAt: row.session_at,
       runtimeMode: row.runtime_mode,
       status: row.status,
-      detail:
-        row.stop_unanswered_run_id === null
-          ? row.detail
-          : [row.detail, STOP_UNANSWERED].filter(Predicate.isNotNull).join(" "),
+      detail: row.stop_unanswered_run_id === null ? row.detail : STOP_UNANSWERED,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       completedAt: row.completed_at,
@@ -1785,7 +1791,8 @@ const make = Effect.gen(function* () {
     if (
       (row.status !== "completed" && row.status !== "failed") ||
       row.result_run_id === null ||
-      row.cancel_requested_at !== null
+      // A result that finished before the cancel's stop is an ordinary result.
+      (row.cancel_requested_at !== null && row.status !== "completed")
     )
       return false;
     if (row.origin === "direct") return row.status === "failed" || row.return_home_run_id === null;
@@ -1936,7 +1943,8 @@ const make = Effect.gen(function* () {
             const ended = yield* sql`
               UPDATE bot_tasks
               SET status = ${status},
-                  detail = COALESCE(${status === "failed" ? (shell?.lastError?.slice(0, 1000) ?? null) : null}, detail),
+                  detail = CASE WHEN ${status === "completed" ? 1 : 0} = 1 THEN NULL
+                    ELSE COALESCE(${status === "failed" ? (shell?.lastError?.slice(0, 1000) ?? null) : null}, detail) END,
                   result_run_id = ${terminal ? (shell?.latestRunId ?? null) : row.result_run_id},
                   completed_at = ${terminal ? now : null},
                   quiet = ${watch?._tag === "quiet" && row.by_hand === 0 ? 1 : 0},

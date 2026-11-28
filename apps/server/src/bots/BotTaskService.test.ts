@@ -304,9 +304,11 @@ const makeThreadWorld = Effect.gen(function* () {
           id: TurnItemId.make(`interrupt-request:${runId}`),
           runId: RunId.make(runId),
           type: "run_interrupt_request",
-          commandId: command.commandId,
-          reached,
+          stops: [{ commandId: command.commandId, reached }],
           ...(unanswered ? { unresponsiveAt: DateTime.makeUnsafe(START) } : {}),
+          ...(!unanswered && reached === "background"
+            ? { backgroundStoppedAt: DateTime.makeUnsafe(START) }
+            : {}),
         } as unknown as OrchestrationV2TurnItem;
         yield* Ref.update(records, (all) => {
           const record = all.get(command.threadId) ?? {
@@ -807,6 +809,7 @@ it.effect.each<{
                 () => ({}) as never,
               ),
               deletedAt: null,
+              latestRunId: null,
             },
     });
     assert.equal(status, expected);
@@ -1618,6 +1621,7 @@ it.effect("the Bot's own Home is told once of each task it started that ends or 
         };
         const work = (task: BotTaskSummary) => task.workThreadId ?? assert.fail("not launched");
         yield* finishRun(world, work(tasks.done), DONE_RESULT);
+        yield* services.tasks.cancel({ taskId: tasks.done.id });
         yield* finishRun(
           world,
           work(tasks.unproven),
@@ -2616,6 +2620,7 @@ it.effect.each([
             yield* world.commandsMatching("thread.mark-unread"),
             expected === "completed" ? 1 : 0,
           );
+          if (expected === "completed") assert.isNull(ended.detail);
         }),
       );
     }).pipe(Effect.provide(layerDatabase)),
@@ -2645,7 +2650,7 @@ it.effect(
           yield* services.tasks.reconcile;
           assert.deepInclude(yield* services.tasks.get(task.id), {
             status: "running",
-            detail: `Cancelled by the user. ${STOP_UNANSWERED}`,
+            detail: STOP_UNANSWERED,
           });
           assert.lengthOf(yield* world.commandsMatching(`thread.stop ${workThreadId}`), 1);
 
@@ -3327,10 +3332,25 @@ it.effect.each<{
         return [task.id];
       }),
   },
-  ...[false, true].map((dropped) => ({
-    name: dropped
-      ? "a completed direct task whose Home return is dropped"
-      : "a completed direct task that returns to Home",
+  {
+    name: "a direct task whose result finished before Cancel",
+    run: (services, world) =>
+      Effect.gen(function* () {
+        const task = yield* services.tasks.start({ botId, projectId: campaign, prompt: "Pick." });
+        yield* finishRun(world, task.workThreadId ?? assert.fail("no work thread"), DONE_RESULT);
+        yield* services.tasks.cancel({ taskId: task.id });
+        yield* services.tasks.reconcile;
+        assert.equal((yield* services.tasks.get(task.id)).status, "completed");
+        return [task.id];
+      }),
+  },
+  ...(["delivered", "dropped", "late-cancel"] as const).map((returnState) => ({
+    name:
+      returnState === "late-cancel"
+        ? "a completed direct task with an opted-in Home return and a late Cancel"
+        : returnState === "dropped"
+          ? "a completed direct task whose Home return is dropped"
+          : "a completed direct task that returns to Home",
     run: (services: Services, world: ThreadWorld, home: ThreadId) =>
       Effect.gen(function* () {
         yield* seedHomeRun(world, home, "external-mcp");
@@ -3340,10 +3360,16 @@ it.effect.each<{
         );
         yield* world.update(home, { status: "completed" });
         yield* finishRun(world, task.workThreadId ?? assert.fail("no work thread"), DONE_RESULT);
-        yield* Ref.set(world.disposeReturn, dropped);
+        if (returnState === "late-cancel") yield* services.tasks.cancel({ taskId: task.id });
+        yield* Ref.set(world.disposeReturn, returnState === "dropped");
         yield* services.tasks.reconcile;
-        assert.lengthOf(yield* world.commandsMatching("bot-task.result.deliver"), 1);
-        return dropped ? [task.id] : [];
+        assert.equal((yield* services.tasks.get(task.id)).status, "completed");
+        // Cancel revokes the opted-in return, so the result asks for the early check instead.
+        assert.lengthOf(
+          yield* world.commandsMatching("bot-task.result.deliver"),
+          returnState === "late-cancel" ? 0 : 1,
+        );
+        return returnState === "delivered" ? [] : [task.id];
       }),
   })),
   {

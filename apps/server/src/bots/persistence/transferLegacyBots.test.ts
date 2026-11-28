@@ -35,6 +35,45 @@ const fixture = Effect.gen(function* () {
   return { mainPath, main, both: Layer.merge(main, bots) };
 });
 
+it.effect("upgrades a populated Bot database from 033 and can reopen it", () =>
+  Effect.gen(function* () {
+    const { both } = yield* fixture;
+    yield* Effect.gen(function* () {
+      const bots = yield* BotDatabase.BotDatabase;
+      yield* bots`ALTER TABLE bot_tasks DROP COLUMN stop_unanswered_run_id`;
+      yield* bots`DELETE FROM effect_sql_migrations WHERE migration_id = 34`;
+      yield* bots`INSERT INTO bots (bot_id, name, instructions, model_selection_json, learning_policy, created_at, updated_at)
+        VALUES ('bot', 'Bot', '', '{}', 'off', 'created', 'updated')`;
+      yield* bots`INSERT INTO bot_tasks (task_id, bot_id, project_id, home_thread_id, origin, title, prompt, runtime_mode, status, created_at, updated_at)
+        VALUES ('task', 'bot', 'project', 'home', 'direct', 'Title', 'Prompt', 'full-access', 'running', 'created', 'updated')`;
+      yield* bots`INSERT INTO deleted_bot_homes (home_thread_id) VALUES ('deleted')`;
+    }).pipe(Effect.provide(both));
+    for (const attempt of [1, 2]) {
+      yield* Effect.gen(function* () {
+        const bots = yield* BotDatabase.BotDatabase;
+        assert.deepEqual(
+          yield* bots`SELECT task_id, status, stop_unanswered_run_id FROM bot_tasks`,
+          [
+            {
+              task_id: "task",
+              status: "running",
+              stop_unanswered_run_id: attempt === 1 ? null : "run",
+            },
+          ],
+        );
+        assert.deepEqual(yield* bots`SELECT * FROM deleted_bot_homes`, [
+          { home_thread_id: "deleted" },
+        ]);
+        assert.equal(
+          (yield* bots`SELECT * FROM effect_sql_migrations WHERE migration_id = 34`).length,
+          1,
+        );
+        if (attempt === 1) yield* bots`UPDATE bot_tasks SET stop_unanswered_run_id = 'run'`;
+      }).pipe(Effect.provide(both));
+    }
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
 it.effect.each([78, 79, 80, 81, 82, 83])(
   "preserves every legacy row at fork head %s and runs real upstream migrations",
   (head) =>
