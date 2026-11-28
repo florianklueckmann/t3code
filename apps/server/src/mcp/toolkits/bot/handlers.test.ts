@@ -188,6 +188,7 @@ const callTool = (
               caller.changes === undefined
                 ? layerCallerChangesAllowed
                 : Layer.succeed(McpCallerChanges.McpCallerChanges, {
+                    canReadThread: () => Effect.succeed(true),
                     forThread: () => Effect.succeed(caller.changes!),
                   }),
               Layer.mock(PeerForwarding.PeerForwarding)({

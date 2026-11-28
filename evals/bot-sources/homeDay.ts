@@ -350,7 +350,7 @@ const recordsOf = (task: DayTask, run: DayRun) =>
 /** The status of each mention of a task: its own line's, or the heading of the group it is in. */
 const summaryStatuses = (task: DayTask, lines: ReadonlyArray<string>) => {
   const isTaskLine = (line: string) => DAY_TASKS.some((other) => matches(other.match, line));
-  return lines.flatMap((line, index) => {
+  const mentions = lines.flatMap((line, index) => {
     if (!matches(task.match, line)) return [];
     // The nearest status above, unless a section heading without one comes first.
     const heading = lines
@@ -359,8 +359,22 @@ const summaryStatuses = (task: DayTask, lines: ReadonlyArray<string>) => {
       .find(
         (above) => !isTaskLine(above) && (statusOfLine(above) !== undefined || HEADING.test(above)),
       );
-    return [statusOfLine(line) ?? (heading === undefined ? undefined : statusOfLine(heading))];
+    const sentence = line.split(/(?<=[.!?])\s+/).find((part) => matches(task.match, part)) ?? line;
+    const grouped = DAY_TASKS.some(
+      (other) => other.key !== task.key && matches(other.match, sentence),
+    );
+    return [
+      {
+        grouped,
+        status:
+          statusOfLine(sentence) ?? (heading === undefined ? undefined : statusOfLine(heading)),
+      },
+    ];
   });
+  // A per-task status answers the question more precisely than a recap of several tasks.
+  return mentions
+    .toSorted((a, b) => Number(a.grouped) - Number(b.grouped))
+    .map(({ status }) => status);
 };
 
 const LIST_ITEM = /^\s*([-*•]|\d+[.)]|\|)\s*/;
@@ -448,7 +462,7 @@ export const gradeDay = (run: DayRun) => {
     lines.every(
       (line) =>
         !LIST_ITEM.test(line) ||
-        !outcomes.includes(statusOfLine(line)) ||
+        (!outcomes.includes(statusOfLine(line)) && !/\bblocked\b/i.test(line)) ||
         !projectTitles.some((title) => line.includes(title)) ||
         DAY_TASKS.some((task) => matches(task.match, line)) ||
         words(line).some((word) => knownWords.has(word)),
@@ -458,7 +472,15 @@ export const gradeDay = (run: DayRun) => {
   for (const task of DAY_TASKS) {
     const question = task.question;
     if (question === undefined) continue;
-    const told = earlierRuns.filter((homeRun) => matches(question.match, homeRun.answer));
+    const told = earlierRuns.filter(({ answer }) =>
+      answer
+        .split(/(?<=[.!?])\s+|\n/)
+        .some(
+          (sentence) =>
+            matches(question.match, sentence) &&
+            (!/\bdone when\b/i.test(sentence) || sentence.includes("?")),
+        ),
+    );
     const title = DAY_PROJECTS[task.project].title;
     add(`question of ${task.key} passed on once`, told.length === 1);
     add(

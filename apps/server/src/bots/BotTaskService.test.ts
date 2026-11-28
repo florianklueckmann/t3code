@@ -735,6 +735,12 @@ it.effect.each<{
   { shell: { status: "running", blockingRequest: true }, expected: "waiting" },
   { shell: { status: "completed" }, expected: "completed" },
   { shell: { status: "completed", backgroundTasks: 1 }, expected: "running" },
+  {
+    shell: { status: "completed", backgroundTasks: 1 },
+    cancelRequested: true,
+    expected: "cancelled",
+  },
+  { shell: { status: "completed" }, cancelRequested: true, expected: "cancelled" },
   { shell: { status: "failed" }, expected: "failed" },
   { shell: { status: "interrupted" }, expected: "interrupted" },
   // A restart ends runs as cancelled; only a stop someone asked for reads as cancelled.
@@ -2412,7 +2418,10 @@ it.effect.each(["before-thread", "before-message"] as const)(
           const workThreadId = task.workThreadId ?? assert.fail("no work thread");
           assert.equal((yield* Ref.get(world.threads)).get(workThreadId)?.status, "interrupted");
           yield* services.tasks.reconcile;
-          assert.equal((yield* services.tasks.get(taskId)).status, "cancelled");
+          assert.deepInclude(yield* services.tasks.get(taskId), {
+            status: "cancelled",
+            detail: "Cancelled by the user.",
+          });
         }),
       );
     }).pipe(Effect.provide(layerDatabase)),

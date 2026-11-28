@@ -979,6 +979,7 @@ it.effect(
           });
           for (const [taskId, status, cancelRequestedAt] of [
             ["task-done", "completed", undefined],
+            ["task-cancelled", "cancelled", "2026-11-04T00:00:00.000Z"],
             ["task-stopping", "running", "2026-11-04T00:00:00.000Z"],
           ] as const) {
             yield* insertBotTask(db, {
@@ -990,6 +991,7 @@ it.effect(
               ...(cancelRequestedAt === undefined ? {} : { cancelRequestedAt }),
             });
           }
+          yield* db`UPDATE bot_tasks SET detail = 'Cancelled by the user.' WHERE task_id = 'task-cancelled'`;
           const needsYou = (question: string): BotTaskAcceptanceValue => ({
             state: "needs_you",
             missing: ["The result names no evidence."],
@@ -1008,6 +1010,30 @@ it.effect(
               completedAt,
               acceptance: needsYou(`Keep the ${taskId} heading?`),
             });
+          }
+
+          for (const [taskId, taskHome, completedAt] of [
+            ["outside-window", home, "2026-11-03T23:59:59.999Z"],
+            ["other-home-result", homeA ?? assert.fail(), "2026-11-05T00:00:00.000Z"],
+          ] as const) {
+            yield* insertBotTask(db, {
+              taskId,
+              homeThreadId: taskHome,
+              projectId: campaignA,
+              status: "completed",
+              createdAt: completedAt,
+              completedAt,
+            });
+          }
+          yield* db`INSERT INTO bot_home_updates (task_id, update_key, sent_at)
+            VALUES ('task-needs-you', 'completed:r', '2026-11-05T00:00:00.000Z')`;
+          for (const [messageId, role] of [
+            ["bot-task-update:task-needs-you:completed:r", "user"],
+            ["answer", "assistant"],
+          ]) {
+            yield* main`INSERT INTO orchestration_v2_projection_messages
+              (message_id, thread_id, run_id, role, streaming, created_at, updated_at, payload_json)
+              VALUES (${messageId}, ${home}, 'update-run', ${role}, 0, '2026-11-05', '2026-11-05', '{"text":"Keep the heading?"}')`;
           }
 
           yield* continuation.save(
@@ -1072,21 +1098,19 @@ it.effect(
             `- "Task task-waiting" (taskId "task-waiting") · project "Faerun" (projectId "${campaignB}") · waiting · started 2026-11-03T00:00:00.000Z\n  Question waiting for the user: Which changelog format should both repos use?`,
           );
           assert.notInclude(turn, "Should the old format stay?");
-          const unfinished = turn.slice(0, turn.indexOf("Completed tasks whose result"));
-          assert.lengthOf(unfinished.match(/\(taskId "/g) ?? [], 30);
+          assert.lengthOf(turn.match(/\(taskId "/g) ?? [], 30);
           assert.isBelow(turn.indexOf('"task-waiting"'), turn.indexOf('"task-31"'));
           assert.isBelow(turn.indexOf('"task-31"'), turn.indexOf('"task-30"'));
-          assert.include(turn, '"task-03"');
-          assert.notInclude(turn, '"task-02"');
-          assert.include(turn, "(2 more unfinished tasks are not shown.)");
-          assert.notInclude(turn, "task-done");
-          assert.notInclude(turn, "task-stopping");
-          // A week of results that wait for the user, so a compacted Home still names them.
-          assert.include(
-            turn,
-            `- "Task task-needs-you" (taskId "task-needs-you") · project "Faerun" (projectId "${campaignB}") · completed 2026-11-05T00:00:00.000Z · The result names no evidence. Open question: Keep the task-needs-you heading?`,
-          );
+          assert.include(turn, "(6 more tasks: use list_tasks.)");
+          assert.include(turn, '"task-done"');
+          assert.match(turn, /"task-cancelled".*cancelled by the user/i);
+          assert.match(turn, /"task-stopping".*cancellation requested/);
+          assert.match(turn, /"task-needs-you".*needs you.*The result names no evidence/);
           assert.notInclude(turn, "task-needs-you-old");
+          assert.notInclude(turn, "other-home-result");
+          assert.notInclude(turn, "outside-window");
+          assert.notInclude(turn, "Keep the task-needs-you heading?");
+          assert.match(turn, /"task-needs-you".*Question already reported/);
           assert.include(turn, "Split the changelog work once the format is chosen.");
           assert.include(turn, `projectId "${homeProject}": pass both ids`);
           assert.notInclude(turn, "Active Bot tasks only");

@@ -62,6 +62,7 @@ export const liveThreadShell = (
 
 /** Callers of tests that are not about No changes may change things. */
 export const layerCallerChangesAllowed = Layer.succeed(McpCallerChanges.McpCallerChanges, {
+  canReadThread: () => Effect.succeed(true),
   forThread: () => Effect.succeed("allowed"),
 });
 

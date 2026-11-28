@@ -5927,7 +5927,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       ),
   );
 
-  it.effect("loads the read Home like No changes, with only t3_bot callable without approval", () =>
+  it.effect("allows task actions and thread reads in the read Home without approval", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const scenario = "codex-read-home-seal";
@@ -6005,7 +6005,10 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             "t3-code": {
               ...t3Server,
               disabled_tools: ["t3_thread_wait", "delegate_task"],
-              tools: { t3_bot: { approval_mode: "approve" } },
+              tools: {
+                t3_bot: { approval_mode: "approve" },
+                t3_thread_read: { approval_mode: "approve" },
+              },
             },
             "t3-code-direct": {
               ...t3Server,

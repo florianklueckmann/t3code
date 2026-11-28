@@ -169,7 +169,7 @@ const handlers = {
       return yield* service.listThreads(scope, input);
     }),
   ),
-  t3_thread_read: McpToolAccess.reads((input) =>
+  t3_thread_read: McpToolAccess.readsThread((input) =>
     Effect.gen(function* () {
       const scope = yield* McpInvocationContext.McpInvocationContext;
       const service = yield* OrchestratorMcpService.OrchestratorMcpService;

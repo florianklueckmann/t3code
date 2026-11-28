@@ -11,5 +11,8 @@ export type McpCallerChangesValue = "allowed" | "none" | "botTasks" | Orchestrat
 
 export class McpCallerChanges extends Context.Service<
   McpCallerChanges,
-  { readonly forThread: (threadId: ThreadId) => Effect.Effect<McpCallerChangesValue> }
+  {
+    readonly canReadThread: (caller: ThreadId, localTarget?: ThreadId) => Effect.Effect<boolean>;
+    readonly forThread: (threadId: ThreadId) => Effect.Effect<McpCallerChangesValue>;
+  }
 >()("t3/mcp/McpCallerChanges") {}

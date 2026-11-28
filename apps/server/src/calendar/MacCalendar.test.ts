@@ -110,6 +110,7 @@ const harness = Effect.fn("MacCalendarTest.harness")(function* (options: {
   const changes = Layer.succeed(
     McpCallerChanges.McpCallerChanges,
     McpCallerChanges.McpCallerChanges.of({
+      canReadThread: () => Effect.succeed(true),
       forThread: () => Effect.succeed(options.changes ?? "allowed"),
     }),
   );

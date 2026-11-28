@@ -116,6 +116,22 @@ it("passes a day whose summary and questions match the records", () => {
   expect(failed(day())).toEqual([]);
 });
 
+it("uses each task's line when an overview groups decisions and outcomes", () => {
+  const overview =
+    "Four need you: the usr alias, alt text, /orders review and German FAQ. The rest finished or failed.";
+  expect(failed(day({}, `${overview}\n${summaryOf()}`))).toEqual([]);
+  const homeRuns = day().homeRuns.map((run) =>
+    run.runId === "run-batch-1"
+      ? {
+          ...run,
+          answer:
+            "Storefront alt text: done when images have text or are explicitly marked decorative.",
+        }
+      : run,
+  );
+  expect(failed(day({ homeRuns }))).toEqual([]);
+});
+
 it("fails a summary that leaves a task out", () => {
   const summary = summaryOf(DAY_TASKS.filter((task) => task.key !== "api-timeout"));
   expect(failed(day({}, summary))).toEqual(["summary gives api-timeout as done"]);
@@ -126,6 +142,9 @@ it("fails a summary that invents a task", () => {
   expect(failed(day({}, summary))).toEqual(["summary invents no task"]);
   const running = `${summaryOf()}\n- Storefront: refresh the sitemap — in progress`;
   expect(failed(day({}, running))).toEqual(["summary invents no task"]);
+  expect(failed(day({}, `${summaryOf()}\n- Storefront: refresh the sitemap — blocked`))).toEqual([
+    "summary invents no task",
+  ]);
   const reworded = `${summaryOf()}\n1. **Orders API rename:** answer the alias question in its card.`;
   expect(failed(day({}, reworded))).toEqual([]);
   const need = `${summaryOf()}\n1. The Orders API needs your answer about backward compatibility.`;

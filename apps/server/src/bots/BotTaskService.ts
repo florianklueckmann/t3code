@@ -221,6 +221,7 @@ export function deriveTaskStatus(input: {
     case "waiting":
       return "waiting";
     case "completed":
+      if (input.cancelRequested) return "cancelled";
       return (shell.pendingBackgroundTasks?.length ?? 0) > 0 ? "running" : "completed";
     // A server restart also ends runs as cancelled, so only a stop someone asked for counts.
     case "interrupted":
@@ -287,7 +288,10 @@ export class BotTaskService extends Context.Service<
     readonly getResult: (input: BotTaskResultInput) => Effect.Effect<BotTaskResult, BotError>;
     readonly list: (input: BotTaskListInput) => Effect.Effect<BotTaskListResult, BotError>;
     readonly subscribeList: (input: BotTaskListInput) => Stream.Stream<BotTaskListResult, BotError>;
-    readonly cancel: (input: BotCancelTaskInput) => Effect.Effect<BotTaskSummary, BotError>;
+    readonly cancel: (
+      input: BotCancelTaskInput,
+      requestedIn?: ThreadId,
+    ) => Effect.Effect<BotTaskSummary, BotError>;
     /** Stops unfinished work when the Bot is archived, a project detached or a Home removed. */
     readonly cancelForContext: (input: {
       readonly botId: BotId;
@@ -1377,9 +1381,8 @@ const make = Effect.gen(function* () {
     // The flag comes first: a launch still under way checks it when it returns.
     yield* sql`
       UPDATE bot_tasks
-      SET cancel_requested_at = COALESCE(cancel_requested_at, ${now}),
-          detail = COALESCE(${reason}, detail), updated_at = ${now}
-      WHERE task_id = ${stale.task_id} AND completed_at IS NULL
+      SET cancel_requested_at = ${now}, detail = ${reason}, updated_at = ${now}
+      WHERE task_id = ${stale.task_id} AND completed_at IS NULL AND cancel_requested_at IS NULL
     `.pipe(Effect.mapError(storageError));
     const row = yield* readRow(stale.task_id);
     if (row === undefined || row.completed_at !== null) return;
@@ -1404,8 +1407,7 @@ const make = Effect.gen(function* () {
       // What it waited for is moot. A launch that recorded itself meanwhile settles by its thread.
       yield* sql`
         UPDATE bot_tasks
-        SET status = 'cancelled', completed_at = ${now}, notified_at = ${now}, updated_at = ${now},
-          detail = ${reason}
+        SET status = 'cancelled', completed_at = ${now}, notified_at = ${now}, updated_at = ${now}
         WHERE task_id = ${row.task_id} AND completed_at IS NULL AND dispatched_at IS NULL
       `.pipe(Effect.mapError(storageError));
     }
@@ -1413,13 +1415,19 @@ const make = Effect.gen(function* () {
   });
 
   const cancel: BotTaskService["Service"]["cancel"] = Effect.fn("BotTaskService.cancel")(
-    function* (input) {
+    function* (input, requestedIn) {
       const row = yield* readRow(input.taskId);
       if (row === undefined) return yield* botError("Bot task not found.")();
       yield* sql`UPDATE bot_tasks SET return_home_run_id = NULL WHERE task_id = ${row.task_id}`.pipe(
         Effect.mapError(storageError),
       );
-      if (row.completed_at === null) yield* requestCancel(row, null);
+      if (row.completed_at === null)
+        yield* requestCancel(
+          row,
+          requestedIn === undefined
+            ? "Cancelled by the user."
+            : `Cancelled by the agent in thread ${requestedIn}.`,
+        );
       yield* publish(row);
       return yield* get(input.taskId);
     },
@@ -1838,7 +1846,7 @@ const make = Effect.gen(function* () {
                   quiet = ${watch?._tag === "quiet" && row.by_hand === 0 ? 1 : 0},
                   acceptance_json = ${acceptance === null ? null : encodeAcceptance(acceptance)},
                   updated_at = ${now}
-              WHERE task_id = ${row.task_id} AND completed_at IS NULL
+              WHERE task_id = ${row.task_id} AND completed_at IS NULL AND cancel_requested_at IS ${row.cancel_requested_at}
               RETURNING task_id
             `;
             if (ended.length === 0 || watch?._tag !== "post" || row.scheduled_task_id === null)

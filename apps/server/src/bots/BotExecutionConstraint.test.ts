@@ -55,6 +55,13 @@ it.effect("lets the Bot-level Home with read access change things only through t
     yield* home(botHome, "bot-home-bot", "bot");
     yield* home(projectHome, "project", "project");
 
+    const work = ThreadId.make("work:home-task");
+    yield* bots`INSERT INTO bot_tasks
+      (task_id, bot_id, project_id, home_thread_id, work_thread_id, origin, title, prompt, runtime_mode, status, created_at, updated_at)
+      VALUES ('task', 'bot', 'project', ${botHome}, ${work}, 'direct', 'Fix typo', 'Fix the typo.', 'full-access', 'completed', ${now}, ${now})`;
+    assert.isTrue(yield* changes.canReadThread(botHome, work));
+    assert.isFalse(yield* changes.canReadThread(botHome, projectHome));
+    assert.isFalse(yield* changes.canReadThread(botHome));
     assert.equal(yield* constraint.forThread(botHome), "home-read");
     assert.equal(yield* changes.forThread(botHome), "botTasks");
     // A project Home of the same Bot keeps its own mode.

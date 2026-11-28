@@ -1742,6 +1742,7 @@ describe("ClaudeAdapterV2 append-system-prompt-file launch argument", () => {
           assert.deepEqual(options.allowedTools, [
             ...ClaudeAdapterV2.CLAUDE_SEALED_TOOLS,
             "mcp__t3-code__t3_bot",
+            "mcp__t3-code__t3_thread_read",
             ...ClaudeAdapterV2.CLAUDE_READ_ONLY_T3_MCP_ALLOWED_TOOLS,
           ]);
           // Not a Home seal: T3 Code's server offers its whole toolset and refuses the writes itself.
