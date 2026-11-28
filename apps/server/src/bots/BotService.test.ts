@@ -1274,7 +1274,7 @@ it.effect(
     Effect.gen(function* () {
       yield* seedProjects;
       const world = yield* makeThreadWorld;
-      yield* withServices(world.threadLayer, ({ bots, attention, continuation }) =>
+      yield* withServices(world.threadLayer, ({ bots, attention, continuation, guard }) =>
         Effect.gen(function* () {
           yield* createCampaignBot(bots);
           yield* bots.attachProject({ botId, projectId: campaignA });
@@ -1339,6 +1339,16 @@ it.effect(
             { kind: "user" },
           );
           assert.deepEqual(yield* notesRevisions, [1]);
+
+          yield* bots.detachProject({ botId, projectId: campaignA });
+          assert.lengthOf((yield* pull)[0]!.bots[0]!.projects, 1);
+          yield* guard.forgetProject(campaignA);
+          const afterDeletion = yield* pull.pipe(Effect.forkScoped({ startImmediately: true }));
+          assert.isDefined(
+            afterDeletion.pollUnsafe(),
+            "project deletion publishes a fresh Bot list",
+          );
+          assert.isEmpty((yield* Fiber.join(afterDeletion))[0]!.bots[0]!.projects);
         }).pipe(Effect.scoped),
       );
     }).pipe(Effect.provide(layerDatabase)),

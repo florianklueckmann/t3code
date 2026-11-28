@@ -21,7 +21,9 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as PubSub from "effect/PubSub";
 import * as Schema from "effect/Schema";
+import type * as Scope from "effect/Scope";
 import * as BotDatabase from "./persistence/BotDatabase.ts";
 
 type BotInsertRow = Omit<BotRow, "home_access">;
@@ -130,6 +132,8 @@ export class BotStore extends Context.Service<
   BotStore,
   {
     readonly listBots: Effect.Effect<ReadonlyArray<BotRow>, BotStoreError>;
+    readonly notifyListChanged: Effect.Effect<void>;
+    readonly subscribeListChanges: Effect.Effect<PubSub.Subscription<void>, never, Scope.Scope>;
     readonly getBot: (botId: string) => Effect.Effect<BotRow | undefined, BotStoreError>;
     /** The Bot's project Homes, or every Bot's; never a Bot-level Home. */
     readonly listContexts: (
@@ -360,6 +364,9 @@ export const layer = Layer.effect(
   BotStore,
   Effect.gen(function* () {
     const sql = yield* BotDatabase.BotDatabase;
+    // Subscribers re-read the full list, so only the newest change signal matters.
+    const listChanges = yield* PubSub.sliding<void>(1);
+    const notifyListChanged = PubSub.publish(listChanges, undefined).pipe(Effect.asVoid);
     const fail = (operation: string) => (cause: unknown) => new BotStoreError({ operation, cause });
 
     const getBot = Effect.fn("BotStore.getBot")(
@@ -522,7 +529,7 @@ export const layer = Layer.effect(
     const deleteContextsForProject = Effect.fn("BotStore.deleteContextsForProject")(
       function* (projectId: ProjectId) {
         // Shared entries learned there stay; they apply to the Bot's other projects.
-        yield* sql.withTransaction(
+        const removed = yield* sql.withTransaction(
           Effect.gen(function* () {
             yield* sql`DELETE FROM bot_learning_revisions WHERE project_id = ${projectId}`;
             yield* sql`
@@ -532,9 +539,11 @@ export const layer = Layer.effect(
             yield* sql`INSERT INTO deleted_bot_homes (home_thread_id)
               SELECT home_thread_id FROM bot_project_contexts WHERE project_id = ${projectId}
               ON CONFLICT (home_thread_id) DO NOTHING`;
-            yield* sql`DELETE FROM bot_project_contexts WHERE project_id = ${projectId}`;
+            return yield* sql`DELETE FROM bot_project_contexts WHERE project_id = ${projectId}
+              RETURNING home_thread_id`;
           }),
         );
+        if (removed.length > 0) yield* notifyListChanged;
       },
       Effect.mapError(fail("delete-contexts-for-project")),
     );
@@ -781,6 +790,8 @@ export const layer = Layer.effect(
     );
 
     return BotStore.of({
+      notifyListChanged,
+      subscribeListChanges: PubSub.subscribe(listChanges),
       listBots: sql<BotRow>`SELECT * FROM bots ORDER BY created_at, bot_id`.pipe(
         Effect.mapError(fail("list-bots")),
       ),

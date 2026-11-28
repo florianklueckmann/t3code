@@ -1,4 +1,6 @@
 import * as BotDatabase from "../bots/persistence/BotDatabase.ts";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import * as BotTurnContext from "../bots/BotTurnContext.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
@@ -572,7 +574,17 @@ it.effect("rejects deleting an attached project and remembers its Bot Home after
   Effect.gen(function* () {
     const sql = yield* BotDatabase.BotDatabase;
     const projectId = ProjectId.make("project:bot-attached");
+    const survivingProject = ProjectId.make("project:surviving");
+    const botHomeProject = ProjectId.make("bot-home-campaign-bot");
+    const projectHome = ThreadId.make("bot-home:campaign-bot:project:bot-attached");
+    const botHome = ThreadId.make("bot-home:campaign-bot:bot-home-campaign-bot");
+    const work = ThreadId.make("bot-work:own-home-task");
+    const child = ThreadId.make("thread:work-created");
+    const directChild = ThreadId.make("thread:home-created");
+    const now = "2026-01-01T00:00:00.000Z";
     yield* seedProject(projectId);
+    yield* seedProject(survivingProject);
+    yield* seedProject(botHomeProject);
     yield* sql`
       INSERT INTO bots (
         bot_id, name, instructions, model_selection_json, learning_policy, created_at, updated_at
@@ -583,16 +595,36 @@ it.effect("rejects deleting an attached project and remembers its Bot Home after
     `;
     yield* sql`
       INSERT INTO bot_project_contexts (
-        home_thread_id, bot_id, project_id, guidance, sources_json, revision,
+        home_thread_id, bot_id, project_id, kind, guidance, sources_json, revision,
         attached_at, detached_at, updated_at
-      ) VALUES (
-        'bot-home:campaign-bot:project:bot-attached', 'campaign-bot', ${projectId}, '', '[]', 0,
-        '2026-01-01T00:00:00.000Z', NULL, '2026-01-01T00:00:00.000Z'
-      )
+      ) VALUES
+        (${projectHome}, 'campaign-bot', ${projectId}, 'project', '', '[]', 0, ${now}, NULL, ${now}),
+        (${botHome}, 'campaign-bot', ${botHomeProject}, 'bot', '', '[]', 0, ${now}, NULL, ${now})
     `;
+    yield* sql`INSERT INTO bot_tasks (
+      task_id, bot_id, project_id, home_thread_id, work_thread_id, origin, title, prompt,
+      runtime_mode, status, completed_at, created_at, updated_at
+    ) VALUES (
+      'bot-task:own-home-task', 'campaign-bot', ${projectId}, ${botHome}, ${work},
+      'direct', 'Finished work', '', 'full-access', 'completed', ${now}, ${now}, ${now}
+    )`;
 
     yield* Effect.gen(function* () {
+      const events = yield* EventSink.EventSinkV2;
+      const context = yield* BotTurnContext.BotTurnContext;
       const service = yield* ProjectService.make;
+      const workChild = nativeThreadCreated(survivingProject, child);
+      const homeChild = nativeThreadCreated(survivingProject, directChild);
+      yield* events.write({
+        events: [
+          nativeThreadCreated(projectId, projectHome),
+          nativeThreadCreated(botHomeProject, botHome),
+          nativeThreadCreated(projectId, work),
+          { ...workChild, payload: { ...workChild.payload, createdByThreadId: work } },
+          { ...homeChild, payload: { ...homeChild.payload, createdByThreadId: projectHome } },
+        ],
+      });
+      assert.equal((yield* context.mcpAccessForThreadId(child))._tag, "bot", "while attached");
       const rejected = yield* service
         .delete({ commandId: CommandId.make("command:bot-attached:delete"), projectId })
         .pipe(Effect.flip);
@@ -603,6 +635,7 @@ it.effect("rejects deleting an attached project and remembers its Bot Home after
         UPDATE bot_project_contexts SET detached_at = '2026-01-02T00:00:00.000Z'
         WHERE project_id = ${projectId}
       `;
+      assert.equal((yield* context.mcpAccessForThreadId(child))._tag, "refused", "while detached");
       yield* service.delete({
         commandId: CommandId.make("command:bot-detached:delete"),
         projectId,
@@ -613,8 +646,15 @@ it.effect("rejects deleting an attached project and remembers its Bot Home after
       `;
       assert.lengthOf(remaining, 0);
       assert.deepEqual(yield* sql`SELECT home_thread_id FROM deleted_bot_homes`, [
-        { home_thread_id: "bot-home:campaign-bot:project:bot-attached" },
+        { home_thread_id: projectHome },
       ]);
-    }).pipe(Effect.provide(layerServices));
+      assert.isTrue(Option.isSome(yield* service.getById(survivingProject)));
+      assert.equal((yield* context.mcpAccessForThreadId(directChild))._tag, "refused");
+      assert.equal((yield* context.mcpAccessForThreadId(child))._tag, "refused", "after deletion");
+    }).pipe(
+      Effect.provide(
+        Layer.merge(layerServices, BotTurnContext.layer).pipe(Layer.provide(NodeCrypto.layer)),
+      ),
+    );
   }).pipe(Effect.provide(layerDatabase)),
 );
