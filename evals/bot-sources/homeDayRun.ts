@@ -38,6 +38,7 @@ import {
   type DayProjectKey,
   type DayRecord,
   type DayRun,
+  resultLine,
   workerScript,
 } from "./homeDay.ts";
 
@@ -52,12 +53,12 @@ const TaskList = Schema.Struct({ tasks: Schema.Array(BotTaskSummary) });
 const git = (cwd: string, ...args: ReadonlyArray<string>) =>
   NodeChildProcess.execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" });
 
-const makeRepository = (root: string, key: DayProjectKey) => {
+const makeRepository = (root: string, key: DayProjectKey, live: boolean) => {
   const fixture = DAY_PROJECTS[key];
   const files = {
     ...fixture.files,
     "README.md": `# ${fixture.title}\n`,
-    "AGENTS.md": workerScript(key),
+    ...(live ? { "AGENTS.md": workerScript(key) } : {}),
   };
   for (const [file, text] of Object.entries(files)) {
     NodeFS.mkdirSync(NodePath.dirname(NodePath.join(root, file)), { recursive: true });
@@ -100,6 +101,7 @@ const startedBriefs = (tools: ReturnType<typeof toolActivity>) => {
 
 /** Groups the Home's messages by run, with the task updates that started each run. */
 const homeRuns = (
+  prompts: Map<string, NonNullable<DayHomeRun["prompt"]>>,
   messages: ReadonlyArray<OrchestratorMcpThreadReadResult["items"][number]>,
 ): ReadonlyArray<DayHomeRun> => {
   const runs = new Map<string, { updateTaskIds: Array<string>; answer: Array<string> }>();
@@ -117,6 +119,7 @@ const homeRuns = (
   }
   return [...runs].map(([runId, run]) => ({
     runId,
+    prompt: prompts.get(runId) ?? (run.updateTaskIds.length ? "task-update" : "other"),
     updateTaskIds: run.updateTaskIds,
     answer: run.answer.join("\n"),
   }));
@@ -156,6 +159,38 @@ const homeUsage = (baseDir: string, homeThreadId: string) => {
 
 export type DayUsage = ReturnType<typeof homeUsage>;
 
+export const restrictDayWorkers = Effect.fn("botSources.restrictDayWorkers")(function* (
+  call: Call,
+  baseDir: string,
+  projectIds: readonly string[],
+  instanceId: string,
+) {
+  const { providers } = yield* call(
+    "orchestrator_capabilities",
+    {},
+    Schema.Struct({
+      providers: Schema.Array(Schema.Struct({ providerInstanceId: Schema.String })),
+    }),
+  );
+  const providerInstances = Object.fromEntries(
+    providers
+      .filter((provider) => provider.providerInstanceId !== instanceId)
+      .map((provider) => [provider.providerInstanceId, { enabled: false }]),
+  );
+  yield* withRpc(
+    baseDir,
+    (rpc) =>
+      rpc["server.updateSettings"]({
+        patch: {
+          projectSettingsOverrides: Object.fromEntries(
+            projectIds.map((id) => [id, { providerInstances }]),
+          ),
+        },
+      }),
+    ["settings:write", "providers:manage"],
+  );
+});
+
 export const runDaySample = Effect.fn("botSources.runDaySample")(function* (
   call: Call,
   options: {
@@ -165,14 +200,18 @@ export const runDaySample = Effect.fn("botSources.runDaySample")(function* (
     readonly modelSelection: BotModelSelection;
     /** The Bot's model, which its tasks run on. */
     readonly workerSelection: BotModelSelection;
+    readonly release?: ((taskId: string, text: string) => void) | undefined;
   },
 ) {
+  const live = options.release === undefined;
+  const prompts = new Map<string, NonNullable<DayHomeRun["prompt"]>>();
+  const batchOf = new Map<string, 1 | 2>();
   const tag = `day-${NodeCrypto.randomBytes(3).toString("hex")}`;
   const roots = {} as Record<DayProjectKey, string>;
   const projectIds = {} as Record<DayProjectKey, string>;
   for (const key of DAY_PROJECT_KEYS) {
     roots[key] = NodePath.join(options.work, tag, key);
-    makeRepository(roots[key], key);
+    makeRepository(roots[key], key, live);
     const project = yield* call(
       "t3_project_create",
       { title: DAY_PROJECTS[key].title, workspaceRoot: roots[key] },
@@ -180,6 +219,13 @@ export const runDaySample = Effect.fn("botSources.runDaySample")(function* (
     );
     projectIds[key] = project.id;
   }
+  if (!live)
+    yield* restrictDayWorkers(
+      call,
+      options.baseDir,
+      Object.values(projectIds),
+      options.workerSelection.instanceId,
+    );
   const checkouts = () => DAY_PROJECT_KEYS.map((key) => git(roots[key], "status", "--porcelain"));
   const before = checkouts();
   const botId = `day-${tag}`;
@@ -236,7 +282,7 @@ export const runDaySample = Effect.fn("botSources.runDaySample")(function* (
       OrchestratorMcpThreadReadResult,
     );
     if (thread.activeRunId !== null) return false;
-    const runs = homeRuns(yield* readItems(call, homeThreadId, "messages"));
+    const runs = homeRuns(prompts, yield* readItems(call, homeThreadId, "messages"));
     return told.every((task) =>
       runs.some((run) => run.updateTaskIds.includes(task.id) && run.answer !== ""),
     );
@@ -255,6 +301,29 @@ export const runDaySample = Effect.fn("botSources.runDaySample")(function* (
     return yield* new SampleError({ message: `${phase} did not settle in ${timeoutMs} ms` });
   });
 
+  const batchTurn = Effect.fn("botSources.batchTurn")(function* (batch: 1 | 2) {
+    const label = batch === 1 ? "batch1" : "batch2";
+    const id = yield* runTurn(call, homeThreadId, DAY_PROMPTS[label], {
+      freshContext: batch === 2,
+    });
+    prompts.set(id, label);
+    const activity = (yield* readItems(call, homeThreadId, "activity")).filter(
+      (item) => item.runId === id,
+    );
+    for (const taskId of startedBriefs(toolActivity(activity)).keys()) batchOf.set(taskId, batch);
+  });
+
+  const release = (tasks: ReadonlyArray<BotTaskSummary>, evening: boolean) => {
+    if (live) return;
+    for (const record of tasks) {
+      if (ended(record)) continue;
+      const project = DAY_PROJECT_KEYS.find((key) => projectIds[key] === record.projectId);
+      if (!project) continue;
+      const task = DAY_TASKS.find((entry) => record.title.includes(`[${entry.key}]`));
+      if (!evening && task?.key !== "cart-rounding" && task?.key !== "alt-text") continue;
+      options.release?.(record.id, task ? resultLine(task) : "Task reference missing.");
+    }
+  };
   let userCancelled: string | null = null;
   let summaryRunId = "";
   const timeline: Array<string> = [];
@@ -266,19 +335,22 @@ export const runDaySample = Effect.fn("botSources.runDaySample")(function* (
     );
   const day = Effect.gen(function* () {
     yield* mark("batch 1");
-    yield* runTurn(call, homeThreadId, DAY_PROMPTS.batch1);
+    yield* batchTurn(1);
     yield* settle(
       "midday",
       (tasks) => {
+        release(tasks, false);
         const endedTasks = tasks.filter(ended);
-        return endedTasks.length < MIDDAY_ENDED
-          ? Effect.succeed(false)
-          : homeSettled(endedTasks.filter(owesUpdate));
+        const pending = live
+          ? endedTasks.length < MIDDAY_ENDED
+          : tasks.some((task) => /\[(?:alt-text|cart-rounding)\]/.test(task.title) && !ended(task));
+        return pending ? Effect.succeed(false) : homeSettled(endedTasks.filter(owesUpdate));
       },
       MIDDAY_TIMEOUT_MS,
     );
     yield* mark("midday settled");
-    yield* runTurn(call, homeThreadId, DAY_PROMPTS.batch2, { freshContext: true });
+    prompts.set(yield* runTurn(call, homeThreadId, DAY_PROMPTS.followUp), "follow-up");
+    yield* batchTurn(2);
     yield* mark("batch 2 answered");
     // The user changes their mind about one task, from its card.
     const faq = DAY_TASKS.find((task) => task.outcome === "cancelled")!;
@@ -302,12 +374,15 @@ export const runDaySample = Effect.fn("botSources.runDaySample")(function* (
     yield* mark(`user cancelled: ${userCancelled}`);
     yield* settle(
       "evening",
-      (tasks) =>
-        tasks.every(ended) ? homeSettled(tasks.filter(owesUpdate)) : Effect.succeed(false),
+      (tasks) => {
+        release(tasks, true);
+        return tasks.every(ended) ? homeSettled(tasks.filter(owesUpdate)) : Effect.succeed(false);
+      },
       EVENING_TIMEOUT_MS,
     );
     yield* mark("evening settled");
     summaryRunId = yield* runTurn(call, homeThreadId, DAY_PROMPTS.summary);
+    prompts.set(summaryRunId, "recap");
     yield* mark("summary answered");
   });
   const cancelOpen = Effect.gen(function* () {
@@ -346,6 +421,8 @@ export const runDaySample = Effect.fn("botSources.runDaySample")(function* (
     id: task.id,
     title: task.title,
     detail: task.detail,
+    batch: batchOf.get(task.id) ?? null,
+    baseBranch: task.baseBranch ?? null,
     brief: briefs.get(task.id) ?? null,
     projectId: task.projectId,
     status: task.status,
@@ -353,7 +430,7 @@ export const runDaySample = Effect.fn("botSources.runDaySample")(function* (
   }));
   const run: DayRun = {
     records,
-    homeRuns: homeRuns(yield* readItems(call, homeThreadId, "messages")),
+    homeRuns: homeRuns(prompts, yield* readItems(call, homeThreadId, "messages")),
     incomplete,
     summaryRunId,
     userCancelled,

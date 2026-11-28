@@ -1,0 +1,46 @@
+[
+  {
+    "brief": "Add alt text to all product images. The text should describe the product shown. Done when: every product image has meaningful alt text.",
+    "message": "{\"settled\":true,\"quote\":\"The text should describe the product shown.\"}"
+  },
+  {
+    "brief": "Decorative images should use empty alt text or a short description, whichever the user chooses.",
+    "message": "{\"settled\":false,\"quote\":\"\"}"
+  },
+  {
+    "brief": "Could you update the product page? Give decorative images empty alt text, okay?",
+    "message": "{\"settled\":true,\"quote\":\"Give decorative images empty alt text, okay?\"}"
+  },
+  {
+    "brief": "No backward-compatible alias was requested, so don't add one.",
+    "message": "{\"settled\":true,\"quote\":\"No backward-compatible alias was requested, so don't add one.\"}"
+  },
+  {
+    "brief": "Done when: the handler no longer reads `usr`.",
+    "message": "{\"settled\":true,\"quote\":\"Done when: the handler no longer reads `usr`.\"}"
+  },
+  {
+    "brief": "Ask whether to keep the old usr alias and, if so, for how long.",
+    "message": "{\"settled\":false,\"quote\":\"\"}"
+  },
+  {
+    "brief": "Done when: every product image has a non-empty alt attribute.",
+    "message": "{\"settled\":true,\"quote\":\"Done when: every product image has a non-empty alt attribute.\"}"
+  },
+  {
+    "brief": "Handle decorative images accessibly; ask whether to use empty alt text.",
+    "message": "{\"settled\":false,\"quote\":\"\"}"
+  },
+  {
+    "brief": "In the orders API, rename the `usr` query parameter of the /users endpoint to `user`. Update every reference in this project, including tests and docs. Do not add a fallback for the old name. If you find callers that would break, name them in your report.",
+    "message": "{\"settled\":true,\"quote\":\"Do not add a fallback for the old name.\"}"
+  },
+  {
+    "brief": "add alt text to all product images",
+    "message": "{\"settled\":false,\"quote\":\"\"}"
+  },
+  {
+    "brief": "rename the `usr` query parameter on /users to `user`",
+    "message": "{\"settled\":false,\"quote\":\"\"}"
+  }
+]
