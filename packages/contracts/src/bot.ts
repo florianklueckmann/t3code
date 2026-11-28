@@ -612,6 +612,9 @@ export const BotTaskStatus = Schema.Literals([
 ]);
 export type BotTaskStatus = typeof BotTaskStatus.Type;
 
+/** Starts the command id of a Bot task's Stop; the run it reaches keeps it across later Stops. */
+export const BOT_TASK_CANCEL_COMMAND_PREFIX = "bot-task-cancel:";
+
 export const BOT_TASK_TERMINAL_STATUSES: ReadonlySet<BotTaskStatus> = new Set([
   "completed",
   "failed",

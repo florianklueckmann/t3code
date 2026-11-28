@@ -304,7 +304,7 @@ const makeThreadWorld = Effect.gen(function* () {
           id: TurnItemId.make(`interrupt-request:${runId}`),
           runId: RunId.make(runId),
           type: "run_interrupt_request",
-          stops: [{ commandId: command.commandId, reached }],
+          attributedStop: { commandId: command.commandId, reached },
           ...(unanswered ? { unresponsiveAt: DateTime.makeUnsafe(START) } : {}),
           ...(!unanswered && reached === "background"
             ? { backgroundStoppedAt: DateTime.makeUnsafe(START) }

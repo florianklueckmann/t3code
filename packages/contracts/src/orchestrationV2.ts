@@ -1741,7 +1741,7 @@ const AssistantMessagePhase = Schema.Literals(["commentary", "partial_answer", "
  */
 export const OrchestrationV2StopReach = Schema.Literals(["run", "background", "nothing"]);
 export type OrchestrationV2StopReach = typeof OrchestrationV2StopReach.Type;
-const OrchestrationV2StopEntry = Schema.Struct({
+const OrchestrationV2AttributedStop = Schema.Struct({
   commandId: CommandId,
   reached: OrchestrationV2StopReach,
 });
@@ -1978,8 +1978,8 @@ export const OrchestrationV2TurnItem = Schema.Union([
     message: Schema.String,
     /** Set when the provider did not confirm the stop in time; clients then offer Force stop. */
     unresponsiveAt: Schema.optionalKey(Schema.DateTimeUtc),
-    /** Every Stop that reached this run, in order; a later Stop keeps the earlier entries. */
-    stops: Schema.optionalKey(Schema.Array(OrchestrationV2StopEntry)),
+    /** The Bot task's Stop that reached this run, kept across later Stops. */
+    attributedStop: Schema.optionalKey(OrchestrationV2AttributedStop),
     /** Set when a Stop ended background work the run left, not when that work finished on its own. */
     backgroundStoppedAt: Schema.optionalKey(Schema.DateTimeUtc),
   }),
@@ -2871,7 +2871,7 @@ export const OrchestrationV2TurnItemJson = Schema.Union([
     type: Schema.Literal("run_interrupt_request"),
     message: Schema.String,
     unresponsiveAt: Schema.optionalKey(Schema.DateTimeUtcFromString),
-    stops: Schema.optionalKey(Schema.Array(OrchestrationV2StopEntry)),
+    attributedStop: Schema.optionalKey(OrchestrationV2AttributedStop),
     backgroundStoppedAt: Schema.optionalKey(Schema.DateTimeUtcFromString),
   }),
   Schema.Struct({

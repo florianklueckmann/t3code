@@ -1,5 +1,6 @@
 import {
   BOT_TASK_LIMIT_DEFAULT,
+  BOT_TASK_CANCEL_COMMAND_PREFIX,
   BOT_TASK_TERMINAL_STATUSES,
   BOT_WORK_THREAD_ID_PREFIX,
   BotTaskAcceptance,
@@ -202,7 +203,8 @@ type InterruptRequest = Extract<
   { readonly type: "run_interrupt_request" }
 >;
 
-const taskStopPrefix = (row: Pick<BotTaskRow, "task_id">) => `bot-task-cancel:${row.task_id}:`;
+const taskStopPrefix = (row: Pick<BotTaskRow, "task_id">) =>
+  `${BOT_TASK_CANCEL_COMMAND_PREFIX}${row.task_id}:`;
 
 type TaskStop = InterruptRequest & { readonly reached: OrchestrationV2StopReach };
 
@@ -216,8 +218,8 @@ export const taskStop = (
 ): TaskStop | undefined => {
   for (const item of turnItems.toReversed()) {
     if (item.type !== "run_interrupt_request") continue;
-    const own = item.stops?.findLast((stop) => stop.commandId.startsWith(taskStopPrefix(row)));
-    if (own !== undefined) return { ...item, reached: own.reached };
+    const own = item.attributedStop;
+    if (own?.commandId.startsWith(taskStopPrefix(row))) return { ...item, reached: own.reached };
   }
   return undefined;
 };
