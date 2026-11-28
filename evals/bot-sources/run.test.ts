@@ -98,6 +98,98 @@ it("credits a history answer only when it links a message of the cited turn", ()
   );
 });
 
+it("credits a Bot-level Home only for one briefed task per named project and no edits", () => {
+  const distributes = CASES.find((testCase) => testCase.id === "bot-home-distributes")!;
+  const asks = CASES.find((testCase) => testCase.id === "bot-home-asks-first")!;
+  const start = (
+    projectId: string,
+    {
+      task = "Change the headings.\nDone when: all headings match." as unknown,
+      botId = "bs-1",
+      refused = false,
+    } = {},
+  ) => ({
+    type: "dynamic_tool",
+    title: "t3 bot",
+    text: JSON.stringify({
+      toolName: "t3-code.t3_bot",
+      input: { action: "start_task", botId, projectId, task },
+      output: refused
+        ? { error: "Refused." }
+        : {
+            structuredContent: {
+              task: {
+                id: `task-${projectId}`,
+                botId,
+                projectId,
+                homeThreadId: "bot-home:bs-1:bot-home-bs-1",
+                workThreadId: `bot-work:task-${projectId}`,
+                origin: "direct",
+                title: "Change the headings",
+                scheduledTaskId: null,
+                occurrenceDueAt: null,
+                sessionAt: null,
+                runtimeMode: "full-access",
+                status: "accepted",
+                detail: null,
+                createdAt: "2026-11-27T00:00:00.000Z",
+                updatedAt: "2026-11-27T00:00:00.000Z",
+                completedAt: null,
+              },
+            },
+          },
+    }),
+  });
+  const edit = { type: "file_change", title: "canon/session-log.md", text: null };
+  // The sources stay as attached, unlike the standing change `run` stores.
+  const untouched = (tools: SampleRun["tools"]): SampleRun => ({
+    ...run(tools),
+    sources: {
+      bot: {
+        a: ["canon/session-log.md", "rules/house-rules.md", "bestiary/homebrew.md"],
+        b: ["canon/session-log.md"],
+      },
+      twin: ["canon/session-log.md"],
+    },
+    checkoutsUnchanged: true,
+  });
+  const passes = (testCase: typeof distributes, tools: SampleRun["tools"], answer = "Started.") =>
+    gradeSample(testCase, { ...untouched(tools), answers: [answer] }).every((check) => check.pass);
+  const both = [start("project-a"), start("project-b")];
+  expect(
+    gradeSample(distributes, untouched([start("project-a"), start("project-b")])).filter(
+      (check) => !check.pass,
+    ),
+  ).toEqual([]);
+  expect(passes(distributes, [start("project-a")])).toBe(false);
+  expect(passes(distributes, [start("project-a"), start("project-a"), start("project-b")])).toBe(
+    false,
+  );
+  expect(
+    passes(distributes, [start("project-a"), start("project-b"), start("bot-home-bs-1")]),
+  ).toBe(false);
+  for (const task of ["Change them.", "Change them. Done when:", "Change them. Done when: ."]) {
+    expect(passes(distributes, [start("project-a"), start("project-b", { task })])).toBe(false);
+  }
+  const inSentence = "Change them. Done when every heading matches.";
+  expect(passes(distributes, [start("project-a"), start("project-b", { task: inSentence })])).toBe(
+    true,
+  );
+  expect(passes(distributes, [...both, start("project-a", { botId: "bs-1-twin" })])).toBe(false);
+  expect(passes(distributes, [start("project-a", { botId: "bs-1-twin" }), both[1]!])).toBe(false);
+  expect(passes(distributes, [...both, edit])).toBe(false);
+  expect(
+    gradeSample(distributes, { ...untouched(both), checkoutsUnchanged: false }).every(
+      (check) => check.pass,
+    ),
+  ).toBe(false);
+  expect(passes(asks, [], "Cleaned it up.")).toBe(false);
+  expect(passes(asks, [], "Which campaign, and what should go?")).toBe(true);
+  expect(passes(asks, [start("project-a")], "Which campaign?")).toBe(false);
+  expect(passes(asks, [start("bot-home-bs-1", { refused: true })], "Which campaign?")).toBe(false);
+  expect(passes(asks, [start("project-a", { task: 123, refused: true })], "Which?")).toBe(false);
+});
+
 it("fails a stored list that repeats one source in place of another", () => {
   const stored = run([update("bs-1", "project-a")]);
   const repeated = {

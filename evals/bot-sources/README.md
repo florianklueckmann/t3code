@@ -31,6 +31,8 @@ Add a case to `CASES`. Run it against the old context, where a `bad` case should
 
 The `route-thread-extraction` and `route-durable-script` cases use a Terra or Sonnet Home and a provider account that offers both a faster and a stronger model. They grade the model returned by the delegation or task tool. `source-first` checks that a simple lookup stays in Home.
 
+The `bot-home-*` cases run in the Bot-level Home, which the sample opens with `t3_bot` `open_home`. `bot-home-distributes` requires exactly one started task per named project, each brief with a "Done when" condition, no task attempt elsewhere and no change in the Home: no file change in its activity and no added, deleted or changed file in the project checkouts. Their project folders are Git repositories, so the started tasks write in their own worktrees. `bot-home-asks-first` requires a question and no task attempt. Tasks start while the Home's turn runs; the eval cancels them after it, which limits their ungraded work. These cases grade only the Home's choice; where task cards and results land is outside them.
+
 ## Output
 
 `results.jsonl` has one row per sample: checks, answers, the thread's tool activity, the stored sources, and the ids. `summary.md` has the pass counts per case and how many samples ran a tool call that touched your home directory. Those samples are not fully synthetic; check what they read before trusting their score. The rows hold the Bot's full answers; read them before quoting any.

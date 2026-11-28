@@ -124,8 +124,8 @@ export interface BotSourcesCase {
   readonly kind: "bad" | "guard" | "control";
   readonly source: string;
   readonly experience: string;
-  /** The project whose home conversation gets the turns. */
-  readonly home: ProjectKey;
+  /** The project whose home conversation gets the turns, or "bot" for the Bot-level Home. */
+  readonly home: ProjectKey | "bot";
   readonly turns: ReadonlyArray<Turn>;
   /** The Bot's source locations per project after the turns. Unlisted projects stay unchanged. */
   readonly sourcesAfter?: Partial<Record<ProjectKey, ReadonlyArray<string>>>;
@@ -135,7 +135,14 @@ export interface BotSourcesCase {
   /** What the Bot must record. Without it, the Bot must record no learning at all. */
   readonly learningAfter?: ReadonlyArray<ExpectedLearning>;
   readonly modelRouting?: "direct" | "fast-worker" | "strong-task";
+  /**
+   * For the Bot-level Home: the projects that each get exactly one task, with a done condition in
+   * its brief, and no task anywhere else. Empty: no task at all. The Home edits no file either way.
+   */
+  readonly distribution?: ReadonlyArray<ProjectKey>;
 }
+
+const T3B_121 = "T3B-121 acceptance criteria (synthetic)";
 
 const T3B_4 = "T3B-4 acceptance criteria (synthetic)";
 const T3B_6 = "T3B-6 acceptance criteria (synthetic)";
@@ -420,5 +427,29 @@ export const CASES: ReadonlyArray<BotSourcesCase> = [
       scope: "bot",
     },
     turns: [{ prompt: OPEN_LORD, textMust: ["Laeral", "table ready"] }],
+  },
+  {
+    id: "bot-home-distributes",
+    kind: "bad",
+    source: T3B_121,
+    experience:
+      "A change the user names for both campaigns, sent to the Bot-level Home, becomes one task in each campaign instead of edits in the Home.",
+    home: "bot",
+    distribution: ["a", "b"],
+    turns: [
+      {
+        prompt:
+          "In the session logs of both of my campaigns, change every heading from '## Session N (YYYY-MM-DD)' to '## Session N, DD.MM.YYYY'. Nothing else changes.",
+      },
+    ],
+  },
+  {
+    id: "bot-home-asks-first",
+    kind: "guard",
+    source: T3B_121,
+    experience: "An unclear request to the Bot-level Home gets a question before any task starts.",
+    home: "bot",
+    distribution: [],
+    turns: [{ prompt: "Clean up the campaign.", textMust: ["\\?"] }],
   },
 ];

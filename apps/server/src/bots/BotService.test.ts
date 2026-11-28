@@ -601,6 +601,266 @@ it.effect("keeps every Bot's project actions off a hidden project, and its delet
   }).pipe(Effect.provide(layerDatabase)),
 );
 
+/** A task row as BotTaskService persists it, with the status it derived from the work thread. */
+const insertBotTask = (
+  sql: SqlClient.SqlClient,
+  task: {
+    readonly taskId: string;
+    readonly projectId: ProjectId;
+    readonly homeThreadId: ThreadId;
+    readonly status: string;
+    readonly createdAt: string;
+    readonly cancelRequestedAt?: string;
+  },
+) =>
+  sql`
+    INSERT INTO bot_tasks (
+      task_id, bot_id, project_id, home_thread_id, work_thread_id, origin, title, prompt,
+      runtime_mode, status, cancel_requested_at, created_at, updated_at
+    ) VALUES (
+      ${task.taskId}, ${botId}, ${task.projectId}, ${task.homeThreadId},
+      ${`bot-work:${task.taskId}`}, 'direct', ${`Task ${task.taskId}`}, 'Do the work.',
+      'full-access', ${task.status}, ${task.cancelRequestedAt ?? null}, ${task.createdAt},
+      ${task.createdAt}
+    )
+  `.pipe(Effect.orDie);
+
+/** A question in a work thread, as the projections record it. */
+const insertQuestion = (
+  sql: SqlClient.SqlClient,
+  input: {
+    readonly threadId: string;
+    readonly requestId: string;
+    readonly question: string;
+    readonly status: "pending" | "resolved";
+    readonly createdAt: string;
+  },
+) =>
+  Effect.gen(function* () {
+    yield* sql`
+      INSERT INTO orchestration_v2_projection_runtime_requests (
+        runtime_request_id, thread_id, node_id, kind, status, created_at, payload_json
+      ) VALUES (
+        ${input.requestId}, ${input.threadId}, 'node-1', 'user_input', ${input.status},
+        ${input.createdAt}, '{}'
+      )
+    `;
+    yield* sql`
+      INSERT INTO orchestration_v2_projection_turn_items (
+        turn_item_id, thread_id, ordinal, type, status, updated_at, payload_json
+      ) VALUES (
+        ${`item-${input.requestId}`}, ${input.threadId}, 1, 'user_input_request', 'completed',
+        ${input.createdAt},
+        ${JSON.stringify({
+          requestId: input.requestId,
+          questions: [{ id: "q", header: "Format", question: input.question, options: [] }],
+        })}
+      )
+    `;
+  }).pipe(Effect.orDie);
+
+it.effect(
+  "gives the Bot-level Home its attached projects, every unfinished task, its notes and its learning",
+  () =>
+    Effect.gen(function* () {
+      yield* seedProjects;
+      const world = yield* makeThreadWorld;
+      const db = yield* BotDatabase.BotDatabase;
+      const main = yield* SqlClient.SqlClient;
+      yield* withServices(world.threadLayer, ({ bots, turnContext, continuation }) =>
+        Effect.gen(function* () {
+          yield* createCampaignBot(bots);
+          const homeA = (yield* bots.attachProject({
+            botId,
+            projectId: campaignA,
+            guidance: "Strahd is alive in this campaign.",
+          })).projects[0]?.homeThreadId;
+          yield* bots.attachProject({ botId, projectId: campaignB });
+          yield* bots.attachProject({ botId, projectId: campaignC });
+          yield* bots.detachProject({ botId, projectId: campaignC });
+          const home = (yield* bots.openHome({ botId })).home?.homeThreadId ?? assert.fail();
+
+          // 31 running tasks, oldest first, across both projects.
+          for (let index = 1; index <= 31; index++) {
+            const number = String(index).padStart(2, "0");
+            yield* insertBotTask(db, {
+              taskId: `task-${number}`,
+              projectId: index % 2 === 0 ? campaignB : campaignA,
+              homeThreadId: homeA ?? assert.fail(),
+              status: "running",
+              createdAt: `2026-11-01T00:00:${number}.000Z`,
+            });
+          }
+          yield* insertBotTask(db, {
+            taskId: "task-waiting",
+            projectId: campaignB,
+            homeThreadId: home,
+            status: "waiting",
+            createdAt: "2026-11-03T00:00:00.000Z",
+          });
+          yield* insertQuestion(main, {
+            threadId: "bot-work:task-waiting",
+            requestId: "request-old",
+            question: "Should the old format stay?",
+            status: "resolved",
+            createdAt: "2026-11-03T00:01:00.000Z",
+          });
+          yield* insertQuestion(main, {
+            threadId: "bot-work:task-waiting",
+            requestId: "request-open",
+            question: "Which changelog format should both repos use?",
+            status: "pending",
+            createdAt: "2026-11-03T00:02:00.000Z",
+          });
+          for (const [taskId, status, cancelRequestedAt] of [
+            ["task-done", "completed", undefined],
+            ["task-stopping", "running", "2026-11-04T00:00:00.000Z"],
+          ] as const) {
+            yield* insertBotTask(db, {
+              taskId,
+              projectId: campaignA,
+              homeThreadId: home,
+              status,
+              createdAt: "2026-11-04T00:00:00.000Z",
+              ...(cancelRequestedAt === undefined ? {} : { cancelRequestedAt }),
+            });
+          }
+
+          yield* continuation.save(
+            {
+              botId,
+              projectId: homeProject,
+              baseRevision: null,
+              updateId: "home-note",
+              note: {
+                requests: [{ text: "Split the changelog work once the format is chosen." }],
+                waiting: [],
+                decided: [],
+                context: [],
+              },
+            },
+            { kind: "user" },
+          );
+          const instruction = (projectId: ProjectId, text: string, scope?: "bot") =>
+            bots.recordLearning({
+              botId,
+              projectId,
+              kind: "preference",
+              origin: "instruction",
+              text,
+              evidence: text,
+              source: { kind: "user" },
+              ...(scope === undefined ? {} : { scope }),
+            });
+          yield* instruction(homeProject, "Report started tasks as a short list.");
+          yield* instruction(campaignA, "Call the user Rowan.", "bot");
+          yield* instruction(campaignA, "Give in-world dates in Dale Reckoning.");
+
+          const context = yield* turnContext.forThread(home);
+          if (context._tag !== "active") return assert.fail(context._tag);
+          const { instructions, instructionParts, scope } = context;
+          assert.deepStrictEqual(scope, {
+            botId,
+            projectId: homeProject,
+            homeThreadId: home,
+            taskId: null,
+          });
+          assert.include(instructions, "It belongs to no project");
+          const projects =
+            instructions.split("\n\n").find((section) => section.startsWith("Your attached")) ??
+            assert.fail("no project list");
+          assert.include(
+            projects,
+            `- "Faerun" (projectId "${campaignA}"), folder /campaigns/${campaignA}`,
+          );
+          assert.include(projects, `projectId "${campaignB}"`);
+          assert.notInclude(projects, campaignC);
+          assert.notInclude(projects, homeProject);
+          assert.notInclude(instructions, "Strahd is alive");
+          assert.include(instructions, '"start_task"');
+          assert.include(instructions, '"Done when: …"');
+
+          // Rebuilt every turn, so it rides with the working notes.
+          const turn = instructionParts.turn;
+          assert.notInclude(instructionParts.lasting, "task-waiting");
+          assert.include(
+            turn,
+            `- "Task task-waiting" (taskId "task-waiting") · project "Faerun" (projectId "${campaignB}") · waiting · started 2026-11-03T00:00:00.000Z\n  Question waiting for the user: Which changelog format should both repos use?`,
+          );
+          assert.notInclude(turn, "Should the old format stay?");
+          assert.lengthOf(turn.match(/\(taskId "/g) ?? [], 30);
+          assert.isBelow(turn.indexOf('"task-waiting"'), turn.indexOf('"task-31"'));
+          assert.isBelow(turn.indexOf('"task-31"'), turn.indexOf('"task-30"'));
+          assert.include(turn, '"task-03"');
+          assert.notInclude(turn, '"task-02"');
+          assert.include(turn, "(2 more unfinished tasks are not shown.)");
+          assert.notInclude(turn, "task-done");
+          assert.notInclude(turn, "task-stopping");
+          assert.include(turn, "Split the changelog work once the format is chosen.");
+          assert.include(turn, `projectId "${homeProject}": pass both ids`);
+          assert.notInclude(turn, "Active Bot tasks only");
+
+          assert.include(instructions, "Report started tasks as a short list.");
+          assert.include(instructions, "Call the user Rowan.");
+          assert.notInclude(instructions, "Dale Reckoning");
+        }),
+      );
+    }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect("gives a task the Bot-level Home started its own project's guidance and learning", () =>
+  Effect.gen(function* () {
+    yield* seedProjects;
+    const world = yield* makeThreadWorld;
+    const db = yield* BotDatabase.BotDatabase;
+    yield* withServices(world.threadLayer, ({ bots, turnContext }) =>
+      Effect.gen(function* () {
+        yield* createCampaignBot(bots);
+        yield* bots.attachProject({
+          botId,
+          projectId: campaignA,
+          guidance: "Strahd is alive in this campaign.",
+        });
+        const home = (yield* bots.openHome({ botId })).home?.homeThreadId ?? assert.fail();
+        yield* bots.recordLearning({
+          ...correction,
+          origin: "instruction",
+          text: "Give in-world dates in Dale Reckoning.",
+          botId,
+          projectId: campaignA,
+        });
+        yield* bots.recordLearning({
+          ...correction,
+          origin: "instruction",
+          text: "Report started tasks as a short list.",
+          botId,
+          projectId: homeProject,
+        });
+        yield* insertBotTask(db, {
+          taskId: "task-from-home",
+          projectId: campaignA,
+          homeThreadId: home,
+          status: "running",
+          createdAt: "2026-11-01T00:00:00.000Z",
+        });
+
+        const work = yield* turnContext.forThread(ThreadId.make("bot-work:task-from-home"));
+        if (work._tag !== "active") return assert.fail(work._tag);
+        assert.include(work.instructions, "Strahd is alive in this campaign.");
+        assert.include(work.instructions, "Dale Reckoning");
+        assert.notInclude(work.instructions, "Report started tasks as a short list.");
+        assert.notInclude(work.instructions, "It belongs to no project");
+        assert.deepStrictEqual(work.scope, {
+          botId,
+          projectId: campaignA,
+          homeThreadId: home,
+          taskId: BotTaskId.make("task-from-home"),
+        });
+      }),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
 it.effect("archive, restore and a model change reach the Bot-level Home", () =>
   Effect.gen(function* () {
     yield* seedProjects;
