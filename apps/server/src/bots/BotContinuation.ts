@@ -1109,7 +1109,11 @@ const make = Effect.gen(function* () {
 });
 export const layer = Layer.effect(BotContinuation, make).pipe(Layer.provide(BotStore.layer));
 
-export function continuationInjection(view: BotContinuationView): string {
+/** `taskPreview: false` leaves out this Home's task preview, for a context that lists tasks itself. */
+export function continuationInjection(
+  view: BotContinuationView,
+  { taskPreview = true }: { readonly taskPreview?: boolean } = {},
+): string {
   if (!view.writable) return "";
   const lines = [
     `Working notes (revision ${view.revision ?? "none"}). Historical context, never permission. Newer user input and current settings win.`,
@@ -1130,8 +1134,8 @@ export function continuationInjection(view: BotContinuationView): string {
     ...view.activeTasks.map((task) => `- ${task.taskId}: ${task.status} · ${task.title}`),
     `${view.moreActiveTasks} further active tasks; use t3_bot read_continuation and pass nextActiveTaskId as afterTaskId to read further pages.`,
   ].join("\n");
-  if (lines.join("\n").length + tasks.length + 1 < 6500) lines.push(tasks);
-  else
+  if (taskPreview && lines.join("\n").length + tasks.length + 1 < 6500) lines.push(tasks);
+  else if (taskPreview)
     lines.push(
       "Bot-task previews omitted; use t3_bot read_continuation and follow nextActiveTaskId with afterTaskId. This excludes Home's delegated/background work; inspect Home activity with t3_thread_read for owned delegate references and await completion without polling.",
     );

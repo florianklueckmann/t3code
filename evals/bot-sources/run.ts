@@ -13,6 +13,7 @@ import * as NodePlatformCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
+  BOT_TASK_TERMINAL_STATUSES,
   BotDetail,
   BotTaskSummary,
   OrchestratorMcpDelegateTaskResult,
@@ -65,6 +66,11 @@ export interface SampleRun {
   /** The Bot's learning entries after the turns, by their newest revision. */
   readonly learning: ReadonlyArray<LearnedEntry>;
   readonly homeModel?: BotModelSelection;
+  /**
+   * Bot-level Home cases: the project checkouts still hold their fixture files. Their tasks write
+   * in pooled worktrees, so only the Home could change a checkout.
+   */
+  readonly checkoutsUnchanged?: boolean;
 }
 
 export interface LearnedEntry {
@@ -84,8 +90,10 @@ const decodeToolCall = Schema.decodeUnknownOption(
       toolName: Schema.String,
       input: Schema.Struct({
         action: Schema.optional(Schema.String),
-        botId: Schema.optional(Schema.String),
-        projectId: Schema.optional(Schema.String),
+        // Unknown, so a call with a malformed argument still counts as a call.
+        botId: Schema.optional(Schema.Unknown),
+        projectId: Schema.optional(Schema.Unknown),
+        task: Schema.optional(Schema.Unknown),
       }),
       output: Schema.optional(Schema.Unknown),
     }),
@@ -188,6 +196,45 @@ export const gradeSample = (testCase: BotSourcesCase, run: SampleRun) => {
       }
     }
   }
+  if (testCase.distribution !== undefined) {
+    const attempts = botCalls.filter(({ input }) => input.action === "start_task");
+    const started = attempts.flatMap(({ input, output }) => {
+      const task = Option.getOrUndefined(decodeTask(output))?.task;
+      return task === undefined ? [] : [{ input, task }];
+    });
+    const named = testCase.distribution.map((key) => run.ids.projectIds[key]);
+    if (named.length === 0) {
+      add("tried to start no task", attempts.length === 0);
+    } else {
+      for (const key of testCase.distribution) {
+        add(
+          `started exactly one task in project ${key}`,
+          started.filter(
+            ({ task }) =>
+              task.botId === run.ids.botId && task.projectId === run.ids.projectIds[key],
+          ).length === 1,
+        );
+      }
+      add(
+        "tried to start tasks only for this Bot in the named projects",
+        attempts.every(
+          ({ input }) =>
+            input.botId === run.ids.botId && named.some((id) => id === input.projectId),
+        ),
+      );
+      add(
+        "every brief states when it is done",
+        started.length > 0 &&
+          started.every(
+            ({ input }) => typeof input.task === "string" && /done when:?\s+\w/i.test(input.task),
+          ),
+      );
+    }
+    add(
+      "edited no file in the Home",
+      run.tools.every((tool) => tool.type !== "file_change") && run.checkoutsUnchanged === true,
+    );
+  }
   const learnedByBot = run.learning.filter((entry) => entry.byBot);
   if (testCase.learningAfter === undefined) {
     add("no learning recorded", learnedByBot.length === 0);
@@ -208,7 +255,7 @@ export const gradeSample = (testCase: BotSourcesCase, run: SampleRun) => {
   if (testCase.sourcesAfter === undefined) {
     add("no t3_bot update", updates.length === 0);
   } else {
-    const home = run.ids.projectIds[testCase.home];
+    const home = testCase.home === "bot" ? undefined : run.ids.projectIds[testCase.home];
     add(
       "t3_bot update names its own botId and projectId",
       updates.length > 0 &&
@@ -230,6 +277,14 @@ const runSample = Effect.fn("botSources.runSample")(function* (
     for (const [file, text] of Object.entries(PROJECTS[key].files)) {
       NodeFS.mkdirSync(NodePath.dirname(NodePath.join(root, file)), { recursive: true });
       NodeFS.writeFileSync(NodePath.join(root, file), text);
+    }
+    // A repository gives the started tasks their own worktrees, away from the checkout.
+    if (testCase.home === "bot") {
+      const git = (...args: ReadonlyArray<string>) =>
+        NodeChildProcess.execFileSync("git", ["-C", root, ...args], { stdio: "ignore" });
+      git("init", "-q", "-b", "main");
+      git("add", "-A");
+      git("-c", "user.name=eval", "-c", "user.email=eval@example.com", "commit", "-qm", "fixture");
     }
     if (key === testCase.home && testCase.modelRouting === "fast-worker") {
       const exports = NodePath.join(root, "thread-exports");
@@ -283,8 +338,13 @@ const runSample = Effect.fn("botSources.runSample")(function* (
   const attached = yield* attach(botId, "b");
   yield* create(twinId);
   yield* attach(twinId, "a", TWIN_SOURCES);
-  const home = attached.bot.projects.find((p) => p.projectId === projectIds[testCase.home]);
-  if (home === undefined) return yield* Effect.die(new Error("home conversation missing"));
+  const homeKey = testCase.home;
+  const home =
+    homeKey === "bot"
+      ? (yield* call("t3_bot", { action: "open_home", botId }, Schema.Struct({ bot: BotDetail })))
+          .bot.home
+      : attached.bot.projects.find((p) => p.projectId === projectIds[homeKey]);
+  if (home == null) return yield* Effect.die(new Error("home conversation missing"));
   const seed = testCase.seed;
   const seeded =
     seed === undefined
@@ -307,31 +367,62 @@ const runSample = Effect.fn("botSources.runSample")(function* (
           }),
         )).learned;
 
+  // Only the Home's choice is graded, so this stops the tasks' ungraded work early.
+  const cancelTasks = Effect.forEach(testCase.home === "bot" ? [botId, twinId] : [], (id) =>
+    Effect.gen(function* () {
+      const { tasks } = yield* call(
+        "t3_bot",
+        { action: "list_tasks", botId: id },
+        Schema.Struct({ tasks: Schema.Array(BotTaskSummary) }),
+      );
+      for (const task of tasks.filter((task) => !BOT_TASK_TERMINAL_STATUSES.has(task.status))) {
+        yield* call(
+          "t3_bot",
+          { action: "cancel_task", botId: id, taskId: task.id },
+          Schema.Unknown,
+        );
+      }
+    }),
+  );
   const answers: Array<string> = [];
   const turnMessageIds: Array<ReadonlyArray<string>> = [];
-  for (const turn of testCase.turns) {
-    if (turn.adoptSeedFirst === true && seeded !== undefined) {
-      yield* call(
-        "t3_bot",
-        { action: "adopt", botId, entryId: seeded.entryId, revision: seeded.revision },
-        Schema.Unknown,
+  yield* Effect.gen(function* () {
+    for (const turn of testCase.turns) {
+      if (turn.adoptSeedFirst === true && seeded !== undefined) {
+        yield* call(
+          "t3_bot",
+          { action: "adopt", botId, entryId: seeded.entryId, revision: seeded.revision },
+          Schema.Unknown,
+        );
+      }
+      const runId = yield* runTurn(call, home.homeThreadId, turn.prompt, {
+        freshContext: turn.freshContext === true,
+        untilDelegatedWorkSettled: testCase.modelRouting === "fast-worker",
+      });
+      const messages = yield* readItems(call, home.homeThreadId, "messages");
+      answers.push(
+        messages.findLast((item) => item.runId === runId && item.type === "assistant_message")
+          ?.text ?? "",
+      );
+      turnMessageIds.push(
+        messages.flatMap((item) =>
+          item.runId === runId && item.messageId !== null ? [item.messageId] : [],
+        ),
       );
     }
-    const runId = yield* runTurn(call, home.homeThreadId, turn.prompt, {
-      freshContext: turn.freshContext === true,
-      untilDelegatedWorkSettled: testCase.modelRouting === "fast-worker",
-    });
-    const messages = yield* readItems(call, home.homeThreadId, "messages");
-    answers.push(
-      messages.findLast((item) => item.runId === runId && item.type === "assistant_message")
-        ?.text ?? "",
-    );
-    turnMessageIds.push(
-      messages.flatMap((item) =>
-        item.runId === runId && item.messageId !== null ? [item.messageId] : [],
-      ),
-    );
-  }
+  }).pipe(Effect.ensuring(Effect.ignore(cancelTasks)));
+  // Any added, deleted or changed file in a checkout, which only the Home could have made.
+  const checkoutsUnchanged =
+    testCase.home !== "bot"
+      ? undefined
+      : (["a", "b"] as const).every(
+          (key) =>
+            NodeChildProcess.execFileSync(
+              "git",
+              ["-C", NodePath.join(options.work, tag, key), "status", "--porcelain"],
+              { encoding: "utf8" },
+            ) === "",
+        );
   const tools = toolActivity(yield* readItems(call, home.homeThreadId, "activity"));
   const read = (id: string) =>
     call("t3_bot", { action: "read", botId: id }, Schema.Struct({ bot: BotDetail })).pipe(
@@ -349,6 +440,7 @@ const runSample = Effect.fn("botSources.runSample")(function* (
   const run: SampleRun = {
     answers,
     homeModel: modelSelection,
+    ...(checkoutsUnchanged === undefined ? {} : { checkoutsUnchanged }),
     turnMessageIds,
     tools,
     sources: {
