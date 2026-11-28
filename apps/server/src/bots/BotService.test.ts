@@ -527,13 +527,20 @@ it.effect(
           assert.isTrue((yield* Ref.get(world.threads)).get(home.homeThreadId)?.archived);
           assert.equal(yield* instructionsFor(turnContext, home.homeThreadId), "inactive");
 
-          const reopened = yield* bots.openHome({ botId, access: "full" });
+          // An access change racing a removal elsewhere must not reopen the Home.
+          const refused = yield* bots.openHome({ botId, access: "full" }).pipe(Effect.flip);
+          assert.include(refused.message, "Reopen it before changing its access");
+          assert.isTrue((yield* Ref.get(world.threads)).get(home.homeThreadId)?.archived);
+
+          const reopened = yield* bots.openHome({ botId });
           assert.deepInclude(reopened.home, {
             homeThreadId: home.homeThreadId,
             detachedAt: null,
-            access: "full",
+            access: "read",
           });
           assert.isFalse((yield* Ref.get(world.threads)).get(home.homeThreadId)?.archived);
+          const full = yield* bots.openHome({ botId, access: "full" });
+          assert.deepInclude(full.home, { detachedAt: null, access: "full" });
         }),
       );
       const homeLaunches = (yield* Ref.get(world.launches)).filter(

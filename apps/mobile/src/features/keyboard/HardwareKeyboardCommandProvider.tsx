@@ -119,10 +119,10 @@ export function HardwareKeyboardCommandProvider({
     }
     if (pathname !== "/" || navigation.canGoBack()) commands.add("back");
     if (activeThreadRef !== null) {
-      if (!botOwnHomeThread) {
-        commands.add("files");
-        commands.add("terminal");
-        commands.add("review");
+      for (const command of ["files", "terminal", "review"] as const) {
+        // The workspace registers some of these too; the own Home offers none.
+        if (botOwnHomeThread) commands.delete(command);
+        else commands.add(command);
       }
       if (pathname.split("/")[4] !== "terminal") commands.add("copyThreadReference");
     }

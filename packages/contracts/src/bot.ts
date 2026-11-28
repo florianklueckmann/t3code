@@ -466,7 +466,10 @@ export type BotDetachProjectInput = typeof BotDetachProjectInput.Type;
 /** Opens the Bot-level Home, or reopens a removed one with its earlier conversation. */
 export const BotOpenHomeInput = Schema.Struct({
   botId: BotId,
-  /** Absent keeps the saved access: read until it is set. */
+  /**
+   * Absent keeps the saved access: read until it is set. On a Home that exists it only changes the
+   * access, and a removed Home is refused rather than reopened.
+   */
   access: Schema.optional(BotHomeAccess),
 });
 export type BotOpenHomeInput = typeof BotOpenHomeInput.Type;

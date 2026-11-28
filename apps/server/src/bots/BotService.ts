@@ -721,6 +721,23 @@ const make = Effect.gen(function* () {
         .ensureProject(input.botId)
         .pipe(Effect.mapError((cause) => botError(cause.message, input.botId)(cause)));
       if (input.access !== undefined) {
+        const [home] = yield* store
+          .listHomes(input.botId)
+          .pipe(Effect.mapError(storeError(input.botId)));
+        if (home !== undefined) {
+          // Changing the access of an existing Home must not reopen one another client removed.
+          const changed = yield* store
+            .setOpenHomeAccess(input.botId, input.access)
+            .pipe(Effect.mapError(storeError(input.botId)));
+          if (!changed) {
+            return yield* botError(
+              "This Bot's own Home was removed. Reopen it before changing its access.",
+              input.botId,
+            )();
+          }
+          yield* notifyChanged;
+          return yield* readDetail(input.botId);
+        }
         yield* store
           .setHomeAccess(input.botId, input.access)
           .pipe(Effect.mapError(storeError(input.botId)));
