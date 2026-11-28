@@ -51,6 +51,7 @@ import {
   botTaskResultMatchesThread,
   botTurnLearningView,
   emptyBotSourceDraft,
+  isBotOwnHomeThreadId,
   type HiddenBotTaskCards,
   hideBotTaskCard,
   homeBotTaskCards,
@@ -295,6 +296,15 @@ describe("the Bot's own Home", () => {
     projects: [projectContext],
     home: ownHomeContext,
   };
+
+  it.each([
+    [ownHomeContext.homeThreadId, true],
+    [projectContext.homeThreadId, false],
+    ["bot-home:companion", false],
+    ["thread:bot-home-companion", false],
+  ])("tells the own Home's thread %s from its id alone", (threadId, expected) => {
+    expect(isBotOwnHomeThreadId(threadId)).toBe(expected);
+  });
 
   it("loads a project Home's cards by project and the own Home's by the Home that started them", () => {
     const inputOf = (threadId: string) => {

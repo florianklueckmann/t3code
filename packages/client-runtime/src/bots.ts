@@ -16,7 +16,9 @@ import {
   type BotFailureDiagnosisView,
   type BotRecordLearningInput,
   type BotWorktreePool,
+  BOT_HOME_THREAD_ID_PREFIX,
   isBotHomeProjectId,
+  mayBeBotHomeThreadId,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import * as Option from "effect/Option";
@@ -523,6 +525,17 @@ export const BOT_OWN_HOME_LABEL = "Own Home";
 /** Whether this Home is the Bot's own one, in its hidden project, rather than a project Home. */
 export function isBotOwnHome(context: { readonly projectId: string }): boolean {
   return isBotHomeProjectId(context.projectId);
+}
+
+/**
+ * Whether a thread id is a Bot's own Home (`bot-home:<botId>:bot-home-<botId>`), decided from the
+ * id alone, so it holds before the thread's shell or the Bot list has loaded.
+ */
+export function isBotOwnHomeThreadId(threadId: string): boolean {
+  if (!mayBeBotHomeThreadId(threadId)) return false;
+  const rest = threadId.slice(BOT_HOME_THREAD_ID_PREFIX.length);
+  const separator = rest.indexOf(":");
+  return separator > 0 && isBotHomeProjectId(rest.slice(separator + 1));
 }
 
 /** A Bot's Homes, attached or not: its project Homes, then its own Home once it was opened. */

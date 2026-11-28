@@ -13,9 +13,10 @@ import {
   activeBotConversations,
   BOT_OWN_HOME_LABEL,
   isBotOwnHome,
+  isBotOwnHomeThreadId,
 } from "@t3tools/client-runtime/bots";
 import { isShownUnderParent } from "@t3tools/client-runtime/state/threads";
-import { isBotHomeProjectId, THREAD_JUMP_KEYBINDING_COMMANDS } from "@t3tools/contracts";
+import { THREAD_JUMP_KEYBINDING_COMMANDS } from "@t3tools/contracts";
 import {
   foldSearchQuery,
   PALETTE_MESSAGE_LIMIT,
@@ -411,7 +412,7 @@ export function CommandPalette(props: {
     }
     if (activeThreadRef) {
       // A Bot's own Home has no project folder to browse, run or review.
-      const projectActions = isBotHomeProjectId(activeThread?.projectId ?? "")
+      const projectActions = isBotOwnHomeThreadId(activeThreadRef.threadId)
         ? []
         : ([
             ["files", "Go to file", ["open", "files", "browse", "search"]],

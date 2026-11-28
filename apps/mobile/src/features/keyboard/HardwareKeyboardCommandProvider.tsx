@@ -14,7 +14,7 @@ import {
   type ReactNode,
 } from "react";
 
-import { isBotHomeProjectId } from "@t3tools/contracts";
+import { isBotOwnHomeThreadId } from "@t3tools/client-runtime/bots";
 import { copyThreadReference } from "../../lib/copyThreadReference";
 import {
   firstWorkspaceDetailOpen,
@@ -59,7 +59,8 @@ export function HardwareKeyboardCommandProvider({
   const activeThreadRef = useMemo(() => parseActiveThreadPath(pathname), [pathname]);
   const activeThread = useThreadShell(activeThreadRef);
   // A Bot's own Home runs in its hidden project's folder, which holds none of the user's work.
-  const botOwnHomeThread = isBotHomeProjectId(activeThread?.projectId ?? "");
+  const botOwnHomeThread =
+    activeThreadRef !== null && isBotOwnHomeThreadId(activeThreadRef.threadId);
   const copyTarget = useMemo(
     () =>
       activeThreadRef === null
