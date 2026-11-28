@@ -2,7 +2,7 @@
 
 Runs real Bot turns end to end: a T3 Code dev server, its configured Codex provider, the Bot's real application context and T3's real MCP tools. It checks whether a Bot prefers its project's established sources, names missing and conflicting sources, keeps one-off research out of its defaults, and makes standing source changes through `t3_bot` with its own ids. Its learning cases check that the Bot records standing instructions and lessons from corrections under the right policy and scope, and that learning it never saw in the conversation changes later answers only when it is active and in scope.
 
-Unlike [mcp-tool-use](../mcp-tool-use/), nothing is replayed or simulated, and it calls no model API directly. It uses whatever login the dev server's Codex provider has, so turns count against that account's usage.
+The source and learning cases use real workers. The ten-task bookkeeping case replays worker answers. It uses whatever login the dev server's Codex provider has, so turns count against that account's usage.
 
 ## Run
 
@@ -35,25 +35,17 @@ The `bot-home-*` cases run in the Bot-level Home, which the sample opens with `t
 
 ## A day of ten tasks
 
-`bot-home-ten-tasks` (T3B-123, `homeDay.ts`) runs the Bot's own Home through a scripted day: ten tasks across four projects in two batches, with a fresh conversation (`freshContext`) once three tasks of the first batch have ended. Two tasks come back with an open question, one fails to start, the eval cancels one from its task card through the client RPC while it runs, and one result names no evidence. The case runs only when named, because one sample costs about as much as the rest of the set:
+The opt-in `bot-home-ten-tasks` case starts ten requests in four throwaway projects. Home runs on the requested model. A temporary Codex instance sends its worker requests to a loopback endpoint that returns a fixed answer at a milestone. The endpoint identifies the work thread from the provider thread record and ignores the brief. T3 checks the resulting `T3_RESULT` evidence, records acceptance, and sends its usual task update to Home. The day includes an unborn base branch, a user cancellation, two decisions, and a result without evidence.
 
 ```sh
-pnpm bot-sources --base-dir ../.t3 --out runs/day --case bot-home-ten-tasks --model gpt-6-luna --effort medium
+pnpm bot-sources --base-dir ../.t3 --work /tmp/day-projects --out runs/day --case bot-home-ten-tasks --model gpt-6-luna --effort medium --samples 1
 ```
 
-The Home runs on `--instance`/`--model`. The work threads are real turns on Codex `gpt-6-luna`, the Bot's model, whatever the Home runs on: the sample switches the Home's thread to the model under test as a user can in its composer, and the server needs a `codex` instance. Each fixture repository's `AGENTS.md` tells the workers to wait 30 seconds, as real work outlasts the turn that started it, and which `T3_RESULT` line to end with, so the Home sees the task records and "Task update" turns a real day produces. The failing task's project has its commits on `trunk` while HEAD names an unborn `main`, so its task fails with "The project has no commit to start a task branch from." The scripted workers do not cover a worker that wanders off, a native question card, or a run that fails midway.
+The runner releases the cart and image tasks after the first batch. The user asks to hear the image question again, then starts a fresh conversation for the second batch. After cancellation, the remaining workers finish. Home must recap the exact recorded titles and IDs, status and review state. The runner records which turn started each task. It scores routing, each question and its alternatives, and whether prose contradicts the record. It reports briefs separately by project, request details without deciding an open choice, completion condition, base branch, and whether the brief decided an open choice. Errors and invalid samples remain in the denominator. Each run writes usage, individual checks and briefs to disk.
 
-First the runner checks the task records. An incorrectly routed, merged, extra or missing task fails the Home. With correct routing, a worker that missed its question, omitted evidence, cited a missing file, or otherwise departed from the script makes the sample invalid. The runner records the reason and excludes it from the score.
+The setup needs a Codex CLI with custom Responses providers and the native thread ID header. Only Home consumes model tokens in this case. Budget for roughly a dozen Home turns per sample. The summary reports input, cached input, and output tokens. Run `--case bot-home-ten-tasks-live-workers` separately for one integration day with real Luna workers. Its result stays outside the bookkeeping pass count.
 
-The final request asks for a table with one row per task (Project, Task, Recorded status), followed by evidence, doubts and what needs the user. The grader compares each row to its record, checks that the recap includes the first batch in the day, and looks for explicit conflicting status claims in prose and task updates. Each scripted question should reach the user in its own update, naming its task and project, with no unsolicited repeat. The requested recap must name each open decision or point to its task card. The Home must do no work itself.
-
-Each model's `summary.md` shows the valid-sample pass count, Home turns and token usage, and a per-check matrix. A dash means the check was not scored. The total for each check counts the samples in which it ran. `results.jsonl` retains invalid samples and their transcripts.
-
-To compare with a Home that gets its conversation history but not the task list, empty the turn sections of `buildBotHomeInstructions` in `apps/server/src/bots/BotTurnContext.ts` on a scratch server and run the case against it.
-
-### Known limits
-
-Workers are real model turns. An invalid sample can hide a Home error in the brief, such as deciding the answer to a question the worker should ask. Read the brief printed alongside the invalid reason. Task matching uses words from the request, so a row about lowering a timeout to five seconds can stand in for a request to raise it. The status parser accepts a label even when its qualifier contradicts it, such as “completed (not really, it failed)”. The prose and question checks can miss contradictions and repeats or penalize accurate statements. Use pass counts to guide development. They do not measure overall Home quality.
+The grader recognizes the two fixture decisions and a limited set of English phrasings. It checks reported evidence and status, not whether the shop work itself succeeds. To add a request, extend `DAY_TASKS`, supply a project fixture and a fixed outcome, and add positive and negative examples of its brief and recap in `homeDay.test.ts`. Review and sanitize transcript excerpts before committing them.
 
 ## Output
 

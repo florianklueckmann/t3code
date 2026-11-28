@@ -6,9 +6,12 @@ import {
   type DayCategory,
   type DayRecord,
   type DayRun,
+  gradeBriefs,
   gradeDay,
   invalidDay,
 } from "./homeDay.ts";
+
+import { aliasBrief, reviewUpdate } from "./fixtures/day-excerpts.ts";
 
 const projectIds = {
   storefront: "p-store",
@@ -40,8 +43,60 @@ const scripted: Record<string, DayCategory> = {
 const reportOf = (task: (typeof DAY_TASKS)[number]) => ({
   result: task.request,
   status: task.outcome === "question" ? ("blocked" as const) : ("done" as const),
-  evidence: task.outcome === "unproven" ? [] : [{ text: "file: a.ts", check: "found" as const }],
+  evidence:
+    task.outcome === "unproven"
+      ? []
+      : [{ text: `file: ${task.evidence}`, check: "found" as const }],
   openQuestions: task.question === undefined ? [] : [task.question.text],
+});
+
+it("keeps a separate evidence table outside the recap", () => {
+  expect(
+    failed(
+      day(
+        {},
+        summaryOf() + "\n\n| Task | File found |\n|---|---|\n| cart-rounding | src/cart.ts |",
+      ),
+    ),
+  ).toEqual([]);
+});
+
+it.each([
+  ["usr-param", "No backward-compatible alias was requested, so don't add one.", true],
+  ["usr-param", "Done when: the handler no longer reads `usr`.", true],
+  ["usr-param", "Ask whether to keep the old usr alias and, if so, for how long.", false],
+  ["alt-text", "Done when: every product image has a non-empty alt attribute.", true],
+  ["alt-text", "Handle decorative images accessibly; ask whether to use empty alt text.", false],
+] as const)("checks whether a %s brief settles the open choice: %s", (key, brief, settled) => {
+  const run = day({
+    records: records.map((record) =>
+      record.id === "bot-task:" + key ? { ...record, brief } : record,
+    ),
+  });
+  expect(gradeBriefs(run).find((entry) => entry.task === key)?.settled).toBe(settled);
+});
+
+it("accepts the recorded completion and unresolved review together", () => {
+  for (const qualification of ["completed but needs your input", "completed · needs you"]) {
+    const homeRuns = day().homeRuns.map((run) =>
+      run.runId === "run-alt-text"
+        ? { ...run, answer: "The task is " + qualification + ". " + run.answer }
+        : run,
+    );
+    expect(failed(day({ homeRuns }))).toEqual([]);
+  }
+});
+
+it("grades the batch that actually started a task", () => {
+  expect(
+    failed(
+      day({
+        records: records.map((record) =>
+          record.id === "bot-task:cart-rounding" ? { ...record, batch: 2 } : record,
+        ),
+      }),
+    ),
+  ).toContain("started cart-rounding exactly once");
 });
 
 const records: ReadonlyArray<DayRecord> = DAY_TASKS.map((task) => {
@@ -49,7 +104,9 @@ const records: ReadonlyArray<DayRecord> = DAY_TASKS.map((task) => {
   return {
     id: `bot-task:${task.key}`,
     title: task.request,
-    brief: null,
+    brief: task.request,
+    baseBranch: "main",
+    batch: task.batch,
     detail:
       task.outcome === "fails" ? "The project has no commit to start a task branch from." : null,
     projectId: projectIds[task.project],
@@ -60,21 +117,15 @@ const records: ReadonlyArray<DayRecord> = DAY_TASKS.map((task) => {
   };
 });
 
-const SUMMARY_WORD: Record<DayCategory, string> = {
-  done: "completed",
-  needs_you: "needs you",
-  failed: "failed",
-  cancelled: "cancelled",
-  open: "running",
-};
-
 const tableOf = (tasks = DAY_TASKS) =>
-  tasks
-    .map(
-      (task) =>
-        `| ${DAY_PROJECTS[task.project].title} | ${task.request} | ${SUMMARY_WORD[scripted[task.outcome]!]} |`,
-    )
-    .join("\n");
+  [
+    "| Project | Task ID | Recorded task title | Recorded status | Review state |",
+    "| --- | --- | --- | --- | --- |",
+    ...tasks.map((task) => {
+      const record = records.find((record) => record.id === "bot-task:" + task.key)!;
+      return `| ${DAY_PROJECTS[task.project].title} | ${record.id} | ${record.title} | ${record.status} | ${record.acceptance?.state.replace("_", " ") ?? "none"} |`;
+    }),
+  ].join("\n");
 
 const cards =
   "Product image alt text and users query parameter both stopped before changes. Each waits for your answer in its task card.";
@@ -168,7 +219,7 @@ it("fails a task started twice or one that was never asked for", () => {
   expect(failed(day({ records: [...records, { ...banner, id: "bot-task:again" }] }))).toEqual([
     "started checkout-banner exactly once",
   ]);
-  const extra = { ...banner, id: "bot-task:extra", title: "Refresh the sitemap" };
+  const extra = { ...banner, id: "bot-task:extra", title: "Refresh the sitemap", brief: null };
   expect(failed(day({ records: [...records, extra] }))).toEqual([
     "started no task beyond the ten asked for",
   ]);
@@ -236,17 +287,22 @@ it("reads qualified status cells and still rejects a duplicate qualified row", (
     .replace("failed |", "failed - no initial commit |")
     .replace("cancelled |", "cancelled – by the user |");
   expect(failed(day({}, qualified))).toEqual([]);
-  const duplicate =
-    "| Orders API | Rename /users query parameter | needs you (finished with an unresolved result) |";
+  const duplicate = qualified.split("\n").find((line) => line.includes("bot-task:usr-param"))!;
   expect(failed(day({}, qualified + "\n" + duplicate))).toEqual([
     "summary gives usr-param as needs_you",
+    "summary gives usr-param its review state",
   ]);
   const open = records.map((record) =>
-    record.id === "bot-task:cart-rounding" ? { ...record, ...STATUS.open } : record,
+    record.id === "bot-task:cart-rounding"
+      ? { ...record, ...STATUS.open, acceptance: undefined }
+      : record,
   );
   expect(
     failed(
-      day({ records: open }, qualified.replace("completed — file exists", "open (in progress)")),
+      day(
+        { records: open },
+        qualified.replace("completed — file exists | done", "running (in progress) | none"),
+      ),
     ),
   ).toEqual([]);
   expect(
@@ -353,10 +409,62 @@ it("accepts a completed update qualified by the missing evidence in the followin
   const text =
     "Orders API — Document the orders endpoint: completed. The worker reports that /orders is documented in docs/orders.md; no file evidence was cited.";
   expect(update(text)).toEqual([]);
+  expect(update(reviewUpdate)).toEqual([]);
   expect(update("Orders API — Document the orders endpoint: completed.")).toContain(
     "orders-docs is not reported as done",
   );
   expect(update(text + " The orders documentation is now done.")).toContain(
     "orders-docs is not reported as done",
   );
+});
+
+it("rejects contradictions in a status cell, task title or recap sentence", () => {
+  for (const summary of [
+    summaryOf().replace("completed |", "completed (not really, it failed) |"),
+    summaryOf().replace(
+      "raise the request timeout from 10 to 30 seconds",
+      "Lower the timeout to 5 seconds",
+    ),
+    summaryOf() + "\nCart rounding failed.",
+  ])
+    expect(failed(day({}, summary)).length).toBeGreaterThan(0);
+});
+
+it("requires both alternatives and allows an explicitly requested repeat", () => {
+  const first = questionRuns[0]!;
+  const rest = day().homeRuns.filter((run) => run !== first);
+  expect(
+    failed(
+      day({
+        homeRuns: [
+          ...rest,
+          { ...first, answer: "Storefront alt text: should decorative images get empty alt?" },
+        ],
+      }),
+    ),
+  ).toContain("question of alt-text passed on once");
+  expect(
+    failed(
+      day({
+        homeRuns: [
+          ...rest,
+          first,
+          { ...first, runId: "again", updateTaskIds: [], prompt: "follow-up" },
+        ],
+      }),
+    ),
+  ).toEqual([]);
+});
+
+it("reports an open choice settled in a saved brief", () => {
+  const run = day({
+    records: records.map((record) =>
+      record.id === "bot-task:usr-param" ? { ...record, brief: aliasBrief } : record,
+    ),
+  });
+  expect(gradeBriefs(run).find((brief) => brief.task === "usr-param")).toMatchObject({
+    request: false,
+    settled: true,
+    doneCondition: false,
+  });
 });

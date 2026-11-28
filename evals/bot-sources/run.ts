@@ -15,6 +15,8 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   BOT_TASK_TERMINAL_STATUSES,
   BotDetail,
+  ProviderInstanceId,
+  ProviderDriverKind,
   BotTaskSummary,
   OrchestratorMcpDelegateTaskResult,
   OrchestratorMcpThreadReadResult,
@@ -39,6 +41,8 @@ import {
   toolActivity,
   withTools,
 } from "../shared/devServerTools.ts";
+import { dayWorkerArgs, dayWorkerServer } from "./dayWorker.ts";
+import { withRpc } from "../shared/devServerRpc.ts";
 import { noteOf } from "../shared/botHome.ts";
 import {
   BOT_INSTRUCTIONS,
@@ -498,6 +502,7 @@ const daySummary = (
     | {
         readonly pass: boolean;
         readonly invalid: string | null;
+        readonly briefs: ReturnType<typeof scoreDay>["briefs"];
         readonly checks: ReadonlyArray<{ readonly check: string; readonly pass: boolean }>;
         readonly usage: DayUsage;
       }
@@ -510,14 +515,23 @@ const daySummary = (
     const failed = day.checks.filter((check) => !check.pass).map((check) => check.check);
     return `| ${sample + 1} | ${day.invalid ? "invalid" : day.pass ? "pass" : "fail"} | ${usage.homeTurns} | ${usage.inputTokens} (${usage.cachedInputTokens} cached) | ${usage.outputTokens} | ${day.invalid?.replace(/\s+/g, " ").replaceAll("|", "\\|") ?? failed.join("; ")} |`;
   });
-  const scored = days.flatMap((day) => ("error" in day || day.invalid !== null ? [] : [day]));
+  const scored = days.flatMap((day) => ("error" in day ? [] : [day]));
   const names = new Set(scored.flatMap((day) => day.checks.map((check) => check.check)));
   return [
-    `${DAY_CASE_ID}: ${scored.filter((day) => day.pass).length}/${scored.length} valid samples passed.`,
+    `${DAY_CASE_ID}: ${scored.filter((day) => day.pass).length}/${days.length} samples passed. Invalid: ${scored.filter((day) => day.invalid !== null).length}. Errors: ${days.length - scored.length}.`,
     "",
     "| Sample | Result | Home turns | Home input tokens | Home output tokens | Failed checks or invalid reason |",
     "| --- | --- | --- | --- | --- | --- |",
     ...rows,
+    "",
+    "| Brief criterion | Count |",
+    "| --- | --- |",
+    ...(["project", "request", "doneCondition", "baseBranch", "settled"] as const).map((key) => {
+      const briefs = scored
+        .flatMap((day) => day.briefs)
+        .filter((brief) => key !== "settled" || brief.openChoice);
+      return `| ${key} | ${briefs.filter((brief) => brief[key]).length}/${briefs.length} |`;
+    }),
     "",
     "| Check | " + days.map((_, i) => `Sample ${i + 1}`).join(" | ") + " | Total |",
     "| --- | " + days.map(() => "---").join(" | ") + " | --- |",
@@ -594,18 +608,86 @@ const main = Effect.gen(function* () {
         ),
       { concurrency: Number(values.concurrency) },
     );
-  const dayJobs = values.case?.includes(DAY_CASE_ID) === true ? samples : 0;
+  const liveCase = DAY_CASE_ID + "-live-workers";
+  const live = values.case?.includes(liveCase) === true;
+  if (live && values.case?.includes(DAY_CASE_ID))
+    throw new Error("Run the live integration separately.");
+  const dayJobs = live ? 1 : values.case?.includes(DAY_CASE_ID) ? samples : 0;
+  const replayId = "dayReplay-" + NodeCrypto.randomUUID();
+  let release: ((taskId: string, text: string) => void) | undefined;
+  if (dayJobs && !live) {
+    const replay = yield* Effect.acquireRelease(
+      Effect.promise(() => dayWorkerServer(NodePath.resolve(baseDir), replayId)),
+      ({ server }) =>
+        Effect.sync(() => {
+          server.closeAllConnections();
+          server.close();
+        }),
+    );
+    release = replay.release;
+    yield* Effect.acquireRelease(
+      withRpc(
+        baseDir,
+        (rpc) =>
+          rpc["server.updateSettings"]({
+            patch: {},
+            providerInstanceMutation: {
+              operation: "upsert",
+              instanceId: ProviderInstanceId.make(replayId),
+              instance: {
+                displayName: "Fixed day worker",
+                driver: ProviderDriverKind.make("codex"),
+                enabled: true,
+                config: {
+                  enabled: true,
+                  homePath: process.env.CODEX_HOME,
+                  customModels: ["fixed"],
+                  launchArgs: dayWorkerArgs(replay.port),
+                },
+              },
+            },
+          }),
+        ["providers:manage", "settings:write"],
+      ),
+      () =>
+        withRpc(
+          baseDir,
+          (rpc) =>
+            rpc["server.updateSettings"]({
+              patch: {},
+              providerInstanceMutation: {
+                operation: "remove",
+                instanceId: ProviderInstanceId.make(replayId),
+              },
+            }),
+          ["providers:manage", "settings:write"],
+        ).pipe(Effect.orDie),
+    );
+  }
   const runDays = (call: Call, modelSelection: BotModelSelection) =>
     Effect.forEach(
       Array.from({ length: dayJobs }, (_, sample) => sample),
       (sample) =>
-        requireBotModel(call, DAY_WORKER_MODEL).pipe(
+        (live
+          ? requireBotModel(call, DAY_WORKER_MODEL)
+          : Effect.succeed({ instanceId: replayId, model: "fixed", options: [] })
+        ).pipe(
           Effect.flatMap((workerSelection) =>
-            runDaySample(call, { work, baseDir, modelSelection, workerSelection }),
+            runDaySample(call, { work, baseDir, modelSelection, workerSelection, release }),
           ),
-          Effect.map((run) => ({ id: DAY_CASE_ID, sample, ...scoreDay(run), ...run })),
+          Effect.map((run) => ({
+            id: live ? liveCase : DAY_CASE_ID,
+            sample,
+            ...scoreDay(run),
+            ...run,
+          })),
           Effect.catch((error) =>
-            Effect.succeed({ id: DAY_CASE_ID, sample, pass: false, error: error.message }),
+            Effect.succeed({
+              id: live ? liveCase : DAY_CASE_ID,
+              sample,
+              pass: false,
+              error: error.message,
+            }),
           ),
           Effect.tap((row) =>
             Effect.sync(() =>
@@ -642,7 +724,9 @@ const main = Effect.gen(function* () {
     "| ---- | ---- | ------ | ------ | ----------------------- |",
     ...lines,
     "",
-    ...daySummary(results.days),
+    ...(live
+      ? ["Live-worker integration (excluded from pass counts). See results.jsonl."]
+      : daySummary(results.days)),
   ].join("\n");
   NodeFS.writeFileSync(NodePath.join(out, "summary.md"), summary);
   yield* Effect.log(summary);
@@ -650,6 +734,7 @@ const main = Effect.gen(function* () {
 
 if (import.meta.main) {
   main.pipe(
+    Effect.scoped,
     Effect.provide(Layer.mergeAll(NodeServices.layer, NodePlatformCrypto.layer, Net.layer)),
     NodeRuntime.runMain,
   );
