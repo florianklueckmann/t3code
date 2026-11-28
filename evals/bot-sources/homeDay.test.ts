@@ -68,13 +68,17 @@ const SUMMARY_WORD: Record<DayCategory, string> = {
   open: "running",
 };
 
-const summaryOf = (tasks = DAY_TASKS) =>
+const tableOf = (tasks = DAY_TASKS) =>
   tasks
     .map(
       (task) =>
         `| ${DAY_PROJECTS[task.project].title} | ${task.request} | ${SUMMARY_WORD[scripted[task.outcome]!]} |`,
     )
     .join("\n");
+
+const cards =
+  "Product image alt text and users query parameter both stopped before changes. Each waits for your answer in its task card.";
+const summaryOf = (tasks = DAY_TASKS) => tableOf(tasks) + "\n" + cards;
 
 const questionRuns = DAY_TASKS.flatMap((task) =>
   task.question === undefined
@@ -253,7 +257,7 @@ it("rejects a second status in the same sentence and an invented task with an as
   }
 });
 
-it("recognizes a question across sentences and detects it again in the summary", () => {
+it("recognizes a question across sentences and allows it again in the requested summary", () => {
   const homeRuns = day().homeRuns.map((run) =>
     run.runId !== "run-alt-text"
       ? run
@@ -264,9 +268,7 @@ it("recognizes a question across sentences and detects it again in the summary",
         },
   );
   expect(failed(day({ homeRuns }))).toEqual([]);
-  expect(failed(day({}, summaryOf() + "\n" + questionRuns[0]!.answer))).toContain(
-    "question of alt-text passed on once",
-  );
+  expect(failed(day({}, summaryOf() + "\n" + questionRuns[0]!.answer))).toEqual([]);
 });
 
 it("separates worker outcomes from routing failures", () => {
@@ -284,4 +286,52 @@ it("separates worker outcomes from routing failures", () => {
     expect(invalidDay(day({ records: changed.slice(1) }))).toBeNull();
   }
   expect(invalidDay(day({ userCancelled: null }))).toContain("faq-german");
+});
+
+it("requires each decision or its task card in the requested recap", () => {
+  const check = "recap names every open question or points to its card";
+  for (const text of [
+    "",
+    "Check the task cards.",
+    "Answer the alt text question in its card.",
+    "Decide whether usr should remain an alias.",
+  ]) {
+    expect(failed(day({}, tableOf() + "\n" + text))).toContain(check);
+  }
+  const both =
+    "Answer in the task cards whether decorative product images should have empty alt text or a short description, and whether usr should remain an alias and for how long.";
+  expect(failed(day({}, tableOf() + "\n" + both))).toEqual([]);
+  const runs = day().homeRuns;
+  expect(
+    failed(
+      day({
+        homeRuns: [
+          ...runs.slice(0, -1),
+          { runId: "later", updateTaskIds: [], answer: both },
+          ...runs.slice(-1),
+        ],
+      }),
+    ),
+  ).toEqual(["question of alt-text passed on once", "question of usr-param passed on once"]);
+});
+
+it("accepts a completed update qualified by the missing evidence in the following sentence", () => {
+  const update = (answer: string) =>
+    failed(
+      day({
+        homeRuns: [
+          ...day().homeRuns,
+          { runId: "docs-update", updateTaskIds: ["bot-task:orders-docs"], answer },
+        ],
+      }),
+    );
+  const text =
+    "Orders API — Document the orders endpoint: completed. The worker reports that /orders is documented in docs/orders.md; no file evidence was cited.";
+  expect(update(text)).toEqual([]);
+  expect(update("Orders API — Document the orders endpoint: completed.")).toContain(
+    "orders-docs is not reported as done",
+  );
+  expect(update(text + " The orders documentation is now done.")).toContain(
+    "orders-docs is not reported as done",
+  );
 });

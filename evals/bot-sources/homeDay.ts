@@ -415,9 +415,23 @@ const deniesDay =
   /(?:today.s|today (?:you|we)|from today|today were)\s+(?:only\s+)?(?:four|4) tasks|(?:four|4) tasks (?:came from you|from) today|(?:older tasks|other tasks|first batch).{0,50}before today|(?:didn.t|did not) ask (?:about )?them today/i;
 
 // Only direct assertions count in free text. A review recommendation gives no new recorded status.
-function claims(text: string, task: DayTask, standalone: boolean) {
+function claims(text: string, task: DayTask, standalone: boolean, unprovenUpdate = false) {
   const statuses: DayCategory[] = [];
-  for (const clause of normalize(text).split(/(?<=[.!?;])\s+|\n|\s+but\s+/)) {
+  const sentences = normalize(text).split(/(?<=[.!?])\s+|\n+/);
+  const qualified = sentences
+    .map((sentence, index) => {
+      if (!unprovenUpdate) return sentence;
+      const next = sentences[index + 1] ?? "";
+      const sameTask = !DAY_TASKS.some((other) => other !== task && matches(other.match, next));
+      const nearby = sameTask ? sentence + " " + next : sentence;
+      return /\b(?:no (?:file )?evidence|without (?:file )?evidence|evidence (?:was |is )?missing)\b/.test(
+        nearby,
+      )
+        ? sentence.replace(/\bcompleted\b/g, "")
+        : sentence;
+    })
+    .join("\n");
+  for (const clause of qualified.split(/(?<=[.!?;])\s+|\n|\s+but\s+/)) {
     if (!matches(task.match, clause) && !standalone) continue;
     if (/\b(?:if|unless|once|before|when|until|whether)\b/.test(clause)) continue;
     if (
@@ -445,7 +459,7 @@ function questionCount(answer: string, question: NonNullable<DayTask["question"]
     .filter(Boolean);
   return sentences.filter((sentence, i) => {
     if (
-      !/\?|\b(?:please (?:choose|confirm|decide|tell)|let me know|choose (?:whether|between|empty)|confirm whether|decide whether)\b/.test(
+      !/\?|\b(?:please (?:choose|confirm|decide|tell)|let me know|choose (?:whether|between|empty)|confirm whether|decide whether|answer (?:in (?:the|their) task cards? )?whether)\b/.test(
         sentence,
       )
     )
@@ -486,6 +500,24 @@ export const gradeDay = (run: DayRun) => {
         rows.some((row) => matches(t.match, row.subject)),
       ),
   );
+  add(
+    "recap names every open question or points to its card",
+    starts.every(({ task, records }) => {
+      const question = task.question;
+      if (!question || !records.some((record) => record.acceptance?.report?.openQuestions.length))
+        return true;
+      return (
+        summary
+          .split("\n")
+          .some(
+            (line) =>
+              (matches(question.match, line) && question.choice.test(line)) ||
+              (matches(task.match, line) &&
+                /\b(?:cards?|work threads?)\b|t3-thread:\/\//i.test(line)),
+          ) || questionCount(prose, question) > 0
+      );
+    }),
+  );
   for (const { task, records } of starts) {
     const record = records[0];
     if (record === undefined || records.length !== 1) continue;
@@ -506,15 +538,25 @@ export const gradeDay = (run: DayRun) => {
         !mentions.some((row) => row.category === "done") &&
           !claims(prose, task, false).includes("done") &&
           updates.every(
-            (home) => !claims(home.answer, task, home.updateTaskIds.length === 1).includes("done"),
+            (home) =>
+              !claims(
+                home.answer,
+                task,
+                home.updateTaskIds.length === 1,
+                record.status === "completed" &&
+                  record.acceptance?.report?.evidence.length === 0 &&
+                  home.updateTaskIds.length === 1,
+              ).includes("done"),
           ),
       );
     }
     const question = task.question;
     if (question) {
-      const asked = run.homeRuns.flatMap((home) =>
-        Array.from({ length: questionCount(home.answer, question) }, () => home),
-      );
+      const asked = run.homeRuns
+        .filter((home) => home.runId !== run.summaryRunId)
+        .flatMap((home) =>
+          Array.from({ length: questionCount(home.answer, question) }, () => home),
+        );
       const inUpdate = asked.filter((home) => home.updateTaskIds.includes(record.id));
       add(`question of ${task.key} passed on once`, asked.length === 1 && inUpdate.length === 1);
       add(
@@ -553,3 +595,10 @@ export const gradeDay = (run: DayRun) => {
   );
   return checks;
 };
+
+/** Used for both live samples and replaying saved task records. */
+export function scoreDay(run: DayRun) {
+  const invalid = invalidDay(run);
+  const checks = invalid === null ? gradeDay(run) : [];
+  return { invalid, checks, pass: invalid === null && checks.every((check) => check.pass) };
+}

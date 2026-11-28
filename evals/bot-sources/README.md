@@ -45,7 +45,7 @@ The Home runs on `--instance`/`--model`. The work threads are real turns on Code
 
 First the runner checks the task records. An incorrectly routed, merged, extra or missing task fails the Home. With correct routing, a worker that missed its question, omitted evidence, cited a missing file, or otherwise departed from the script makes the sample invalid. The runner records the reason and excludes it from the score.
 
-The final request asks for a table with one row per task (Project, Task, Recorded status), followed by evidence, doubts and what needs the user. The grader compares each row to its record, checks that the recap includes the first batch in the day, and looks for explicit conflicting status claims in prose and task updates. Each scripted question should reach the user once in its own update, naming its task and project. The Home must do no work itself.
+The final request asks for a table with one row per task (Project, Task, Recorded status), followed by evidence, doubts and what needs the user. The grader compares each row to its record, checks that the recap includes the first batch in the day, and looks for explicit conflicting status claims in prose and task updates. Each scripted question should reach the user in its own update, naming its task and project, with no unsolicited repeat. The requested recap must name each open decision or point to its task card. The Home must do no work itself.
 
 Each model's `summary.md` shows the valid-sample pass count, Home turns and token usage, and a per-check matrix. A dash means the check was not scored. The total for each check counts the samples in which it ran. `results.jsonl` retains invalid samples and their transcripts.
 

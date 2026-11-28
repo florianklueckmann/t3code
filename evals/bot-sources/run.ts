@@ -51,7 +51,7 @@ import {
   type ProjectKey,
   TWIN_SOURCES,
 } from "./cases.ts";
-import { DAY_CASE_ID, DAY_WORKER_MODEL, gradeDay, invalidDay } from "./homeDay.ts";
+import { DAY_CASE_ID, DAY_WORKER_MODEL, scoreDay } from "./homeDay.ts";
 import { type DayUsage, runDaySample } from "./homeDayRun.ts";
 
 export interface SampleRun {
@@ -603,18 +603,7 @@ const main = Effect.gen(function* () {
           Effect.flatMap((workerSelection) =>
             runDaySample(call, { work, baseDir, modelSelection, workerSelection }),
           ),
-          Effect.map((run) => {
-            const invalid = invalidDay(run);
-            const checks = invalid === null ? gradeDay(run) : [];
-            return {
-              id: DAY_CASE_ID,
-              sample,
-              invalid,
-              pass: invalid === null && checks.every((c) => c.pass),
-              checks,
-              ...run,
-            };
-          }),
+          Effect.map((run) => ({ id: DAY_CASE_ID, sample, ...scoreDay(run), ...run })),
           Effect.catch((error) =>
             Effect.succeed({ id: DAY_CASE_ID, sample, pass: false, error: error.message }),
           ),
