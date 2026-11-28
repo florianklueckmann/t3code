@@ -117,6 +117,7 @@ import {
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import { placeholderThreadTitle } from "../orchestration-v2/placeholderThreadTitle.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
+import * as BotService from "../bots/BotService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import { isSnoozed } from "../orchestration-v2/ThreadSettlementService.ts";
 import { userFacingDispatchErrorMessage } from "../orchestration-v2/UserFacingErrors.ts";
@@ -145,7 +146,12 @@ import {
   runtimeModeRank,
   taskPrompt,
 } from "./delegatedTaskModes.ts";
-import { assertTargetWithinLimits, isLiveCallerShell, threadNotFound } from "./threadAccess.ts";
+import {
+  assertManagesScheduledTask,
+  assertTargetWithinLimits,
+  isLiveCallerShell,
+  threadNotFound,
+} from "./threadAccess.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
@@ -1303,6 +1309,7 @@ const make = Effect.gen(function* () {
   });
   const secretRequests = yield* SecretRequests.SecretRequests;
   const botRoutines = yield* BotRoutineTarget;
+  const scheduledTaskOwners = { bots: yield* BotService.BotService, scheduledTasks };
 
   const requireCapability = (scope: McpInvocationScope) =>
     scope.capabilities.has("orchestration")
@@ -2269,6 +2276,9 @@ const make = Effect.gen(function* () {
   return OrchestratorMcpService.of({
     scheduleTask: Effect.fn("OrchestratorMcpService.scheduleTask")(function* (scope, input) {
       const { parent, limits } = yield* loadCaller(scope, ["runs"]);
+      yield* assertManagesScheduledTask(scheduledTaskOwners, scope.thread?.threadId, {
+        botId: input.botId,
+      });
       const projectId = yield* resolveProjectTarget(parent, input.projectId);
       if (isBotHomeProjectId(projectId)) {
         return yield* failure("invalid_request", ScheduledTaskService.BOT_HOME_SCHEDULE_ERROR);
@@ -2424,6 +2434,10 @@ const make = Effect.gen(function* () {
       function* (scope, input) {
         const { parent, limits } = yield* loadCaller(scope, ["runs"]);
         const existing = yield* loadScheduledTask(input.scheduledTaskId, limits);
+        yield* assertManagesScheduledTask(scheduledTaskOwners, scope.thread?.threadId, {
+          botId: existing.bot?.botId,
+          id: existing.id,
+        });
         yield* assertLiveCallerForOtherProject(scope, parent, existing.projectId);
         if (
           existing.bot !== undefined &&
@@ -2532,6 +2546,10 @@ const make = Effect.gen(function* () {
       function* (scope, input) {
         const { parent, limits } = yield* loadCaller(scope, ["runs"]);
         const existing = yield* loadScheduledTask(input.scheduledTaskId, limits);
+        yield* assertManagesScheduledTask(scheduledTaskOwners, scope.thread?.threadId, {
+          botId: existing.bot?.botId,
+          id: existing.id,
+        });
         yield* assertLiveCallerForOtherProject(scope, parent, existing.projectId);
         yield* scheduledTasks
           .delete({ id: existing.id })
@@ -3762,4 +3780,5 @@ export const layer: Layer.Layer<
   | SecretRequests.SecretRequests
   | ServerSettings.ServerSettingsService
   | RemoteDelegation.RemoteDelegation
+  | BotService.BotService
 > = Layer.effect(OrchestratorMcpService, make);

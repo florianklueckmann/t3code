@@ -1,6 +1,7 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { expect, it } from "@effect/vitest";
 import {
+  BotId,
   EnvironmentId,
   ProjectId,
   ProviderInstanceId,
@@ -15,6 +16,7 @@ import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 
+import * as BotService from "../../../bots/BotService.ts";
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as ThreadSearch from "../../../orchestration-v2/ThreadSearch.ts";
 import * as ScheduledTasks from "../../../scheduledTasks/ScheduledTaskService.ts";
@@ -32,10 +34,24 @@ const caller = ThreadId.make("thread:caller");
 const mailHome = ThreadId.make("thread:mail-home");
 const workHome = ThreadId.make("thread:work-home");
 const plainThread = ThreadId.make("thread:plain");
+const mailWork = ThreadId.make("thread:mail-work");
 const mailRoutine = ScheduledTaskId.make("routine:mail");
 const workRoutine = ScheduledTaskId.make("routine:work");
 const plainSchedule = ScheduledTaskId.make("schedule:plain");
-const call = (name: string, params: unknown) =>
+const mailMadeSchedule = ScheduledTaskId.make("schedule:mail-made");
+const mailBot = BotId.make("mail");
+const ownerOf = new Map([
+  [mailHome, mailBot],
+  [mailWork, mailBot],
+  [workHome, BotId.make("work")],
+]);
+const scheduledTasks = [
+  { id: mailRoutine, bot: { botId: mailBot } },
+  { id: workRoutine, bot: { botId: BotId.make("work") } },
+  { id: plainSchedule },
+  { id: mailMadeSchedule },
+];
+const call = (name: string, params: unknown, callerThread = caller) =>
   Effect.gen(function* () {
     const reached = yield* Ref.make<ReadonlyArray<string>>([]);
     // Recorded, then refused, so no result needs encoding; only reaching the service counts.
@@ -58,7 +74,7 @@ const call = (name: string, params: unknown) =>
                 environmentId: EnvironmentId.make("environment:here"),
                 requestNamespace: "provider:caller",
                 thread: {
-                  threadId: caller,
+                  threadId: callerThread,
                   providerSessionId: "provider:caller",
                   providerInstanceId: ProviderInstanceId.make("codex"),
                 },
@@ -82,11 +98,12 @@ const call = (name: string, params: unknown) =>
                   ),
               }),
               Layer.mock(ScheduledTasks.ScheduledTaskService)({
-                list: () =>
-                  Effect.succeed({
-                    tasks: [mailRoutine, workRoutine, plainSchedule].map((id) => ({ id })),
-                  } as never),
+                list: () => Effect.succeed({ tasks: scheduledTasks } as never),
+                creatorOf: (id) => Effect.succeed(id === mailMadeSchedule ? mailHome : null),
                 runNow: () => reach("runNow", new ScheduledTaskError({ message: "runNow" })),
+              }),
+              Layer.mock(BotService.BotService)({
+                writeOwnerOfThread: (threadId) => Effect.succeed(ownerOf.get(threadId)),
               }),
               Layer.mock(ThreadSearch.ThreadSearch)({}),
             ),
@@ -136,6 +153,23 @@ it.effect.each([
     { action: "merge_back", threadId: mailHome, targetThreadId: plainThread },
     "reached",
   ],
-] as const)("%s %o: %s", ([name, params, expected]) =>
-  call(name, params).pipe(Effect.map((result) => expect(outcome(result)).toBe(expected))),
+  ["run_scheduled_task_now", { taskId: mailRoutine }, "reached", mailWork],
+  ["run_scheduled_task_now", { taskId: mailMadeSchedule }, "reached", mailWork],
+  ["run_scheduled_task_now", { taskId: workRoutine }, "capability_denied", mailWork],
+  ["run_scheduled_task_now", { taskId: plainSchedule }, "capability_denied", mailWork],
+  [
+    "run_scheduled_task_now",
+    { taskId: mailRoutine, environmentId: EnvironmentId.make("environment:peer") },
+    "orchestration_error",
+  ],
+  [
+    "run_scheduled_task_now",
+    { taskId: mailRoutine, environmentId: EnvironmentId.make("environment:peer") },
+    "capability_denied",
+    mailWork,
+  ],
+] as const)("%s %o: %s", ([name, params, expected, callerThread]) =>
+  call(name, params, callerThread).pipe(
+    Effect.map((result) => expect(outcome(result)).toBe(expected)),
+  ),
 );

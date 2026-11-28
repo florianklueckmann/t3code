@@ -725,7 +725,9 @@ changing a project's guidance and sources, need one of:
 This is also what lets a Bot record a preferred source from its own conversation.
 
 A Bot's Home, work threads and threads they create can change only their own
-Bot through `t3_bot`. These writes stay in the Bot's environment.
+Bot through `t3_bot`. They can set up, change, run or delete only their own
+Bot's routines and the schedules they set up themselves. These writes stay in
+the Bot's environment.
 A Bot can ask another Bot by messaging its Home. A message from another
 thread's agent, Bot or linked environment always waits until the Home's
 running turn ends, so it never lands in a turn you started. The receiving Bot

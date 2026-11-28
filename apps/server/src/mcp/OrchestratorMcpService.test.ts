@@ -12,6 +12,7 @@ import {
   NodeId,
   ORCHESTRATOR_MCP_RUNNING_TASK_NEXT,
   type OrchestratorMcpCapabilitiesResult,
+  type OrchestratorMcpFailure,
   type OrchestratorMcpListScheduledTasksInput,
   type Project,
   OrchestratorMcpTarget,
@@ -46,6 +47,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
+import * as BotService from "../bots/BotService.ts";
 import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as CommandReceiptStore from "../orchestration-v2/CommandReceiptStore.ts";
 import * as EffectWorker from "../orchestration-v2/EffectWorker.ts";
@@ -75,7 +77,11 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 import type { McpInvocationScope } from "./McpInvocationContext.ts";
-import { idleThreadProjection, liveThreadShell } from "./McpToolAccess.testkit.ts";
+import {
+  idleThreadProjection,
+  layerNoBotOwners,
+  liveThreadShell,
+} from "./McpToolAccess.testkit.ts";
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
 import { resolveRuntimeMode } from "./delegatedTaskModes.ts";
 import type { ProjectionRecordFilter } from "../orchestration-v2/ProjectionStore.ts";
@@ -86,6 +92,7 @@ const decodeTarget = Schema.decodeUnknownEffect(OrchestratorMcpTarget);
 const layerOrchestratorService = OrchestratorMcpService.layer.pipe(
   Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
   Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
+  Layer.provide(layerNoBotOwners),
 );
 
 describe("OrchestratorMcpService", () => {
@@ -3431,6 +3438,7 @@ describe("OrchestratorMcpService provider resolution", () => {
     ) =>
       OrchestratorMcpService.layer.pipe(
         Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
+        Layer.provide(layerNoBotOwners),
         Layer.provide(
           Layer.mock(GitVcsDriver.GitVcsDriver)({
             resolvePrimaryRemoteName: () => Effect.succeed("origin"),
@@ -3667,6 +3675,7 @@ describe("OrchestratorMcpService provider resolution", () => {
       OrchestratorMcpService.layer.pipe(
         Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
         Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)(git)),
+        Layer.provide(layerNoBotOwners),
         Layer.provide(
           Layer.mergeAll(
             NodeServices.layer,
@@ -3861,6 +3870,7 @@ describe("OrchestratorMcpService provider resolution", () => {
             OrchestratorMcpService.layer.pipe(
               Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
               Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)(masterRepository)),
+              Layer.provide(layerNoBotOwners),
               Layer.provide(
                 Layer.mergeAll(
                   NodeServices.layer,
@@ -4000,6 +4010,155 @@ describe("OrchestratorMcpService provider resolution", () => {
       }),
     );
 
+    const ownBot = BotId.make("campaign-companion");
+    const botWork = ThreadId.make("thread:companion-work");
+    const botHome = ThreadId.make("thread:companion-home");
+    const plainCaller = ThreadId.make("thread:plain-caller");
+    const ownership = {
+      own: { ...existing, id: ScheduledTaskId.make("routine:own"), bot: { botId: ownBot } },
+      other: {
+        ...existing,
+        id: ScheduledTaskId.make("routine:other"),
+        bot: { botId: BotId.make("mail-sorter") },
+      },
+      userMade: { ...existing, id: ScheduledTaskId.make("schedule:user-made") },
+      botMade: { ...existing, id: ScheduledTaskId.make("schedule:bot-made") },
+    } satisfies Record<string, ScheduledTask>;
+    const ownershipCall = (
+      callerThreadId: ThreadId,
+      call: (
+        mcp: OrchestratorMcpService.OrchestratorMcpService["Service"],
+        scope: McpInvocationScope,
+      ) => Effect.Effect<unknown, OrchestratorMcpFailure>,
+    ) =>
+      Effect.gen(function* () {
+        const writes = yield* Ref.make(0);
+        const write = Ref.update(writes, (count) => count + 1);
+        const caller = { ...liveThreadShell(callerThreadId), projectId };
+        const mcp = yield* OrchestratorMcpService.OrchestratorMcpService.pipe(
+          Effect.provide(
+            OrchestratorMcpService.layer.pipe(
+              Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
+              Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)(masterRepository)),
+              Layer.provide(
+                Layer.mergeAll(
+                  NodeServices.layer,
+                  NodeCrypto.layer,
+                  Layer.mock(ThreadManagementService.ThreadManagementService)({
+                    getThreadShell: () => Effect.succeed(caller),
+                    getThreadRecords: () => Effect.succeed(idleThreadProjection(caller) as never),
+                  }),
+                  ServerSettings.layerTest(),
+                  Layer.mock(ProviderRegistry.ProviderRegistry)({
+                    getProviders: Effect.succeed([]),
+                  }),
+                  Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
+                    list: () => Effect.succeed([]),
+                  }),
+                  Layer.mock(ProjectService.ProjectService)({
+                    getById: () =>
+                      Effect.succeedSome({
+                        id: projectId,
+                        workspaceRoot,
+                        defaultModelSelection: existing.modelSelection,
+                      } as never),
+                  }),
+                  Layer.mock(SecretRequests.SecretRequests)({}),
+                  Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+                  Layer.succeed(BotRoutineTarget, {
+                    requireRunnable: () =>
+                      Effect.succeed({ modelSelection: existing.modelSelection }),
+                    admit: () => Effect.die("unused"),
+                  }),
+                  Layer.mock(BotService.BotService)({
+                    writeOwnerOfThread: (threadId) =>
+                      Effect.succeed(
+                        threadId === botWork || threadId === botHome ? ownBot : undefined,
+                      ),
+                  }),
+                  Layer.mock(ScheduledTaskService.ScheduledTaskService)({
+                    list: () => Effect.succeed({ tasks: Object.values(ownership) }),
+                    creatorOf: (id) => Effect.succeed(id === ownership.botMade.id ? botHome : null),
+                    upsert: (input) =>
+                      write.pipe(
+                        Effect.as({
+                          task: { ...existing, id: input.id ?? existing.id, bot: input.bot },
+                        }),
+                      ),
+                    delete: (input) => write.pipe(Effect.as({ id: input.id })),
+                  }),
+                ),
+              ),
+            ),
+          ),
+        );
+        const scope: McpInvocationScope = {
+          environmentId: EnvironmentId.make("environment:scheduled-base"),
+          requestNamespace: `provider:${callerThreadId}`,
+          thread: {
+            threadId: callerThreadId,
+            providerSessionId: `provider:${callerThreadId}`,
+            providerInstanceId: ProviderInstanceId.make("codex"),
+          },
+          client: undefined,
+          capabilities: new Set(["orchestration"]),
+          issuedAt: 1,
+        };
+        const result = yield* call(mcp, scope).pipe(
+          Effect.match({ onFailure: (error) => error.code, onSuccess: () => "done" }),
+        );
+        return { result, writes: yield* Ref.get(writes) };
+      });
+    const createRoutine = (botId: BotId | undefined) => ({
+      projectId,
+      prompt: "Sort the inbox.",
+      schedule: { type: "interval", everyMs: 3_600_000 } as const,
+      ...(botId === undefined ? {} : { botId }),
+    });
+    const update = (task: ScheduledTask) => ({ scheduledTaskId: task.id, title: "Renamed" });
+
+    const outcome = (expected: "done" | "denied") =>
+      expected === "done"
+        ? { result: "done", writes: 1 }
+        : { result: "capability_denied", writes: 0 };
+
+    it.effect.each([
+      ["creates its own Bot's routine", "done", botWork, createRoutine(ownBot)],
+      ["creates a plain schedule", "done", botWork, createRoutine(undefined)],
+      [
+        "creates another Bot's routine",
+        "denied",
+        botWork,
+        createRoutine(BotId.make("mail-sorter")),
+      ],
+      ["outside every Bot, creates any Bot's routine", "done", plainCaller, createRoutine(ownBot)],
+    ] as const)("a caller that %s: %s", ([, expected, callerThreadId, input]) =>
+      ownershipCall(callerThreadId, (mcp, scope) => mcp.scheduleTask(scope, input)).pipe(
+        Effect.map((result) => assert.deepEqual(result, outcome(expected))),
+      ),
+    );
+
+    it.effect.each([
+      ["its own Bot's routine", "done", botWork, ownership.own],
+      ["a schedule its Bot made", "done", botWork, ownership.botMade],
+      ["another Bot's routine", "denied", botWork, ownership.other],
+      ["a schedule the user made", "denied", botWork, ownership.userMade],
+      ["another Bot's routine, outside every Bot", "done", plainCaller, ownership.other],
+      ["a schedule the user made, outside every Bot", "done", plainCaller, ownership.userMade],
+    ] as const)("a caller updates and deletes %s: %s", ([, expected, callerThreadId, task]) =>
+      Effect.gen(function* () {
+        const updated = yield* ownershipCall(callerThreadId, (mcp, scope) =>
+          mcp.updateScheduledTask(scope, update(task)),
+        );
+        const deleted = yield* ownershipCall(callerThreadId, (mcp, scope) =>
+          mcp.deleteScheduledTask(scope, { scheduledTaskId: task.id }),
+        );
+        for (const result of [updated, deleted]) {
+          assert.deepEqual(result, outcome(expected));
+        }
+      }),
+    );
+
     it.effect("returns a live identical Bot routine instead of creating a second one", () =>
       Effect.gen(function* () {
         const runAt = "2026-11-20T09:00:00.000Z";
@@ -4023,6 +4182,7 @@ describe("OrchestratorMcpService provider resolution", () => {
             OrchestratorMcpService.layer.pipe(
               Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
               Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)(masterRepository)),
+              Layer.provide(layerNoBotOwners),
               Layer.provide(
                 Layer.mergeAll(
                   NodeServices.layer,

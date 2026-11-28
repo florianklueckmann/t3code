@@ -6,6 +6,7 @@ import {
   type RunId,
   OrchestratorMcpFailure,
   type OrchestrationV2Command,
+  type ScheduledTaskId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import { modelSelectionCommandType } from "@t3tools/shared/model";
@@ -14,12 +15,16 @@ import { topOfPinnedRunOrderKey } from "@t3tools/shared/pinOrderKey";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import {
+  assertManagesScheduledTask,
   dispatchFailure,
+  localBotWritesOnly,
   newCommandId,
   readCaller,
   readThread,
+  SCHEDULED_TASKS_STAY_LOCAL,
   unavailable,
 } from "../../threadAccess.ts";
+import * as BotService from "../../../bots/BotService.ts";
 import type * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as ThreadSearch from "../../../orchestration-v2/ThreadSearch.ts";
 import * as ScheduledTasks from "../../../scheduledTasks/ScheduledTaskService.ts";
@@ -106,8 +111,8 @@ const writesThread = <P extends { readonly threadId?: ThreadId | undefined }, A,
   handle: (params: P) => Effect.Effect<A, E, R>,
 ) => McpToolAccess.writesThreads((params: P) => [params.threadId], handle);
 
-export const layer = McpToolAccess.toLayer(ThreadToolkit, {
-  run_scheduled_task_now: McpToolAccess.writesEnvironment((input) =>
+const runScheduledTaskNow = (bots: BotService.BotService["Service"]) =>
+  McpToolAccess.writesEnvironment((input: { readonly taskId: ScheduledTaskId }) =>
     Effect.gen(function* () {
       const scheduler = yield* ScheduledTasks.ScheduledTaskService;
       const { tasks } = yield* scheduler.list().pipe(Effect.mapError(unavailable));
@@ -118,6 +123,11 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
           message: "The scheduled task was not found.",
         });
       const scope = yield* McpInvocationContext.McpInvocationContext;
+      yield* assertManagesScheduledTask(
+        { bots, scheduledTasks: scheduler },
+        scope.thread?.threadId,
+        { botId: scheduled.bot?.botId, id: scheduled.id },
+      );
       const { task, threadId } = yield* scheduler
         .runNow({ id: input.taskId }, { requestedIn: scope.thread?.threadId ?? null })
         .pipe(
@@ -140,7 +150,9 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
         nextRunAt: task.nextRunAt,
       };
     }),
-  ),
+  );
+
+const handlers = {
   t3_thread_search: McpToolAccess.reads((input) =>
     Effect.gen(function* () {
       const { caller } = yield* readCaller();
@@ -401,4 +413,18 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
       return { sequence: result.sequence };
     }),
   ),
-});
+} satisfies Omit<McpToolAccess.Handlers<typeof ThreadToolkit.tools>, "run_scheduled_task_now">;
+
+export const layer = McpToolAccess.toLayer(
+  ThreadToolkit,
+  Effect.gen(function* () {
+    const bots = yield* BotService.BotService;
+    return {
+      ...handlers,
+      run_scheduled_task_now: McpToolAccess.beforeForwarding(
+        runScheduledTaskNow(bots),
+        localBotWritesOnly(bots, SCHEDULED_TASKS_STAY_LOCAL),
+      ),
+    } satisfies McpToolAccess.Handlers<typeof ThreadToolkit.tools>;
+  }),
+);
