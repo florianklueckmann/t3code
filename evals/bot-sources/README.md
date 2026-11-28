@@ -51,6 +51,10 @@ Each model's `summary.md` shows the valid-sample pass count, Home turns and toke
 
 To compare with a Home that gets its conversation history but not the task list, empty the turn sections of `buildBotHomeInstructions` in `apps/server/src/bots/BotTurnContext.ts` on a scratch server and run the case against it.
 
+### Known limits
+
+Workers are real model turns. An invalid sample can hide a Home error in the brief, such as deciding the answer to a question the worker should ask. Read the brief printed alongside the invalid reason. Task matching uses words from the request, so a row about lowering a timeout to five seconds can stand in for a request to raise it. The status parser accepts a label even when its qualifier contradicts it, such as “completed (not really, it failed)”. The prose and question checks can miss contradictions and repeats or penalize accurate statements. Use pass counts to guide development. They do not measure overall Home quality.
+
 ## Output
 
 `results.jsonl` has one row per sample: checks, answers, the thread's tool activity, the stored sources, and the ids. `summary.md` has the pass counts per case and how many samples ran a tool call that touched your home directory. Those samples are not fully synthetic; check what they read before trusting their score. The rows hold the Bot's full answers; read them before quoting any.

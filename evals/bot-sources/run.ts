@@ -508,7 +508,7 @@ const daySummary = (
     if ("error" in day) return `| ${sample + 1} | error | | | | ${day.error.slice(0, 80)} |`;
     const { usage } = day;
     const failed = day.checks.filter((check) => !check.pass).map((check) => check.check);
-    return `| ${sample + 1} | ${day.invalid ? "invalid" : day.pass ? "pass" : "fail"} | ${usage.homeTurns} | ${usage.inputTokens} (${usage.cachedInputTokens} cached) | ${usage.outputTokens} | ${day.invalid ?? failed.join("; ")} |`;
+    return `| ${sample + 1} | ${day.invalid ? "invalid" : day.pass ? "pass" : "fail"} | ${usage.homeTurns} | ${usage.inputTokens} (${usage.cachedInputTokens} cached) | ${usage.outputTokens} | ${day.invalid?.replace(/\s+/g, " ").replaceAll("|", "\\|") ?? failed.join("; ")} |`;
   });
   const scored = days.flatMap((day) => ("error" in day || day.invalid !== null ? [] : [day]));
   const names = new Set(scored.flatMap((day) => day.checks.map((check) => check.check)));

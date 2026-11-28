@@ -367,7 +367,7 @@ export function invalidDay(run: DayRun): string | null {
         break;
     }
     if (!held)
-      return `${task.key}: expected ${task.outcome}, recorded ${record.status} (${record.detail || record.acceptance?.missing.join(" ") || (report ? `worker ${report.status}, ${report.openQuestions.length} questions, evidence: ${report.evidence.map((item) => item.check).join(", ") || "none"}` : "no report")})`;
+      return `${task.key}: expected ${task.outcome}, recorded ${record.status} (${record.detail || record.acceptance?.missing.join(" ") || (report ? `worker ${report.status}, ${report.openQuestions.length} questions, evidence: ${report.evidence.map((item) => item.check).join(", ") || "none"}` : "no report")}). Home brief: ${record.brief ?? "(unavailable)"}`;
   }
   return null;
 }

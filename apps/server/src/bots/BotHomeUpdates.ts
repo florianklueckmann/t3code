@@ -29,11 +29,11 @@ import * as ThreadManagementService from "../orchestration-v2/ThreadManagementSe
 import * as ProjectService from "../project/ProjectService.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import { forkParked } from "../serverActivation.ts";
-import { evidenceSummary } from "./BotTaskAcceptance.ts";
+import * as HomeText from "./BotHomeTaskText.ts";
 import * as BotTaskService from "./BotTaskService.ts";
 import * as BotDatabase from "./persistence/BotDatabase.ts";
 
-const RESULT_CHARS = 2_000;
+const UPDATE_CHARS = 3_200;
 const DETAIL_CHARS = 1_000;
 
 interface UpdateRow {
@@ -62,11 +62,6 @@ const isBotError = Schema.is(BotError);
 const storageError = (cause: unknown) =>
   isBotError(cause) ? cause : new BotError({ message: "Bot Home update storage failed.", cause });
 
-const clip = (text: string, chars: number) => {
-  const trimmed = text.trim();
-  return trimmed.length <= chars ? trimmed : `${trimmed.slice(0, chars - 1)}…`;
-};
-
 const ANSWERED: ReadonlySet<string> = new Set(["completed", "failed", "cancelled", "interrupted"]);
 
 const ANSWERED_CARD = Symbol("answered");
@@ -81,7 +76,7 @@ const questionOf = (items: ReadonlyArray<OrchestrationV2TurnItem>, requestId: st
     )
       return ANSWERED_CARD;
     if (item.type === "user_input_request" && item.requestId === requestId)
-      return item.questions.map((question) => question.question).join(" ");
+      return HomeText.nativeQuestions(item.questions);
     if (item.type === "approval_request" && item.requestId === requestId)
       return `Approval: ${item.prompt ?? item.reason ?? item.requestKind}`;
   }
@@ -89,7 +84,7 @@ const questionOf = (items: ReadonlyArray<OrchestrationV2TurnItem>, requestId: st
 };
 
 /** What the Home reads. Model-facing. */
-function updateText(input: {
+export function updateText(input: {
   readonly task: Pick<
     BotTaskSummary,
     "id" | "title" | "projectId" | "status" | "workThreadId" | "branch" | "acceptance" | "detail"
@@ -106,26 +101,35 @@ function updateText(input: {
     task.status === "failed" || task.status === "interrupted"
       ? (task.detail ?? input.runError)
       : null;
-  return [
+  const reason = acceptance && HomeText.reviewReason(acceptance, DETAIL_CHARS);
+  const footer =
+    "Report only this task and its project. Pass on the displayed question, or point to its card for the full question and choices. The user answers there. Full details are in the task card.";
+  const lines = [
     "T3 Code: task update from the server.",
     `Recorded status: ${task.status}${acceptance?.state === "needs_you" ? " · needs you" : ""}`,
-    `Task: “${task.title}” (${task.id})`,
-    `Project: ${input.projectTitle} (${task.projectId})`,
-    task.workThreadId === null ? null : `Work thread: ${task.workThreadId}`,
-    task.branch === undefined ? null : `Branch: ${task.branch}`,
-    acceptance === undefined
-      ? null
-      : `Evidence: ${clip(evidenceSummary(acceptance), DETAIL_CHARS)}`,
-    acceptance?.missing.length ? `Needs review: ${acceptance.missing.join(" ")}` : null,
-    questions.length === 0 ? null : `Open questions: ${questions.join(" ")}`,
-    input.result === null ? null : `Worker report: ${clip(input.result, RESULT_CHARS)}`,
-    failure == null ? null : `What went wrong: ${clip(failure, DETAIL_CHARS)}`,
-    input.question === null ? null : `Question: ${clip(input.question, DETAIL_CHARS)}`,
-    "",
-    "Report only this task, naming its project and task. If it asks a question, pass that question on now. You cannot answer a task's question for the user: they answer it in the task's work thread, from its card.",
-  ]
-    .filter((line) => line !== null)
-    .join("\n");
+    `Task: ${HomeText.dataValue(task.title, 160)} (${HomeText.dataValue(task.id, 160)})`,
+    `Project: ${HomeText.dataValue(input.projectTitle, 160)} (${HomeText.dataValue(task.projectId, 160)})`,
+  ];
+  const details = [
+    questions.length || input.question || task.status === "waiting"
+      ? `Question: ${HomeText.questionValue(input.question, DETAIL_CHARS, questions)}`
+      : null,
+    failure && `Failure detail: ${HomeText.dataValue(failure, DETAIL_CHARS)}`,
+    acceptance && `Evidence: ${HomeText.evidenceSummary(acceptance, 8)}`,
+    reason && `Needs review: ${reason}`,
+    input.result && `Worker report: ${HomeText.dataValue(input.result, 2000)}`,
+    task.workThreadId && `Work thread: ${HomeText.dataValue(task.workThreadId, 160)}`,
+    task.branch && `Branch: ${HomeText.dataValue(task.branch, 160)}`,
+  ];
+  let remaining = UPDATE_CHARS - lines.join("\n").length - footer.length - 1;
+  for (const line of details) {
+    if (!line) continue;
+    if (line.length + 1 <= remaining) {
+      lines.push(line);
+      remaining -= line.length + 1;
+    }
+  }
+  return [...lines, footer].join("\n");
 }
 
 const make = Effect.gen(function* () {

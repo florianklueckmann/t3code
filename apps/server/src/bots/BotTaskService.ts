@@ -1842,6 +1842,7 @@ const make = Effect.gen(function* () {
             const ended = yield* sql`
               UPDATE bot_tasks
               SET status = ${status},
+                  detail = COALESCE(${status === "failed" ? (shell?.lastError?.slice(0, 1000) ?? null) : null}, detail),
                   result_run_id = ${terminal ? (shell?.latestRunId ?? null) : row.result_run_id},
                   completed_at = ${terminal ? now : null},
                   quiet = ${watch?._tag === "quiet" && row.by_hand === 0 ? 1 : 0},
