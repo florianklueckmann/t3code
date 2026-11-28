@@ -33,6 +33,20 @@ The `route-thread-extraction` and `route-durable-script` cases use a Terra or So
 
 The `bot-home-*` cases run in the Bot-level Home, which the sample opens with `t3_bot` `open_home`. `bot-home-distributes` requires exactly one started task per named project, each brief with a "Done when" condition, no task attempt elsewhere and no change in the Home: no file change in its activity and no added, deleted or changed file in the project checkouts. Their project folders are Git repositories, so the started tasks write in their own worktrees. `bot-home-asks-first` requires a question and no task attempt. Tasks start while the Home's turn runs; the eval cancels them after it, which limits their ungraded work. These cases grade only the Home's choice; where task cards and results land is outside them.
 
+## A day of ten tasks
+
+`bot-home-ten-tasks` (T3B-123, `homeDay.ts`) runs the Bot's own Home through a scripted day: ten tasks across four projects in two batches, with a fresh conversation (`freshContext`) once three tasks of the first batch have ended. Two tasks come back with an open question, one fails to start, the user cancels one while it runs, and one result names no evidence. The case runs only when named, because one sample costs about as much as the rest of the set:
+
+```sh
+pnpm bot-sources --base-dir ../.t3 --out runs/day --case bot-home-ten-tasks --model gpt-6-luna --effort medium
+```
+
+The Home runs on `--instance`/`--model`. The work threads are real turns on Codex `gpt-6-luna`, the Bot's model, whatever the Home runs on: the sample switches the Home's thread to the model under test as a user can in its composer, and the server needs a `codex` instance. Each fixture repository's `AGENTS.md` tells the workers to wait 30 seconds, as real work outlasts the turn that started it, and which `T3_RESULT` line to end with, so the Home sees the task records and "Task update" turns a real day produces. The failing task's project has its commits on `trunk` while HEAD names an unborn `main`, so its task fails with "The project has no commit to start a task branch from." The scripted workers do not cover a worker that wanders off, a native question card, or a run that fails midway.
+
+It grades what the Home tells the user against the task records: one task per request and none started twice or beyond the ten, the final summary gives every task its record's status, the failed, cancelled and unproven tasks are never reported as done (also not in their update turn), each question reaches the user once before the summary, with its task and project, and the Home edits nothing and delegates nothing. `scenario held` fails a sample whose tasks did not end as scripted, for example when a worker ignored its script. `summary.md` records each sample's Home turns and token usage, read from the server's `statev2.sqlite` without writing to it.
+
+To compare with a Home that gets its conversation history but not the task list, empty the turn sections of `buildBotHomeInstructions` in `apps/server/src/bots/BotTurnContext.ts` on a scratch server and run the case against it.
+
 ## Output
 
 `results.jsonl` has one row per sample: checks, answers, the thread's tool activity, the stored sources, and the ids. `summary.md` has the pass counts per case and how many samples ran a tool call that touched your home directory. Those samples are not fully synthetic; check what they read before trusting their score. The rows hold the Bot's full answers; read them before quoting any.
