@@ -2,6 +2,7 @@
 /** The clients' WebSocket RPCs on a running dev server, for evals that set up what Settings does. */
 import * as NodeWS from "@effect/platform-node/NodeWS";
 import {
+  type AuthEnvironmentScopes,
   AuthOrchestrationReadScope,
   AuthSettingsWriteScope,
   ORCHESTRATION_PROTOCOL_HEADER,
@@ -29,6 +30,7 @@ export type WsClient = RpcClient.FromGroup<typeof WsRpcGroup, RpcClientError.Rpc
 export const withRpc = Effect.fn("evals.withRpc")(function* <A, E, R>(
   baseDir: string,
   body: (rpc: WsClient) => Effect.Effect<A, E, R>,
+  scopes: AuthEnvironmentScopes = [AuthOrchestrationReadScope, AuthSettingsWriteScope],
 ) {
   const config = yield* resolveCliAuthConfig({ baseDir: Option.some(baseDir) }, Option.none(), {
     quietLogs: true,
@@ -43,7 +45,7 @@ export const withRpc = Effect.fn("evals.withRpc")(function* <A, E, R>(
     const issued = yield* Effect.acquireRelease(
       auth.issueSession({
         label: "eval",
-        scopes: [AuthOrchestrationReadScope, AuthSettingsWriteScope],
+        scopes,
       }),
       (session) => auth.revokeSession(session.sessionId).pipe(Effect.ignore({ log: true })),
     );

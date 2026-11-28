@@ -945,15 +945,15 @@ it.effect(
           yield* bots.detachProject({ botId, projectId: campaignC });
           const home = (yield* bots.openHome({ botId })).home?.homeThreadId ?? assert.fail();
 
-          // 31 running tasks, oldest first, across both projects.
+          // Newer completions must leave room for older work still needing attention.
           for (let index = 1; index <= 31; index++) {
             const number = String(index).padStart(2, "0");
             yield* insertBotTask(db, {
               taskId: `task-${number}`,
               projectId: index % 2 === 0 ? campaignB : campaignA,
-              homeThreadId: homeA ?? assert.fail(),
-              status: "running",
-              createdAt: `2026-11-01T00:00:${number}.000Z`,
+              homeThreadId: home,
+              status: "completed",
+              createdAt: `2026-11-04T00:00:${number}.000Z`,
             });
           }
           yield* insertBotTask(db, {
@@ -987,7 +987,7 @@ it.effect(
               projectId: campaignA,
               homeThreadId: home,
               status,
-              createdAt: "2026-11-04T00:00:00.000Z",
+              createdAt: "2026-11-04T01:00:00.000Z",
               ...(cancelRequestedAt === undefined ? {} : { cancelRequestedAt }),
             });
           }
@@ -1027,13 +1027,14 @@ it.effect(
           }
           yield* db`INSERT INTO bot_home_updates (task_id, update_key, sent_at)
             VALUES ('task-needs-you', 'completed:r', '2026-11-05T00:00:00.000Z')`;
+          yield* main`INSERT INTO orchestration_v2_projection_runs (run_id,thread_id,ordinal,provider,status,requested_at,payload_json) VALUES ('update-run',${home},1,'codex','interrupted','2026-11-05','{}')`;
           for (const [messageId, role] of [
             ["bot-task-update:task-needs-you:completed:r", "user"],
             ["answer", "assistant"],
           ]) {
             yield* main`INSERT INTO orchestration_v2_projection_messages
               (message_id, thread_id, run_id, role, streaming, created_at, updated_at, payload_json)
-              VALUES (${messageId}, ${home}, 'update-run', ${role}, 0, '2026-11-05', '2026-11-05', '{"text":"Keep the heading?"}')`;
+              VALUES (${messageId}, ${home}, 'update-run', ${role}, 0, '2026-11-05', '2026-11-05', '{"text":"I will check."}')`;
           }
 
           yield* continuation.save(
@@ -1098,12 +1099,12 @@ it.effect(
             `- "Task task-waiting" · project "Faerun" · waiting · 2026-11-03T00:00:00.000Z (taskId "task-waiting", projectId "${campaignB}")\n  Question waiting for the user: Which changelog format should both repos use?`,
           );
           assert.notInclude(turn, "Should the old format stay?");
-          assert.include(turn, "You started 5 of the tasks below in this Home");
-          assert.match(turn, /"Task task-31".*started by another Home/);
+          assert.include(turn, "You started 30 of the tasks below in this Home");
+
           assert.lengthOf(turn.match(/\(taskId "/g) ?? [], 30);
           assert.isBelow(turn.indexOf('"task-waiting"'), turn.indexOf('"task-31"'));
           assert.isBelow(turn.indexOf('"task-31"'), turn.indexOf('"task-30"'));
-          assert.include(turn, "(6 more tasks: use list_tasks.)");
+          assert.include(turn, "(6 more ended tasks: use list_tasks.)");
           assert.include(turn, '"task-done"');
           assert.match(turn, /"Task task-cancelled".*cancelled by the user/i);
           assert.match(turn, /"Task task-stopping".*cancellation requested/);
@@ -1111,8 +1112,13 @@ it.effect(
           assert.notInclude(turn, "task-needs-you-old");
           assert.notInclude(turn, "other-home-result");
           assert.notInclude(turn, "outside-window");
-          assert.notInclude(turn, "Keep the task-needs-you heading?");
-          assert.match(turn, /"Task task-needs-you".*Question already reported/);
+          assert.include(turn, "Keep the task-needs-you heading?");
+          assert.notInclude(turn, "Home replied to this update");
+          yield* main`UPDATE orchestration_v2_projection_runs SET status = 'completed' WHERE run_id = 'update-run'`;
+          const refreshed = yield* turnContext.forThread(home);
+          if (refreshed._tag !== "active") return assert.fail();
+          assert.include(refreshed.instructionParts.turn, "Home replied to this update");
+          assert.include(refreshed.instructionParts.turn, "Keep the task-needs-you heading?");
           assert.include(turn, "Split the changelog work once the format is chosen.");
           assert.include(turn, `projectId "${homeProject}": pass both ids`);
           assert.notInclude(turn, "Active Bot tasks only");

@@ -247,21 +247,25 @@ interface HomeTasks {
     readonly createdAt: string;
     readonly question: string | null;
   }>;
-  readonly total: number;
+  readonly omittedAttention: number;
+  readonly omittedEnded: number;
 }
 
 const HOME_TASKS_SHOWN = 30;
 const QUESTION_CHARS = 300;
 
-function homeTasksSection({ shown, total }: HomeTasks): string {
+function homeTasksSection({ shown, omittedAttention, omittedEnded }: HomeTasks): string {
   if (shown.length === 0) return "Your task records across projects: none.";
   return [
-    `You started ${shown.filter((task) => task.startedHere).length} of the tasks below in this Home. A fresh conversation keeps that work: include each matching row in a recap. “Already reported” questions in your working notes need no reminder unless the user asks. Leave user cancellations in place.`,
+    `You started ${shown.filter((task) => task.startedHere).length} of the tasks below in this Home. A fresh conversation keeps that work: include each matching row in a recap. Check the conversation and working notes before repeating a question. Leave user cancellations in place.`,
     ...shown.flatMap((task) => [
       `- "${task.title}" · project "${task.projectTitle}" · ${task.status}${task.startedHere ? "" : " · started by another Home"} · ${task.createdAt} (taskId "${task.taskId}", projectId "${task.projectId}")`,
       ...(task.question === null ? [] : [`  Question waiting for the user: ${task.question}`]),
     ]),
-    ...(total > shown.length ? [`(${total - shown.length} more tasks: use list_tasks.)`] : []),
+    ...(omittedAttention
+      ? [`(${omittedAttention} more tasks needing attention: use list_tasks.)`]
+      : []),
+    ...(omittedEnded ? [`(${omittedEnded} more ended tasks: use list_tasks.)`] : []),
   ].join("\n");
 }
 
@@ -276,21 +280,20 @@ function homeTaskStatus(
 ) {
   if (row.status === "cancelled") return row.detail ? `cancelled · ${row.detail}` : "cancelled";
   if (row.cancel_requested_at !== null) return `${row.status} (cancellation requested)`;
-  if (row.status === "waiting" && replied) return "waiting · question already reported";
+  const reply = replied ? " · Home replied to this update" : "";
+  if (row.status === "waiting") return row.status + reply;
   if (row.status !== "completed" || row.acceptance_json === null) return row.status;
   const acceptance = Option.getOrUndefined(decodeAcceptance(row.acceptance_json));
   if (acceptance?.state !== "needs_you") return row.status;
   const questions = acceptance.report?.openQuestions ?? [];
   const reasons = [
+    ...questions.map((question) => `Open question: ${question}`),
     ...acceptance.missing,
-    ...(questions.length > 0 && replied
-      ? ["Question already reported; awaiting the user's answer in the work thread."]
-      : questions.map((question) => `Open question: ${question}`)),
   ]
     .join(" ")
     .replace(/\s+/g, " ")
     .trim();
-  return `needs you · ${reasons.slice(0, QUESTION_CHARS) || "Review the result."}`;
+  return `needs you · ${reasons.slice(0, QUESTION_CHARS) || "Review the result."}${questions.length ? reply : ""}`;
 }
 
 const earlierConversationSection = [
@@ -676,16 +679,21 @@ export const layer = Layer.effect(
         readonly acceptance_json: string | null;
         readonly update_key: string | null;
         readonly total: number;
+        readonly attention: number;
+        readonly attention_total: number;
       }>`
-        SELECT t.task_id, project_id, home_thread_id, work_thread_id, title, status, created_at, detail,
-          cancel_requested_at, acceptance_json, u.update_key, COUNT(*) OVER() AS total
+        WITH eligible AS (SELECT t.task_id, project_id, home_thread_id, work_thread_id, title, status, created_at, detail,
+          cancel_requested_at, acceptance_json, u.update_key, COALESCE(completed_at, updated_at) AS activity,
+          CASE WHEN status IN ('accepted', 'running', 'waiting') OR (status = 'completed' AND
+            json_extract(acceptance_json, '$.state') = 'needs_you') THEN 1 ELSE 0 END AS attention
         FROM bot_tasks t LEFT JOIN bot_home_updates u ON u.task_id = t.task_id
         WHERE bot_id = ${botId} AND (
           status IN ('accepted', 'running', 'waiting')
           OR (home_thread_id = ${homeThreadId} AND COALESCE(completed_at, updated_at) >= ${since})
           OR (status = 'completed' AND completed_at >= ${reviewSince}
             AND json_extract(acceptance_json, '$.state') = 'needs_you'))
-        ORDER BY COALESCE(completed_at, updated_at) DESC, t.task_id DESC LIMIT ${HOME_TASKS_SHOWN}
+        ) SELECT *, COUNT(*) OVER() AS total, SUM(attention) OVER() AS attention_total FROM eligible
+        ORDER BY attention DESC, activity DESC, task_id DESC LIMIT ${HOME_TASKS_SHOWN}
       `.pipe(
         Effect.mapError((cause) => new BotStore.BotStoreError({ operation: "read-tasks", cause })),
       );
@@ -702,6 +710,7 @@ export const layer = Layer.effect(
           ? []
           : yield* main<{ readonly message_id: string }>`
         SELECT m.message_id FROM orchestration_v2_projection_messages m
+        JOIN orchestration_v2_projection_runs r ON r.run_id = m.run_id AND r.thread_id = m.thread_id AND r.status = 'completed'
         WHERE m.thread_id = ${homeThreadId} AND m.message_id IN ${main.in(updates)}
           AND EXISTS (SELECT 1 FROM orchestration_v2_projection_messages a
             WHERE a.thread_id = m.thread_id AND a.run_id = m.run_id AND a.role = 'assistant'
@@ -753,7 +762,9 @@ export const layer = Layer.effect(
             row.work_thread_id === null ? undefined : questions.get(row.work_thread_id);
           const replied =
             answeredUpdates.has(updateId(row)) &&
-            (row.status !== "waiting" || row.update_key === `waiting:${pending?.id}`);
+            (row.status === "waiting"
+              ? row.update_key === `waiting:${pending?.id}`
+              : row.update_key?.startsWith("completed:") === true);
           return {
             taskId: row.task_id,
             title: row.title.slice(0, 160),
@@ -762,10 +773,14 @@ export const layer = Layer.effect(
             status: homeTaskStatus(row, replied),
             startedHere: row.home_thread_id === homeThreadId,
             createdAt: row.created_at,
-            question: replied ? null : (pending?.text ?? null),
+            question: pending?.text ?? null,
           };
         }),
-        total: rows[0]?.total ?? 0,
+        omittedAttention: Math.max(0, (rows[0]?.attention_total ?? 0) - rows.length),
+        omittedEnded:
+          (rows[0]?.total ?? 0) -
+          (rows[0]?.attention_total ?? 0) -
+          rows.filter((row) => row.attention === 0).length,
       } satisfies HomeTasks;
     });
 

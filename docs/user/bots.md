@@ -89,7 +89,7 @@ task's project. You answer a task's question in that task's work thread, which
 **Open thread** on its card opens. The phone alert comes from the task, under
 the rules in [Tasks and routines](#tasks-and-routines); the Home's follow-up does
 not alert again. After a compaction or a fresh start, the Home still knows its
-unfinished tasks, tasks it started that ended in the past day, and results from the last week that wait for you. It sees the 30 most recently updated tasks first.
+unfinished tasks, tasks it started that ended in the past day, and results from the last week that wait for you. It sees up to 30 tasks, with unfinished work and results waiting for you first, followed by the most recent ended tasks.
 
 **Access** decides what the Home itself may do:
 

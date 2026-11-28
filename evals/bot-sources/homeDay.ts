@@ -34,7 +34,7 @@ export interface DayTask {
   /** Finds the task in a title, a brief or a line of the Home's answers. Case-insensitive. */
   readonly match: string;
   /** The question its work thread asks, and what finds it in the Home's answers. */
-  readonly question?: { readonly text: string; readonly match: string };
+  readonly question?: { readonly text: string; readonly match: string; readonly choice: RegExp };
   /** A file the work thread names as evidence, present in the fixture. */
   readonly evidence?: string;
 }
@@ -59,6 +59,7 @@ export const DAY_TASKS: ReadonlyArray<DayTask> = [
     question: {
       text: "Should decorative product images get an empty alt attribute or a short description?",
       match: "decorative",
+      choice: /empty|blank|description|descriptive|short|alt=""/i,
     },
     evidence: "src/products.ts",
   },
@@ -115,6 +116,7 @@ export const DAY_TASKS: ReadonlyArray<DayTask> = [
     question: {
       text: "Should the old `usr` name keep working as an alias, and for how long?",
       match: "alias",
+      choice: /keep|retain|support|compatib|how long|duration|old|legacy/i,
     },
     evidence: "src/routes/users.ts",
   },
@@ -350,31 +352,27 @@ const recordsOf = (task: DayTask, run: DayRun) =>
 /** The status of each mention of a task: its own line's, or the heading of the group it is in. */
 const summaryStatuses = (task: DayTask, lines: ReadonlyArray<string>) => {
   const isTaskLine = (line: string) => DAY_TASKS.some((other) => matches(other.match, line));
-  const mentions = lines.flatMap((line, index) => {
+  return lines.flatMap((line, index) => {
     if (!matches(task.match, line)) return [];
-    // The nearest status above, unless a section heading without one comes first.
     const heading = lines
       .slice(0, index)
       .toReversed()
       .find(
         (above) => !isTaskLine(above) && (statusOfLine(above) !== undefined || HEADING.test(above)),
       );
-    const grouped = DAY_TASKS.some((other) => other.key !== task.key && matches(other.match, line));
-    const description = grouped
-      ? (line.split(/(?<=[.!?])\s+/).find((part) => matches(task.match, part)) ?? line)
-      : line;
-    return [
-      {
-        grouped,
-        status:
-          statusOfLine(description) ?? (heading === undefined ? undefined : statusOfLine(heading)),
-      },
-    ];
+    const clauses = line.split(/(?<=[.!?;])\s+/);
+    const named = clauses.filter(isTaskLine);
+    const descriptions =
+      named.length > 1 ||
+      DAY_TASKS.some((other) => other.key !== task.key && matches(other.match, line))
+        ? named.filter((part) => matches(task.match, part))
+        : [line];
+    return descriptions.flatMap((part) => {
+      const status =
+        statusOfLine(part) ?? (heading === undefined ? undefined : statusOfLine(heading));
+      return status === undefined ? [] : [status];
+    });
   });
-  // A per-task status answers the question more precisely than a recap of several tasks.
-  return mentions
-    .toSorted((a, b) => Number(a.grouped) - Number(b.grouped))
-    .map(({ status }) => status);
 };
 
 const LIST_ITEM = /^\s*([-*•]|\d+[.)]|\|)\s*/;
@@ -431,8 +429,10 @@ export const gradeDay = (run: DayRun) => {
     if (records.length !== 1 || record === undefined) continue;
     const expected = categoryOfRecord(record);
     const mentions = summaryStatuses(task, lines);
-    const reported = mentions.find((status) => status !== undefined);
-    add(`summary gives ${task.key} as ${expected}`, reported === expected);
+    add(
+      `summary gives ${task.key} as ${expected}`,
+      mentions.length > 0 && mentions.every((status) => status === expected),
+    );
     // From the record, not the script: a worker that strayed into a proven result is done.
     if (expected === "failed" || expected === "cancelled" || expected === "needs_you") {
       const update = run.homeRuns.filter((homeRun) => homeRun.updateTaskIds.includes(record.id));
@@ -450,7 +450,8 @@ export const gradeDay = (run: DayRun) => {
 
   // A real task may be named in other words, so a line is invented only if it shares none. Lines
   // that ask for the user's input name a need, not a task's outcome, so they never count.
-  const outcomes: ReadonlyArray<DayCategory | undefined> = ["done", "failed", "cancelled", "open"];
+  const asksForInput =
+    /\?|\bneeds? your (answer|input) (about|on|to)\b|\bplease (choose|confirm|decide|tell)\b/i;
   const projectWords = new Set(projectTitles.flatMap(words));
   const knownWords = new Set(
     [...DAY_TASKS.map((task) => task.request), ...run.records.map((record) => record.title)]
@@ -462,7 +463,8 @@ export const gradeDay = (run: DayRun) => {
     lines.every(
       (line) =>
         !LIST_ITEM.test(line) ||
-        (!outcomes.includes(statusOfLine(line)) && !/\bblocked\b/i.test(line)) ||
+        statusOfLine(line) === undefined ||
+        (statusOfLine(line) === "needs_you" && asksForInput.test(line)) ||
         !projectTitles.some((title) => line.includes(title)) ||
         DAY_TASKS.some((task) => matches(task.match, line)) ||
         words(line).some((word) => knownWords.has(word)),
@@ -472,21 +474,30 @@ export const gradeDay = (run: DayRun) => {
   for (const task of DAY_TASKS) {
     const question = task.question;
     if (question === undefined) continue;
-    const told = earlierRuns.filter(({ answer }) =>
-      answer
-        .split(/(?<=[.!?])\s+|\n/)
-        .some(
+    const recordIds = recordsOf(task, run).map((record) => record.id);
+    const told = earlierRuns.flatMap((homeRun) =>
+      homeRun.answer
+        .split(/(?<=[.!?;])\s+|\n/)
+        .filter(
           (sentence) =>
             matches(question.match, sentence) &&
-            (!/\bdone when\b/i.test(sentence) || sentence.includes("?")),
-        ),
+            question.choice.test(sentence) &&
+            (/\?/.test(sentence) ||
+              /\b(please (choose|confirm|decide|tell)|let me know|choose (whether|between)|confirm whether)\b/i.test(
+                sentence,
+              )),
+        )
+        .map(() => homeRun),
+    );
+    const inUpdate = told.filter((homeRun) =>
+      homeRun.updateTaskIds.some((id) => recordIds.includes(id)),
     );
     const title = DAY_PROJECTS[task.project].title;
-    add(`question of ${task.key} passed on once`, told.length === 1);
+    add(`question of ${task.key} passed on once`, told.length === 1 && inUpdate.length === 1);
     add(
       `question of ${task.key} names its task and project`,
-      told.length > 0 &&
-        told.every(
+      inUpdate.length > 0 &&
+        inUpdate.every(
           ({ answer }) =>
             matches(task.match, answer) && answer.toLowerCase().includes(title.toLowerCase()),
         ),

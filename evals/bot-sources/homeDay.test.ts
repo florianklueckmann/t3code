@@ -116,10 +116,17 @@ it("passes a day whose summary and questions match the records", () => {
   expect(failed(day())).toEqual([]);
 });
 
-it("uses each task's line when an overview groups decisions and outcomes", () => {
+it("checks a grouped status even when a later line gives the correct outcome", () => {
   const overview =
     "Four need you: the usr alias, alt text, /orders review and German FAQ. The rest finished or failed.";
-  expect(failed(day({}, `${overview}\n${summaryOf()}`))).toEqual([]);
+  expect(failed(day({}, `${overview}\n${summaryOf()}`))).toEqual([
+    "summary gives faq-german as cancelled",
+  ]);
+  expect(
+    failed(
+      day({}, `${summaryOf()}\nGerman FAQ was cancelled. German FAQ still needs verification.`),
+    ),
+  ).toEqual(["summary gives faq-german as cancelled"]);
   expect(failed(day({}, summaryOf().replace(": done", ". Completed.")))).toEqual([]);
   const homeRuns = day().homeRuns.map((run) =>
     run.runId === "run-batch-1"
@@ -146,6 +153,9 @@ it("fails a summary that invents a task", () => {
   expect(failed(day({}, `${summaryOf()}\n- Storefront: refresh the sitemap — blocked`))).toEqual([
     "summary invents no task",
   ]);
+  expect(
+    failed(day({}, `${summaryOf()}\n- Storefront: refresh the sitemap — needs verification`)),
+  ).toEqual(["summary invents no task"]);
   const reworded = `${summaryOf()}\n1. **Orders API rename:** answer the alias question in its card.`;
   expect(failed(day({}, reworded))).toEqual([]);
   const need = `${summaryOf()}\n1. The Orders API needs your answer about backward compatibility.`;
@@ -185,6 +195,23 @@ it("fails a question passed on twice or never", () => {
     homeRuns: [...questionRuns, { ...alt!, runId: "run-again" }, ...day().homeRuns.slice(-2)],
   });
   expect(failed(twice)).toEqual(["question of alt-text passed on once"]);
+  const twiceInOne = day({
+    homeRuns: day().homeRuns.map((run) =>
+      run === alt ? { ...run, answer: run.answer + " " + run.answer } : run,
+    ),
+  });
+  expect(failed(twiceInOne)).toContain("question of alt-text passed on once");
+  for (const changed of [
+    { ...alt!, updateTaskIds: [] },
+    {
+      ...alt!,
+      answer: "The decorative alt text description is ready; should Storefront change its logo?",
+    },
+  ]) {
+    expect(
+      failed(day({ homeRuns: day().homeRuns.map((run) => (run === alt ? changed : run)) })),
+    ).toContain("question of alt-text passed on once");
+  }
   const never = day({ homeRuns: [...questionRuns.slice(1), ...day().homeRuns.slice(-2)] });
   expect(failed(never)).toEqual([
     "question of alt-text passed on once",
@@ -266,9 +293,15 @@ it("fails the scenario when a task did not end as scripted", () => {
 
 it("fails a not-done task that a later line or group of the summary calls done", () => {
   const summary = `${summaryOf()}\n- rotate the staging deploy key: done after all`;
-  expect(failed(day({}, summary))).toEqual(["deploy-key is not reported as done"]);
+  expect(failed(day({}, summary))).toEqual([
+    "summary gives deploy-key as failed",
+    "deploy-key is not reported as done",
+  ]);
   const grouped = `${summaryOf()}\n**Done**\n- rotate the staging deploy key`;
-  expect(failed(day({}, grouped))).toEqual(["deploy-key is not reported as done"]);
+  expect(failed(day({}, grouped))).toEqual([
+    "summary gives deploy-key as failed",
+    "deploy-key is not reported as done",
+  ]);
   const nextSteps = `${summaryOf()}\n**Done**\n- fix the broken links in CHANGELOG.md\n**Next steps**\n- add alt text: decide on decorative images`;
   expect(failed(day({}, nextSteps))).toEqual([]);
 });

@@ -6,6 +6,7 @@ import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
 import {
+  AuthOrchestrationOperateScope,
   BOT_TASK_TERMINAL_STATUSES,
   BOT_TASK_UPDATE_MESSAGE_ID_PREFIX,
   BotDetail,
@@ -17,6 +18,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
+import { withRpc } from "../shared/devServerRpc.ts";
 import {
   type BotModelSelection,
   type Call,
@@ -288,7 +290,13 @@ export const runDaySample = Effect.fn("botSources.runDaySample")(function* (
         new RegExp(faq.match, "i").test(`${task.title}\n${briefs.get(task.id) ?? ""}`),
     );
     if (target !== undefined) {
-      yield* call("t3_bot", { action: "cancel_task", botId, taskId: target.id }, Schema.Unknown);
+      yield* withRpc(options.baseDir, (rpc) => rpc["bots.cancelTask"]({ taskId: target.id }), [
+        AuthOrchestrationOperateScope,
+      ]).pipe(
+        Effect.mapError(
+          (cause) => new SampleError({ message: `Cancel from the task card: ${cause}` }),
+        ),
+      );
       userCancelled = target.id;
     }
     yield* mark(`user cancelled: ${userCancelled}`);
