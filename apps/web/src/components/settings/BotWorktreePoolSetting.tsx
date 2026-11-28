@@ -1,5 +1,9 @@
 import { useAtomValue } from "@effect/atom-react";
-import { BOT_WORKTREE_POOL_DESCRIPTION, botWorktreePoolLabel } from "@t3tools/client-runtime/bots";
+import {
+  BOT_WORKTREE_POOL_DESCRIPTION,
+  botWorktreePoolKeptLabel,
+  botWorktreePoolLabel,
+} from "@t3tools/client-runtime/bots";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
@@ -38,6 +42,7 @@ export function BotWorktreePoolSetting({
   // Null without a pending read: this server keeps no worktrees for Bot tasks.
   if (pool === null && !query.isPending) return null;
   const labelId = `bot-worktree-pool-${projectId}`;
+  const keptLabel = pool === null ? null : botWorktreePoolKeptLabel(pool);
 
   const clearPool = async () => {
     setClearing(true);
@@ -64,12 +69,14 @@ export function BotWorktreePoolSetting({
         <p className="text-xs text-muted-foreground">
           {pool === null ? "Measuring…" : botWorktreePoolLabel(pool)}
         </p>
+        {keptLabel === null ? null : <p className="text-xs text-muted-foreground">{keptLabel}</p>}
       </div>
       <Button
         size="xs"
         variant="outline"
         aria-describedby={labelId}
-        disabled={clearing || !canClear || pool === null || pool.parked === 0}
+        // A kept worktree may be clean again, and Clear checks it.
+        disabled={clearing || !canClear || pool === null || pool.parked + (pool.kept ?? 0) === 0}
         onClick={() => void clearPool()}
       >
         Clear free worktrees

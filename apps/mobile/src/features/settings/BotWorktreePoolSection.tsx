@@ -1,5 +1,9 @@
 import { useAtomValue } from "@effect/atom-react";
-import { BOT_WORKTREE_POOL_DESCRIPTION, botWorktreePoolLabel } from "@t3tools/client-runtime/bots";
+import {
+  BOT_WORKTREE_POOL_DESCRIPTION,
+  botWorktreePoolKeptLabel,
+  botWorktreePoolLabel,
+} from "@t3tools/client-runtime/bots";
 import type { EnvironmentId, ProjectId } from "@t3tools/contracts";
 import { useState } from "react";
 import { Pressable, View } from "react-native";
@@ -30,7 +34,10 @@ export function BotWorktreePoolSection(props: {
   const pool = query.data;
   // Null without a pending read: this server keeps no worktrees for Bot tasks.
   if (pool === null && !query.isPending) return null;
-  const clearDisabled = clearing || !canClear || pool === null || pool.parked === 0;
+  // A kept worktree may be clean again, and Clear checks it.
+  const clearDisabled =
+    clearing || !canClear || pool === null || pool.parked + (pool.kept ?? 0) === 0;
+  const keptLabel = pool === null ? null : botWorktreePoolKeptLabel(pool);
 
   const clearPool = async () => {
     setClearing(true);
@@ -52,6 +59,11 @@ export function BotWorktreePoolSection(props: {
         <Text textRole="footnote" className="text-foreground-muted">
           {pool === null ? "Measuring…" : botWorktreePoolLabel(pool)}
         </Text>
+        {keptLabel === null ? null : (
+          <Text textRole="footnote" className="text-foreground-muted">
+            {keptLabel}
+          </Text>
+        )}
       </View>
       <Pressable
         accessibilityRole="button"

@@ -1486,17 +1486,23 @@ export function botTaskBranchLabel(task: BotTaskSummary): string | null {
 }
 
 export const BOT_WORKTREE_POOL_DESCRIPTION =
-  "Tasks that may change files work in worktrees of their own. A finished task's worktree stays for the next one, with its installed dependencies; one unused for 7 days is removed.";
+  "Tasks that may change files work in worktrees of their own. A finished task's worktree stays for the next one, with its installed dependencies; one unused for 7 days is removed. A worktree with work that could not be saved is kept until a message in its task picks it up again.";
 /** Settings caption for a project's task worktrees. */
 export function botWorktreePoolLabel(pool: BotWorktreePool): string {
-  if (pool.parked + pool.inUse === 0) return "No worktrees yet";
+  const kept = pool.kept ?? 0;
+  if (pool.parked + pool.inUse + kept === 0) return "No worktrees yet";
   const size =
     pool.bytes === null
       ? "size unknown"
       : pool.bytes >= 1024 ** 3
         ? `${(pool.bytes / 1024 ** 3).toFixed(1)} GB`
         : `${Math.max(1, Math.round(pool.bytes / 1024 ** 2))} MB`;
-  return `${pool.parked} free · ${pool.inUse} in use · ${size}`;
+  return `${pool.parked} free · ${pool.inUse} in use${kept === 0 ? "" : ` · ${kept} kept`} · ${size}`;
+}
+/** Why worktrees are kept, such as "Kept: has a terminal open in it"; null when none are. */
+export function botWorktreePoolKeptLabel(pool: BotWorktreePool): string | null {
+  const reasons = pool.keptReasons ?? [];
+  return reasons.length === 0 ? null : `Kept: ${reasons.join(" · ")}`;
 }
 
 /** Why a diagnostic task started, for its Home card; null for other tasks. */

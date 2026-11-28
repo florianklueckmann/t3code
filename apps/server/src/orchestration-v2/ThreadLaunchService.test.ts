@@ -3021,6 +3021,68 @@ it.effect.each([0, 1])("releases an async setup before its completion with exit 
   }),
 );
 
+it.effect.each([0, 1])(
+  "starts the agent only after an awaited async setup exits 0, here %s",
+  (exitCode) =>
+    Effect.gen(function* () {
+      const completion = yield* Deferred.make<{ exitCode: number | null; durationMs: number }>();
+      const harness = makeHarness({
+        runSetup: () =>
+          Effect.succeed({
+            status: "started" as const,
+            async: true,
+            scriptId: "setup",
+            scriptName: "Setup",
+            scriptCommand: "vp install",
+            terminalId: "setup",
+            cwd: "/repo-worktrees/pooled",
+            completion: Deferred.await(completion),
+          }),
+      });
+      yield* Effect.gen(function* () {
+        const launches = yield* ThreadLaunch.ThreadLaunchService;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
+        const launched = yield* launches.launch({
+          ...launchInput({
+            command: `command:launch:awaited-${exitCode}`,
+            thread: `thread:launch:awaited-${exitCode}`,
+            message: "Start after setup",
+            workspace: {
+              type: "existing_worktree",
+              worktreePath: "/repo-worktrees/pooled",
+              branch: "bot/pooled",
+            },
+          }),
+          setupScript: "await",
+        });
+        yield* tracker.stream(launched.threadId).pipe(
+          Stream.filter(
+            (snapshot) =>
+              snapshot?.stages.some(
+                (stage) => stage.id === "setup-script" && stage.status === "running",
+              ) === true,
+          ),
+          Stream.runHead,
+        );
+        assert.equal(
+          (yield* threads.getThreadProjection(launched.threadId)).runs[0]?.status,
+          "preparing",
+        );
+        yield* Deferred.succeed(completion, { exitCode, durationMs: 1 });
+        const settled = yield* tracker.stream(launched.threadId).pipe(
+          Stream.filter((snapshot) => snapshot !== null && snapshot.phase !== "running"),
+          Stream.runHead,
+        );
+        assert.equal(Option.getOrNull(settled)?.phase, exitCode === 0 ? "done" : "failed");
+        assert.equal(
+          (yield* threads.getThreadProjection(launched.threadId)).runs[0]?.status,
+          exitCode === 0 ? "starting" : "failed",
+        );
+      }).pipe(Effect.provide(harness.layer));
+    }),
+);
+
 it.effect.each(["origin/master", ":/initial"])(
   "refuses a worktree in a non-Git project before checking base %s",
   (baseRef) =>

@@ -36,6 +36,8 @@ import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ProjectService from "../project/ProjectService.ts";
+import * as WorktreeSetupTracker from "../project/WorktreeSetupTracker.ts";
+import * as TerminalManager from "../terminal/Manager.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
@@ -171,12 +173,17 @@ const layerSupport = Layer.mergeAll(
   Layer.mock(ScheduledTaskService.ScheduledTaskService)({ pauseBotRoutines: () => Effect.void }),
   // Task worktrees are covered in BotTaskService.test.ts and BotWorktreePool.test.ts.
   Layer.mock(BotWorktreePool.BotWorktreePool)({
-    take: () => Effect.succeed({ _tag: "create", baseRef: "main" }),
+    take: () =>
+      Effect.succeed({ _tag: "pooled", worktreePath: "/worktrees/task", setupNeeded: true }),
     claimedPath: () => Effect.succeed(null),
     expire: Effect.void,
   }),
   // The result check is covered in BotTaskService.test.ts and BotTaskAcceptance.test.ts.
   Layer.mock(BotTaskAcceptance.BotTaskEvidence)({}),
+  WorktreeSetupTracker.layer,
+  Layer.mock(TerminalManager.TerminalManager)({
+    subscribeMetadata: () => Effect.succeed(() => undefined),
+  }),
 );
 
 const layerDatabase = SqlitePersistence.layerMemory.pipe(

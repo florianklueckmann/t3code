@@ -762,6 +762,13 @@ export const BotWorktreePool = Schema.Struct({
   parked: NonNegativeInt,
   /** Worktrees a task or a follow-up works in now. */
   inUse: NonNegativeInt,
+  /**
+   * Worktrees kept out of the pool: one holding work it could not save, or a free one that changed
+   * after it was parked. Absent from servers before it existed.
+   */
+  kept: Schema.optional(NonNegativeInt),
+  /** Why they are kept, each once, such as "has a terminal open in it". */
+  keptReasons: Schema.optional(Schema.Array(Schema.String)),
   /** Disk use of all of them; null when it could not be measured. */
   bytes: Schema.NullOr(NonNegativeInt),
 });

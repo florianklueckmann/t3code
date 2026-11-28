@@ -97,7 +97,8 @@ export interface ThreadLaunchInput {
   readonly workspaceStrategy: ThreadLaunchWorkspaceStrategy;
   /**
    * "skip" leaves out the project's setup script: the worktree already has what it installs.
-   * "await" runs it in an existing worktree as a new one does, and the agent starts after it.
+   * "await" runs it in an existing worktree, and the agent starts only once it succeeded, even
+   * when the script is async.
    */
   readonly setupScript?: "skip" | "await";
   readonly initialMessage?: ThreadLaunchInitialMessage;
@@ -957,20 +958,22 @@ const make = Effect.gen(function* () {
           },
         }));
         if (setup.completion) {
+          // An awaited setup holds the agent back even when the script itself runs async.
+          const background = setup.async && input.setupScript !== "await";
           const awaitCompletion = Effect.gen(function* () {
             const completion = yield* setup.completion!;
             yield* setupTracker.stage(threadId, "setup-script", {
               status: completion.exitCode === 0 ? "done" : "failed",
               detail: `exited with ${completion.exitCode ?? "no exit code"}`,
             });
-            if (completion.exitCode !== 0 && !setup.async)
+            if (completion.exitCode !== 0 && !background)
               return yield* mapError(
                 input,
                 "run-setup-script",
                 threadId,
               )(`Setup script exited with ${completion.exitCode ?? "no exit code"}.`);
           });
-          if (setup.async) {
+          if (background) {
             awaitAsyncSetup = awaitCompletion.pipe(
               Effect.catchCause((cause) =>
                 setupTracker.stage(threadId, "setup-script", {
