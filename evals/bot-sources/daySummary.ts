@@ -63,13 +63,14 @@ export const daySummary = (days: ReadonlyArray<Started | Finished>) => {
     "| --- | --- | --- | --- | --- | --- |",
     ...rows,
     "",
-    "| Brief criterion | Count |",
+    "| Brief measure | Count |",
     "| --- | --- |",
     ...(["project", "request", "doneCondition", "baseBranch", "settled"] as const).map((key) => {
       const briefs = scored
         .flatMap((day) => day.briefs)
         .filter((brief) => key !== "settled" || brief.openChoice);
-      return `| ${key} | ${briefs.filter((brief) => brief[key]).length}/${briefs.length} |`;
+      const label = key === "settled" ? "Settled an open choice (informational)" : key;
+      return `| ${label} | ${briefs.filter((brief) => brief[key]).length}/${briefs.length} |`;
     }),
     "",
     "| Sample | Open choice | Verdict (Luna judge) | Quoted requirement or default |",

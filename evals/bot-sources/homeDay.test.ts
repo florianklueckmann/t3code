@@ -258,19 +258,30 @@ it("keeps a separate evidence table outside the recap", () => {
 });
 
 it.each([
-  ["usr-param", "No backward-compatible alias was requested, so don't add one.", true],
-  ["usr-param", "Done when: the handler no longer reads `usr`.", true],
-  ["usr-param", "Ask whether to keep the old usr alias and, if so, for how long.", false],
-  ["alt-text", "Done when: every product image has a non-empty alt attribute.", true],
-  ["alt-text", "Handle decorative images accessibly; ask whether to use empty alt text.", false],
-] as const)("checks whether a %s brief settles the open choice: %s", (key, brief, settled) => {
-  const run = day({
-    records: records.map((record) =>
-      record.id === "bot-task:" + key ? { ...record, brief } : record,
-    ),
-  });
-  expect(gradeBriefs(run).find((entry) => entry.task === key)?.settled).toBe(settled);
-});
+  ["usr-param", "No backward-compatible alias was requested, so don't add one.", true, false],
+  ["usr-param", "Done when: the handler no longer reads `usr`.", true, false],
+  ["usr-param", "Ask whether to keep the old usr alias and, if so, for how long.", false, false],
+  ["alt-text", "Done when: every product image has a non-empty alt attribute.", true, true],
+  [
+    "alt-text",
+    "Handle decorative images accessibly; ask whether to use empty alt text.",
+    false,
+    false,
+  ],
+] as const)(
+  "checks whether a %s brief settles the open choice: %s",
+  (key, brief, settled, request) => {
+    const run = day({
+      records: records.map((record) =>
+        record.id === "bot-task:" + key ? { ...record, brief } : record,
+      ),
+    });
+    expect(gradeBriefs(run).find((entry) => entry.task === key)).toMatchObject({
+      settled,
+      request,
+    });
+  },
+);
 
 it("accepts the recorded completion and unresolved review together", () => {
   for (const qualification of ["completed but needs your input", "completed · needs you"]) {
@@ -655,14 +666,14 @@ it("requires both alternatives and allows an explicitly requested repeat", () =>
   ).toEqual([]);
 });
 
-it("reports an open choice settled in a saved brief", () => {
+it("credits a faithful request even when the brief settles an open choice", () => {
   const run = day({
     records: records.map((record) =>
       record.id === "bot-task:usr-param" ? { ...record, brief: aliasBrief } : record,
     ),
   });
   expect(gradeBriefs(run).find((brief) => brief.task === "usr-param")).toMatchObject({
-    request: false,
+    request: true,
     settled: true,
     doneCondition: false,
   });

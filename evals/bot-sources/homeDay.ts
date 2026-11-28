@@ -627,7 +627,7 @@ export function gradeBriefs(run: DayRun, decisions: DayDecisions) {
       task: task.key,
       decision,
       project: record?.projectId === run.ids.projectIds[task.project],
-      request: !settled && requestDetails[task.key]!.every((pattern) => pattern.test(brief)),
+      request: requestDetails[task.key]!.every((pattern) => pattern.test(brief)),
       doneCondition:
         /\b(?:done when|complete when|acceptance criteria|success criteria)\b[ \t]*:?[ \t]*[^\s:.,;]/i.test(
           brief,
