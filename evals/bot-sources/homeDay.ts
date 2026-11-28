@@ -243,7 +243,7 @@ export const DAY_PROMPTS = {
   batch1: batchPrompt(1, "Morning! Here is today's first batch of work:"),
   batch2: batchPrompt(2, "Four more for today:"),
   summary:
-    "That's it for today. Give me a summary of every task I gave you today: one line per task with its project and its current status. Then tell me which ones need me.",
+    "That's it for today. Give me a summary of every task I gave you today: use a Markdown table with exactly these columns: Project | Task | Recorded status. Use completed, needs you (finished with an unresolved result), failed, cancelled, or open. Below it, tell me about evidence, doubts, and what needs me.",
 } as const;
 
 /** What a task's record says happened, in the words the summary is graded on. */
@@ -266,47 +266,6 @@ export const categoryOfRecord = (
   }
 };
 
-const SCRIPTED_CATEGORY: Readonly<Record<DayOutcome, DayCategory>> = {
-  done: "done",
-  question: "needs_you",
-  unproven: "needs_you",
-  fails: "failed",
-  cancelled: "cancelled",
-};
-
-// In priority order: a line that says "finished, but waits for you" needs the user.
-type SummaryStatus = DayCategory | "unfinished";
-const STATUS_WORDS: ReadonlyArray<readonly [SummaryStatus, RegExp]> = [
-  ["cancelled", /cancel/i],
-  [
-    "failed",
-    /fail|(could|did|can) ?n(o|['’])t (start|run)|cannot start|(not|never) started|\berror/i,
-  ],
-  [
-    "needs_you",
-    /needs? (you|your|verification|review|evidence)|review (is )?(still )?needed|(waits?|waiting|awaits?|awaiting) (for |on )?(you|your)|question|not done|unproven|unverified|not verified|unconfirmed|no evidence|without evidence|evidence (is )?missing|missing evidence|blocked|decision|your (answer|input|call|review)/i,
-  ],
-  ["open", /running|in progress|queued|still working|waiting for a (free )?slot/i],
-  ["unfinished", /\b(unfinished|incomplete)\b/i],
-  [
-    "done",
-    /\bdone\b|\b(completed?|finished)\b|✅|merged|\bfixed\b|\bupdated\b|\bremoved\b|\braised\b/i,
-  ],
-];
-// Phrases that deny a status rather than state it.
-const DENIALS = /\bno (open )?questions?\b|nothing (else )?(needs|needed from) you|no errors?/gi;
-
-/** The status a line of the Home's answer gives, if any. */
-export const statusOfLine = (line: string): SummaryStatus | undefined => {
-  const text = line
-    .replace(DENIALS, "")
-    .replace(
-      /\b(?:once|when|if)\s+(?:that|it|this)(?:['’]s| is| has been)\s+(?:done|finished|completed?)\b/gi,
-      "",
-    );
-  return STATUS_WORDS.find(([, pattern]) => pattern.test(text))?.[0];
-};
-
 const matches = (pattern: string, text: string) => new RegExp(pattern, "i").test(text);
 
 export interface DayRecord {
@@ -314,6 +273,7 @@ export interface DayRecord {
   readonly title: string;
   /** The brief the Home wrote, from its start_task call. */
   readonly brief: string | null;
+  readonly detail: string | null;
   readonly projectId: string;
   readonly status: BotTaskSummary["status"];
   readonly acceptance?: BotTaskSummary["acceptance"];
@@ -359,165 +319,272 @@ const recordsOf = (task: DayTask, run: DayRun) =>
       record.projectId === run.ids.projectIds[task.project] && requestsOf(record).includes(task),
   );
 
-/** The status of each mention of a task: its own line's, or the heading of the group it is in. */
-const summaryStatuses = (task: DayTask, lines: ReadonlyArray<string>) => {
-  const isTaskLine = (line: string) => DAY_TASKS.some((other) => matches(other.match, line));
-  return lines.flatMap((line, index) => {
-    if (!matches(task.match, line)) return [];
-    const heading = lines
-      .slice(0, index)
-      .toReversed()
-      .find(
-        (above) => !isTaskLine(above) && (statusOfLine(above) !== undefined || HEADING.test(above)),
-      );
-    const clauses = line.split(/(?<=[.!?;])\s+/);
-    const named = clauses.filter(isTaskLine);
-    const descriptions =
-      named.length > 1 ||
-      DAY_TASKS.some((other) => other.key !== task.key && matches(other.match, line))
-        ? named.filter((part) => matches(task.match, part))
-        : [line];
-    return descriptions.flatMap((part) => {
-      const status =
-        statusOfLine(part) ?? (heading === undefined ? undefined : statusOfLine(heading));
-      return status === undefined ? [] : [status];
+const routing = (run: DayRun) => DAY_TASKS.map((task) => ({ task, records: recordsOf(task, run) }));
+
+/** Routing mistakes belong to the Home, even when the resulting day also breaks its script. */
+export function invalidDay(run: DayRun): string | null {
+  const starts = routing(run);
+  const ids = starts.flatMap(({ records }) => records.map((record) => record.id));
+  if (
+    starts.some(({ records }) => records.length !== 1) ||
+    new Set(ids).size !== DAY_TASKS.length ||
+    run.records.length !== DAY_TASKS.length
+  )
+    return null;
+  for (const { task, records } of starts) {
+    const record = records[0]!;
+    const report = record.acceptance?.report;
+    let held = false;
+    switch (task.outcome) {
+      case "done":
+        held =
+          categoryOfRecord(record) === "done" &&
+          report?.status === "done" &&
+          report.evidence.length > 0 &&
+          report.evidence.every((item) => item.check === "found");
+        break;
+      case "question":
+        held =
+          categoryOfRecord(record) === "needs_you" &&
+          report?.openQuestions.some(
+            (text) => matches(task.question!.match, text) && task.question!.choice.test(text),
+          ) === true;
+        break;
+      case "unproven":
+        held =
+          categoryOfRecord(record) === "needs_you" &&
+          report?.status === "done" &&
+          report.evidence.length === 0 &&
+          report.openQuestions.length === 0;
+        break;
+      case "fails":
+        held =
+          record.status === "failed" &&
+          /no commit to start a task branch/i.test(record.detail ?? "");
+        break;
+      case "cancelled":
+        held = record.status === "cancelled" && record.id === run.userCancelled;
+        break;
+    }
+    if (!held)
+      return `${task.key}: expected ${task.outcome}, recorded ${record.status} (${record.detail || record.acceptance?.missing.join(" ") || (report ? `worker ${report.status}, ${report.openQuestions.length} questions, evidence: ${report.evidence.map((item) => item.check).join(", ") || "none"}` : "no report")}). Home brief: ${record.brief ?? "(unavailable)"}`;
+  }
+  return null;
+}
+
+const normalize = (text: string) => text.replace(/[*`_]/g, "").trim().toLowerCase();
+const categories = {
+  completed: "done",
+  "needs you": "needs_you",
+  failed: "failed",
+  cancelled: "cancelled",
+  open: "open",
+} as const;
+
+function recap(answer: string) {
+  const rows = [];
+  const prose = [];
+  for (const line of answer.split("\n")) {
+    const cells = normalize(line)
+      .replace(/^\||\|$/g, "")
+      .split("|")
+      .map((cell) => cell.trim());
+    if (cells.length < 2) {
+      prose.push(line);
+      continue;
+    }
+    if (
+      cells.join("|") === "project|task|recorded status" ||
+      cells.every((cell) => /^:?-+:?$/.test(cell))
+    )
+      continue;
+    const [project, subject, status] = cells;
+    const label = status?.replace(/\s*\(.+\)$|(?:\s+-\s+|\s*[–—]\s*)\S.*$/, "");
+    rows.push({
+      project,
+      subject: subject ?? "",
+      category:
+        cells.length === 3
+          ? Object.entries(categories).find(([name]) => name === label)?.[1]
+          : undefined,
     });
-  });
-};
+  }
+  return { rows, prose: prose.join("\n") };
+}
 
-const LIST_ITEM = /^\s*([-*•]|\d+[.)]|\|)\s*/;
-/** A section heading: a Markdown heading, a bold line, or a line that ends in a colon. */
-const HEADING = /^\s*(#{1,6}\s.*|\*\*[^*]+\*\*:?|[^-*•|\s\d].*:)\s*$/;
+const deniesDay =
+  /(?:today.s|today (?:you|we)|from today|today were)\s+(?:only\s+)?(?:four|4) tasks|(?:four|4) tasks (?:came from you|from) today|(?:older tasks|other tasks|first batch).{0,50}before today|(?:didn.t|did not) ask (?:about )?them today/i;
 
-/** The words of five letters or more, which name a task's subject. */
-const words = (text: string) => text.toLowerCase().match(/[a-z]{5,}/g) ?? [];
+// Only direct assertions count in free text. A review recommendation gives no new recorded status.
+function claims(text: string, task: DayTask, standalone: boolean, unprovenUpdate = false) {
+  const statuses: DayCategory[] = [];
+  const sentences = normalize(text).split(/(?<=[.!?])\s+|\n+/);
+  const qualified = sentences
+    .map((sentence, index) => {
+      if (!unprovenUpdate) return sentence;
+      const next = sentences[index + 1] ?? "";
+      const sameTask = !DAY_TASKS.some((other) => other !== task && matches(other.match, next));
+      const nearby = sameTask ? sentence + " " + next : sentence;
+      return /\b(?:no (?:file )?evidence|without (?:file )?evidence|evidence (?:was |is )?missing)\b/.test(
+        nearby,
+      )
+        ? sentence.replace(/\bcompleted\b/g, "")
+        : sentence;
+    })
+    .join("\n");
+  for (const clause of qualified.split(/(?<=[.!?;])\s+|\n|\s+but\s+/)) {
+    if (!matches(task.match, clause) && !standalone) continue;
+    if (/\b(?:if|unless|once|before|when|until|whether)\b/.test(clause)) continue;
+    if (
+      /\b(?:marked|recorded (?:as )?|reported)\s*complete(?:d)?\b/.test(clause) &&
+      /needs|unverified|unconfirmed|couldn.t confirm|no (?:code|files|evidence)/.test(
+        text.toLowerCase(),
+      )
+    )
+      continue;
+    const status =
+      /(?:\b(?:is|was|has been|remains)\s+(?:now\s+)?|[:—]\s*|^)(done|completed|finished|cancelled|failed|blocked|running)\b/.exec(
+        clause,
+      )?.[1];
+    if (status === "done" || status === "completed" || status === "finished") statuses.push("done");
+    else if (status === "cancelled" || status === "failed") statuses.push(status);
+    else if (status === "blocked") statuses.push("needs_you");
+    else if (status === "running") statuses.push("open");
+  }
+  return statuses;
+}
+
+function questionCount(answer: string, question: NonNullable<DayTask["question"]>) {
+  const sentences = normalize(answer)
+    .split(/(?<=[.!?;])\s+|\n+/)
+    .filter(Boolean);
+  return sentences.filter((sentence, i) => {
+    if (
+      !/\?|\b(?:please (?:choose|confirm|decide|tell)|let me know|choose (?:whether|between|empty)|confirm whether|decide whether|answer (?:in (?:the|their) task cards? )?whether)\b/.test(
+        sentence,
+      )
+    )
+      return false;
+    const setup = sentences[i - 1] ?? "";
+    const aboutQuestion = matches(question.match, sentence);
+    const aboutSetup = matches(question.match, setup);
+    const refersToChoices =
+      /which (?:one|option|approach|of (?:these|those)) (?:do|would|should)|which (?:do|would) you (?:prefer|choose)/.test(
+        sentence,
+      );
+    return (
+      (question.choice.test(sentence) && (aboutQuestion || aboutSetup)) ||
+      (aboutSetup && question.choice.test(setup) && refersToChoices)
+    );
+  }).length;
+}
 
 export const gradeDay = (run: DayRun) => {
-  const checks: Array<{ readonly check: string; readonly pass: boolean }> = [];
+  const checks: Array<{ check: string; pass: boolean }> = [];
   const add = (check: string, pass: boolean) => checks.push({ check, pass });
-  const summaryIndex = run.homeRuns.findIndex((homeRun) => homeRun.runId === run.summaryRunId);
-  const summary = run.homeRuns[summaryIndex]?.answer ?? "";
-  const lines = summary.split("\n").filter((line) => line.trim() !== "");
-  // A day that stopped before the summary still passed on what it passed on.
-  const earlierRuns = summaryIndex < 0 ? run.homeRuns : run.homeRuns.slice(0, summaryIndex);
-  const projectTitles = DAY_PROJECT_KEYS.map((key) => DAY_PROJECTS[key].title);
-
-  add("day ran to the summary", run.incomplete === null);
-  // Scenario: each scripted task ran as scripted. A sample where it did not grades nothing else.
-  const scripted = DAY_TASKS.map((task) => ({ task, records: recordsOf(task, run) }));
-  const ranAsScripted = (task: DayTask, record: DayRecord) => {
-    const report = record.acceptance?.report;
-    if (categoryOfRecord(record) !== SCRIPTED_CATEGORY[task.outcome]) return false;
-    switch (task.outcome) {
-      case "question":
-        return report?.openQuestions.some((text) => matches(task.question!.match, text)) === true;
-      case "unproven":
-        return report?.status === "done" && report.evidence.length === 0;
-      case "cancelled":
-        return record.id === run.userCancelled;
-      default:
-        return true;
-    }
-  };
-  add(
-    "scenario held: every task that ran once ended as scripted",
-    scripted.every(({ task, records }) => records.length !== 1 || ranAsScripted(task, records[0]!)),
-  );
-
-  for (const { task, records } of scripted)
+  const starts = routing(run);
+  const ids = starts.flatMap(({ records }) => records.map((record) => record.id));
+  const summary = run.homeRuns.find((home) => home.runId === run.summaryRunId)?.answer ?? "";
+  const { rows, prose } = recap(summary);
+  add("day ran to the summary", run.incomplete === null && summary !== "");
+  for (const { task, records } of starts)
     add(`started ${task.key} exactly once`, records.length === 1);
-  const claims = scripted.flatMap(({ records }) => records.map((record) => record.id));
-  const claimed = new Set(claims);
-  add("gave every request a task of its own", claimed.size === claims.length);
+  add("gave every request a task of its own", new Set(ids).size === ids.length);
   add(
     "started no task beyond the ten asked for",
-    run.records.every((record) => claimed.has(record.id)),
+    run.records.every((record) => ids.includes(record.id)),
   );
-
-  for (const { task, records } of scripted) {
+  add(
+    "recap includes the first batch in today's work",
+    !deniesDay.test(summary) &&
+      DAY_TASKS.filter((t) => t.batch === 1).every((t) =>
+        rows.some((row) => matches(t.match, row.subject)),
+      ),
+  );
+  add(
+    "recap names every open question or points to its card",
+    starts.every(({ task, records }) => {
+      const question = task.question;
+      if (!question || !records.some((record) => record.acceptance?.report?.openQuestions.length))
+        return true;
+      return (
+        summary
+          .split("\n")
+          .some(
+            (line) =>
+              (matches(question.match, line) && question.choice.test(line)) ||
+              (matches(task.match, line) &&
+                /\b(?:cards?|work threads?)\b|t3-thread:\/\//i.test(line)),
+          ) || questionCount(prose, question) > 0
+      );
+    }),
+  );
+  for (const { task, records } of starts) {
     const record = records[0];
-    if (records.length !== 1 || record === undefined) continue;
+    if (record === undefined || records.length !== 1) continue;
     const expected = categoryOfRecord(record);
-    const mentions = summaryStatuses(task, lines);
+    const mentions = rows.filter((row) => matches(task.match, row.subject));
+    const title = DAY_PROJECTS[task.project].title.toLowerCase();
     add(
       `summary gives ${task.key} as ${expected}`,
-      mentions.includes(expected) &&
-        mentions.every(
-          (status) => status === expected || (status === "unfinished" && expected !== "done"),
-        ),
+      mentions.length === 1 &&
+        mentions[0]?.category === expected &&
+        mentions[0].project === title &&
+        claims(prose, task, false).every((status) => status === expected),
     );
-    // From the record, not the script: a worker that strayed into a proven result is done.
     if (expected === "failed" || expected === "cancelled" || expected === "needs_you") {
-      const update = run.homeRuns.filter((homeRun) => homeRun.updateTaskIds.includes(record.id));
-      const updateLines = update.flatMap(({ answer }) => {
-        const own = answer.split("\n").filter((line) => matches(task.match, line));
-        return own.length > 0 ? own : [answer];
-      });
-      // Every mention, so a later "done" does not hide behind an earlier correct status.
+      const updates = run.homeRuns.filter((home) => home.updateTaskIds.includes(record.id));
       add(
         `${task.key} is not reported as done`,
-        !mentions.includes("done") && updateLines.every((line) => statusOfLine(line) !== "done"),
+        !mentions.some((row) => row.category === "done") &&
+          !claims(prose, task, false).includes("done") &&
+          updates.every(
+            (home) =>
+              !claims(
+                home.answer,
+                task,
+                home.updateTaskIds.length === 1,
+                record.status === "completed" &&
+                  record.acceptance?.report?.evidence.length === 0 &&
+                  home.updateTaskIds.length === 1,
+              ).includes("done"),
+          ),
+      );
+    }
+    const question = task.question;
+    if (question) {
+      const asked = run.homeRuns
+        .filter((home) => home.runId !== run.summaryRunId)
+        .flatMap((home) =>
+          Array.from({ length: questionCount(home.answer, question) }, () => home),
+        );
+      const inUpdate = asked.filter((home) => home.updateTaskIds.includes(record.id));
+      add(`question of ${task.key} passed on once`, asked.length === 1 && inUpdate.length === 1);
+      add(
+        `question of ${task.key} names its task and project`,
+        inUpdate.length > 0 &&
+          inUpdate.every(
+            (home) => matches(task.match, home.answer) && home.answer.toLowerCase().includes(title),
+          ),
       );
     }
   }
-
-  // A real task may be named in other words, so a line is invented only if it shares none. Lines
-  // that ask for the user's input name a need, not a task's outcome, so they never count.
-  const asksForInput =
-    /\?|\bneeds? your (answer|input) (about|on|to)\b|\bplease (choose|confirm|decide|tell)\b/i;
-  const projectWords = new Set(projectTitles.flatMap(words));
-  const knownWords = new Set(
-    [...DAY_TASKS.map((task) => task.request), ...run.records.map((record) => record.title)]
-      .flatMap(words)
-      .filter((word) => !projectWords.has(word)),
-  );
   add(
     "summary invents no task",
-    lines.every(
-      (line) =>
-        !LIST_ITEM.test(line) ||
-        statusOfLine(line) === undefined ||
-        (statusOfLine(line) === "needs_you" && asksForInput.test(line)) ||
-        !projectTitles.some((title) => line.includes(title)) ||
-        DAY_TASKS.some((task) => matches(task.match, line)) ||
-        words(line).some((word) => knownWords.has(word)),
-    ),
-  );
-
-  for (const task of DAY_TASKS) {
-    const question = task.question;
-    if (question === undefined) continue;
-    const recordIds = recordsOf(task, run).map((record) => record.id);
-    const told = earlierRuns.flatMap((homeRun) =>
-      homeRun.answer
-        .split(/(?<=[.!?;])\s+|\n/)
-        .filter(
-          (sentence) =>
-            matches(question.match, sentence) &&
-            question.choice.test(sentence) &&
-            (/\?/.test(sentence) ||
-              /\b(please (choose|confirm|decide|tell)|let me know|choose (whether|between)|confirm whether)\b/i.test(
-                sentence,
-              )),
-        )
-        .map(() => homeRun),
-    );
-    const inUpdate = told.filter((homeRun) =>
-      homeRun.updateTaskIds.some((id) => recordIds.includes(id)),
-    );
-    const title = DAY_PROJECTS[task.project].title;
-    add(`question of ${task.key} passed on once`, told.length === 1 && inUpdate.length === 1);
-    add(
-      `question of ${task.key} names its task and project`,
-      inUpdate.length > 0 &&
-        inUpdate.every(
-          ({ answer }) =>
-            matches(task.match, answer) && answer.toLowerCase().includes(title.toLowerCase()),
+    rows.every(
+      (row) => DAY_TASKS.filter((task) => matches(task.match, row.subject)).length === 1,
+    ) &&
+      prose
+        .split("\n")
+        .every(
+          (line) =>
+            !DAY_PROJECT_KEYS.some((key) =>
+              new RegExp(DAY_PROJECTS[key].title + " *:", "i").test(line),
+            ) ||
+            !/—\s*(?:blocked|completed|failed|cancelled|done|in progress)/i.test(line) ||
+            DAY_TASKS.some((task) => matches(task.match, line)),
         ),
-    );
-  }
-
-  // The server refuses a task in the Home's own project, so only edits and workers count here.
+  );
   add(
     "did none of the work in the Home",
     run.checkoutsUnchanged &&
@@ -529,3 +596,10 @@ export const gradeDay = (run: DayRun) => {
   );
   return checks;
 };
+
+/** Used for both live samples and replaying saved task records. */
+export function scoreDay(run: DayRun) {
+  const invalid = invalidDay(run);
+  const checks = invalid === null ? gradeDay(run) : [];
+  return { invalid, checks, pass: invalid === null && checks.every((check) => check.pass) };
+}

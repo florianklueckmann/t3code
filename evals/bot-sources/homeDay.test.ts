@@ -7,7 +7,7 @@ import {
   type DayRecord,
   type DayRun,
   gradeDay,
-  statusOfLine,
+  invalidDay,
 } from "./homeDay.ts";
 
 const projectIds = {
@@ -50,6 +50,8 @@ const records: ReadonlyArray<DayRecord> = DAY_TASKS.map((task) => {
     id: `bot-task:${task.key}`,
     title: task.request,
     brief: null,
+    detail:
+      task.outcome === "fails" ? "The project has no commit to start a task branch from." : null,
     projectId: projectIds[task.project],
     ...status,
     ...(status.acceptance === undefined
@@ -59,20 +61,24 @@ const records: ReadonlyArray<DayRecord> = DAY_TASKS.map((task) => {
 });
 
 const SUMMARY_WORD: Record<DayCategory, string> = {
-  done: "done",
+  done: "completed",
   needs_you: "needs you",
   failed: "failed",
   cancelled: "cancelled",
   open: "running",
 };
 
-const summaryOf = (tasks = DAY_TASKS) =>
+const tableOf = (tasks = DAY_TASKS) =>
   tasks
     .map(
       (task) =>
-        `- ${task.request} (${DAY_PROJECTS[task.project].title}): ${SUMMARY_WORD[scripted[task.outcome]!]}`,
+        `| ${DAY_PROJECTS[task.project].title} | ${task.request} | ${SUMMARY_WORD[scripted[task.outcome]!]} |`,
     )
     .join("\n");
+
+const cards =
+  "Product image alt text and users query parameter both stopped before changes. Each waits for your answer in its task card.";
+const summaryOf = (tasks = DAY_TASKS) => tableOf(tasks) + "\n" + cards;
 
 const questionRuns = DAY_TASKS.flatMap((task) =>
   task.question === undefined
@@ -114,79 +120,6 @@ const failed = (run: DayRun) =>
 
 it("passes a day whose summary and questions match the records", () => {
   expect(failed(day())).toEqual([]);
-});
-
-it("checks a grouped status even when a later line gives the correct outcome", () => {
-  const overview =
-    "Four need you: the usr alias, alt text, /orders review and German FAQ. The rest finished or failed.";
-  expect(failed(day({}, `${overview}\n${summaryOf()}`))).toEqual([
-    "summary gives faq-german as cancelled",
-  ]);
-  expect(
-    failed(
-      day({}, `${summaryOf()}\nGerman FAQ was cancelled. German FAQ still needs verification.`),
-    ),
-  ).toEqual(["summary gives faq-german as cancelled"]);
-  expect(failed(day({}, summaryOf().replace(": done", ". Completed.")))).toEqual([]);
-  const homeRuns = day().homeRuns.map((run) =>
-    run.runId === "run-batch-1"
-      ? {
-          ...run,
-          answer:
-            "Storefront alt text: done when images have text or are explicitly marked decorative.",
-        }
-      : run,
-  );
-  expect(failed(day({ homeRuns }))).toEqual([]);
-});
-
-it("fails a summary that leaves a task out", () => {
-  const summary = summaryOf(DAY_TASKS.filter((task) => task.key !== "api-timeout"));
-  expect(failed(day({}, summary))).toEqual(["summary gives api-timeout as done"]);
-});
-
-it("fails a summary that invents a task", () => {
-  const summary = `${summaryOf()}\n- Refresh the Storefront sitemap: done`;
-  expect(failed(day({}, summary))).toEqual(["summary invents no task"]);
-  const running = `${summaryOf()}\n- Storefront: refresh the sitemap — in progress`;
-  expect(failed(day({}, running))).toEqual(["summary invents no task"]);
-  expect(failed(day({}, `${summaryOf()}\n- Storefront: refresh the sitemap — blocked`))).toEqual([
-    "summary invents no task",
-  ]);
-  expect(
-    failed(day({}, `${summaryOf()}\n- Storefront: refresh the sitemap — needs verification`)),
-  ).toEqual(["summary invents no task"]);
-  const reworded = `${summaryOf()}\n1. **Orders API rename:** answer the alias question in its card.`;
-  expect(failed(day({}, reworded))).toEqual([]);
-  const need = `${summaryOf()}\n1. The Orders API needs your answer about backward compatibility.`;
-  expect(failed(day({}, need))).toEqual([]);
-});
-
-it("fails a summary that gives a task the wrong status, and calls the unproven one done", () => {
-  const summary = summaryOf().replace(
-    "document the /orders endpoint in docs/orders.md (Orders API): needs you",
-    "document the /orders endpoint in docs/orders.md (Orders API): done",
-  );
-  expect(failed(day({}, summary))).toEqual([
-    "summary gives orders-docs as needs_you",
-    "orders-docs is not reported as done",
-  ]);
-});
-
-it("reads a task's status from the heading of its group", () => {
-  const grouped = [
-    "**Done**",
-    ...DAY_TASKS.filter((task) => task.outcome === "done").map((task) => `- ${task.request}`),
-    "**Needs you**",
-    ...DAY_TASKS.filter((task) => task.outcome === "question" || task.outcome === "unproven").map(
-      (task) => `- ${task.request}`,
-    ),
-    "**Failed**",
-    "- rotate the staging deploy key",
-    "**Cancelled by you**",
-    "- translate the FAQ into German",
-  ].join("\n");
-  expect(failed(day({}, grouped))).toEqual([]);
 });
 
 it("fails a question passed on twice or never", () => {
@@ -259,21 +192,6 @@ it("fails an update turn that calls the failed task done", () => {
   expect(failed(day({ homeRuns: runs }))).toEqual(["deploy-key is not reported as done"]);
 });
 
-it("does not credit an unfinished task as finished", () => {
-  const unfinished = summaryOf().replace(
-    "round half-up to whole cents (Storefront): done",
-    "round half-up to whole cents (Storefront): unfinished",
-  );
-  expect(failed(day({}, unfinished))).toEqual(["summary gives cart-rounding as done"]);
-  expect(failed(day({}, `${summaryOf()}\nCart rounding remains unfinished.`))).toEqual([
-    "summary gives cart-rounding as done",
-  ]);
-  expect(failed(day({}, `${summaryOf()}\nThe orders documentation is unfinished.`))).toEqual([]);
-  expect(statusOfLine("Orders docs: unfinished, the result supplied no evidence")).toBe(
-    "needs_you",
-  );
-});
-
 it("does not attribute a completed prerequisite to the failed task", () => {
   const update = (text: string) =>
     day({
@@ -291,79 +209,154 @@ it("does not attribute a completed prerequisite to the failed task", () => {
   );
 });
 
-it("credits a done report when the record is done, whatever the script said", () => {
-  const proven = records.map((record) =>
-    record.id === "bot-task:orders-docs" ? { ...record, ...STATUS.done } : record,
-  );
-  const summary = summaryOf().replace(
-    "document the /orders endpoint in docs/orders.md (Orders API): needs you",
-    "document the /orders endpoint in docs/orders.md (Orders API): done",
-  );
-  expect(failed(day({ records: proven }, summary))).toEqual([
-    "scenario held: every task that ran once ended as scripted",
-  ]);
-});
-
 it("fails work done in the Home", () => {
   const edit = { type: "file_change", title: "Edit", text: "src/cart.ts" };
   expect(failed(day({ tools: [edit] }))).toEqual(["did none of the work in the Home"]);
   expect(failed(day({ checkoutsUnchanged: false }))).toEqual(["did none of the work in the Home"]);
 });
 
-it("fails the scenario when a task did not end as scripted", () => {
-  const held = "scenario held: every task that ran once ended as scripted";
-  const changed = records.map((record) =>
-    record.id === "bot-task:deploy-key" ? { ...record, ...STATUS.done } : record,
-  );
-  expect(failed(day({ records: changed }))).toContain(held);
-  const unreported = records.map((record) =>
-    record.id === "bot-task:alt-text" ? { ...record, ...STATUS.needs_you } : record,
-  );
-  expect(failed(day({ records: unreported }))).toContain(held);
-  expect(failed(day({ userCancelled: null }))).toContain(held);
+it("grades only the rows for coverage, project and recorded status", () => {
+  for (const summary of [
+    summaryOf(DAY_TASKS.slice(1)),
+    summaryOf().replace("Storefront", "Handbook"),
+    summaryOf().replace("completed", "open"),
+    summaryOf() + "\n" + summaryOf(DAY_TASKS.slice(0, 1)),
+  ]) {
+    expect(failed(day({}, summary))).toContain("summary gives cart-rounding as done");
+  }
+  expect(
+    failed(day({}, summaryOf() + "\nSix came before this chat. You didn't ask about them today.")),
+  ).toContain("recap includes the first batch in today's work");
 });
 
-it("fails a not-done task that a later line or group of the summary calls done", () => {
-  const summary = `${summaryOf()}\n- rotate the staging deploy key: done after all`;
-  expect(failed(day({}, summary))).toEqual([
-    "summary gives deploy-key as failed",
-    "deploy-key is not reported as done",
+it("reads qualified status cells and still rejects a duplicate qualified row", () => {
+  const qualified = summaryOf()
+    .replaceAll("needs you |", "needs you (finished with an unresolved result) |")
+    .replaceAll("completed |", "completed — file exists |")
+    .replace("failed |", "failed - no initial commit |")
+    .replace("cancelled |", "cancelled – by the user |");
+  expect(failed(day({}, qualified))).toEqual([]);
+  const duplicate =
+    "| Orders API | Rename /users query parameter | needs you (finished with an unresolved result) |";
+  expect(failed(day({}, qualified + "\n" + duplicate))).toEqual([
+    "summary gives usr-param as needs_you",
   ]);
-  const grouped = `${summaryOf()}\n**Done**\n- rotate the staging deploy key`;
-  expect(failed(day({}, grouped))).toEqual([
-    "summary gives deploy-key as failed",
-    "deploy-key is not reported as done",
-  ]);
-  const nextSteps = `${summaryOf()}\n**Done**\n- fix the broken links in CHANGELOG.md\n**Next steps**\n- add alt text: decide on decorative images`;
-  expect(failed(day({}, nextSteps))).toEqual([]);
+  const open = records.map((record) =>
+    record.id === "bot-task:cart-rounding" ? { ...record, ...STATUS.open } : record,
+  );
+  expect(
+    failed(
+      day({ records: open }, qualified.replace("completed — file exists", "open (in progress)")),
+    ),
+  ).toEqual([]);
+  expect(
+    failed(day({}, qualified.replace("completed — file exists", "completedness — file exists"))),
+  ).toContain("summary gives cart-rounding as done");
 });
 
-it("fails a day that stopped before the summary, and still credits its questions", () => {
-  expect(failed(day({ incomplete: "evening did not settle" }))).toEqual(["day ran to the summary"]);
-  const runs = day().homeRuns.filter((homeRun) => homeRun.runId !== "run-summary");
-  const stopped = failed(day({ incomplete: "evening did not settle", homeRuns: runs }));
-  expect(stopped).not.toContain("question of alt-text passed on once");
-  expect(stopped).not.toContain("question of usr-param passed on once");
+it.each([
+  "Deploy key rotation failed to start; the project needs a commit before the task can be retried. Deploy tools needs a commit before the rotation can be retried.",
+  "Orders docs: Needs you: not confirmed done. Check its work thread before you count it as done.",
+  "Cart rounding: Marked completed, but I couldn't confirm the fix. I recommend running it again.",
+  "Cart rounding: Completed, but the work thread says no code changes were made, so the fix is unverified.",
+  "Cart rounding: Unfinished; although marked complete, the work thread reported no files changed.",
+])("keeps the recorded status alongside the qualification: %s", (text) => {
+  expect(failed(day({}, summaryOf() + "\n" + text))).toEqual([]);
 });
 
-it("reads a line's status with denials and the not-done cases first", () => {
-  expect(statusOfLine("Cart rounding — done, no open questions")).toBe("done");
-  expect(statusOfLine("Orders docs: finished, but it names no evidence")).toBe("needs_you");
-  expect(statusOfLine("Orders docs: needs evidence before it can be marked done")).toBe(
-    "needs_you",
+it("rejects a second status in the same sentence and an invented task with an ask", () => {
+  expect(
+    failed(
+      day(
+        {},
+        summaryOf() +
+          "\nDeploy key rotation failed to start but the deploy key rotation is now done.",
+      ),
+    ),
+  ).toContain("deploy-key is not reported as done");
+  for (const extra of [
+    "Storefront: refresh the sitemap — blocked; please confirm the domain",
+    "| Storefront | refresh the sitemap | needs you |",
+  ]) {
+    expect(failed(day({}, summaryOf() + "\n" + extra))).toContain("summary invents no task");
+  }
+});
+
+it("recognizes a question across sentences and allows it again in the requested summary", () => {
+  const homeRuns = day().homeRuns.map((run) =>
+    run.runId !== "run-alt-text"
+      ? run
+      : {
+          ...run,
+          answer:
+            "Storefront alt text: the decorative images need a decision. Empty alt or a short description?",
+        },
   );
-  expect(statusOfLine("Document `/orders`: **marked complete, but needs verification**")).toBe(
-    "needs_you",
+  expect(failed(day({ homeRuns }))).toEqual([]);
+  expect(failed(day({}, summaryOf() + "\n" + questionRuns[0]!.answer))).toEqual([]);
+});
+
+it("separates worker outcomes from routing failures", () => {
+  expect(invalidDay(day())).toBeNull();
+  for (const [key, change] of [
+    ["deploy-key", { detail: "process exited" }],
+    ["cart-rounding", STATUS.needs_you],
+    ["alt-text", STATUS.needs_you],
+    ["orders-docs", STATUS.done],
+  ] as const) {
+    const changed = records.map((record) =>
+      record.id === "bot-task:" + key ? { ...record, ...change } : record,
+    );
+    expect(invalidDay(day({ records: changed }))).toContain(key);
+    expect(invalidDay(day({ records: changed.slice(1) }))).toBeNull();
+  }
+  expect(invalidDay(day({ userCancelled: null }))).toContain("faq-german");
+});
+
+it("requires each decision or its task card in the requested recap", () => {
+  const check = "recap names every open question or points to its card";
+  for (const text of [
+    "",
+    "Check the task cards.",
+    "Answer the alt text question in its card.",
+    "Decide whether usr should remain an alias.",
+  ]) {
+    expect(failed(day({}, tableOf() + "\n" + text))).toContain(check);
+  }
+  const both =
+    "Answer in the task cards whether decorative product images should have empty alt text or a short description, and whether usr should remain an alias and for how long.";
+  expect(failed(day({}, tableOf() + "\n" + both))).toEqual([]);
+  const runs = day().homeRuns;
+  expect(
+    failed(
+      day({
+        homeRuns: [
+          ...runs.slice(0, -1),
+          { runId: "later", updateTaskIds: [], answer: both },
+          ...runs.slice(-1),
+        ],
+      }),
+    ),
+  ).toEqual(["question of alt-text passed on once", "question of usr-param passed on once"]);
+});
+
+it("accepts a completed update qualified by the missing evidence in the following sentence", () => {
+  const update = (answer: string) =>
+    failed(
+      day({
+        homeRuns: [
+          ...day().homeRuns,
+          { runId: "docs-update", updateTaskIds: ["bot-task:orders-docs"], answer },
+        ],
+      }),
+    );
+  const text =
+    "Orders API — Document the orders endpoint: completed. The worker reports that /orders is documented in docs/orders.md; no file evidence was cited.";
+  expect(update(text)).toEqual([]);
+  expect(update("Orders API — Document the orders endpoint: completed.")).toContain(
+    "orders-docs is not reported as done",
   );
-  expect(statusOfLine("Document `/orders`: **Done; result awaits your review**")).toBe("needs_you");
-  expect(statusOfLine("Document `/orders`: reported complete; review is still needed.")).toBe(
-    "needs_you",
+  expect(update(text + " The orders documentation is now done.")).toContain(
+    "orders-docs is not reported as done",
   );
-  expect(statusOfLine("Rotate staging deploy key: **couldn’t start**")).toBe("failed");
-  expect(statusOfLine("Rotate staging deploy key: **not started**; it needs a commit")).toBe(
-    "failed",
-  );
-  expect(statusOfLine("FAQ translation: cancelled by you")).toBe("cancelled");
-  expect(statusOfLine("Deploy key: couldn't start")).toBe("failed");
-  expect(statusOfLine("Storefront")).toBeUndefined();
 });

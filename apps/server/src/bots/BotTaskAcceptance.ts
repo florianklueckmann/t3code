@@ -46,6 +46,10 @@ const items = (values: ReadonlyArray<string>) =>
     .filter((value) => value !== "")
     .slice(0, ITEMS);
 
+/** Older reports do not record whether the item and length limits cut off their questions. */
+export const mayHaveClippedQuestions = (questions: ReadonlyArray<string>) =>
+  questions.length >= ITEMS || questions.some((question) => question.length >= ITEM_CHARS);
+
 /** The report that ends the result's last line, and the result without it. */
 export function readResultReport(text: string): {
   readonly report: ReportLine | null;
@@ -108,7 +112,7 @@ export function decideAcceptance(
     ...(evidence.length === 0 ? ["The result names no evidence."] : []),
     ...evidence
       .filter((item) => item.check === "missing")
-      .map((item) => `“${item.text}” does not exist.`),
+      .map((item) => `Could not verify “${item.text}”.`),
   ];
   const full: BotTaskReport = { ...report, evidence };
   return {
