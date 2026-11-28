@@ -44,6 +44,7 @@ export const BOT_WORKTREE_POOL_LIMIT = 5;
 export const BOT_WORKTREE_IDLE_DAYS = 7;
 /** `claimed_by` of a free worktree while Clear or expiry removes it. */
 const REMOVING = "removing";
+const WIP_FOOTER = "Saved by T3 Code when the Bot task's work stopped.";
 /** In a pool worktree's admin directory: the id of the row it belongs to. */
 const OWNER_MARKER = "t3-bot-worktree";
 /** In the same directory, written just before a claim's switch: older files are leftovers. */
@@ -166,7 +167,7 @@ export class BotWorktreePool extends Context.Service<
       /** The task's branch, and the thread's folder: a worktree there not yet the pool's joins it. */
       readonly branch: string;
       readonly worktreePath: string | null;
-      readonly commitMessage: string;
+      readonly taskTitle: string;
       /** Branch for work saved from a detached HEAD; it starts with `<branch>-wip-`. */
       readonly wipBranch: string;
       /** False removes the worktree instead of parking it. */
@@ -689,8 +690,7 @@ const make = Effect.gen(function* () {
       WHERE project_id = ${projectId} AND claimed_by IS NULL AND kept_reason IS NULL
     `.pipe(Effect.map((rows) => rows[0]?.count ?? 0));
   const markHeld = (workThreadId: ThreadId) =>
-    sql`UPDATE bot_tasks SET worktree_state = 'held', unfinished_work = 0
-        WHERE work_thread_id = ${workThreadId} AND worktree_state IS NOT 'held'`;
+    sql`UPDATE bot_tasks SET worktree_state = 'held' WHERE work_thread_id = ${workThreadId}`;
   const readRow = (worktreeId: string) =>
     sql<WorktreeRow>`SELECT * FROM bot_worktrees WHERE worktree_id = ${worktreeId}`.pipe(
       Effect.map((rows) => rows[0]),
@@ -946,12 +946,28 @@ const make = Effect.gen(function* () {
       : [];
   });
 
+  const branchHasWipCommit = (cwd: string, branch: string) =>
+    read("branch-tip-message", cwd, [
+      "log",
+      "-1",
+      "--format=%B",
+      `refs/heads/${branch}`,
+      "--",
+    ]).pipe(
+      Effect.map(
+        ({ exitCode, stdout }) =>
+          exitCode === 0 &&
+          stdout.startsWith("WIP: ") &&
+          stdout.trimEnd().endsWith(`\n\n${WIP_FOOTER}`),
+      ),
+    );
+
   /** Commits uncommitted work, and names a commit no ref holds; how much was saved, and where. */
   const saveWork = Effect.fn("BotWorktreePool.saveWork")(function* (
     target: string,
     input: {
       readonly branch: string;
-      readonly commitMessage: string;
+      readonly taskTitle: string;
       readonly wipBranch: string;
     },
   ) {
@@ -981,7 +997,7 @@ const make = Effect.gen(function* () {
           "--no-verify",
           "--quiet",
           "-m",
-          input.commitMessage,
+          `WIP: ${input.taskTitle}\n\n${WIP_FOOTER}`,
         ]);
     } else if (detached && !(yield* headOnRef(target))) {
       // A clean detached HEAD can still hold commits; parking would leave them on no branch.
@@ -1083,9 +1099,12 @@ const make = Effect.gen(function* () {
         }
         if (located.at !== row.path) {
           saved = yield* saveWork(located.at, input);
+          const unfinished =
+            saved.savedWork ||
+            (yield* branchHasWipCommit(repo.root, saved.savedOn ?? input.branch));
           // Before the worktree moves, so a restart after the move still names the saved work.
           yield* sql`
-            UPDATE bot_tasks SET unfinished_work = MAX(unfinished_work, ${saved.savedWork ? 1 : 0}),
+            UPDATE bot_tasks SET unfinished_work = ${unfinished ? 1 : 0},
               branch = COALESCE(${saved.savedOn}, branch)
             WHERE work_thread_id = ${input.workThreadId}
           `.pipe(Effect.mapError(storage));

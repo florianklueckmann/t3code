@@ -209,7 +209,7 @@ const withRepository = <A, E>(
         workThreadId: threadOf(name),
         branch: `bot/${name}`,
         worktreePath,
-        commitMessage: "WIP: Task",
+        taskTitle: "Task",
         wipBranch: `bot/${name}-wip-1`,
         reuse,
         inUse,
@@ -661,7 +661,14 @@ it.effect("keeps the WIP mark when release resumes before the worktree moved", (
       const claim = yield* world.take("retry");
       if (claim._tag !== "pooled") return assert.fail();
       yield* world.write(`${claim.worktreePath}/README.md`, "draft\n");
-      yield* world.git(claim.worktreePath, "commit", "-qam", "WIP: Task");
+      yield* world.git(
+        claim.worktreePath,
+        "commit",
+        "-qam",
+        "WIP: Task",
+        "-m",
+        "Saved by T3 Code when the Bot task's work stopped.",
+      );
       yield* sql`UPDATE bot_tasks SET unfinished_work = 1 WHERE work_thread_id = ${thread}`;
 
       assert.deepEqual(yield* world.release("retry"), {
@@ -1007,8 +1014,14 @@ it.effect("puts a released task's worktree back on its branch for a follow-up", 
         yield* world.pool.restore({ ...thread, id: ThreadId.make("not-a-bot-thread") }),
       );
 
+      assert.isFalse((yield* world.release("task-1")).savedWork);
+      yield* markReleased(task.thread);
+      assert.equal((yield* unfinishedWork)[0]?.unfinished_work, 1);
+      assert.equal(yield* world.git(world.root, "rev-parse", task.branch), wip);
+
+      assert.isTrue(yield* world.pool.restore(thread));
       yield* world.write(`${task.worktreePath}/feature.txt`, "finished\n");
-      yield* world.git(task.worktreePath, "commit", "-am", "Finish the feature");
+      yield* world.git(task.worktreePath, "commit", "-am", "WIP: Task");
       assert.deepEqual(yield* world.release("task-1"), {
         savedWork: false,
         savedOn: null,

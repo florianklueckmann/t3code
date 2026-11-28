@@ -125,7 +125,7 @@ interface BotTaskRow {
   /** The branch the task named to start from; null starts from the default branch. */
   readonly base_branch: string | null;
   readonly worktree_state: "root" | "held" | "released" | null;
-  /** 1 when the latest worktree release saved uncommitted changes on the branch. */
+  /** 1 when the task branch tip was a pool WIP commit at release. */
   readonly unfinished_work: number;
   /** A completed direct task's BotTaskAcceptance; null for other tasks. */
   readonly acceptance_json: string | null;
@@ -2086,7 +2086,7 @@ const make = Effect.gen(function* () {
             workThreadId,
             branch,
             worktreePath: shell?.worktreePath ?? null,
-            commitMessage: `WIP: ${row.title}\n\nSaved by T3 Code when the Bot task's work stopped.`,
+            taskTitle: row.title,
             wipBranch: `${branch}-wip-${DateTime.toEpochMillis(yield* DateTime.now)}`,
             reuse: started,
             inUse: terminalIn(worktreePath).pipe(
@@ -2098,7 +2098,8 @@ const make = Effect.gen(function* () {
         // From the task row, so a release a restart interrupted still tells the thread, and before
         // the task counts as released, which ends these passes. Only a WIP branch: a branch the
         // agent switched to is one the thread already follows.
-        const saved = (yield* readRow(row.task_id))?.branch ?? null;
+        const updated = yield* readRow(row.task_id);
+        const saved = updated?.branch ?? null;
         if (
           saved !== null &&
           saved.startsWith(`${taskBranchName(row)}-wip-`) &&
@@ -2116,8 +2117,11 @@ const make = Effect.gen(function* () {
         yield* sql`UPDATE bot_tasks SET worktree_state = 'released' WHERE task_id = ${row.task_id}`.pipe(
           Effect.mapError(storageError),
         );
-        // Claiming a follow-up can clear its WIP mark before this release sees the task.
-        return row.worktree_state === "held" || parked.savedWork || parked.savedOn !== null;
+        return (
+          parked.savedWork ||
+          parked.savedOn !== null ||
+          updated?.unfinished_work !== row.unfinished_work
+        );
       }),
     );
     if (shouldPublish) yield* publish(row);
