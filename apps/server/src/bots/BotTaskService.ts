@@ -882,13 +882,15 @@ const make = Effect.gen(function* () {
 
   /**
    * The turn running in the Bot's Home, when `requestedIn` names that Home; it is what asked.
-   * `projectId` is the Home's own project: the hidden one for the Bot's own Home.
+   * `projectId` is the Home's own project: the hidden one for the Bot's own Home, where a task's
+   * update may already wait behind the turn that is still starting tasks.
    */
   const readRequestingHomeTurn = Effect.fnUntraced(function* (
     input: { readonly botId: BotId; readonly projectId: ProjectId },
     homeThreadId: string,
     home: OrchestrationV2ThreadShell | null,
     requestedIn: ThreadId | null | undefined,
+    queuedBehind = false,
   ) {
     if (
       requestedIn === undefined ||
@@ -900,7 +902,7 @@ const make = Effect.gen(function* () {
       home.archivedAt !== null ||
       home.status !== "running" ||
       home.activeRunId === null ||
-      home.activeRunId !== home.latestRunId
+      (!queuedBehind && home.activeRunId !== home.latestRunId)
     )
       return undefined;
     const runId = home.activeRunId;
@@ -921,16 +923,17 @@ const make = Effect.gen(function* () {
     const message = records.messages.find((candidate) => candidate.id === run?.userMessageId);
     return { records, run, message };
   });
-  /** The Bot's own Home, attached, when its turn is what asked. */
+  /** The Bot's own Home, when its turn is what asked; refused once removed, so no task strays. */
   const requestingBotHome = Effect.fnUntraced(function* (
     botId: BotId,
     requestedIn: ThreadId | null | undefined,
   ) {
     if (requestedIn == null) return undefined;
     const home = yield* store.getContextByThread(requestedIn).pipe(Effect.mapError(storageError));
-    return home?.kind === "bot" && home.bot_id === botId && home.detached_at === null
-      ? home
-      : undefined;
+    if (home?.kind !== "bot" || home.bot_id !== botId) return undefined;
+    if (home.detached_at !== null)
+      return yield* botError("This Bot's Home was removed, so it starts no tasks.", botId)();
+    return home;
   });
 
   /** An agent acts by hand only inside a Home turn the user began with a typed message. */
@@ -1006,6 +1009,7 @@ const make = Effect.gen(function* () {
         asking.homeThreadId,
         asking.home,
         requestedIn,
+        botHome !== undefined,
       );
       const byHand = options === undefined || isUserTurn(homeTurn);
       let returnHomeRunId: string | null = null;
@@ -1073,6 +1077,8 @@ const make = Effect.gen(function* () {
                   input.botId,
                 )();
             }
+            // A removal that committed since the read above has already swept its tasks.
+            if (botHome !== undefined) yield* requestingBotHome(input.botId, requestedIn);
             yield* insertTask(row);
           }),
         )

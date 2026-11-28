@@ -86,7 +86,7 @@ function updateText(input: {
   readonly projectTitle: string;
   readonly result: string | null;
   readonly question: string | null;
-  readonly lastMessage: string | null;
+  readonly runError: string | null;
 }) {
   const { task } = input;
   const acceptance = task.acceptance;
@@ -103,7 +103,7 @@ function updateText(input: {
   const questions = acceptance?.report?.openQuestions ?? [];
   const failure =
     task.status === "failed" || task.status === "interrupted"
-      ? (task.detail ?? input.lastMessage)
+      ? (task.detail ?? input.runError)
       : null;
   return [
     `T3 Code: a task you started ${what}. This is a status update from the server, not a message from the user.`,
@@ -180,6 +180,9 @@ const make = Effect.gen(function* () {
 
   const deliverRow = Effect.fn("BotHomeUpdates.deliverRow")(function* (row: UpdateRow) {
     if (row.work_thread_id === null) return;
+    const task = yield* tasks.get(BotTaskId.make(row.task_id));
+    // It moved on since the row was read; that status is told on its own.
+    if (task.status !== row.status) return;
     const shell =
       row.status === "waiting" || row.status === "failed"
         ? yield* readShell(row.work_thread_id)
@@ -189,7 +192,6 @@ const make = Effect.gen(function* () {
     // A removed Home or an archived Bot has nobody to tell; a later reopening is not owed it.
     if (row.home_detached_at !== null || row.bot_archived_at !== null)
       return yield* record(row.task_id, key);
-    const task = yield* tasks.get(BotTaskId.make(row.task_id));
     const result =
       task.status === "completed"
         ? (task.acceptance?.report?.result ??
@@ -217,7 +219,9 @@ const make = Effect.gen(function* () {
               ),
             requestId,
           );
-    const lastMessage = task.detail === null ? (shell?.latestVisibleMessage?.text ?? null) : null;
+    // The thread's last error is the saved run's only while that run is still its latest.
+    const runError =
+      shell !== null && shell.latestRunId === row.result_run_id ? (shell.lastError ?? null) : null;
     const project = yield* projects
       .getById(task.projectId)
       .pipe(Effect.orElseSucceed(() => Option.none()));
@@ -235,7 +239,7 @@ const make = Effect.gen(function* () {
           projectTitle: Option.isSome(project) ? project.value.title : task.projectId,
           result,
           question,
-          lastMessage,
+          runError,
         }),
         attachments: [],
         mode: "queue",

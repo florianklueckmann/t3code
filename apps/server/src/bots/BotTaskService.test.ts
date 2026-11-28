@@ -150,6 +150,9 @@ interface FakeThread {
   /** Where the launch put it: "root", "worktree <branch> from <base>" or "pooled <path> <branch>". */
   readonly workspace: string;
   readonly worktreePath: string | null;
+  /** A run queued behind the active one, which then is the latest. */
+  readonly queuedRunId?: string;
+  readonly lastError?: string;
 }
 
 const describeWorkspace = (
@@ -303,6 +306,7 @@ const makeThreadWorld = Effect.gen(function* () {
       | "latestRunStartedAt"
       | "id"
       | "projectId"
+      | "lastError"
     > = {
       id: threadId,
       projectId: thread.projectId,
@@ -315,7 +319,9 @@ const makeThreadWorld = Effect.gen(function* () {
         ? { id: "request" as never, kind: "user_input" as never, createdAt: DateTime.makeUnsafe(0) }
         : null,
       pendingBackgroundTasks: Array.from({ length: thread.backgroundTasks }, () => ({}) as never),
-      latestRunId: thread.runId as OrchestrationV2ThreadShell["latestRunId"],
+      latestRunId: (thread.queuedRunId ??
+        thread.runId) as OrchestrationV2ThreadShell["latestRunId"],
+      lastError: thread.lastError ?? null,
       latestRunCompletedAt:
         thread.runId !== null && thread.status !== "queued" && thread.status !== "running"
           ? DateTime.makeUnsafe(0)
@@ -1303,6 +1309,8 @@ it.effect(
           yield* world.update(projectHome, { runtimeMode: "approval-required" });
           yield* world.update(home.homeThreadId, { runtimeMode: "full-access" });
           yield* seedHomeRun(world, home.homeThreadId, "ui", home.projectId);
+          // An update of a task started earlier in this turn already waits behind it.
+          yield* world.update(home.homeThreadId, { queuedRunId: "update-run" });
           yield* services.bots.update({ botId, taskLimit: 1 });
           const fromHome = (prompt: string, projectId: ProjectId, returnToHome = false) =>
             services.tasks.start(
@@ -1356,6 +1364,9 @@ it.effect(
           // The waiting one ends at once and never starts.
           assert.equal(byId.get(waiting.id)?.status, "cancelled");
           assert.isFalse((yield* Ref.get(world.threads)).has(workThreadOf(waiting)));
+          // A turn still running in the removed Home starts nothing, not even in a project's Home.
+          const removed = yield* Effect.flip(fromHome("E.", campaign));
+          assert.include(removed.message, "Home was removed");
 
           // A start the removal did not see, as after a crash, is stopped by the next pass.
           yield* services.bots.openHome({ botId });
@@ -1408,6 +1419,7 @@ it.effect("the Bot's own Home is told once of each task it started that ends or 
           `Changed it.\n${report({ evidence: ["branch: bot/missing"] })}`,
         );
         yield* endRun(world, work(tasks.failed), "failed");
+        yield* world.update(work(tasks.failed), { lastError: "Codex exited with code 1." });
         yield* world.update(work(tasks.asking), { status: "running", blockingRequest: true });
         yield* Ref.update(world.records, (all) =>
           new Map(all).set(work(tasks.asking), {
@@ -1457,6 +1469,7 @@ it.effect("the Bot's own Home is told once of each task it started that ends or 
     assert.include(unproven, "finished, but its result waits for the user");
     assert.include(unproven, "Result check: not done. “branch: bot/missing” does not exist.");
     assert.include(failed, "a task you started failed.");
+    assert.include(failed, "What went wrong: Codex exited with code 1.");
     assert.include(asking, "is waiting for the user");
     assert.include(asking, "Question: Which branch should I use?");
     // What waits for the user is noted in the Home that started it.
