@@ -479,7 +479,7 @@ it.effect(
         readonly migration_id: number;
         readonly name: string;
       }>`SELECT migration_id, name FROM effect_sql_migrations ORDER BY migration_id`;
-      assert.deepEqual(history.slice(-21), [
+      assert.deepEqual(history.slice(-22), [
         { migration_id: 11, name: "BotMaintenance" },
         { migration_id: 12, name: "BotMaintenanceReceipts" },
         { migration_id: 13, name: "BotMaintenanceNightly" },
@@ -501,6 +501,7 @@ it.effect(
         { migration_id: 29, name: "BotHome" },
         { migration_id: 30, name: "BotTaskLimit" },
         { migration_id: 31, name: "BotHomeUpdates" },
+        { migration_id: 32, name: "BotWorktreeSlots" },
       ]);
       const maintenance = yield* BotMaintenance.BotMaintenance;
       const view = yield* maintenance.get(scope);

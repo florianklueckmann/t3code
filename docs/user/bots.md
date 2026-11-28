@@ -241,16 +241,27 @@ worktree unused for 7 days is removed. **Settings → Bots** shows each project'
 task worktrees and their disk use; **Clear free worktrees** removes the free ones
 now, for example when a stale build cache causes trouble.
 
-A task that fails or is cancelled with uncommitted changes keeps them as a WIP
-commit on its branch, and its card says the branch holds unfinished work. Nothing
-is pushed. A message in a finished task's thread takes a worktree again, on the
+Changes a task leaves uncommitted, also when it fails or is cancelled, are kept as
+a WIP commit on its branch, and its card says so. Nothing is pushed. A message in a finished task's thread takes a worktree again, on the
 task's branch, and gives it back when that turn ends. Its setup script does not
-run again for the follow-up.
+run again for the follow-up. A worktree goes back only once the task's thread, any
+side chat working in it and its setup script have all finished.
+
+Some work cannot go into a commit, such as edits or unpushed commits inside a
+submodule. A worktree holding such work is kept in the task's folder, out of the
+pool, and **Settings → Bots** counts it as kept and says why. A worktree with a
+terminal still open in it is kept the same way until you close that terminal, and
+then goes back to the pool. A free worktree that changed after the pool took it
+back is kept too and never handed to another task. A message in the task's thread
+picks a kept worktree up again; **Clear free worktrees** removes a kept one once
+nothing in it is unsaved anymore.
 
 A project folder without Git, or a repository without a commit yet, has no
 worktrees: its tasks run in the folder, one task that may change files at a
 time, and the next one waits. A base branch that does not exist stops the task
-before it starts and its card says why.
+before it starts and its card says why. So does a remote that cannot be reached
+when the default branch was never fetched from it: the task does not guess a
+local branch instead.
 
 A **routine** runs a task on a schedule. In **Settings → Bots**, edit
 the Bot and choose **Add routine** under the project. Describe what the Bot should do,

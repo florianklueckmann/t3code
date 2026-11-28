@@ -3,6 +3,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
   BOT_WORK_THREAD_ID_PREFIX,
+  type TerminalMetadataStreamEvent,
   type BotError,
   BotId,
   botHomeProjectId,
@@ -39,6 +40,7 @@ import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Option from "effect/Option";
@@ -59,6 +61,8 @@ import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as ProjectService from "../project/ProjectService.ts";
+import * as WorktreeSetupTracker from "../project/WorktreeSetupTracker.ts";
+import * as TerminalManager from "../terminal/Manager.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
@@ -153,11 +157,12 @@ interface FakeThread {
   /** A run queued behind the active one, which then is the latest. */
   readonly queuedRunId?: string;
   readonly lastError?: string;
+  readonly branch?: string | null;
 }
 
 const describeWorkspace = (
   input: ThreadLaunchService.ThreadLaunchInput,
-): Pick<FakeThread, "workspace" | "worktreePath"> => {
+): Pick<FakeThread, "workspace" | "worktreePath" | "branch"> => {
   const strategy = input.workspaceStrategy;
   switch (strategy.type) {
     case "root":
@@ -171,6 +176,7 @@ const describeWorkspace = (
       return {
         workspace: `pooled ${strategy.worktreePath} ${strategy.branch}${input.setupScript === "skip" ? " without setup" : ""}`,
         worktreePath: strategy.worktreePath,
+        branch: strategy.branch ?? null,
       };
   }
 };
@@ -208,11 +214,21 @@ const makeThreadWorld = Effect.gen(function* () {
   /** Command ids the orchestrator refused; their receipt replays the refusal. */
   const rejected = yield* Ref.make(new Set<string>());
   const notificationAttempts = yield* Ref.make<ReadonlyArray<CommandId>>([]);
-  /** What the pool answers next; the last one stays. Without any, a new worktree is created. */
+  /** What the pool answers next; the last one stays. Without any, a new worktree named by branch. */
   const poolClaims = yield* Ref.make<ReadonlyArray<BotWorktreePool.BotWorktreeClaim>>([]);
   const poolTakes = yield* Ref.make<
     ReadonlyArray<Parameters<BotWorktreePool.BotWorktreePool["Service"]["take"]>[0]>
   >([]);
+  /** The worktree each work thread holds now. */
+  const poolHeld = yield* Ref.make(new Map<ThreadId, string>());
+  /** Worktrees the pool keeps for a thread, with why. */
+  const poolKept = yield* Ref.make(new Map<ThreadId, string>());
+  /** What happens while a release moves the worktree, before the pool asks whether it is in use. */
+  const poolMoving = yield* Ref.make<Effect.Effect<void>>(Effect.void);
+  /** TerminalManager's metadata listeners; `terminalEvent` feeds them as it would. */
+  const terminalListeners: Array<(event: TerminalMetadataStreamEvent) => Effect.Effect<void>> = [];
+  const terminalEvent = (event: TerminalMetadataStreamEvent) =>
+    Effect.forEach(terminalListeners, (listener) => listener(event), { discard: true });
   /** Worktree paths given back to the pool, in order. */
   const poolParks = yield* Ref.make<ReadonlyArray<string>>([]);
   const poolSavesWork = yield* Ref.make(false);
@@ -303,6 +319,7 @@ const makeThreadWorld = Effect.gen(function* () {
       | "latestRunCompletedAt"
       | "activeRunId"
       | "worktreePath"
+      | "branch"
       | "latestRunStartedAt"
       | "id"
       | "projectId"
@@ -329,9 +346,25 @@ const makeThreadWorld = Effect.gen(function* () {
           : null,
       activeRunId: thread.status === "running" ? RunId.make(thread.runId!) : null,
       worktreePath: thread.worktreePath,
+      branch: thread.branch ?? null,
       latestRunStartedAt: thread.started === true ? DateTime.makeUnsafe(0) : null,
     };
     return shell as OrchestrationV2ThreadShell;
+  });
+
+  /** The threads in one folder, as the orchestrator lists them by worktree path. */
+  const getShellSnapshot = Effect.fn("FakeThreads.getShellSnapshot")(function* (options?: {
+    readonly worktreePath?: string;
+  }) {
+    const shells: Array<OrchestrationV2ThreadShell> = [];
+    const archived: Array<OrchestrationV2ThreadShell> = [];
+    for (const [threadId, thread] of yield* Ref.get(threads)) {
+      if (options?.worktreePath !== undefined && thread.worktreePath !== options.worktreePath)
+        continue;
+      const shell = yield* getThreadShell(threadId);
+      if (shell !== null) (thread.archived ? archived : shells).push(shell);
+    }
+    return { threads: shells, archivedThreads: archived } as never;
   });
 
   const launch = Effect.fn("FakeThreads.launch")(function* (
@@ -395,6 +428,7 @@ const makeThreadWorld = Effect.gen(function* () {
           }
           return {} as never;
         }),
+      getShellSnapshot,
       isProviderInstanceEnabledForProject: (input) =>
         Effect.succeed(input.instanceId !== "codex-blocked"),
       getProjectThreadRecords: (input, fields, filter) =>
@@ -419,19 +453,75 @@ const makeThreadWorld = Effect.gen(function* () {
           }
           const [next, ...rest] = yield* Ref.get(poolClaims);
           if (rest.length > 0) yield* Ref.set(poolClaims, rest);
-          const claim = next ?? { _tag: "create", baseRef: "origin-main" };
-          if (claim._tag === "create" || claim._tag === "pooled")
+          const claim = next ?? {
+            _tag: "pooled",
+            worktreePath: `/worktrees/${input.branch.replaceAll("/", "-")}`,
+            setupNeeded: true,
+          };
+          if (claim._tag === "pooled") {
             yield* botSql`UPDATE bot_tasks SET worktree_state = 'held'
               WHERE work_thread_id = ${input.workThreadId}`.pipe(Effect.orDie);
+            yield* Ref.update(poolHeld, (all) =>
+              new Map(all).set(input.workThreadId, claim.worktreePath),
+            );
+          }
           return claim;
         }),
-      park: (input) =>
-        Ref.update(poolParks, (all) => [...all, input.worktreePath]).pipe(
-          Effect.andThen(Ref.get(poolSavesWork)),
-          Effect.map((savedWork) => ({ savedWork, savedOn: null })),
+      release: (input) =>
+        Effect.gen(function* () {
+          const held = (yield* Ref.get(poolHeld)).get(input.workThreadId);
+          if (held === undefined) return { savedWork: false, savedOn: null, kept: null };
+          yield* yield* Ref.get(poolMoving);
+          const busy = yield* input.inUse;
+          if (busy !== null) {
+            yield* Ref.update(poolKept, (all) => new Map(all).set(input.workThreadId, busy));
+            return { savedWork: false, savedOn: null, kept: busy };
+          }
+          yield* Ref.update(poolParks, (all) => [...all, input.reuse ? held : `${held} (removed)`]);
+          const without = (all: ReadonlyMap<ThreadId, string>) => {
+            const next = new Map(all);
+            next.delete(input.workThreadId);
+            return next;
+          };
+          yield* Ref.update(poolHeld, without);
+          yield* Ref.update(poolKept, without);
+          // The pool records saved work on the task itself, before the worktree moves.
+          const savedWork = yield* Ref.get(poolSavesWork);
+          if (savedWork)
+            yield* botSql`UPDATE bot_tasks SET unfinished_work = 1
+              WHERE work_thread_id = ${input.workThreadId}`.pipe(Effect.orDie);
+          return { savedWork, savedOn: null, kept: null };
+        }),
+      claimedPath: (workThreadId) =>
+        Ref.get(poolHeld).pipe(Effect.map((all) => all.get(workThreadId) ?? null)),
+      keep: ({ workThreadId, reason }) =>
+        Ref.get(poolHeld).pipe(
+          Effect.flatMap((held) =>
+            held.has(workThreadId)
+              ? Ref.update(poolKept, (all) => new Map(all).set(workThreadId, reason)).pipe(
+                  Effect.as(true),
+                )
+              : Effect.succeed(false),
+          ),
         ),
-      claimedPath: () => Effect.succeed(null),
+      keptClaims: Effect.gen(function* () {
+        const held = yield* Ref.get(poolHeld);
+        return [...(yield* Ref.get(poolKept))].map(([workThreadId, reason]) => ({
+          workThreadId,
+          path: held.get(workThreadId) ?? "",
+          reason,
+        }));
+      }),
       expire: Effect.void,
+    }),
+    Layer.mock(TerminalManager.TerminalManager)({
+      subscribeMetadata: (listener) =>
+        Effect.sync(() => {
+          terminalListeners.push(listener);
+          return () => {
+            terminalListeners.splice(terminalListeners.indexOf(listener), 1);
+          };
+        }),
     }),
     Layer.mock(BotTaskAcceptance.BotTaskEvidence)({
       check: ({ items }) =>
@@ -478,6 +568,10 @@ const makeThreadWorld = Effect.gen(function* () {
     commandsMatching,
     poolClaims,
     poolTakes,
+    poolHeld,
+    poolKept,
+    poolMoving,
+    terminalEvent,
     poolParks,
     poolSavesWork,
     poolGate,
@@ -538,6 +632,7 @@ interface Services {
   readonly constraint: BotExecutionConstraint.BotExecutionConstraint["Service"];
   readonly diagnosis: BotFailureDiagnosis.BotFailureDiagnosis["Service"];
   readonly updates: BotHomeUpdates.BotHomeUpdates["Service"];
+  readonly setups: WorktreeSetupTracker.WorktreeSetupTracker["Service"];
 }
 
 /**
@@ -558,6 +653,7 @@ const withServices = <A, E>(
       constraint: yield* BotExecutionConstraint.BotExecutionConstraint,
       diagnosis: yield* BotFailureDiagnosis.BotFailureDiagnosis,
       updates: yield* BotHomeUpdates.BotHomeUpdates,
+      setups: yield* WorktreeSetupTracker.WorktreeSetupTracker,
     });
   }).pipe(
     Effect.provide(
@@ -573,6 +669,7 @@ const withServices = <A, E>(
         ),
         Layer.provideMerge(BotTaskService.layer),
         Layer.provide(Layer.merge(world.threadLayer, layerSupport)),
+        Layer.provideMerge(WorktreeSetupTracker.layer),
       ),
     ),
     Effect.scoped,
@@ -3386,9 +3483,11 @@ it.effect(
           const branch = fresh.branch ?? assert.fail("no branch");
           assert.match(branch, /^bot\/fix-the-typo-[0-9a-f]{8}$/);
           assert.equal(fresh.baseBranch, "release");
+          // Even a new worktree is the pool's: the launch only runs its setup, and a cancelled
+          // setup has nothing of its own to remove.
           assert.equal(
             yield* workspaceOf(world, fresh.workThreadId),
-            `worktree ${branch} from origin-main`,
+            `pooled /worktrees/${branch.replaceAll("/", "-")} ${branch}`,
           );
           assert.deepInclude((yield* Ref.get(world.poolTakes))[0], {
             branch,
@@ -3513,13 +3612,15 @@ it.effect("a task waits for a free worktree, and without Git for the other writi
         assert.equal(waiting.status, "accepted");
         assert.include(waiting.detail, "Waiting for a free worktree");
         assert.isUndefined(yield* workspaceOf(world, workThreadOf(waiting)));
-        yield* Ref.set(world.poolClaims, [{ _tag: "create", baseRef: "origin-main" }]);
+        yield* Ref.set(world.poolClaims, [
+          { _tag: "pooled", worktreePath: "/worktrees/waited", setupNeeded: true },
+        ]);
         yield* services.tasks.reconcile;
         const started = yield* services.tasks.get(waiting.id);
         assert.isNull(started.detail);
         assert.equal(
           yield* workspaceOf(world, workThreadOf(waiting)),
-          `worktree ${started.branch} from origin-main`,
+          `pooled /worktrees/waited ${started.branch}`,
         );
 
         yield* Ref.set(world.poolClaims, [{ _tag: "no-git" }]);
@@ -3566,14 +3667,15 @@ it.effect(
               prompt: "Fix the typo.",
             });
             const thread = task.workThreadId ?? assert.fail();
-            const worktreePath = `/worktrees/${task.branch}`;
+            const worktreePath = `/worktrees/${task.branch?.replaceAll("/", "-")}`;
             yield* world.update(thread, { status: "running" });
             yield* services.tasks.reconcile;
             assert.deepEqual(yield* Ref.get(world.poolParks), []);
 
-            // Its run never started, so the install may be unfinished: the next task sets up again.
+            // Its run never started: the install may be unfinished and a cancelled setup still
+            // writing, so the worktree is not reused.
             const setupOf = sql<{ readonly setup_signature: string | null }>`
-            SELECT setup_signature FROM bot_tasks WHERE task_id = ${task.id}`.pipe(
+              SELECT setup_signature FROM bot_tasks WHERE task_id = ${task.id}`.pipe(
               Effect.map((rows) => rows[0]?.setup_signature),
             );
             yield* sql`UPDATE bot_tasks SET setup_signature = 'lock-a' WHERE task_id = ${task.id}`;
@@ -3586,21 +3688,24 @@ it.effect(
               branch: task.branch,
               unfinishedWork: true,
             });
-            assert.deepEqual(yield* Ref.get(world.poolParks), [worktreePath]);
-            assert.isNull(yield* setupOf);
+            assert.deepEqual(yield* Ref.get(world.poolParks), [`${worktreePath} (removed)`]);
 
             // A follow-up took a worktree again at turn start; it goes back when that turn ends.
             // Once a run started, the install it set up is trusted.
             yield* sql`UPDATE bot_tasks SET setup_signature = 'lock-a' WHERE task_id = ${task.id}`;
             yield* world.update(thread, { started: true });
             yield* sql`UPDATE bot_tasks SET worktree_state = 'held' WHERE task_id = ${task.id}`;
+            yield* Ref.update(world.poolHeld, (all) => new Map(all).set(thread, worktreePath));
             yield* Ref.set(world.poolSavesWork, false);
             yield* world.update(thread, { status: "running" });
             yield* services.tasks.reconcile;
             assert.lengthOf(yield* Ref.get(world.poolParks), 1);
             yield* world.update(thread, { status: "completed" });
             yield* services.tasks.reconcile;
-            assert.deepEqual(yield* Ref.get(world.poolParks), [worktreePath, worktreePath]);
+            assert.deepEqual(yield* Ref.get(world.poolParks), [
+              `${worktreePath} (removed)`,
+              worktreePath,
+            ]);
             assert.isTrue((yield* services.tasks.get(task.id)).unfinishedWork);
             assert.equal(yield* setupOf, "lock-a");
           }),
@@ -3619,48 +3724,56 @@ it.effect("a Bot runs at most its task limit and starts waiting tasks oldest fir
       Ref.get(world.threads).pipe(
         Effect.map((threads) => tasks.map((task) => threads.has(workThreadOf(task)))),
       );
-    const tasks = yield* withServices(world, (services) =>
-      Effect.gen(function* () {
-        yield* attachBot(services);
-        yield* services.bots.update({ botId, taskLimit: 2 });
-        const tasks: Array<BotTaskSummary> = [];
-        for (const n of [1, 2, 3, 4, 5]) {
-          yield* TestClock.adjust("1 second");
-          tasks.push(
-            yield* services.tasks.start({ botId, projectId: campaign, prompt: `Task ${n}.` }),
-          );
-        }
-        assert.deepEqual(yield* launched(tasks), [true, true, false, false, false]);
-        assert.deepInclude(tasks[2], {
-          status: "accepted",
-          detail: "Waiting for a free slot: Campaign Companion runs at most 2 tasks at once.",
-        });
-        // Routines do not count and start on time.
-        const routine = yield* runRoutine(services, false);
-        assert.isTrue((yield* Ref.get(world.threads)).has(routine.workThreadId));
-        // A cancelled waiting task never starts; the next one takes the free slot.
-        yield* services.tasks.cancel({ taskId: tasks[2]!.id });
-        yield* finishRun(world, tasks[0]!.workThreadId!, DONE_RESULT);
-        yield* services.tasks.reconcile;
-        assert.deepEqual(yield* launched(tasks), [true, true, false, true, false]);
-        // Cancelled before it started: no thread to open on its card.
-        assert.deepInclude(yield* services.tasks.get(tasks[2]!.id), {
-          status: "cancelled",
-          workThreadId: null,
-        });
-        return tasks;
-      }),
+    // Only the passes below run: a scheduled pass alongside them could hold a task's dispatch
+    // while it still counts a slot those passes free.
+    const tasks = yield* withServices(
+      world,
+      (services) =>
+        Effect.gen(function* () {
+          yield* attachBot(services);
+          yield* services.bots.update({ botId, taskLimit: 2 });
+          const tasks: Array<BotTaskSummary> = [];
+          for (const n of [1, 2, 3, 4, 5]) {
+            yield* TestClock.adjust("1 second");
+            tasks.push(
+              yield* services.tasks.start({ botId, projectId: campaign, prompt: `Task ${n}.` }),
+            );
+          }
+          assert.deepEqual(yield* launched(tasks), [true, true, false, false, false]);
+          assert.deepInclude(tasks[2], {
+            status: "accepted",
+            detail: "Waiting for a free slot: Campaign Companion runs at most 2 tasks at once.",
+          });
+          // Routines do not count and start on time.
+          const routine = yield* runRoutine(services, false);
+          assert.isTrue((yield* Ref.get(world.threads)).has(routine.workThreadId));
+          // A cancelled waiting task never starts; the next one takes the free slot.
+          yield* services.tasks.cancel({ taskId: tasks[2]!.id });
+          yield* finishRun(world, tasks[0]!.workThreadId!, DONE_RESULT);
+          yield* services.tasks.reconcile;
+          assert.deepEqual(yield* launched(tasks), [true, true, false, true, false]);
+          // Cancelled before it started: no thread to open on its card.
+          assert.deepInclude(yield* services.tasks.get(tasks[2]!.id), {
+            status: "cancelled",
+            workThreadId: null,
+          });
+          return tasks;
+        }),
+      Effect.never,
     );
     // After a restart the last task still waits, and starts once a slot frees up.
-    yield* withServices(world, (services) =>
-      Effect.gen(function* () {
-        yield* services.tasks.reconcile;
-        assert.deepEqual(yield* launched(tasks), [true, true, false, true, false]);
-        yield* finishRun(world, tasks[1]!.workThreadId!, DONE_RESULT);
-        yield* services.tasks.reconcile;
-        assert.deepEqual(yield* launched(tasks), [true, true, false, true, true]);
-        assert.isNull((yield* services.tasks.get(tasks[4]!.id)).detail);
-      }),
+    yield* withServices(
+      world,
+      (services) =>
+        Effect.gen(function* () {
+          yield* services.tasks.reconcile;
+          assert.deepEqual(yield* launched(tasks), [true, true, false, true, false]);
+          yield* finishRun(world, tasks[1]!.workThreadId!, DONE_RESULT);
+          yield* services.tasks.reconcile;
+          assert.deepEqual(yield* launched(tasks), [true, true, false, true, true]);
+          assert.isNull((yield* services.tasks.get(tasks[4]!.id)).detail);
+        }),
+      Effect.never,
     );
   }).pipe(Effect.provide(layerDatabase)),
 );
@@ -3846,6 +3959,298 @@ it.effect.each([
           yield* sql`SELECT revision FROM bot_continuation_revisions WHERE home_thread_id = ${home}`,
           1,
         );
+      }),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect("keeps a worktree held while a thread sharing it runs or its setup still runs", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(START);
+    yield* seedProject;
+    const world = yield* makeThreadWorld;
+    yield* withServices(world, (services) =>
+      Effect.gen(function* () {
+        yield* attachBot(services);
+        const task = yield* services.tasks.start({
+          botId,
+          projectId: campaign,
+          prompt: "Fix the typo.",
+        });
+        const thread = task.workThreadId ?? assert.fail();
+        const work = (yield* Ref.get(world.threads)).get(thread) ?? assert.fail();
+        // A side chat of the work thread works in the same folder.
+        const sideChat = ThreadId.make("side-chat");
+        yield* Ref.update(world.threads, (all) =>
+          // Archived already, while its provider is still stopping.
+          new Map(all).set(sideChat, {
+            ...work,
+            status: "running",
+            runId: "run:side",
+            archived: true,
+          }),
+        );
+        yield* world.update(thread, { status: "completed", started: true });
+        yield* services.tasks.reconcile;
+        assert.equal((yield* services.tasks.get(task.id)).status, "completed");
+        assert.deepEqual(yield* Ref.get(world.poolParks), []);
+
+        // An async setup script can still install after the agent finished.
+        yield* services.setups.begin({
+          threadId: thread,
+          branch: task.branch ?? null,
+          baseRef: null,
+          stages: ["setup-script", "agent"],
+          fiber: null,
+        });
+        yield* world.update(sideChat, { status: "completed" });
+        yield* services.tasks.reconcile;
+        assert.deepEqual(yield* Ref.get(world.poolParks), []);
+
+        yield* services.setups.finish(thread, "done");
+        yield* services.tasks.reconcile;
+        assert.deepEqual(yield* Ref.get(world.poolParks), [work.worktreePath ?? assert.fail()]);
+      }),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect("tells the work thread the WIP branch a release a restart interrupted saved", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(START);
+    yield* seedProject;
+    const world = yield* makeThreadWorld;
+    const sql = yield* BotDatabase.BotDatabase;
+    yield* withServices(world, (services) =>
+      Effect.gen(function* () {
+        yield* attachBot(services);
+        const task = yield* services.tasks.start({
+          botId,
+          projectId: campaign,
+          prompt: "Fix the typo.",
+        });
+        const thread = task.workThreadId ?? assert.fail();
+        // The pool recorded the WIP branch on the task, then the server stopped.
+        const wip = `${task.branch}-wip-1`;
+        yield* sql`UPDATE bot_tasks SET branch = ${wip} WHERE task_id = ${task.id}`;
+        yield* world.update(thread, { status: "completed", started: true });
+        // Until the thread knows the branch the task stays held, so the pass's own retry tells it.
+        yield* Ref.set(world.failNext, "thread.metadata.update");
+        yield* services.tasks.reconcile;
+        assert.lengthOf(
+          yield* world.commandsMatching(`thread.metadata.update ${thread} bot-task-wip-branch`),
+          1,
+        );
+        assert.equal((yield* services.tasks.get(task.id)).branch, wip);
+      }),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect("keeps a worktree a terminal works in out of the pool until that terminal closes", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(START);
+    yield* seedProject;
+    const world = yield* makeThreadWorld;
+    const sql = yield* BotDatabase.BotDatabase;
+    const fs = yield* FileSystem.FileSystem;
+    yield* withServices(world, (services) =>
+      Effect.gen(function* () {
+        yield* attachBot(services);
+        const task = yield* services.tasks.start({
+          botId,
+          projectId: campaign,
+          prompt: "Fix the typo.",
+        });
+        const thread = task.workThreadId ?? assert.fail();
+        const worktreePath = (yield* Ref.get(world.poolHeld)).get(thread) ?? assert.fail();
+        // A shell the user opened in another thread, working in a folder of this worktree.
+        const shell = {
+          threadId: "user-thread",
+          terminalId: "zsh",
+          cwd: `${worktreePath}/src`,
+          worktreePath: null,
+          status: "running",
+          pid: 4242,
+          exitCode: null,
+          exitSignal: null,
+          hasRunningSubprocess: false,
+          label: "zsh",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        } as const;
+        yield* world.terminalEvent({ type: "upsert", terminal: shell });
+        yield* world.update(thread, { status: "completed", started: true });
+        yield* services.tasks.reconcile;
+        // Kept in place and out of the count; the terminal is left alone.
+        assert.deepEqual(yield* Ref.get(world.poolParks), []);
+        assert.deepEqual(
+          [...(yield* Ref.get(world.poolKept))],
+          [[thread, "has a terminal open in it"]],
+        );
+        const stateOf = sql<{ readonly worktree_state: string }>`
+          SELECT worktree_state FROM bot_tasks WHERE task_id = ${task.id}`.pipe(
+          Effect.map((rows) => rows[0]?.worktree_state),
+        );
+        assert.equal(yield* stateOf, "released");
+        yield* services.tasks.reconcile;
+        assert.deepEqual(yield* Ref.get(world.poolParks), []);
+
+        yield* world.terminalEvent({ type: "remove", threadId: "user-thread", terminalId: "zsh" });
+        yield* services.tasks.reconcile;
+        assert.deepEqual(yield* Ref.get(world.poolParks), [worktreePath]);
+        assert.deepEqual([...(yield* Ref.get(world.poolKept))], []);
+
+        // A shell that opens after the check, while the worktree moves, keeps it all the same,
+        // also when it names the folder that is gone by another spelling, through a symlink.
+        const tmp = yield* fs.realPath(
+          yield* fs.makeTempDirectoryScoped({ prefix: "bot-task-alias-" }),
+        );
+        yield* fs.makeDirectory(`${tmp}/real`);
+        yield* fs.symlink(`${tmp}/real`, `${tmp}/alias`);
+        const nextPath = `${tmp}/alias/bot-next`;
+        yield* Ref.set(world.poolClaims, [
+          { _tag: "pooled", worktreePath: nextPath, setupNeeded: true },
+        ]);
+        const next = yield* services.tasks.start({
+          botId,
+          projectId: campaign,
+          prompt: "Fix another typo.",
+        });
+        const nextThread = next.workThreadId ?? assert.fail();
+        yield* Ref.set(
+          world.poolMoving,
+          world.terminalEvent({
+            type: "upsert",
+            terminal: { ...shell, cwd: `${tmp}/real/bot-next/src` },
+          }),
+        );
+        yield* world.update(nextThread, { status: "completed", started: true });
+        yield* services.tasks.reconcile;
+        yield* Ref.set(world.poolMoving, Effect.void);
+        assert.deepEqual(yield* Ref.get(world.poolParks), [worktreePath]);
+        assert.deepEqual(
+          [...(yield* Ref.get(world.poolKept))],
+          [[nextThread, "has a terminal open in it"]],
+        );
+        yield* services.tasks.reconcile;
+        assert.deepEqual(yield* Ref.get(world.poolParks), [worktreePath]);
+        yield* world.terminalEvent({ type: "remove", threadId: "user-thread", terminalId: "zsh" });
+        yield* services.tasks.reconcile;
+        assert.deepEqual(yield* Ref.get(world.poolParks), [worktreePath, nextPath]);
+      }),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect("finds a terminal in a worktree whose folder it names through a link into it", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(START);
+    yield* seedProject;
+    const world = yield* makeThreadWorld;
+    const fs = yield* FileSystem.FileSystem;
+    yield* withServices(world, (services) =>
+      Effect.gen(function* () {
+        yield* attachBot(services);
+        const tmp = yield* fs.realPath(
+          yield* fs.makeTempDirectoryScoped({ prefix: "bot-task-link-" }),
+        );
+        const terminal = (cwd: string) => ({
+          threadId: "user-thread",
+          terminalId: "zsh",
+          cwd,
+          worktreePath: null,
+          status: "running" as const,
+          pid: 4242,
+          exitCode: null,
+          exitSignal: null,
+          hasRunningSubprocess: false,
+          label: "zsh",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        });
+        const finish = Effect.fn(function* (worktreePath: string) {
+          yield* Ref.set(world.poolClaims, [{ _tag: "pooled", worktreePath, setupNeeded: true }]);
+          const task = yield* services.tasks.start({ botId, projectId: campaign, prompt: "Fix." });
+          const thread = task.workThreadId ?? assert.fail();
+          yield* world.update(thread, { status: "completed", started: true });
+          yield* services.tasks.reconcile;
+          return thread;
+        });
+
+        // `link/..` with the link pointing into the worktree is inside it, not beside the link.
+        yield* fs.makeDirectory(`${tmp}/first/src`, { recursive: true });
+        yield* fs.symlink(`${tmp}/first/src`, `${tmp}/shell-link`);
+        yield* world.terminalEvent({ type: "upsert", terminal: terminal(`${tmp}/shell-link/..`) });
+        const first = yield* finish(`${tmp}/first`);
+        assert.deepEqual(yield* Ref.get(world.poolParks), []);
+        assert.deepEqual(
+          [...(yield* Ref.get(world.poolKept))],
+          [[first, "has a terminal open in it"]],
+        );
+        yield* world.terminalEvent({ type: "remove", threadId: "user-thread", terminalId: "zsh" });
+
+        // A link straight into a worktree that moved away points nowhere, but still into it.
+        yield* fs.symlink(`${tmp}/second`, `${tmp}/into-second`);
+        yield* Ref.set(
+          world.poolMoving,
+          world.terminalEvent({ type: "upsert", terminal: terminal(`${tmp}/into-second/src`) }),
+        );
+        const second = yield* finish(`${tmp}/second`);
+        yield* Ref.set(world.poolMoving, Effect.void);
+        assert.deepEqual(yield* Ref.get(world.poolParks), [`${tmp}/first`]);
+        assert.deepEqual(
+          [...(yield* Ref.get(world.poolKept))],
+          [[second, "has a terminal open in it"]],
+        );
+      }),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect("leaves a worktree from before the pool held while a terminal works in it", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(START);
+    yield* seedProject;
+    const world = yield* makeThreadWorld;
+    const sql = yield* BotDatabase.BotDatabase;
+    yield* withServices(world, (services) =>
+      Effect.gen(function* () {
+        yield* attachBot(services);
+        const task = yield* services.tasks.start({
+          botId,
+          projectId: campaign,
+          prompt: "Fix the typo.",
+        });
+        const thread = task.workThreadId ?? assert.fail();
+        const worktreePath = (yield* Ref.get(world.poolHeld)).get(thread) ?? assert.fail();
+        // The launch made this worktree before the pool tracked them: the pool holds no row.
+        yield* Ref.update(world.poolHeld, (all) => {
+          const next = new Map(all);
+          next.delete(thread);
+          return next;
+        });
+        yield* world.terminalEvent({
+          type: "upsert",
+          terminal: {
+            threadId: thread,
+            terminalId: "zsh",
+            cwd: worktreePath,
+            worktreePath,
+            status: "running",
+            pid: 4242,
+            exitCode: null,
+            exitSignal: null,
+            hasRunningSubprocess: false,
+            label: "zsh",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+          },
+        });
+        yield* world.update(thread, { status: "completed", started: true });
+        yield* services.tasks.reconcile;
+        // Nothing records the hold, so the task keeps the worktree until the terminal is gone.
+        const [state] = yield* sql<{ readonly worktree_state: string }>`
+          SELECT worktree_state FROM bot_tasks WHERE task_id = ${task.id}`;
+        assert.equal(state?.worktree_state, "held");
+        assert.deepEqual([...(yield* Ref.get(world.poolKept))], []);
       }),
     );
   }).pipe(Effect.provide(layerDatabase)),

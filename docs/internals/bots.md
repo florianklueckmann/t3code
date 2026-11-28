@@ -106,18 +106,71 @@ started the task.
 
 A task that may write launches into a worktree from
 [BotWorktreePool](../../apps/server/src/bots/BotWorktreePool.ts). Each work thread
-keeps one worktree path for its whole life. Releasing the worktree moves it out of
-that path into the pool, so a finished task's thread points at a missing worktree.
-That is the state storage cleanup already leaves behind, and turn start already
-restores it: [restoreMissingWorktree](../../apps/server/src/workspace/restoreMissingWorktree.ts)
-first asks the pool to move a free worktree back to the path. Release and turn start
-both run under the path's workspace lease, and release checks that the thread is idle
-inside the lease. A follow-up therefore never runs in a worktree another task holds,
-and never in the project checkout. A terminal does not take a pooled worktree: it can
-stay open after the turn that would give the worktree back. Release does not see
-terminals either, so one opened while a task holds its worktree keeps its old folder
-after the worktree moves. The pool cap applies to starting tasks; a follow-up still
-gets a worktree when the pool is full, and release removes the extra one.
+keeps one worktree path for its whole life, and the worktree moves: into that path
+when a thread claims it, back to its resting place (`bot-pool-<id>`) when released.
+A finished task's thread therefore points at a missing worktree, the state storage
+cleanup already leaves behind, and turn start restores it:
+[restoreMissingWorktree](../../apps/server/src/workspace/restoreMissingWorktree.ts)
+first asks the pool for one. The alternative, a worktree that never moves and
+threads pointed at it, fails because T3 treats a thread's path as that thread's own
+checkout. Turn start reads the path before it restores, branch sync renames every
+thread whose path holds a checkout, and rollback, terminals and diffs act on it, so a
+released thread left at a shared path would act on the next task's work.
+
+Only the pool creates and removes these worktrees; the launch gets an
+`existing_worktree` and owns nothing it could remove. A row in `bot_worktrees`
+lives as long as its worktree, and every transition is one step that starts from
+that row: the claim is written before anything moves, release moves before it frees
+the row, and the worktree's Git directory identifies it at either of its two places.
+A step a restart interrupted runs again from what it finds. The rules each step
+keeps:
+
+- Before any checkout, clean, move or removal, the folder must be the top of a
+  linked worktree of the project's repository, registered at that folder, with the
+  expected Git directory and the pool's mark (`t3-bot-worktree`) in it. Git reuses
+  an admin directory for a checkout recreated at the same path, so the directory alone
+  does not identify it. A move never targets an existing folder, since Git would
+  move into it. A checkout of the thread's own branch at its folder, recreated there
+  for a terminal or a side chat, joins the pool on the next turn; anything else there
+  fails the turn rather than run in it.
+- Nothing is reused or removed without a fresh check for uncommitted and untracked
+  files and submodule history no remote has, the check storage cleanup uses. A free
+  worktree must also still be at the commit it was parked at. One that fails stays
+  where it is with `kept_reason` set, outside the pool's count; a message in its task
+  picks it up again, and Clear retries it. A commit only the worktree holds, as when
+  its task branch was deleted while it was parked, gets a ref under
+  `refs/t3/bot-worktrees/` before HEAD moves on.
+- What the previous branch ignored is removed after a claim's switch only when its
+  status-change time is older than a stamp written just before the switch. Unlike the
+  modification time, a copy cannot set that back, so what a post-checkout hook or the
+  agent writes is kept, also when a restart resumes the clean-up.
+- A worktree stays held until its work thread, every thread sharing its path (side
+  chats) and its setup script have finished. An awaited setup holds the agent back
+  even when the script is async, so a run that started means the install succeeded.
+  A worktree whose run never started is removed, not reused: its install may be
+  unfinished, and a cancelled setup's process can outlive its terminal briefly.
+
+Git cannot move a worktree with populated submodules, so such a worktree is removed
+at release once the check passes, not reused. Release and turn start both run under
+the path's workspace lease. A terminal does not take a pooled worktree, but release
+sees terminals the way storage cleanup does
+([liveTerminals](../../apps/server/src/terminal/liveTerminals.ts)): while a shell
+works in the worktree, by the thread's folder or its own working folder, the
+worktree stays where it is as kept, outside the count, and each pass releases it
+once that terminal is gone. Nothing closes the user's terminal. Terminal startup
+leases only its own folder, so a shell can still open inside the worktree while
+release moves it; release asks again once the worktree is at rest and keeps it
+claimed if one did, since the shell follows the folder. The pool cap applies to
+starting tasks; a follow-up still gets a worktree when the pool is full, and
+release removes the extra one.
+
+Known limitations: terminals are matched by the real path of their recorded
+folder, so one reached through an unusual path (a mount point, a case-insensitive
+spelling, a folder it changed to after it started) may not hold a worktree. A
+shell that opens while release removes the worktree loses its folder. Both are
+accepted: the shell lives outside T3's control, any removed worktree has the same
+exposure, and a stray write from it is saved as a WIP commit by the next release,
+which is cheaper than making every terminal wait for releases around it.
 
 ## Persistence and recovery
 
