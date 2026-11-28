@@ -9,6 +9,7 @@ import {
   BotTaskId,
   EnvironmentId,
   MessageId,
+  OrchestratorMcpFailure,
   type OrchestrationV2ConversationMessage,
   ProjectId,
   ProviderInstanceId,
@@ -19,6 +20,7 @@ import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 
+import * as PeerForwarding from "../../../peer/PeerForwarding.ts";
 import * as BotAttention from "../../../bots/BotAttention.ts";
 import * as BotService from "../../../bots/BotService.ts";
 import * as BotTaskService from "../../../bots/BotTaskService.ts";
@@ -120,6 +122,7 @@ const callTool = (
   callerBot?: { readonly botId: BotId; readonly projectId: ProjectId; readonly taskId?: BotTaskId },
   external = false,
   caller: {
+    readonly creatorBotId?: BotId;
     readonly changes?: McpCallerChangesValue;
     readonly subagent?: boolean;
     readonly sealedLoad?: boolean;
@@ -187,6 +190,19 @@ const callTool = (
                 : Layer.succeed(McpCallerChanges.McpCallerChanges, {
                     forThread: () => Effect.succeed(caller.changes!),
                   }),
+              Layer.mock(PeerForwarding.PeerForwarding)({
+                call: () =>
+                  Ref.update(calls, (current) => [...current, "forward"]).pipe(
+                    Effect.andThen(
+                      Effect.fail(
+                        new OrchestratorMcpFailure({
+                          code: "orchestration_error",
+                          message: "Test peer is offline.",
+                        }),
+                      ),
+                    ),
+                  ),
+              }),
               Layer.mock(BotContinuation.BotContinuation)({
                 save: (input) =>
                   record("save_continuation").pipe(
@@ -215,10 +231,13 @@ const callTool = (
                     Effect.andThen(Effect.fail(new BotError({ message: "This Bot is archived." }))),
                   ),
                 create: () => record("create"),
+                openHome: () => record("open_home"),
+                removeHome: () => record("remove_home"),
                 setArchived: (input) => record(input.archived ? "archive" : "restore"),
                 detachProject: () => record("detach"),
                 retireLearning: () => record("retire"),
                 restoreLearning: () => record("reinstate"),
+                writeOwnerOfThread: () => Effect.succeed(callerBot?.botId ?? caller.creatorBotId),
                 scopeOfThread: () =>
                   Effect.succeed(
                     callerBot === undefined
@@ -250,6 +269,8 @@ const callTool = (
                   Ref.update(calls, (current) => [...current, "list_tasks"]).pipe(
                     Effect.as({ tasks: [] }),
                   ),
+                get: (id) =>
+                  Effect.succeed({ ...taskSummary, id, botId: id === ownTask ? botId : otherBot }),
                 cancel: () =>
                   Ref.update(calls, (current) => [...current, "cancel"]).pipe(
                     Effect.as(taskSummary),
@@ -447,6 +468,8 @@ const botChanges: ReadonlyArray<readonly [(bot: BotId) => BotToolInput, string]>
     (bot) => ({ action: "update", botId: bot, projectId: campaignA, guidance: "Changed." }),
     `project:${campaignA}:Changed.:undefined`,
   ],
+  [(bot) => ({ action: "open_home", botId: bot }), "open_home"],
+  [(bot) => ({ action: "remove_home", botId: bot }), "remove_home"],
   [(bot) => ({ action: "archive", botId: bot }), "archive"],
   [(bot) => ({ action: "restore", botId: bot }), "restore"],
   [(bot) => ({ action: "attach", botId: bot, projectId: campaignA }), `attach:${campaignA}`],
@@ -484,13 +507,7 @@ it.effect.each(
     const other = params(otherBot);
     return [
       [own, { botId, projectId: campaignA }, ownCall],
-      [
-        other,
-        { botId, projectId: campaignA },
-        other.action === "learn"
-          ? "invalid_request"
-          : (ordinaryCallerReaches[other.action] ?? ownCall),
-      ],
+      [other, { botId, projectId: campaignA }, "capability_denied"],
       [other, undefined, ordinaryCallerReaches[other.action] ?? ownCall],
     ] as const;
   }),
@@ -500,6 +517,72 @@ it.effect.each(
       expect(calls[0] ?? (result as { readonly code?: string } | undefined)?.code).toBe(expected),
     ),
   ),
+);
+
+it.effect("checks the task owner for Bot work threads and allows approved outside agents", () =>
+  Effect.gen(function* () {
+    const work = { botId, projectId: campaignA, taskId: ownTask };
+    for (const input of [
+      { action: "cancel_task", taskId: otherTask, botId },
+      { action: "start_task", botId: otherBot, task: "Prepare." },
+    ] as const) {
+      const refused = yield* callTool(input, undefined, work);
+      expect(refused.calls).toEqual([]);
+      expect(refused.result).toMatchObject({
+        code: "capability_denied",
+        message: expect.stringContaining("own Bot"),
+      });
+      const outside = yield* callTool(input, undefined, undefined, true);
+      expect(outside.calls).toEqual([input.action === "cancel_task" ? "cancel" : "start:null"]);
+    }
+  }),
+);
+
+it.effect("binds Bot-created threads to their creator's Bot for task writes", () =>
+  Effect.gen(function* () {
+    const child = (params: BotToolInput) =>
+      callTool(params, undefined, undefined, false, { creatorBotId: botId });
+    for (const [own, other, call] of [
+      [
+        { action: "start_task", botId, task: "Prepare." },
+        { action: "start_task", botId: otherBot, task: "Prepare." },
+        "start:null",
+      ],
+      [
+        { action: "cancel_task", taskId: ownTask },
+        { action: "cancel_task", taskId: otherTask },
+        "cancel",
+      ],
+    ] as const) {
+      expect((yield* child(own)).calls).toEqual([call]);
+      const denied = yield* child(other);
+      expect(denied.result).toMatchObject({ code: "capability_denied" });
+      expect(denied.calls).toEqual([]);
+    }
+  }),
+);
+
+it.effect("forwards Bot writes only for callers outside a Bot's lineage", () =>
+  Effect.gen(function* () {
+    const remote = EnvironmentId.make("environment:peer");
+    for (const params of [
+      { action: "start_task", botId, task: "Prepare.", environmentId: remote },
+      { action: "archive", botId, environmentId: remote },
+    ] as const) {
+      expect((yield* callTool(params, undefined)).calls).toEqual(["forward"]);
+      const denied = yield* callTool(params, undefined, { botId, projectId: campaignA });
+      expect(denied.result).toMatchObject({ code: "capability_denied" });
+      expect(denied.calls).toEqual([]);
+      const child = yield* callTool(params, undefined, undefined, false, { creatorBotId: botId });
+      expect(child.result).toMatchObject({ code: "capability_denied" });
+      expect(child.calls).toEqual([]);
+    }
+    const read = yield* callTool({ action: "list", environmentId: remote }, undefined, {
+      botId,
+      projectId: campaignA,
+    });
+    expect(read.calls).toEqual(["forward"]);
+  }),
 );
 
 it.effect("lets read-only clients read Bots but not change them", () =>
@@ -648,8 +731,10 @@ it.effect("the Bot-level Home with read access starts tasks, learns and saves it
   Effect.gen(function* () {
     const readHome = (params: BotToolInput) =>
       callTool(params, undefined, { botId, projectId: campaignA }, false, { changes: "botTasks" });
+    const projectId = ProjectId.make("attached-project");
+    const started = yield* readHome({ action: "start_task", botId, projectId, task: "Prepare." });
+    expect(started.result).toMatchObject({ task: { projectId } });
     for (const [params, call] of [
-      [{ action: "start_task", botId, task: "Prepare." }, "start:null"],
       [{ action: "cancel_task", botId, taskId: "bot-task:1" }, "cancel"],
       [learnFromHome, "learn:project-campaign-a:correction:thread:bots"],
       [saveNote, "save_continuation"],

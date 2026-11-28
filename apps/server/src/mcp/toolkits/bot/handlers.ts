@@ -122,17 +122,16 @@ const homeTurnStartedByUser = Effect.fn("mcp.bot.homeTurnStartedByUser")(functio
   return isUserGivenHomeInput(messages[0]);
 });
 
-const changeLearning = Effect.fn("mcp.bot.changeLearning")(function* (input: BotToolInput) {
+const changeLearning = Effect.fn("mcp.bot.changeLearning")(function* (
+  input: BotToolInput,
+  caller: Effect.Success<ReturnType<typeof learningCaller>>,
+) {
   const bots = yield* BotService.BotService;
   const botId = yield* requireBotId(input);
-  const caller = yield* learningCaller();
   if (input.action === "learn") {
     const projectId = yield* requireProjectId(input);
     if (input.learning === undefined) return yield* invalid("`learn` needs `learning`.");
-    if (
-      caller.bot !== undefined &&
-      (caller.bot.botId !== botId || caller.bot.projectId !== projectId)
-    ) {
+    if (caller.bot !== undefined && caller.bot.projectId !== projectId) {
       return yield* invalid("A Bot records learning only in its own project conversation.");
     }
     const fromUser =
@@ -186,6 +185,20 @@ const changeLearning = Effect.fn("mcp.bot.changeLearning")(function* (input: Bot
   return { bot: yield* changed.pipe(Effect.mapError(botFailure)) };
 });
 
+const writeOwner = Effect.fn("mcp.bot.writeOwner")(function* (
+  bots: BotService.BotService["Service"],
+) {
+  const scope = yield* McpInvocationContext.McpInvocationContext;
+  if (scope.thread === undefined) return undefined;
+  return yield* bots.writeOwnerOfThread(scope.thread.threadId).pipe(Effect.mapError(botFailure));
+});
+
+const otherBotRefusal = new OrchestratorMcpFailure({
+  code: "capability_denied",
+  message:
+    "A Bot conversation can only change its own Bot. Message the other Bot's Home to ask it for help.",
+});
+
 const write = Effect.fn("mcp.bot.write")(function* (input: BotToolInput) {
   const bots = yield* BotService.BotService;
   const tasks = yield* BotTaskService.BotTaskService;
@@ -211,12 +224,19 @@ const write = Effect.fn("mcp.bot.write")(function* (input: BotToolInput) {
         .pipe(Effect.mapError(botFailure)),
     };
   }
+  const owner = yield* writeOwner(bots);
+  if (owner !== undefined && input.botId !== undefined && owner !== input.botId)
+    return yield* otherBotRefusal;
   if (input.action === "cancel_task") {
     if (input.taskId === undefined) {
       return yield* new OrchestratorMcpFailure({
         code: "invalid_request",
         message: "`cancel_task` needs `taskId`.",
       });
+    }
+    if (owner !== undefined) {
+      const task = yield* tasks.get(input.taskId).pipe(Effect.mapError(botFailure));
+      if (task.botId !== owner) return yield* otherBotRefusal;
     }
     const cancelled = tasks.cancel({ taskId: input.taskId });
     return { task: yield* cancelled.pipe(Effect.mapError(botFailure)) };
@@ -228,7 +248,12 @@ const write = Effect.fn("mcp.bot.write")(function* (input: BotToolInput) {
     input.action === "retire" ||
     input.action === "reinstate"
   ) {
-    return yield* changeLearning(input);
+    const caller = yield* learningCaller();
+    if (owner !== undefined && caller.bot === undefined)
+      return yield* invalid(
+        "A Bot can change learning only from its own Home or work conversation.",
+      );
+    return yield* changeLearning(input, caller);
   }
   const botId = yield* requireBotId(input);
   if (input.action === "start_task") {
@@ -241,8 +266,8 @@ const write = Effect.fn("mcp.bot.write")(function* (input: BotToolInput) {
     const project = yield* bots
       .resolveProject({ botId, projectId: input.projectId })
       .pipe(Effect.mapError(botFailure));
-    const caller = yield* McpInvocationContext.McpInvocationContext;
-    if (input.returnToHome === true && caller.thread === undefined) {
+    const scope = yield* McpInvocationContext.McpInvocationContext;
+    if (input.returnToHome === true && scope.thread === undefined) {
       return yield* invalid("`returnToHome` is available only from the Bot's Home conversation.");
     }
     const started = tasks.start(
@@ -255,8 +280,8 @@ const write = Effect.fn("mcp.bot.write")(function* (input: BotToolInput) {
         ...(input.baseBranch === undefined ? {} : { baseBranch: input.baseBranch }),
       },
       {
-        requestedIn: caller.thread?.threadId ?? null,
-        ...(input.returnToHome === true ? { returnToHomeFrom: caller.thread!.threadId } : {}),
+        requestedIn: scope.thread?.threadId ?? null,
+        ...(input.returnToHome === true ? { returnToHomeFrom: scope.thread!.threadId } : {}),
       },
     );
     return { task: yield* started.pipe(Effect.mapError(botFailure)) };
@@ -364,26 +389,47 @@ const searchHistory = Effect.fn("mcp.bot.searchHistory")(function* (input: BotHi
   };
 });
 
-export const layer = McpToolAccess.toLayer(BotToolkit, {
-  t3_bot_history_search: McpToolAccess.readsAsCaller(searchHistory),
-  t3_bot: McpToolAccess.either(
-    (input) =>
-      input.action === "list" ||
-      input.action === "read" ||
-      input.action === "list_tasks" ||
-      input.action === "read_continuation",
-    McpToolAccess.reads(read),
-    McpToolAccess.either(
-      (input) => input.action === "save_continuation",
-      McpToolAccess.writesOwnHomeNote((input) => write(input)),
-      McpToolAccess.either(
-        (input) =>
-          input.action === "start_task" ||
-          input.action === "cancel_task" ||
-          input.action === "learn",
-        McpToolAccess.writesBotTasks((input) => write(input)),
-        McpToolAccess.writesEnvironment((input) => write(input)),
+const make = Effect.gen(function* () {
+  const bots = yield* BotService.BotService;
+  const localBotWritesOnly = writeOwner(bots).pipe(
+    Effect.flatMap((owner) =>
+      owner === undefined
+        ? Effect.void
+        : Effect.fail(
+            new OrchestratorMcpFailure({
+              code: "capability_denied",
+              message:
+                "A Bot can only change its own Bot in this environment. Message the other Bot's Home to ask it for help.",
+            }),
+          ),
+    ),
+  );
+  return {
+    t3_bot_history_search: McpToolAccess.readsAsCaller(searchHistory),
+    t3_bot: McpToolAccess.either(
+      (input) =>
+        input.action === "list" ||
+        input.action === "read" ||
+        input.action === "list_tasks" ||
+        input.action === "read_continuation",
+      McpToolAccess.reads(read),
+      McpToolAccess.beforeForwarding(
+        McpToolAccess.either(
+          (input) => input.action === "save_continuation",
+          McpToolAccess.writesOwnHomeNote((input) => write(input)),
+          McpToolAccess.either(
+            (input) =>
+              input.action === "start_task" ||
+              input.action === "cancel_task" ||
+              input.action === "learn",
+            McpToolAccess.writesBotTasks((input) => write(input)),
+            McpToolAccess.writesEnvironment((input) => write(input)),
+          ),
+        ),
+        localBotWritesOnly,
       ),
     ),
-  ),
+  } satisfies McpToolAccess.Handlers<typeof BotToolkit.tools>;
 });
+
+export const layer = McpToolAccess.toLayer(BotToolkit, make);

@@ -369,6 +369,19 @@ export const either = <P, A, E, R, A2, E2, R2>(
   );
 };
 
+/** Adds a sending-side check after the declaration's existing checks and before the call leaves. */
+export const beforeForwarding = <P, A, E, R>(
+  declaration: Declaration<(params: P) => Effect.Effect<A, E, R>>,
+  check: Effect.Effect<void, OrchestratorMcpFailure, CheckServices>,
+) => {
+  const remote = remoteCheckOf(declaration) as RemoteCheck<P> | undefined;
+  return declare(
+    checkedHandler(declaration),
+    remote === undefined ? undefined : (params) => remote(params).pipe(Effect.andThen(check)),
+    forwardedOf(declaration) as Forwarded<P, A, E, R> | undefined,
+  );
+};
+
 /**
  * `declaration`, whose result from a linked environment then goes through
  * `forwarded` here, for what this environment records about the call.

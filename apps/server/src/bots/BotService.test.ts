@@ -1377,6 +1377,11 @@ it.effect(
               id,
             );
           }
+          assert.equal(yield* bots.writeOwnerOfThread(ThreadId.make("launched")), botId);
+          assert.equal(
+            yield* bots.writeOwnerOfThread(ThreadId.make("launched-by-plain")),
+            undefined,
+          );
           for (const id of ["plain", "plain-fork", "launched-by-plain"]) {
             assert.deepEqual(yield* access(id), { _tag: "none" }, id);
           }
