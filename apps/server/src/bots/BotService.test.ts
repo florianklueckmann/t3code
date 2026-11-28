@@ -122,6 +122,7 @@ const makeThreadWorld = Effect.gen(function* () {
     Layer.mock(ThreadLaunchService.ThreadLaunchService)({
       launch: Effect.fn("FakeThreads.launch")(function* (input) {
         const threadId = input.threadId ?? ThreadId.make("unexpected");
+        const resumed = (yield* Ref.get(threads)).has(threadId);
         yield* Ref.update(launches, (current) => [...current, input]);
         yield* Ref.update(commands, (current) => [...current, "thread.create"]);
         yield* Ref.update(threads, (current) =>
@@ -135,7 +136,7 @@ const makeThreadWorld = Effect.gen(function* () {
         );
         const afterLaunch = yield* Ref.getAndSet(afterNextLaunch, Effect.void);
         yield* afterLaunch;
-        return { threadId, resumed: false } as never;
+        return { threadId, resumed } as never;
       }),
     }),
   );
@@ -163,12 +164,6 @@ const layerSupport = Layer.mergeAll(
   // Task selections are covered in BotTaskService.test.ts.
   Layer.mock(ProviderRegistry.ProviderRegistry)({}),
   BotProjectGuard.layer,
-  // The folder and its own repository are covered in BotHomeFolders.test.ts.
-  Layer.mock(BotHomeFolders.BotHomeFolders)({
-    root: "/bots",
-    ensureProject: (id) =>
-      Effect.succeed({ projectId: botHomeProjectId(id), workspaceRoot: `/bots/${id}` }),
-  }),
   Scheduler.layer,
   ServerSettings.layerTest(),
   // Routine pausing is covered with the real scheduled task service in BotTaskService.test.ts.
@@ -227,6 +222,7 @@ const withServices = <A, E>(
     readonly attention: BotAttention.BotAttention["Service"];
     readonly guard: BotProjectGuard.BotProjectGuard["Service"];
   }) => Effect.Effect<A, E>,
+  prepareHome = Effect.void,
 ) =>
   Effect.gen(function* () {
     const bots = yield* BotService.BotService;
@@ -246,7 +242,19 @@ const withServices = <A, E>(
         BotAttention.layer,
       ).pipe(
         Layer.provide(BotTaskService.layer),
-        Layer.provideMerge(Layer.merge(threadLayer, layerSupport)),
+        Layer.provideMerge(
+          Layer.mergeAll(
+            threadLayer,
+            layerSupport,
+            Layer.mock(BotHomeFolders.BotHomeFolders)({
+              root: "/bots",
+              ensureProject: (id) =>
+                prepareHome.pipe(
+                  Effect.as({ projectId: botHomeProjectId(id), workspaceRoot: `/bots/${id}` }),
+                ),
+            }),
+          ),
+        ),
       ),
     ),
     Effect.scoped,
@@ -569,6 +577,58 @@ const makeGate = Effect.gen(function* () {
   };
 });
 
+it.effect("folder preparation allows profile saves and an access edit skips it", () =>
+  Effect.gen(function* () {
+    const world = yield* makeThreadWorld;
+    const preparing = yield* makeGate;
+    const calls = yield* Ref.make(0);
+    yield* withServices(
+      world.threadLayer,
+      ({ bots }) =>
+        Effect.gen(function* () {
+          yield* createCampaignBot(bots);
+          const opening = yield* Effect.forkChild(bots.openHome({ botId, access: "read" }));
+          yield* preparing.entered;
+          const save = yield* bots
+            .update({ botId, name: "Renamed" })
+            .pipe(Effect.forkChild({ startImmediately: true }));
+          assert.isDefined(save.pollUnsafe());
+          assert.equal((yield* Fiber.join(save)).name, "Renamed");
+          yield* preparing.release;
+          yield* Fiber.join(opening);
+          assert.equal((yield* bots.openHome({ botId, access: "full" })).home?.access, "full");
+          assert.equal(yield* Ref.get(calls), 1);
+        }),
+      Ref.update(calls, (count) => count + 1).pipe(Effect.andThen(preparing.pause)),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect("an archive completed during folder preparation prevents the first Home launch", () =>
+  Effect.gen(function* () {
+    const world = yield* makeThreadWorld;
+    const preparing = yield* makeGate;
+    yield* withServices(
+      world.threadLayer,
+      ({ bots }) =>
+        Effect.gen(function* () {
+          yield* createCampaignBot(bots);
+          const opening = yield* bots.openHome({ botId }).pipe(Effect.flip, Effect.forkChild);
+          yield* preparing.entered;
+          const archive = yield* bots
+            .setArchived({ botId, archived: true })
+            .pipe(Effect.forkChild({ startImmediately: true }));
+          assert.isDefined(archive.pollUnsafe());
+          yield* Fiber.join(archive);
+          yield* preparing.release;
+          assert.include((yield* Fiber.join(opening)).message, "archived");
+          assert.isEmpty(yield* Ref.get(world.launches));
+        }),
+      preparing.pause,
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
 it.effect("removal waits for the first Home open to finish", () =>
   Effect.gen(function* () {
     const world = yield* makeThreadWorld;
@@ -656,11 +716,15 @@ it.effect("archive recovers the Home thread left by an interrupted first open", 
         yield* createCampaignBot(bots);
         const opening = yield* Effect.forkChild(bots.openHome({ botId }));
         yield* launch.entered;
+        const updating = yield* bots
+          .update({ botId, modelSelection: { ...codex, model: "gpt-5.5" } })
+          .pipe(Effect.forkChild({ startImmediately: true }));
         const archiving = yield* bots
           .setArchived({ botId, archived: true })
           .pipe(Effect.exit, Effect.forkChild({ startImmediately: true }));
         yield* Ref.set(world.failNext, "thread.archive");
         yield* Fiber.interrupt(opening);
+        yield* Fiber.join(updating);
         yield* Fiber.join(archiving);
         const recovered = (yield* bots.get({ botId })).home ?? assert.fail("missing Home binding");
         assert.isFalse((yield* Ref.get(world.threads)).get(recovered.homeThreadId)?.archived);
@@ -668,6 +732,7 @@ it.effect("archive recovers the Home thread left by an interrupted first open", 
         assert.isTrue((yield* Ref.get(world.threads)).get(recovered.homeThreadId)?.archived);
         yield* bots.setArchived({ botId, archived: false });
         assert.isFalse((yield* Ref.get(world.threads)).get(recovered.homeThreadId)?.archived);
+        assert.equal((yield* Ref.get(world.threads)).get(recovered.homeThreadId)?.model, "gpt-5.5");
       }),
     );
   }).pipe(Effect.provide(layerDatabase)),
@@ -747,7 +812,9 @@ it.effect("adopts the Home thread a crash left before its row on the next open",
     );
     yield* withServices(world.threadLayer, ({ bots }) =>
       Effect.gen(function* () {
+        yield* bots.update({ botId, modelSelection: { ...codex, model: "gpt-5.5" } });
         const home = (yield* bots.openHome({ botId })).home ?? assert.fail("no Home");
+        assert.equal((yield* Ref.get(world.threads)).get(home.homeThreadId)?.model, "gpt-5.5");
         const launches = yield* Ref.get(world.launches);
         assert.lengthOf(launches, 2);
         assert.equal(launches[0]?.commandId, launches[1]?.commandId);

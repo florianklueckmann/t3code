@@ -630,6 +630,9 @@ const make = Effect.gen(function* () {
       if (input.archived) yield* stopWork(input.botId);
       // A repeated request finishes a transition an earlier one left pending.
       yield* syncThreads(input.botId, attached);
+      if (!input.archived && home?.detached_at === null) {
+        yield* followBotModel(input.botId, ThreadId.make(home.home_thread_id));
+      }
       return yield* readDetail(input.botId);
     },
     withBotLock,
@@ -756,13 +759,10 @@ const make = Effect.gen(function* () {
     return yield* attachContext({ ...input, kind: "project" });
   });
 
-  const openHome: BotService["Service"]["openHome"] = Effect.fn("BotService.openHome")(function* (
-    input,
+  const openPreparedHome = Effect.fn("BotService.openPreparedHome")(function* (
+    input: BotOpenHomeInput,
   ) {
     yield* requireActiveBot(input.botId);
-    const { projectId } = yield* homeFolders
-      .ensureProject(input.botId)
-      .pipe(Effect.mapError((cause) => botError(cause.message, input.botId)(cause)));
     if (input.access !== undefined) {
       const [home] = yield* store
         .listHomes(input.botId)
@@ -787,10 +787,28 @@ const make = Effect.gen(function* () {
     }
     return yield* attachContext({
       botId: input.botId,
-      projectId,
+      projectId: botHomeProjectId(input.botId),
       kind: "bot",
     });
   }, withBotLock);
+
+  const openHome: BotService["Service"]["openHome"] = Effect.fn("BotService.openHome")(
+    function* (input) {
+      yield* requireActiveBot(input.botId);
+      const existing =
+        input.access === undefined
+          ? undefined
+          : yield* store
+              .getContext(input.botId, botHomeProjectId(input.botId))
+              .pipe(Effect.mapError(storeError(input.botId)));
+      if (existing === undefined) {
+        yield* homeFolders
+          .ensureProject(input.botId)
+          .pipe(Effect.mapError((cause) => botError(cause.message, input.botId)(cause)));
+      }
+      return yield* openPreparedHome(input);
+    },
+  );
 
   /** Attaches a project Home or the Bot-level Home, or reattaches a detached one. */
   const attachContext = Effect.fn("BotService.attachContext")(function* (
@@ -823,7 +841,7 @@ const make = Effect.gen(function* () {
           );
           // The thread comes first: a crash before the row leaves an ordinary
           // thread that the retried attach adopts through the same command id.
-          yield* threadLaunch
+          const launch = yield* threadLaunch
             .launch({
               commandId: CommandId.make(`bot-attach:${homeThreadId}`),
               threadId: homeThreadId,
@@ -845,6 +863,8 @@ const make = Effect.gen(function* () {
                 )(cause),
               ),
             );
+          if (launch.resumed && input.kind === "bot")
+            yield* followBotModel(input.botId, homeThreadId);
           yield* store.upsertContext(binding).pipe(Effect.mapError(storeError(input.botId)));
           return undefined;
         }
