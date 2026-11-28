@@ -68,7 +68,9 @@ const clip = (text: string, chars: number) => {
 
 const ANSWERED: ReadonlySet<string> = new Set(["completed", "failed", "cancelled", "interrupted"]);
 
-/** The question a waiting work thread asks, from its pending request's card; "answered" once it ended. */
+const ANSWERED_CARD = Symbol("answered");
+
+/** The question a waiting work thread asks, from its pending request's card, unless it ended. */
 const questionOf = (items: ReadonlyArray<OrchestrationV2TurnItem>, requestId: string) => {
   for (const item of items) {
     if (
@@ -76,7 +78,7 @@ const questionOf = (items: ReadonlyArray<OrchestrationV2TurnItem>, requestId: st
       item.requestId === requestId &&
       ANSWERED.has(item.status)
     )
-      return "answered" as const;
+      return ANSWERED_CARD;
     if (item.type === "user_input_request" && item.requestId === requestId)
       return item.questions.map((question) => question.question).join(" ");
     if (item.type === "approval_request" && item.requestId === requestId)
@@ -228,7 +230,7 @@ const make = Effect.gen(function* () {
             requestId,
           );
     // Answered since the shell was read: nothing waits on the user any more.
-    if (question === "answered") return;
+    if (question === ANSWERED_CARD) return;
     // The thread's last error is the saved run's only while that run is still its latest.
     const runError =
       shell !== null && shell.latestRunId === row.result_run_id ? (shell.lastError ?? null) : null;
