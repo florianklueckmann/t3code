@@ -703,8 +703,18 @@ it.effect("starts from a detached project HEAD no branch holds without piling up
       yield* world.git(world.root, "branch", "-m", "main", "trunk");
       yield* world.git(world.root, "switch", "-q", "--detach");
       yield* world.git(world.root, "commit", "-q", "--allow-empty", "-m", "on no branch");
-      yield* world.runTask(1);
+      const projectHead = yield* world.git(world.root, "rev-parse", "HEAD");
+      yield* world.runTask(1, {
+        work: (worktreePath) =>
+          world
+            .git(worktreePath, "commit", "-q", "--allow-empty", "-m", "task one")
+            .pipe(Effect.asVoid),
+      });
+      // The next task reuses the worktree, still at task one's commit, and starts from the
+      // project's HEAD, not from the worktree's own.
+      yield* world.runTask(2);
       assert.equal(yield* world.worktreeCount, 1);
+      assert.equal(yield* world.git(world.root, "rev-parse", "bot/task-2"), projectHead);
     }),
   ),
 );

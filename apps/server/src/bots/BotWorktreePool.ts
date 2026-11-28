@@ -664,7 +664,8 @@ const make = Effect.gen(function* () {
         .hasCommit({ cwd, refName: "HEAD" })
         .pipe(Effect.orElseSucceed(() => false)))
     )
-      return "HEAD";
+      // As a commit: `HEAD` named in the claimed worktree would be that worktree's own.
+      return yield* head(cwd);
     return yield* fail(
       "resolve-base",
       baseBranch === null
