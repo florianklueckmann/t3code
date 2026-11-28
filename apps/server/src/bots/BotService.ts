@@ -742,13 +742,22 @@ const make = Effect.gen(function* () {
           .setHomeAccess(input.botId, input.access)
           .pipe(Effect.mapError(storeError(input.botId)));
       }
-      return yield* attachContext({ botId: input.botId, projectId, kind: "bot" });
+      return yield* attachContext({
+        botId: input.botId,
+        projectId,
+        kind: "bot",
+        refuseReattach: input.access !== undefined,
+      });
     },
   );
 
   /** Attaches a project Home or the Bot-level Home, or reattaches a detached one. */
   const attachContext = Effect.fn("BotService.attachContext")(function* (
-    input: BotAttachProjectInput & { readonly kind: BotStore.BotContextKind },
+    input: BotAttachProjectInput & {
+      readonly kind: BotStore.BotContextKind;
+      /** Set when opening with an access: a Home removed meanwhile stays removed. */
+      readonly refuseReattach?: boolean;
+    },
   ) {
     const result = yield* guard.withProjectLock(
       input.projectId,
@@ -814,6 +823,12 @@ const make = Effect.gen(function* () {
           return undefined;
         }
         const reattach = existing.detached_at !== null;
+        if (reattach && input.refuseReattach === true) {
+          return yield* botError(
+            "This Bot's own Home was removed. Reopen it before changing its access.",
+            input.botId,
+          )();
+        }
         const next: BotStore.BotContextRow = {
           ...existing,
           guidance: input.guidance ?? existing.guidance,
