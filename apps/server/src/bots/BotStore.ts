@@ -24,8 +24,8 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as BotDatabase from "./persistence/BotDatabase.ts";
 
-/** The columns a Bot create or update writes. */
-export type BotProfileRow = Omit<BotRow, "home_access">;
+type BotInsertRow = Omit<BotRow, "home_access">;
+type BotProfileRow = Omit<BotInsertRow, "archived_at" | "created_at">;
 
 /** A pending archive or unarchive of a home thread, recorded before the thread command runs. */
 export type BotThreadSync = "archive" | "unarchive";
@@ -146,7 +146,7 @@ export class BotStore extends Context.Service<
     readonly getContextByThread: (
       threadId: ThreadId,
     ) => Effect.Effect<BotContextRow | undefined, BotStoreError>;
-    readonly insertBot: (row: BotProfileRow) => Effect.Effect<void, BotStoreError>;
+    readonly insertBot: (row: BotInsertRow) => Effect.Effect<void, BotStoreError>;
     readonly updateBot: (row: BotProfileRow) => Effect.Effect<void, BotStoreError>;
     readonly setHomeAccess: (
       botId: BotId,
@@ -342,9 +342,7 @@ export function botRow(input: {
   readonly learningPolicy: BotLearningPolicy;
   readonly taskLimit?: number;
   readonly appearanceJson: string | null;
-  readonly createdAt: string;
   readonly updatedAt: string;
-  readonly archivedAt: string | null;
 }): BotProfileRow {
   return {
     bot_id: input.botId,
@@ -354,9 +352,7 @@ export function botRow(input: {
     learning_policy: input.learningPolicy,
     ...(input.taskLimit === undefined ? {} : { task_limit: input.taskLimit }),
     appearance_json: input.appearanceJson,
-    created_at: input.createdAt,
     updated_at: input.updatedAt,
-    archived_at: input.archivedAt,
   };
 }
 
@@ -421,7 +417,7 @@ export const layer = Layer.effect(
     );
 
     const insertBot = Effect.fn("BotStore.insertBot")(
-      function* (row: BotProfileRow) {
+      function* (row: BotInsertRow) {
         yield* sql`
         INSERT INTO bots (
           bot_id, name, instructions, model_selection_json, learning_policy, appearance_json,
@@ -446,8 +442,7 @@ export const layer = Layer.effect(
           learning_policy = ${row.learning_policy},
           task_limit = COALESCE(${row.task_limit ?? null}, task_limit),
           appearance_json = ${row.appearance_json},
-          updated_at = ${row.updated_at},
-          archived_at = ${row.archived_at}
+          updated_at = ${row.updated_at}
         WHERE bot_id = ${row.bot_id}
       `;
       },

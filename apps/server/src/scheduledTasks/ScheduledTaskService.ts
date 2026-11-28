@@ -1,5 +1,6 @@
 import {
   CommandId,
+  isBotHomeProjectId,
   MessageId,
   PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   type ProjectId,
@@ -268,6 +269,9 @@ interface WebhookDeliveryRow {
   readonly pending_window: number;
   readonly error: string | null;
 }
+
+export const BOT_HOME_SCHEDULE_ERROR =
+  "This project holds a Bot's own Home, which runs no scheduled tasks. Pass projectId of one of the Bot's attached projects.";
 
 export class ScheduledTaskService extends Context.Service<
   ScheduledTaskService,
@@ -1628,6 +1632,12 @@ export const layer = Layer.effect(
     const upsert: ScheduledTaskService["Service"]["upsert"] = Effect.fn(
       "ScheduledTaskService.upsert",
     )(function* (input, provenance) {
+      if (isBotHomeProjectId(input.projectId)) {
+        return yield* taskError(
+          BOT_HOME_SCHEDULE_ERROR,
+          input.id === undefined ? {} : { taskId: input.id },
+        );
+      }
       // A webhook task the policy blocks can still be edited while it is off.
       if (input.enabled && input.schedule.type === "webhook" && webhookPolicyBlock !== undefined) {
         return yield* taskError(

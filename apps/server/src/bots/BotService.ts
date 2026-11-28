@@ -12,6 +12,7 @@ import {
   BotError,
   type BotGetInput,
   BotId,
+  botHomeProjectId,
   type BotLearningNoticesInput,
   type BotLearningNoticesResult,
   type BotLearningRevisionRef,
@@ -177,6 +178,25 @@ function botHomeThreadId(botId: BotId, projectId: ProjectId): ThreadId {
   return ThreadId.make(`${BOT_HOME_THREAD_ID_PREFIX}${botId}:${projectId}`);
 }
 
+function newHomeBinding(
+  input: BotAttachProjectInput & { readonly kind: BotStore.BotContextKind },
+  now: string,
+) {
+  return {
+    home_thread_id: botHomeThreadId(input.botId, input.projectId),
+    bot_id: input.botId,
+    project_id: input.projectId,
+    kind: input.kind,
+    guidance: input.guidance ?? "",
+    sources_json: BotStore.encodeSources(input.sources ?? []),
+    revision: 0,
+    thread_sync: null,
+    attached_at: now,
+    detached_at: null,
+    updated_at: now,
+  } satisfies BotStore.BotContextRow;
+}
+
 const botError = (message: string, botId?: BotId) => (cause?: unknown) =>
   new BotError({
     message,
@@ -213,6 +233,9 @@ const make = Effect.gen(function* () {
   // Names the Bot whose learning committed, so a Home's notices reread only for their own Bot.
   const learningChanges = yield* PubSub.unbounded<BotId>();
 
+  const botLocks = yield* KeyedLock.make<BotId>();
+  const withBotLock = <A, E, R>(effect: Effect.Effect<A, E, R>, input: { readonly botId: BotId }) =>
+    botLocks.withLock(input.botId, effect);
   const syncLocks = yield* KeyedLock.make<ThreadId>();
 
   const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
@@ -476,9 +499,7 @@ const make = Effect.gen(function* () {
     const row = BotStore.botRow({
       ...input,
       appearanceJson: BotStore.encodeAppearance(input.appearance ?? null),
-      createdAt: now,
       updatedAt: now,
-      archivedAt: null,
     });
     const existing = yield* store
       .getBot(input.botId)
@@ -493,7 +514,9 @@ const make = Effect.gen(function* () {
       if (!sameRequest) return yield* botError("A Bot with this id already exists.", input.botId)();
       return yield* readDetail(input.botId);
     }
-    yield* store.insertBot(row).pipe(Effect.mapError(storeError(input.botId)));
+    yield* store
+      .insertBot({ ...row, created_at: now, archived_at: null })
+      .pipe(Effect.mapError(storeError(input.botId)));
     yield* notifyChanged;
     return yield* readDetail(input.botId);
   });
@@ -544,15 +567,13 @@ const make = Effect.gen(function* () {
             input.appearance === undefined
               ? bot.appearance_json
               : BotStore.encodeAppearance(input.appearance),
-          createdAt: bot.created_at,
           updatedAt: now,
-          archivedAt: null,
         }),
       )
       .pipe(Effect.mapError(storeError(input.botId)));
     yield* notifyChanged;
     return yield* readDetail(input.botId);
-  });
+  }, withBotLock);
 
   const setArchived: BotService["Service"]["setArchived"] = Effect.fn("BotService.setArchived")(
     function* (input) {
@@ -561,27 +582,46 @@ const make = Effect.gen(function* () {
       const now = yield* nowIso;
       const sync = input.archived ? "archive" : "unarchive";
       const changed = (bot.archived_at !== null) !== input.archived;
+      const [home] = yield* store
+        .listHomes(input.botId)
+        .pipe(Effect.mapError(storeError(input.botId)));
+      const projectId = botHomeProjectId(input.botId);
+      // A first open can commit its thread and stop before saving its binding.
+      const unbound =
+        input.archived && home === undefined
+          ? yield* threads
+              .getThreadShell(botHomeThreadId(input.botId, projectId))
+              .pipe(Effect.mapError(botError("Failed to read the Bot conversation.", input.botId)))
+          : null;
       const attached = yield* sql
         .withTransaction(
           Effect.gen(function* () {
             const contexts = [
               ...(yield* store.listContexts(input.botId)),
-              ...(yield* store.listHomes(input.botId)),
+              ...(home ? [home] : []),
             ].filter((context) => context.detached_at === null);
             if (input.archived) yield* revokeHomeReturns(input.botId);
-            if (!changed) return contexts;
-            yield* store.updateBot({
-              ...bot,
-              archived_at: input.archived ? now : null,
-              updated_at: now,
-            });
-            const next = contexts.map((context) => ({
-              ...context,
-              revision: context.revision + 1,
-              thread_sync: sync,
-              updated_at: now,
-            }));
-            yield* Effect.forEach(next, store.upsertContext, { discard: true });
+            if (changed) {
+              yield* sql`UPDATE bots SET archived_at = ${input.archived ? now : null}, updated_at = ${now}
+                WHERE bot_id = ${input.botId}`;
+            }
+            const next = changed
+              ? contexts.map((context) => ({
+                  ...context,
+                  revision: context.revision + 1,
+                  thread_sync: sync,
+                  updated_at: now,
+                }))
+              : contexts;
+            if (changed) yield* Effect.forEach(next, store.upsertContext, { discard: true });
+            if (unbound?.projectId === projectId && unbound.deletedAt === null) {
+              const recovered = {
+                ...newHomeBinding({ botId: input.botId, projectId, kind: "bot" }, now),
+                thread_sync: "archive",
+              };
+              yield* store.upsertContext(recovered);
+              return [...next, recovered];
+            }
             return next;
           }),
         )
@@ -590,8 +630,12 @@ const make = Effect.gen(function* () {
       if (input.archived) yield* stopWork(input.botId);
       // A repeated request finishes a transition an earlier one left pending.
       yield* syncThreads(input.botId, attached);
+      if (!input.archived && home?.detached_at === null) {
+        yield* followBotModel(input.botId, ThreadId.make(home.home_thread_id));
+      }
       return yield* readDetail(input.botId);
     },
+    withBotLock,
   );
 
   // Orders grant saves with changes to the Calendar (this Mac) selection, which validate against it.
@@ -715,40 +759,54 @@ const make = Effect.gen(function* () {
     return yield* attachContext({ ...input, kind: "project" });
   });
 
+  const openPreparedHome = Effect.fn("BotService.openPreparedHome")(function* (
+    input: BotOpenHomeInput,
+  ) {
+    yield* requireActiveBot(input.botId);
+    if (input.access !== undefined) {
+      const [home] = yield* store
+        .listHomes(input.botId)
+        .pipe(Effect.mapError(storeError(input.botId)));
+      if (home !== undefined) {
+        // Changing the access of an existing Home must not reopen one another client removed.
+        const changed = yield* store
+          .setOpenHomeAccess(input.botId, input.access)
+          .pipe(Effect.mapError(storeError(input.botId)));
+        if (!changed) {
+          return yield* botError(
+            "This Bot's own Home was removed. Reopen it before changing its access.",
+            input.botId,
+          )();
+        }
+        yield* notifyChanged;
+        return yield* readDetail(input.botId);
+      }
+      yield* store
+        .setHomeAccess(input.botId, input.access)
+        .pipe(Effect.mapError(storeError(input.botId)));
+    }
+    return yield* attachContext({
+      botId: input.botId,
+      projectId: botHomeProjectId(input.botId),
+      kind: "bot",
+    });
+  }, withBotLock);
+
   const openHome: BotService["Service"]["openHome"] = Effect.fn("BotService.openHome")(
     function* (input) {
       yield* requireActiveBot(input.botId);
-      const { projectId } = yield* homeFolders
-        .ensureProject(input.botId)
-        .pipe(Effect.mapError((cause) => botError(cause.message, input.botId)(cause)));
-      if (input.access !== undefined) {
-        const [home] = yield* store
-          .listHomes(input.botId)
-          .pipe(Effect.mapError(storeError(input.botId)));
-        if (home !== undefined) {
-          // Changing the access of an existing Home must not reopen one another client removed.
-          const changed = yield* store
-            .setOpenHomeAccess(input.botId, input.access)
-            .pipe(Effect.mapError(storeError(input.botId)));
-          if (!changed) {
-            return yield* botError(
-              "This Bot's own Home was removed. Reopen it before changing its access.",
-              input.botId,
-            )();
-          }
-          yield* notifyChanged;
-          return yield* readDetail(input.botId);
-        }
-        yield* store
-          .setHomeAccess(input.botId, input.access)
-          .pipe(Effect.mapError(storeError(input.botId)));
+      const existing =
+        input.access === undefined
+          ? undefined
+          : yield* store
+              .getContext(input.botId, botHomeProjectId(input.botId))
+              .pipe(Effect.mapError(storeError(input.botId)));
+      if (existing === undefined) {
+        yield* homeFolders
+          .ensureProject(input.botId)
+          .pipe(Effect.mapError((cause) => botError(cause.message, input.botId)(cause)));
       }
-      return yield* attachContext({
-        botId: input.botId,
-        projectId,
-        kind: "bot",
-        refuseReattach: input.access !== undefined,
-      });
+      return yield* openPreparedHome(input);
     },
   );
 
@@ -756,8 +814,6 @@ const make = Effect.gen(function* () {
   const attachContext = Effect.fn("BotService.attachContext")(function* (
     input: BotAttachProjectInput & {
       readonly kind: BotStore.BotContextKind;
-      /** Set when opening with an access: a Home removed meanwhile stays removed. */
-      readonly refuseReattach?: boolean;
     },
   ) {
     const result = yield* guard.withProjectLock(
@@ -778,13 +834,14 @@ const make = Effect.gen(function* () {
         const now = yield* nowIso;
         if (existing === undefined) {
           const detail = yield* readDetail(input.botId);
-          const homeThreadId = botHomeThreadId(input.botId, input.projectId);
+          const binding = newHomeBinding(input, now);
+          const homeThreadId = binding.home_thread_id;
           const settings = yield* serverSettings.getSettings.pipe(
             Effect.mapError(botError("Failed to read settings.", input.botId)),
           );
           // The thread comes first: a crash before the row leaves an ordinary
           // thread that the retried attach adopts through the same command id.
-          yield* threadLaunch
+          const launch = yield* threadLaunch
             .launch({
               commandId: CommandId.make(`bot-attach:${homeThreadId}`),
               threadId: homeThreadId,
@@ -806,30 +863,12 @@ const make = Effect.gen(function* () {
                 )(cause),
               ),
             );
-          yield* store
-            .upsertContext({
-              home_thread_id: homeThreadId,
-              bot_id: input.botId,
-              project_id: input.projectId,
-              kind: input.kind,
-              guidance: input.guidance ?? "",
-              sources_json: BotStore.encodeSources(input.sources ?? []),
-              revision: 0,
-              thread_sync: null,
-              attached_at: now,
-              detached_at: null,
-              updated_at: now,
-            })
-            .pipe(Effect.mapError(storeError(input.botId)));
+          if (launch.resumed && input.kind === "bot")
+            yield* followBotModel(input.botId, homeThreadId);
+          yield* store.upsertContext(binding).pipe(Effect.mapError(storeError(input.botId)));
           return undefined;
         }
         const reattach = existing.detached_at !== null;
-        if (reattach && input.refuseReattach === true) {
-          return yield* botError(
-            "This Bot's own Home was removed. Reopen it before changing its access.",
-            input.botId,
-          )();
-        }
         const next: BotStore.BotContextRow = {
           ...existing,
           guidance: input.guidance ?? existing.guidance,
@@ -890,30 +929,31 @@ const make = Effect.gen(function* () {
       );
   });
 
+  const withProjectLock = <A, E, R>(
+    effect: Effect.Effect<A, E, R>,
+    input: { readonly projectId: ProjectId },
+  ) => guard.withProjectLock(input.projectId, effect);
+
   const updateProjectContext: BotService["Service"]["updateProjectContext"] = Effect.fn(
     "BotService.updateProjectContext",
   )(function* (input) {
     yield* requireActiveBot(input.botId);
-    const existing = yield* store
-      .getContext(input.botId, input.projectId)
-      .pipe(Effect.mapError(storeError(input.botId)));
-    if (existing === undefined || existing.detached_at !== null || existing.kind === "bot") {
+    const now = yield* nowIso;
+    const changed = yield* sql`
+      UPDATE bot_project_contexts SET
+        guidance = COALESCE(${input.guidance ?? null}, guidance),
+        sources_json = COALESCE(${input.sources === undefined ? null : BotStore.encodeSources(input.sources)}, sources_json),
+        updated_at = ${now}
+      WHERE bot_id = ${input.botId} AND project_id = ${input.projectId}
+        AND kind = 'project' AND detached_at IS NULL
+      RETURNING home_thread_id
+    `.pipe(Effect.mapError(storeError(input.botId)));
+    if (changed.length === 0) {
       return yield* botError("The Bot is not attached to this project.", input.botId)();
     }
-    yield* store
-      .upsertContext({
-        ...existing,
-        guidance: input.guidance ?? existing.guidance,
-        sources_json:
-          input.sources === undefined
-            ? existing.sources_json
-            : BotStore.encodeSources(input.sources),
-        updated_at: yield* nowIso,
-      })
-      .pipe(Effect.mapError(storeError(input.botId)));
     yield* notifyChanged;
     return yield* readDetail(input.botId);
-  });
+  }, withProjectLock);
 
   const detachProject: BotService["Service"]["detachProject"] = Effect.fn(
     "BotService.detachProject",
@@ -931,7 +971,7 @@ const make = Effect.gen(function* () {
       )();
     }
     return yield* detachContext(existing, stopWork(input.botId, input.projectId));
-  });
+  }, withProjectLock);
 
   const removeHome: BotService["Service"]["removeHome"] = Effect.fn("BotService.removeHome")(
     function* (input) {
@@ -949,6 +989,7 @@ const make = Effect.gen(function* () {
         }),
       );
     },
+    withBotLock,
   );
 
   /** Detaches a Home, runs `stop` for the work it owns and archives its thread. */

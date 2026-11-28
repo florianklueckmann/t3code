@@ -24,6 +24,9 @@ import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
+import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
@@ -71,8 +74,7 @@ const makeThreadWorld = Effect.gen(function* () {
   const commands = yield* Ref.make<ReadonlyArray<string>>([]);
   const failNext = yield* Ref.make<string | null>(null);
   const launches = yield* Ref.make<ReadonlyArray<ThreadLaunchService.ThreadLaunchInput>>([]);
-  /** Stops the server right after the next launch created its thread. */
-  const crashAfterLaunch = yield* Ref.make(false);
+  const afterNextLaunch = yield* Ref.make(Effect.void);
 
   const setThread = (threadId: ThreadId, update: (thread: FakeThread) => FakeThread) =>
     Ref.update(threads, (current) => {
@@ -107,8 +109,9 @@ const makeThreadWorld = Effect.gen(function* () {
         if (thread === undefined) return null;
         const shell: Pick<
           OrchestrationV2ThreadShell,
-          "archivedAt" | "deletedAt" | "modelSelection"
+          "archivedAt" | "deletedAt" | "modelSelection" | "projectId"
         > = {
+          projectId: thread.projectId,
           archivedAt: thread.archived ? DateTime.makeUnsafe(0) : null,
           deletedAt: null,
           modelSelection: { ...codex, model: thread.model },
@@ -119,6 +122,7 @@ const makeThreadWorld = Effect.gen(function* () {
     Layer.mock(ThreadLaunchService.ThreadLaunchService)({
       launch: Effect.fn("FakeThreads.launch")(function* (input) {
         const threadId = input.threadId ?? ThreadId.make("unexpected");
+        const resumed = (yield* Ref.get(threads)).has(threadId);
         yield* Ref.update(launches, (current) => [...current, input]);
         yield* Ref.update(commands, (current) => [...current, "thread.create"]);
         yield* Ref.update(threads, (current) =>
@@ -130,14 +134,13 @@ const makeThreadWorld = Effect.gen(function* () {
                 model: input.modelSelection.model,
               }),
         );
-        if (yield* Ref.getAndSet(crashAfterLaunch, false)) {
-          return yield* Effect.die("injected crash after the launch");
-        }
-        return { threadId, resumed: false } as never;
+        const afterLaunch = yield* Ref.getAndSet(afterNextLaunch, Effect.void);
+        yield* afterLaunch;
+        return { threadId, resumed } as never;
       }),
     }),
   );
-  return { threads, commands, failNext, launches, crashAfterLaunch, threadLayer };
+  return { threads, commands, failNext, launches, afterNextLaunch, threadLayer };
 });
 
 const layerSupport = Layer.mergeAll(
@@ -161,12 +164,6 @@ const layerSupport = Layer.mergeAll(
   // Task selections are covered in BotTaskService.test.ts.
   Layer.mock(ProviderRegistry.ProviderRegistry)({}),
   BotProjectGuard.layer,
-  // The folder and its own repository are covered in BotHomeFolders.test.ts.
-  Layer.mock(BotHomeFolders.BotHomeFolders)({
-    root: "/bots",
-    ensureProject: (id) =>
-      Effect.succeed({ projectId: botHomeProjectId(id), workspaceRoot: `/bots/${id}` }),
-  }),
   Scheduler.layer,
   ServerSettings.layerTest(),
   // Routine pausing is covered with the real scheduled task service in BotTaskService.test.ts.
@@ -225,6 +222,7 @@ const withServices = <A, E>(
     readonly attention: BotAttention.BotAttention["Service"];
     readonly guard: BotProjectGuard.BotProjectGuard["Service"];
   }) => Effect.Effect<A, E>,
+  prepareHome = Effect.void,
 ) =>
   Effect.gen(function* () {
     const bots = yield* BotService.BotService;
@@ -244,7 +242,19 @@ const withServices = <A, E>(
         BotAttention.layer,
       ).pipe(
         Layer.provide(BotTaskService.layer),
-        Layer.provideMerge(Layer.merge(threadLayer, layerSupport)),
+        Layer.provideMerge(
+          Layer.mergeAll(
+            threadLayer,
+            layerSupport,
+            Layer.mock(BotHomeFolders.BotHomeFolders)({
+              root: "/bots",
+              ensureProject: (id) =>
+                prepareHome.pipe(
+                  Effect.as({ projectId: botHomeProjectId(id), workspaceRoot: `/bots/${id}` }),
+                ),
+            }),
+          ),
+        ),
       ),
     ),
     Effect.scoped,
@@ -557,6 +567,237 @@ it.effect(
     }).pipe(Effect.provide(layerDatabase)),
 );
 
+const makeGate = Effect.gen(function* () {
+  const entered = yield* Deferred.make<void>();
+  const resume = yield* Deferred.make<void>();
+  return {
+    pause: Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(resume))),
+    entered: Deferred.await(entered),
+    release: Deferred.succeed(resume, undefined),
+  };
+});
+
+it.effect("folder preparation allows profile saves and an access edit skips it", () =>
+  Effect.gen(function* () {
+    const world = yield* makeThreadWorld;
+    const preparing = yield* makeGate;
+    const calls = yield* Ref.make(0);
+    yield* withServices(
+      world.threadLayer,
+      ({ bots }) =>
+        Effect.gen(function* () {
+          yield* createCampaignBot(bots);
+          const opening = yield* Effect.forkChild(bots.openHome({ botId, access: "read" }));
+          yield* preparing.entered;
+          const save = yield* bots
+            .update({ botId, name: "Renamed" })
+            .pipe(Effect.forkChild({ startImmediately: true }));
+          assert.isDefined(save.pollUnsafe());
+          assert.equal((yield* Fiber.join(save)).name, "Renamed");
+          yield* preparing.release;
+          yield* Fiber.join(opening);
+          assert.equal((yield* bots.openHome({ botId, access: "full" })).home?.access, "full");
+          assert.equal(yield* Ref.get(calls), 1);
+        }),
+      Ref.update(calls, (count) => count + 1).pipe(Effect.andThen(preparing.pause)),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect("an archive completed during folder preparation prevents the first Home launch", () =>
+  Effect.gen(function* () {
+    const world = yield* makeThreadWorld;
+    const preparing = yield* makeGate;
+    yield* withServices(
+      world.threadLayer,
+      ({ bots }) =>
+        Effect.gen(function* () {
+          yield* createCampaignBot(bots);
+          const opening = yield* bots.openHome({ botId }).pipe(Effect.flip, Effect.forkChild);
+          yield* preparing.entered;
+          const archive = yield* bots
+            .setArchived({ botId, archived: true })
+            .pipe(Effect.forkChild({ startImmediately: true }));
+          assert.isDefined(archive.pollUnsafe());
+          yield* Fiber.join(archive);
+          yield* preparing.release;
+          assert.include((yield* Fiber.join(opening)).message, "archived");
+          assert.isEmpty(yield* Ref.get(world.launches));
+        }),
+      preparing.pause,
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect("removal waits for the first Home open to finish", () =>
+  Effect.gen(function* () {
+    const world = yield* makeThreadWorld;
+    const launch = yield* makeGate;
+    yield* Ref.set(world.afterNextLaunch, launch.pause);
+    yield* withServices(world.threadLayer, ({ bots }) =>
+      Effect.gen(function* () {
+        yield* createCampaignBot(bots);
+        const opening = yield* Effect.forkChild(bots.openHome({ botId, access: "full" }));
+        yield* launch.entered;
+        const removing = yield* bots
+          .removeHome({ botId })
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        assert.isUndefined(removing.pollUnsafe());
+        yield* launch.release;
+        const home = (yield* Fiber.join(opening)).home ?? assert.fail();
+        assert.isNotNull((yield* Fiber.join(removing)).home?.detachedAt);
+        assert.isTrue((yield* Ref.get(world.threads)).get(home.homeThreadId)?.archived);
+      }),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect("an archive racing a profile save leaves the Bot archived", () =>
+  Effect.gen(function* () {
+    const world = yield* makeThreadWorld;
+    yield* withServices(world.threadLayer, ({ bots }) =>
+      Effect.gen(function* () {
+        yield* createCampaignBot(bots);
+        const home = (yield* bots.openHome({ botId })).home ?? assert.fail();
+        const saving = yield* makeGate;
+        const clock = yield* Clock.Clock;
+        const profile = yield* bots.update({ botId, name: "Renamed" }).pipe(
+          Effect.provideService(Clock.Clock, {
+            ...clock,
+            currentTimeMillis: saving.pause.pipe(Effect.andThen(clock.currentTimeMillis)),
+          }),
+          Effect.forkChild,
+        );
+        yield* saving.entered;
+        const archiving = yield* bots
+          .setArchived({ botId, archived: true })
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* saving.release;
+        yield* Fiber.join(profile);
+        yield* Fiber.join(archiving);
+        const detail = yield* bots.get({ botId });
+        assert.equal(detail.name, "Renamed");
+        assert.isNotNull(detail.archivedAt);
+        assert.isTrue((yield* Ref.get(world.threads)).get(home.homeThreadId)?.archived);
+      }),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect("a model change during the first Home launch reaches its thread", () =>
+  Effect.gen(function* () {
+    const world = yield* makeThreadWorld;
+    const launch = yield* makeGate;
+    yield* Ref.set(world.afterNextLaunch, launch.pause);
+    yield* withServices(world.threadLayer, ({ bots }) =>
+      Effect.gen(function* () {
+        yield* createCampaignBot(bots);
+        const opening = yield* Effect.forkChild(bots.openHome({ botId }));
+        yield* launch.entered;
+        const updating = yield* bots
+          .update({ botId, modelSelection: { ...codex, model: "gpt-5.5" } })
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* launch.release;
+        const home = (yield* Fiber.join(opening)).home ?? assert.fail();
+        yield* Fiber.join(updating);
+        assert.equal((yield* Ref.get(world.threads)).get(home.homeThreadId)?.model, "gpt-5.5");
+      }),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect("archive recovers the Home thread left by an interrupted first open", () =>
+  Effect.gen(function* () {
+    const world = yield* makeThreadWorld;
+    const launch = yield* makeGate;
+    yield* Ref.set(world.afterNextLaunch, launch.pause);
+    yield* withServices(world.threadLayer, ({ bots }) =>
+      Effect.gen(function* () {
+        yield* createCampaignBot(bots);
+        const opening = yield* Effect.forkChild(bots.openHome({ botId }));
+        yield* launch.entered;
+        const updating = yield* bots
+          .update({ botId, modelSelection: { ...codex, model: "gpt-5.5" } })
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        const archiving = yield* bots
+          .setArchived({ botId, archived: true })
+          .pipe(Effect.exit, Effect.forkChild({ startImmediately: true }));
+        yield* Ref.set(world.failNext, "thread.archive");
+        yield* Fiber.interrupt(opening);
+        yield* Fiber.join(updating);
+        yield* Fiber.join(archiving);
+        const recovered = (yield* bots.get({ botId })).home ?? assert.fail("missing Home binding");
+        assert.isFalse((yield* Ref.get(world.threads)).get(recovered.homeThreadId)?.archived);
+        yield* bots.setArchived({ botId, archived: true });
+        assert.isTrue((yield* Ref.get(world.threads)).get(recovered.homeThreadId)?.archived);
+        yield* bots.setArchived({ botId, archived: false });
+        assert.isFalse((yield* Ref.get(world.threads)).get(recovered.homeThreadId)?.archived);
+        assert.equal((yield* Ref.get(world.threads)).get(recovered.homeThreadId)?.model, "gpt-5.5");
+      }),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect.each(["attach", "guidance"] as const)("a racing project %s cannot undo detach", (save) =>
+  Effect.gen(function* () {
+    const world = yield* makeThreadWorld;
+    yield* withServices(world.threadLayer, ({ bots }) =>
+      Effect.gen(function* () {
+        yield* createCampaignBot(bots);
+        const input = { botId, projectId: campaignA };
+        const home = (yield* bots.attachProject(input)).projects[0] ?? assert.fail();
+        const saving = yield* makeGate;
+        const clock = yield* Clock.Clock;
+        const update = save === "attach" ? bots.attachProject : bots.updateProjectContext;
+        const writing = yield* update({ ...input, guidance: "New guidance" }).pipe(
+          Effect.provideService(Clock.Clock, {
+            ...clock,
+            currentTimeMillis: saving.pause.pipe(Effect.andThen(clock.currentTimeMillis)),
+          }),
+          Effect.forkChild,
+        );
+        yield* saving.entered;
+        const removing = yield* bots
+          .detachProject(input)
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* saving.release;
+        yield* Fiber.join(writing);
+        yield* Fiber.join(removing);
+        const detached = (yield* bots.get({ botId })).projects[0] ?? assert.fail();
+        assert.isNotNull(detached.detachedAt);
+        assert.equal(detached.guidance, "New guidance");
+        const refused = yield* bots
+          .updateProjectContext({ ...input, guidance: "Late save" })
+          .pipe(Effect.flip);
+        assert.include(refused.message, "not attached");
+        assert.isTrue((yield* Ref.get(world.threads)).get(home.homeThreadId)?.archived);
+      }),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect("archiving during the first Home launch archives the new thread", () =>
+  Effect.gen(function* () {
+    const world = yield* makeThreadWorld;
+    const launch = yield* makeGate;
+    yield* Ref.set(world.afterNextLaunch, launch.pause);
+    yield* withServices(world.threadLayer, ({ bots }) =>
+      Effect.gen(function* () {
+        yield* createCampaignBot(bots);
+        const opening = yield* Effect.forkChild(bots.openHome({ botId }));
+        yield* launch.entered;
+        const archiving = yield* bots
+          .setArchived({ botId, archived: true })
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* launch.release;
+        const home = (yield* Fiber.join(opening)).home ?? assert.fail();
+        yield* Fiber.join(archiving);
+        assert.isTrue((yield* Ref.get(world.threads)).get(home.homeThreadId)?.archived);
+      }),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
 it.effect("adopts the Home thread a crash left before its row on the next open", () =>
   Effect.gen(function* () {
     yield* seedProjects;
@@ -564,14 +805,16 @@ it.effect("adopts the Home thread a crash left before its row on the next open",
     yield* withServices(world.threadLayer, ({ bots }) =>
       Effect.gen(function* () {
         yield* createCampaignBot(bots);
-        yield* Ref.set(world.crashAfterLaunch, true);
+        yield* Ref.set(world.afterNextLaunch, Effect.die("injected crash after the launch"));
         yield* bots.openHome({ botId }).pipe(Effect.exit);
         assert.isNull((yield* bots.get({ botId })).home);
       }),
     );
     yield* withServices(world.threadLayer, ({ bots }) =>
       Effect.gen(function* () {
+        yield* bots.update({ botId, modelSelection: { ...codex, model: "gpt-5.5" } });
         const home = (yield* bots.openHome({ botId })).home ?? assert.fail("no Home");
+        assert.equal((yield* Ref.get(world.threads)).get(home.homeThreadId)?.model, "gpt-5.5");
         const launches = yield* Ref.get(world.launches);
         assert.lengthOf(launches, 2);
         assert.equal(launches[0]?.commandId, launches[1]?.commandId);

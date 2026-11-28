@@ -2271,10 +2271,7 @@ const make = Effect.gen(function* () {
       const { parent, limits } = yield* loadCaller(scope, ["runs"]);
       const projectId = yield* resolveProjectTarget(parent, input.projectId);
       if (isBotHomeProjectId(projectId)) {
-        return yield* failure(
-          "invalid_request",
-          "This project holds a Bot's own Home, which runs no scheduled tasks. Pass projectId of one of the Bot's attached projects.",
-        );
+        return yield* failure("invalid_request", ScheduledTaskService.BOT_HOME_SCHEDULE_ERROR);
       }
       yield* assertLiveCallerForOtherProject(scope, parent, projectId);
       const project = yield* requireProject(projectId);
