@@ -1,3 +1,4 @@
+import * as NodeSqlite from "node:sqlite";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as NodeUtil from "node:util";
 
@@ -1149,4 +1150,69 @@ it.effect("a run interrupted right after it reserves the task does not block the
       assert.equal(yield* Ref.get(launches), 1);
     }).pipe(Effect.provide(layer));
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect.each([
+  ["client Run now", false],
+  ["MCP Run now", true],
+] as const)(
+  "clears the running mark when %s is interrupted immediately after the write",
+  ([, authorize]) =>
+    Effect.gen(function* () {
+      const layer = ScheduledTaskService.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            ManagedPolicy.layerTest(),
+            Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
+            Layer.mock(ThreadManagementService.ThreadManagementService)({}),
+            Layer.mock(SecretRequests.SecretRequests)({}),
+            Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+              namedProjectsRoot: "/projects",
+              isScratchProject: () => Effect.succeed(false),
+            }),
+            NodeCrypto.layer,
+            Layer.succeed(Scheduler.Scheduler, { register: () => Effect.void }),
+          ),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+        const { task } = yield* service.upsert({
+          id: ScheduledTaskId.make("task:interrupted-after-mark"),
+          title: "Check in",
+          prompt: "Check progress",
+          enabled: true,
+          schedule: { type: "interval", everyMs: 60_000 },
+          projectId: ProjectId.make("project:test"),
+          workspaceStrategy: { type: "root" },
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+        });
+        const all = NodeSqlite.StatementSync.prototype.all;
+        let interrupted = false;
+        using _mark = vi
+          .spyOn(NodeSqlite.StatementSync.prototype, "all")
+          .mockImplementation(function (
+            this: NodeSqlite.StatementSync,
+            ...params: Parameters<typeof all>
+          ) {
+            const rows = all.apply(this, params);
+            if (this.sourceSQL.includes("last_run_status = 'running',")) {
+              interrupted = true;
+              Fiber.getCurrent()?.interruptUnsafe();
+            }
+            return rows;
+          });
+        const exit = yield* service
+          .runNow(
+            { id: task.id },
+            authorize ? { requestedIn: null, authorize: () => Effect.void } : undefined,
+          )
+          .pipe(Effect.forkChild, Effect.flatMap(Fiber.await));
+        assert.isTrue(interrupted);
+        assert.isTrue(Exit.hasInterrupts(exit));
+        assert.equal((yield* service.list()).tasks[0]?.lastRunStatus, "failed");
+      }).pipe(Effect.provide(layer));
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );

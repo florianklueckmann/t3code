@@ -273,6 +273,12 @@ interface WebhookDeliveryRow {
 export const BOT_HOME_SCHEDULE_ERROR =
   "This project holds a Bot's own Home, which runs no scheduled tasks. Pass projectId of one of the Bot's attached projects.";
 
+export type ScheduledTaskAccess = (task: {
+  readonly id: ScheduledTaskId;
+  readonly botId: BotId | undefined;
+  readonly createdByThreadId: ThreadId | null;
+}) => Effect.Effect<void, ScheduledTaskError>;
+
 export class ScheduledTaskService extends Context.Service<
   ScheduledTaskService,
   {
@@ -281,6 +287,7 @@ export class ScheduledTaskService extends Context.Service<
     readonly upsert: (
       input: ScheduledTaskUpsertInput,
       provenance?: { readonly createdByThreadId: ThreadId },
+      authorize?: ScheduledTaskAccess,
     ) => Effect.Effect<ScheduledTaskMutationResult, ScheduledTaskError>;
     /** The thread whose turn created the task; null when a client or an outside agent did. */
     readonly creatorOf: (id: ScheduledTaskId) => Effect.Effect<ThreadId | null, ScheduledTaskError>;
@@ -289,6 +296,7 @@ export class ScheduledTaskService extends Context.Service<
     ) => Effect.Effect<ScheduledTaskMutationResult, ScheduledTaskError>;
     readonly delete: (
       input: ScheduledTaskDeleteInput,
+      authorize?: ScheduledTaskAccess,
     ) => Effect.Effect<ScheduledTaskDeleteResult, ScheduledTaskError>;
     /** Deletes only tasks that still target this thread, including their webhook deliveries. */
     readonly deleteForThread: (threadId: ThreadId) => Effect.Effect<void, ScheduledTaskError>;
@@ -308,7 +316,7 @@ export class ScheduledTaskService extends Context.Service<
      */
     readonly runNow: (
       input: ScheduledTaskRunNowInput,
-      options?: { readonly requestedIn: ThreadId | null },
+      options?: { readonly requestedIn: ThreadId | null; readonly authorize?: ScheduledTaskAccess },
     ) => Effect.Effect<
       ScheduledTaskRunNowResult & { readonly threadId: ThreadId | null },
       ScheduledTaskError
@@ -336,6 +344,9 @@ function taskError(message: string, input?: { taskId?: ScheduledTaskId; cause?: 
     ...(input?.cause === undefined ? {} : { cause: input.cause }),
   });
 }
+
+const scheduleStorageError = (message: string, taskId: ScheduledTaskId) => (cause: unknown) =>
+  isScheduledTaskError(cause) ? cause : taskError(message, { taskId, cause });
 
 function iso(value: DateTime.DateTime): string {
   return DateTime.formatIso(DateTime.toUtc(value));
@@ -665,15 +676,14 @@ export const layer = Layer.effect(
 
     const findStoredTask = Effect.fn("ScheduledTaskService.findStoredTask")(function* (
       id: ScheduledTaskId,
+      loadRoutine: ReturnType<typeof routines.get> = routines.get(id),
     ) {
       // First, so a routine change it waits for is in the row read after it.
-      const routine = yield* routines
-        .get(id)
-        .pipe(
-          Effect.mapError((cause) =>
-            taskError("Could not load schedule task.", { taskId: id, cause }),
-          ),
-        );
+      const routine = yield* loadRoutine.pipe(
+        Effect.mapError((cause) =>
+          taskError("Could not load schedule task.", { taskId: id, cause }),
+        ),
+      );
       const rows = yield* getRows(id).pipe(
         Effect.mapError((cause) =>
           taskError("Could not load schedule task.", { taskId: id, cause }),
@@ -692,6 +702,24 @@ export const layer = Layer.effect(
         task: withPolicy(yield* decode(row, yield* readWebhookOrigin, { routine })),
         createdByThreadId,
       };
+    });
+
+    const authorizedTask = Effect.fn("ScheduledTaskService.authorizedTask")(function* (
+      id: ScheduledTaskId,
+      routine: BotRoutineStore.Routine | undefined,
+      authorize: ScheduledTaskAccess,
+      destination?: BotId,
+    ) {
+      const stored = yield* findStoredTask(id, Effect.succeed(routine));
+      const record = {
+        id,
+        botId: stored?.task.bot?.botId,
+        createdByThreadId: stored?.createdByThreadId ?? null,
+      };
+      if (stored) yield* authorize(record);
+      if (destination !== undefined && destination !== record.botId)
+        yield* authorize({ ...record, botId: destination });
+      return stored;
     });
 
     const findTask = Effect.fn("ScheduledTaskService.findTask")(function* (id: ScheduledTaskId) {
@@ -740,6 +768,7 @@ export const layer = Layer.effect(
         readonly secretChanged: boolean;
       },
       createdByThreadId: ThreadId | undefined,
+      authorize?: ScheduledTaskAccess,
     ) =>
       routines
         .mutate(
@@ -846,11 +875,12 @@ export const layer = Layer.effect(
             bump: keptSchedule === null,
             ...(createdByThreadId === undefined ? {} : { createdByThreadId }),
           },
+          authorize
+            ? (routine) => authorizedTask(task.id, routine, authorize, task.bot?.botId)
+            : undefined,
         )
         .pipe(
-          Effect.mapError((cause) =>
-            taskError("Could not save schedule task.", { taskId: task.id, cause }),
-          ),
+          Effect.mapError(scheduleStorageError("Could not save schedule task.", task.id)),
           Effect.flatMap((rows) =>
             rows.length > 0
               ? Effect.void
@@ -858,18 +888,18 @@ export const layer = Layer.effect(
           ),
         );
 
-    const deleteRow = (id: ScheduledTaskId) =>
+    const deleteRow = (id: ScheduledTaskId, authorize?: ScheduledTaskAccess) =>
       routines
-        .mutate(sql`DELETE FROM scheduled_tasks WHERE task_id = ${id}`, {
-          taskId: id,
-          bump: false,
-          removing: true,
-        })
-        .pipe(
-          Effect.mapError((cause) =>
-            taskError("Could not delete schedule task.", { taskId: id, cause }),
-          ),
-        );
+        .mutate(
+          sql`DELETE FROM scheduled_tasks WHERE task_id = ${id}`,
+          {
+            taskId: id,
+            bump: false,
+            removing: true,
+          },
+          authorize ? (routine) => authorizedTask(id, routine, authorize) : undefined,
+        )
+        .pipe(Effect.mapError(scheduleStorageError("Could not delete schedule task.", id)));
 
     const markRunning = (id: ScheduledTaskId, startedAtIso: string, webhookDeliveryId?: string) =>
       sql<{ task_id: string }>`
@@ -925,6 +955,7 @@ export const layer = Layer.effect(
         startedAtIso: string,
         message: string,
         pendingDeliveryId?: string,
+        onlyThisRun = false,
       ) {
         const now = yield* localNow;
         const reread = yield* Effect.result(findTask(task.id));
@@ -941,10 +972,11 @@ export const layer = Layer.effect(
                 WHERE delivery_id = ${pendingDeliveryId ?? null} AND state = 'running'
               ) THEN 0 ELSE 1 END
           WHERE task_id = ${task.id} AND last_run_status = 'running'
+            ${onlyThisRun ? sql`AND last_run_at = ${startedAtIso}` : sql``}
         `;
         yield* notifyChanged;
       },
-      (effect, task, _startedAtIso, _message, _pendingDeliveryId) =>
+      (effect, task, _startedAtIso, _message, _pendingDeliveryId, _onlyThisRun = false) =>
         effect.pipe(
           Effect.catch((cause) =>
             Effect.logWarning("Could not release stuck schedule task run", {
@@ -1135,14 +1167,34 @@ export const layer = Layer.effect(
         /** The occurrence a Bot routine runs for, when missed ones were coalesced into it. */
         readonly dueAt?: DateTime.DateTime;
         readonly requestedBy?: BotRoutineOccurrence["requestedBy"];
+        readonly authorize?: ScheduledTaskAccess | undefined;
       },
     ) {
       // Read before reserving: nothing between the reservation and its release may fail.
       const startedAt = yield* localNow;
       const startedAtIso = iso(startedAt);
-      const run = Effect.gen(function* () {
+      const authorize = botOccurrence?.authorize;
+      const busy = () => taskError("Schedule task is already running.", { taskId: task.id });
+      const startAuthorized = (check: ScheduledTaskAccess, reserved: boolean) =>
+        routines
+          .withCurrent(task.id, (routine) =>
+            authorizedTask(task.id, routine, check).pipe(
+              Effect.tap((stored) => {
+                if (!reserved) return busy();
+                if (stored === null)
+                  return taskError("Schedule task not found.", { taskId: task.id });
+                if (stored.task.schedule.type === "webhook")
+                  return taskError("Webhook tasks run when their URL receives a request.", {
+                    taskId: task.id,
+                  });
+                return markRunning(task.id, startedAtIso);
+              }),
+            ),
+          )
+          .pipe(Effect.mapError(scheduleStorageError("Could not load schedule task.", task.id)));
+      function* dispatch(admitted?: Effect.Success<ReturnType<typeof findStoredTask>>) {
         // Re-read stale poll snapshots so deleted, paused or postponed tasks cannot fire.
-        const stored = yield* findStoredTask(task.id);
+        const stored = admitted ?? (yield* findStoredTask(task.id));
         const active = stored?.task ?? null;
         if (active === null) {
           if (webhook !== undefined) {
@@ -1204,8 +1256,9 @@ export const layer = Layer.effect(
           if (reason !== null) return yield* new WebhookDeliverySkipped({ reason });
         }
 
-        if (webhook === undefined) yield* markRunning(active.id, startedAtIso);
-        else
+        if (webhook === undefined) {
+          if (authorize === undefined) yield* markRunning(active.id, startedAtIso);
+        } else
           yield* sql
             .withTransaction(
               Effect.gen(function* () {
@@ -1410,7 +1463,9 @@ export const layer = Layer.effect(
         }
         // The stored row can belong to a replacement, so report this dispatch separately.
         return { task: recorded, threadId, dispatchFailed: !runSucceeded };
-      }).pipe(
+      }
+
+      const run = Effect.gen(dispatch).pipe(
         Effect.onError((cause) =>
           releaseStuckRun(task, startedAtIso, errorMessage(cause), webhook?.deliveryId),
         ),
@@ -1424,12 +1479,22 @@ export const layer = Layer.effect(
           next.add(task.id);
           return [true, next] as const;
         }),
-        (reserved) =>
-          reserved
+        (reserved) => {
+          if (authorize)
+            return Effect.acquireUseRelease(
+              startAuthorized(authorize, reserved),
+              (stored) => Effect.gen(() => dispatch(stored)),
+              (_, exit) =>
+                Exit.isFailure(exit)
+                  ? releaseStuckRun(task, startedAtIso, errorMessage(exit.cause), undefined, true)
+                  : Effect.void,
+            );
+          return reserved
             ? run
             : trigger !== "scheduled"
-              ? Effect.fail(taskError("Schedule task is already running.", { taskId: task.id }))
-              : Effect.succeed({ task, threadId: null, dispatchFailed: false }),
+              ? Effect.fail(busy())
+              : Effect.succeed({ task, threadId: null, dispatchFailed: false });
+        },
         (reserved) =>
           reserved
             ? Ref.update(activeRuns, (active) => {
@@ -1637,7 +1702,7 @@ export const layer = Layer.effect(
 
     const upsert: ScheduledTaskService["Service"]["upsert"] = Effect.fn(
       "ScheduledTaskService.upsert",
-    )(function* (input, provenance) {
+    )(function* (input, provenance, authorize) {
       if (isBotHomeProjectId(input.projectId)) {
         return yield* taskError(
           BOT_HOME_SCHEDULE_ERROR,
@@ -1859,6 +1924,7 @@ export const layer = Layer.effect(
         scheduleUnchanged ? existingTask.schedule : null,
         webhook,
         provenance?.createdByThreadId,
+        authorize,
       );
       yield* notifyChanged;
       return { task: (yield* findTask(id)) ?? task };
@@ -1954,8 +2020,8 @@ export const layer = Layer.effect(
         { discard: true },
       );
 
-    const deleteTask: ScheduledTaskService["Service"]["delete"] = (input) =>
-      deleteRow(input.id).pipe(
+    const deleteTask: ScheduledTaskService["Service"]["delete"] = (input, authorize) =>
+      deleteRow(input.id, authorize).pipe(
         Effect.andThen(forgetWebhookTask(input.id)),
         Effect.andThen(notifyChanged),
         Effect.as({ id: input.id }),
@@ -2009,16 +2075,17 @@ export const layer = Layer.effect(
       "ScheduledTaskService.runNow",
     )(function* (
       input: ScheduledTaskRunNowInput,
-      options?: { readonly requestedIn: ThreadId | null },
+      options?: { readonly requestedIn: ThreadId | null; readonly authorize?: ScheduledTaskAccess },
     ) {
       const task = yield* loadTask(input.id);
-      if (task.schedule.type === "webhook") {
+      if (options?.authorize === undefined && task.schedule.type === "webhook") {
         return yield* taskError("Webhook tasks run when their URL receives a request.", {
           taskId: input.id,
         });
       }
       return yield* runTask(task, "manual", undefined, {
         requestedBy: options === undefined ? "client" : { requestedIn: options.requestedIn },
+        authorize: options?.authorize,
       }).pipe(
         Effect.mapError((cause) =>
           isScheduledTaskError(cause)

@@ -15,7 +15,8 @@ import { topOfPinnedRunOrderKey } from "@t3tools/shared/pinOrderKey";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import {
-  assertManagesScheduledTask,
+  scheduledTaskAccess,
+  scheduledTaskFailure,
   dispatchFailure,
   localBotWritesOnly,
   newCommandId,
@@ -123,19 +124,18 @@ const runScheduledTaskNow = (bots: BotService.BotService["Service"]) =>
           message: "The scheduled task was not found.",
         });
       const scope = yield* McpInvocationContext.McpInvocationContext;
-      yield* assertManagesScheduledTask(
-        { bots, scheduledTasks: scheduler },
-        scope.thread?.threadId,
-        { botId: scheduled.bot?.botId, id: scheduled.id },
-      );
       const { task, threadId } = yield* scheduler
-        .runNow({ id: input.taskId }, { requestedIn: scope.thread?.threadId ?? null })
-        .pipe(
-          Effect.mapError(
-            (error) =>
-              new OrchestratorMcpFailure({ code: "orchestration_error", message: error.message }),
-          ),
-        );
+        .runNow(
+          { id: input.taskId },
+          {
+            requestedIn: scope.thread?.threadId ?? null,
+            authorize: scheduledTaskAccess(
+              { bots, scheduledTasks: scheduler },
+              scope.thread?.threadId,
+            ),
+          },
+        )
+        .pipe(Effect.mapError((error) => scheduledTaskFailure(error)));
       return {
         taskId: task.id,
         threadId,
