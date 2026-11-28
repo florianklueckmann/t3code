@@ -1735,6 +1735,13 @@ export type OrchestrationV2ModelSwitch = typeof OrchestrationV2ModelSwitch.Type;
 
 const AssistantMessagePhase = Schema.Literals(["commentary", "partial_answer", "final_answer"]);
 
+/**
+ * What a Stop found to end: a live run, the background work of a run that ended, or nothing,
+ * when its request only fences the last run against late tool calls.
+ */
+export const OrchestrationV2StopReach = Schema.Literals(["run", "background", "nothing"]);
+export type OrchestrationV2StopReach = typeof OrchestrationV2StopReach.Type;
+
 const OrchestrationV2TurnItemBaseFields = {
   /** Wire-only cursor for collapsed work; persisted items keep their complete history. */
   deferredWork: Schema.optionalKey(
@@ -1967,6 +1974,9 @@ export const OrchestrationV2TurnItem = Schema.Union([
     message: Schema.String,
     /** Set when the provider did not confirm the stop in time; clients then offer Force stop. */
     unresponsiveAt: Schema.optionalKey(Schema.DateTimeUtc),
+    /** The Stop that wrote this request, and what it reached. A later Stop of the run replaces both. */
+    commandId: Schema.optionalKey(CommandId),
+    reached: Schema.optionalKey(OrchestrationV2StopReach),
   }),
   Schema.Struct({
     ...OrchestrationV2TurnItemBaseFields,
@@ -2856,6 +2866,8 @@ export const OrchestrationV2TurnItemJson = Schema.Union([
     type: Schema.Literal("run_interrupt_request"),
     message: Schema.String,
     unresponsiveAt: Schema.optionalKey(Schema.DateTimeUtcFromString),
+    commandId: Schema.optionalKey(CommandId),
+    reached: Schema.optionalKey(OrchestrationV2StopReach),
   }),
   Schema.Struct({
     ...OrchestrationV2TurnItemJsonBaseFields,

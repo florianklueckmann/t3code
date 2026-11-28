@@ -85,6 +85,7 @@ it.effect.each([78, 79, 80, 81, 82, 83])(
                     unfinished_work: 0,
                     setup_signature: null,
                     acceptance_json: null,
+                    stop_unanswered_run_id: null,
                   }
                 : {}),
               ...(table === "bot_learning_revisions"

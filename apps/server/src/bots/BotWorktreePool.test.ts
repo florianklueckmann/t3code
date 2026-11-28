@@ -1150,6 +1150,7 @@ it.effect("the upgrade keeps claims for their threads and leaves free worktrees 
     for (const column of ["claimed_path", "git_dir", "kept_reason", "parked_head", "pending_clean"])
       yield* sql`ALTER TABLE bot_worktrees DROP COLUMN ${sql(column)}`;
     yield* sql`DROP TABLE deleted_bot_homes`;
+    yield* sql`ALTER TABLE bot_tasks DROP COLUMN stop_unanswered_run_id`;
     yield* sql`DELETE FROM effect_sql_migrations WHERE migration_id >= 32`;
     yield* sql`INSERT INTO bot_worktrees (worktree_id, project_id, path, claimed_by, setup_signature, parked_at)
       VALUES ('a1', ${projectId}, '/w/project/bot-task-1', ${threadOf("task-1")}, 'unknown', ${NOW}),

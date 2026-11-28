@@ -70,6 +70,7 @@ import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as BotContinuation from "./BotContinuation.ts";
 import { isNoChangesTask } from "./BotExecutionConstraint.ts";
 import * as Acceptance from "./BotTaskAcceptance.ts";
+import { STOP_UNANSWERED } from "./BotHomeTaskText.ts";
 import * as FailureDiagnosis from "./BotFailureDiagnosis.ts";
 import * as BotProviderSupport from "./BotProviderSupport.ts";
 import * as BotStore from "./BotStore.ts";
@@ -129,6 +130,8 @@ interface BotTaskRow {
   readonly unfinished_work: number;
   /** A completed direct task's BotTaskAcceptance; null for other tasks. */
   readonly acceptance_json: string | null;
+  /** The run whose provider did not answer the task's stop; a repeated cancel force stops it. */
+  readonly stop_unanswered_run_id: string | null;
   readonly created_at: string;
   readonly updated_at: string;
 }
@@ -193,12 +196,35 @@ export const taskBranchName = (row: Pick<BotTaskRow, "task_id" | "title">) => {
   return `bot/${slug === "" ? "task" : slug}-${(hash >>> 0).toString(16).padStart(8, "0")}`;
 };
 
+type InterruptRequest = Extract<
+  OrchestrationV2TurnItem,
+  { readonly type: "run_interrupt_request" }
+>;
+
+const taskStopPrefix = (row: Pick<BotTaskRow, "task_id">) => `bot-task-cancel:${row.task_id}:`;
+
+/**
+ * The orchestrator's record of the task's latest stop, on whichever run that stop reached. None
+ * before a stop was dispatched, and once a later Stop of the same run replaced it.
+ */
+export const taskStop = (
+  row: Pick<BotTaskRow, "task_id">,
+  turnItems: ReadonlyArray<OrchestrationV2TurnItem>,
+) =>
+  turnItems.findLast(
+    (item): item is InterruptRequest =>
+      item.type === "run_interrupt_request" &&
+      item.commandId?.startsWith(taskStopPrefix(row)) === true,
+  );
+
 /**
  * The task's status from its work thread's persisted runs. A completed run whose background work
- * is still pending is not finished, and a stop the user asked for reads as cancelled.
+ * is still pending is not finished. After a cancel, `stop` says what the stop reached: a run that
+ * ended on its own before it keeps its result, work the stop ended reads as cancelled.
  */
 export function deriveTaskStatus(input: {
   readonly cancelRequested: boolean;
+  readonly stop?: Pick<InterruptRequest, "reached"> | undefined;
   readonly shell: Pick<
     OrchestrationV2ThreadShell,
     "status" | "pendingRuntimeRequest" | "pendingBackgroundTasks" | "deletedAt"
@@ -208,6 +234,7 @@ export function deriveTaskStatus(input: {
   if (shell === null || shell.deletedAt !== null) {
     return input.cancelRequested ? "cancelled" : "interrupted";
   }
+  const stopped = input.cancelRequested && input.stop?.reached !== "nothing";
   switch (shell.status) {
     case "idle":
     case "preparing":
@@ -221,11 +248,12 @@ export function deriveTaskStatus(input: {
     case "waiting":
       return "waiting";
     case "completed":
-      return (shell.pendingBackgroundTasks?.length ?? 0) > 0 ? "running" : "completed";
+      if ((shell.pendingBackgroundTasks?.length ?? 0) > 0) return "running";
+      return stopped && input.stop?.reached === "background" ? "cancelled" : "completed";
     // A server restart also ends runs as cancelled, so only a stop someone asked for counts.
     case "interrupted":
     case "cancelled":
-      return input.cancelRequested ? "cancelled" : "interrupted";
+      return stopped ? "cancelled" : "interrupted";
     case "failed":
     case "rolled_back":
       return "failed";
@@ -477,7 +505,10 @@ const make = Effect.gen(function* () {
       sessionAt: row.session_at,
       runtimeMode: row.runtime_mode,
       status: row.status,
-      detail: row.detail,
+      detail:
+        row.stop_unanswered_run_id === null
+          ? row.detail
+          : [row.detail, STOP_UNANSWERED].filter(Predicate.isNotNull).join(" "),
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       completedAt: row.completed_at,
@@ -589,7 +620,7 @@ const make = Effect.gen(function* () {
     yield* threads
       .dispatch({
         type: "thread.stop",
-        commandId: CommandId.make(`bot-task-cancel:${row.task_id}:${shell.latestRunId}`),
+        commandId: CommandId.make(`${taskStopPrefix(row)}${shell.latestRunId}`),
         threadId: ThreadId.make(workThreadId),
         reason: row.detail ?? "The Bot task was cancelled.",
       })
@@ -598,6 +629,49 @@ const make = Effect.gen(function* () {
           botError(`Failed to stop the Bot task: ${errorMessage(cause)}`)(cause),
         ),
       );
+  });
+
+  const readTaskStop = Effect.fn("BotTaskService.readTaskStop")(function* (
+    row: BotTaskRow,
+    workThreadId: string,
+  ) {
+    const records = yield* threads
+      .getProjectThreadRecords(
+        { projectId: ProjectId.make(row.project_id), threadId: ThreadId.make(workThreadId) },
+        ["turnItems"],
+        { turnItemTypes: ["run_interrupt_request"] },
+      )
+      .pipe(
+        Effect.catchTags({ ThreadManagementThreadNotFoundError: () => Effect.succeed(null) }),
+        Effect.mapError(botError("Failed to read the Bot task's stop.")),
+      );
+    return records === null ? undefined : taskStop(row, records.turnItems);
+  });
+
+  /** Force stops the run that did not answer the task's stop, as Force stop in its thread does. */
+  const forceUnansweredStop = Effect.fn("BotTaskService.forceUnansweredStop")(function* (
+    row: BotTaskRow,
+  ) {
+    if (row.stop_unanswered_run_id === null || row.work_thread_id === null) return;
+    yield* threads
+      .forceStopThread({
+        threadId: ThreadId.make(row.work_thread_id),
+        runId: RunId.make(row.stop_unanswered_run_id),
+      })
+      .pipe(
+        // A newer run started since; the next reconcile pass sends that run its own stop.
+        Effect.catchIf(
+          (error) => error.reason === "superseded",
+          () => Effect.void,
+        ),
+        Effect.mapError((cause) =>
+          botError(`Failed to force stop the Bot task: ${errorMessage(cause)}`)(cause),
+        ),
+      );
+    yield* sql`
+      UPDATE bot_tasks SET stop_unanswered_run_id = NULL, updated_at = ${yield* nowIso}
+      WHERE task_id = ${row.task_id}
+    `.pipe(Effect.mapError(storageError));
   });
 
   /** Leaves the task admitted but not started, saying why; a later reconcile pass tries again. */
@@ -864,6 +938,7 @@ const make = Effect.gen(function* () {
     worktree_state: null,
     unfinished_work: 0,
     acceptance_json: null,
+    stop_unanswered_run_id: null,
     created_at: input.now,
     updated_at: input.now,
   });
@@ -1420,15 +1495,18 @@ const make = Effect.gen(function* () {
       yield* sql`UPDATE bot_tasks SET return_home_run_id = NULL WHERE task_id = ${row.task_id}`.pipe(
         Effect.mapError(storageError),
       );
-      if (row.completed_at === null)
-        yield* requestCancel(
-          row,
-          requestedIn === undefined
-            ? "Cancelled by the user."
-            : requestedIn === null
-              ? "Cancelled by an outside agent."
-              : `Cancelled by the agent in thread ${requestedIn}.`,
-        );
+      if (row.completed_at === null) {
+        yield* row.stop_unanswered_run_id !== null
+          ? forceUnansweredStop(row)
+          : requestCancel(
+              row,
+              requestedIn === undefined
+                ? "Cancelled by the user."
+                : requestedIn === null
+                  ? "Cancelled by an outside agent."
+                  : `Cancelled by the agent in thread ${requestedIn}.`,
+            );
+      }
       yield* publish(row);
       return yield* get(input.taskId);
     },
@@ -1816,13 +1894,29 @@ const make = Effect.gen(function* () {
       const shell = yield* threads
         .getThreadShell(ThreadId.make(row.work_thread_id))
         .pipe(Effect.mapError(botError("Failed to read the Bot task's work thread.")));
+      const stop =
+        row.cancel_requested_at === null ? undefined : yield* readTaskStop(row, row.work_thread_id);
       const status = deriveTaskStatus({
         cancelRequested: row.cancel_requested_at !== null,
+        stop,
         shell,
       });
-      // A cancelled task still working gets its stop again, for one that failed or came too early.
       if (row.cancel_requested_at !== null && !isTerminal(status)) {
-        yield* stopWorkThread(row, row.work_thread_id);
+        // Sending a stop its provider did not answer again only replays it; the user forces it.
+        // A newer run since gets its own stop instead.
+        const unanswered =
+          stop?.unresponsiveAt !== undefined && stop.runId === shell?.latestRunId
+            ? stop.runId
+            : null;
+        if (unanswered !== row.stop_unanswered_run_id) {
+          yield* sql`
+            UPDATE bot_tasks SET stop_unanswered_run_id = ${unanswered}, updated_at = ${yield* nowIso}
+            WHERE task_id = ${row.task_id} AND completed_at IS NULL
+          `.pipe(Effect.mapError(storageError));
+          yield* publish(row);
+        }
+        // A cancelled task still working gets its stop again, for one that failed or came too early.
+        if (unanswered === null) yield* stopWorkThread(row, row.work_thread_id);
       }
       if (status === row.status) return;
       const now = yield* nowIso;
@@ -1847,6 +1941,8 @@ const make = Effect.gen(function* () {
                   completed_at = ${terminal ? now : null},
                   quiet = ${watch?._tag === "quiet" && row.by_hand === 0 ? 1 : 0},
                   acceptance_json = ${acceptance === null ? null : encodeAcceptance(acceptance)},
+                  stop_unanswered_run_id = CASE WHEN ${terminal ? 1 : 0} = 1 THEN NULL
+                    ELSE stop_unanswered_run_id END,
                   updated_at = ${now}
               WHERE task_id = ${row.task_id} AND completed_at IS NULL
               RETURNING task_id

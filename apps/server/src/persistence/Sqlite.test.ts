@@ -214,6 +214,7 @@ it.effect.each(
             [31, "BotHomeUpdates"],
             [32, "BotWorktreeSlots"],
             [33, "DeletedBotHomes"],
+            [34, "BotTaskStopUnanswered"],
           ],
         );
         return { ...current, botHistory };

@@ -2,6 +2,8 @@ import type { BotTaskAcceptance } from "@t3tools/contracts";
 
 import { mayHaveClippedQuestions } from "./BotTaskAcceptance.ts";
 
+export const STOP_UNANSWERED = "The stop got no response. Cancel again to force stop it.";
+
 export const oneLine = (text: string) =>
   text
     .replace(/[\s\p{Cc}\p{Cf}]+/gu, " ")
