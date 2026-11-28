@@ -243,6 +243,7 @@ interface HomeTasks {
     readonly projectId: string;
     readonly projectTitle: string;
     readonly status: string;
+    readonly startedHere: boolean;
     readonly createdAt: string;
     readonly question: string | null;
   }>;
@@ -255,9 +256,9 @@ const QUESTION_CHARS = 300;
 function homeTasksSection({ shown, total }: HomeTasks): string {
   if (shown.length === 0) return "Your task records across projects: none.";
   return [
-    `Task register (${shown.length} shown, latest activity first). This includes work from earlier conversations. For a recap, cover every matching row. User-cancelled work stays cancelled until the user reopens it:`,
+    `You started ${shown.filter((task) => task.startedHere).length} of the tasks below in this Home. A fresh conversation keeps that work: include each matching row in a recap. “Already reported” questions in your working notes need no reminder unless the user asks. Leave user cancellations in place.`,
     ...shown.flatMap((task) => [
-      `- "${task.title}" (taskId "${task.taskId}") · project "${task.projectTitle}" (projectId "${task.projectId}") · ${task.status} · started ${task.createdAt}`,
+      `- "${task.title}" · project "${task.projectTitle}" · ${task.status}${task.startedHere ? "" : " · started by another Home"} · ${task.createdAt} (taskId "${task.taskId}", projectId "${task.projectId}")`,
       ...(task.question === null ? [] : [`  Question waiting for the user: ${task.question}`]),
     ]),
     ...(total > shown.length ? [`(${total - shown.length} more tasks: use list_tasks.)`] : []),
@@ -665,6 +666,7 @@ export const layer = Layer.effect(
       const rows = yield* sql<{
         readonly task_id: string;
         readonly project_id: string;
+        readonly home_thread_id: string;
         readonly work_thread_id: string | null;
         readonly title: string;
         readonly status: string;
@@ -675,7 +677,7 @@ export const layer = Layer.effect(
         readonly update_key: string | null;
         readonly total: number;
       }>`
-        SELECT t.task_id, project_id, work_thread_id, title, status, created_at, detail,
+        SELECT t.task_id, project_id, home_thread_id, work_thread_id, title, status, created_at, detail,
           cancel_requested_at, acceptance_json, u.update_key, COUNT(*) OVER() AS total
         FROM bot_tasks t LEFT JOIN bot_home_updates u ON u.task_id = t.task_id
         WHERE bot_id = ${botId} AND (
@@ -758,6 +760,7 @@ export const layer = Layer.effect(
             projectId: row.project_id,
             projectTitle: projects.get(row.project_id)?.title ?? row.project_id,
             status: homeTaskStatus(row, replied),
+            startedHere: row.home_thread_id === homeThreadId,
             createdAt: row.created_at,
             question: replied ? null : (pending?.text ?? null),
           };

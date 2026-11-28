@@ -1095,22 +1095,24 @@ it.effect(
           assert.notInclude(instructionParts.lasting, "task-waiting");
           assert.include(
             turn,
-            `- "Task task-waiting" (taskId "task-waiting") · project "Faerun" (projectId "${campaignB}") · waiting · started 2026-11-03T00:00:00.000Z\n  Question waiting for the user: Which changelog format should both repos use?`,
+            `- "Task task-waiting" · project "Faerun" · waiting · 2026-11-03T00:00:00.000Z (taskId "task-waiting", projectId "${campaignB}")\n  Question waiting for the user: Which changelog format should both repos use?`,
           );
           assert.notInclude(turn, "Should the old format stay?");
+          assert.include(turn, "You started 5 of the tasks below in this Home");
+          assert.match(turn, /"Task task-31".*started by another Home/);
           assert.lengthOf(turn.match(/\(taskId "/g) ?? [], 30);
           assert.isBelow(turn.indexOf('"task-waiting"'), turn.indexOf('"task-31"'));
           assert.isBelow(turn.indexOf('"task-31"'), turn.indexOf('"task-30"'));
           assert.include(turn, "(6 more tasks: use list_tasks.)");
           assert.include(turn, '"task-done"');
-          assert.match(turn, /"task-cancelled".*cancelled by the user/i);
-          assert.match(turn, /"task-stopping".*cancellation requested/);
-          assert.match(turn, /"task-needs-you".*needs you.*The result names no evidence/);
+          assert.match(turn, /"Task task-cancelled".*cancelled by the user/i);
+          assert.match(turn, /"Task task-stopping".*cancellation requested/);
+          assert.match(turn, /"Task task-needs-you".*needs you.*The result names no evidence/);
           assert.notInclude(turn, "task-needs-you-old");
           assert.notInclude(turn, "other-home-result");
           assert.notInclude(turn, "outside-window");
           assert.notInclude(turn, "Keep the task-needs-you heading?");
-          assert.match(turn, /"task-needs-you".*Question already reported/);
+          assert.match(turn, /"Task task-needs-you".*Question already reported/);
           assert.include(turn, "Split the changelog work once the format is chosen.");
           assert.include(turn, `projectId "${homeProject}": pass both ids`);
           assert.notInclude(turn, "Active Bot tasks only");

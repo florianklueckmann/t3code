@@ -281,7 +281,7 @@ const STATUS_WORDS: ReadonlyArray<readonly [DayCategory, RegExp]> = [
   ],
   [
     "needs_you",
-    /needs? (you|your|verification|review)|review (is )?(still )?needed|(waits?|waiting|awaits?|awaiting) (for |on )?(you|your)|question|not done|unproven|unverified|not verified|unconfirmed|no evidence|without evidence|evidence (is )?missing|missing evidence|blocked|decision|your (answer|input|call|review)/i,
+    /needs? (you|your|verification|review|evidence)|review (is )?(still )?needed|(waits?|waiting|awaits?|awaiting) (for |on )?(you|your)|question|not done|unproven|unverified|not verified|unconfirmed|no evidence|without evidence|evidence (is )?missing|missing evidence|blocked|decision|your (answer|input|call|review)/i,
   ],
   ["open", /running|in progress|queued|still working|waiting for a (free )?slot/i],
   ["done", /\bdone\b|complete|finished|✅|merged|\bfixed\b|\bupdated\b|\bremoved\b|\braised\b/i],

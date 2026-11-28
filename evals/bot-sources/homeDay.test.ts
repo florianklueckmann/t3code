@@ -283,6 +283,9 @@ it("fails a day that stopped before the summary, and still credits its questions
 it("reads a line's status with denials and the not-done cases first", () => {
   expect(statusOfLine("Cart rounding — done, no open questions")).toBe("done");
   expect(statusOfLine("Orders docs: finished, but it names no evidence")).toBe("needs_you");
+  expect(statusOfLine("Orders docs: needs evidence before it can be marked done")).toBe(
+    "needs_you",
+  );
   expect(statusOfLine("Document `/orders`: **marked complete, but needs verification**")).toBe(
     "needs_you",
   );
