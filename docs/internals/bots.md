@@ -69,10 +69,23 @@ retried occurrence from starting another task.
 
 The task service reconciles status from orchestration and pins the result to
 the completed run. Later turns in the work thread leave that result intact.
-The task card in Home opens the saved result. For a direct task that opts into an
-automatic Home follow-up, [orchestration](../../apps/server/src/orchestration-v2/Orchestrator.ts)
-admits the result only while the original Home input is still current. The
-server submits the result to Home under the thread's existing permissions.
+The task card in the Home that started the task opens the saved result. A task
+started from a Bot's own Home runs in one of its attached projects, in the
+runtime mode of that project's Home, and its card stays with the Bot's own Home.
+
+For a direct task from a project Home that opts into an automatic follow-up,
+[orchestration](../../apps/server/src/orchestration-v2/Orchestrator.ts) admits
+the result only while the original Home input is still current. The server
+submits the result to Home under the thread's existing permissions. That return
+holds one result per Home input and waits for the Home's other tasks, so a Home
+that fans out cannot use it. [BotHomeUpdates](../../apps/server/src/bots/BotHomeUpdates.ts)
+serves the Bot's own Home instead: one message per completion, failure,
+interruption or question of a task it started, sent from the task's work thread.
+A message from another thread queues behind a Bot Home's running turn, and the
+command id per task, status and run keeps a retried or restarted send to one.
+The message folds into an automation row, and a turn it starts is not user
+input, so it cannot record a standing instruction. That turn never alerts the
+phone: the task's own result already did, under the alert budget below.
 
 The Bot's task limit is checked when a direct task launches, not at admission, so
 a waiting task is an ordinary admitted row that a reconcile pass starts later and
@@ -85,7 +98,7 @@ its completion, by [BotTaskAcceptance](../../apps/server/src/bots/BotTaskAccepta
 the report line its work thread ends with, and whether the branches, commits and
 files it names exist. The outcome is stored on the task, so the Home return, the
 Waiting item and the relay's alert all read the same decision. A result that waits
-for the user is never returned to Home, and its alert is held and gathered by
+for the user is never returned to a project Home, and its alert is held and gathered by
 [BotAttention](../../apps/server/src/bots/BotAttention.ts) even when the user
 started the task.
 

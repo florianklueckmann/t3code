@@ -69,6 +69,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as BotExecutionConstraint from "./BotExecutionConstraint.ts";
 import * as BotFailureDiagnosis from "./BotFailureDiagnosis.ts";
 import * as BotHomeFolders from "./BotHomeFolders.ts";
+import * as BotHomeUpdates from "./BotHomeUpdates.ts";
 import * as BotProjectGuard from "./BotProjectGuard.ts";
 import * as BotService from "./BotService.ts";
 import * as BotTaskAcceptance from "./BotTaskAcceptance.ts";
@@ -221,6 +222,10 @@ const makeThreadWorld = Effect.gen(function* () {
   const failNext = yield* Ref.make<OrchestrationV2ServerCommand["type"] | null>(null);
   /** Branches, commits and files a result's evidence check finds. */
   const existingEvidence = yield* Ref.make<ReadonlySet<string>>(new Set(["notes/prep.md"]));
+  /** Messages other threads sent, once per command id as receipts keep them. */
+  const sends = yield* Ref.make<ReadonlyArray<ThreadManagementService.ThreadManagementSendInput>>(
+    [],
+  );
 
   const update = (threadId: ThreadId, change: Partial<FakeThread>) =>
     Ref.update(threads, (current) => {
@@ -371,6 +376,18 @@ const makeThreadWorld = Effect.gen(function* () {
       withBotResultDelivery: (command, use) =>
         beforeDeliveryLock.pipe(Effect.andThen(use(dispatchLocked(command)))),
       getThreadShell,
+      sendToThread: (input) =>
+        Effect.gen(function* () {
+          if ((yield* Ref.get(threads)).get(input.threadId)?.archived === true)
+            return yield* new ThreadManagementService.ThreadManagementThreadArchivedError({
+              threadId: input.threadId,
+            });
+          if (!(yield* Ref.get(receipts)).has(input.commandId)) {
+            yield* Ref.update(receipts, (current) => new Set(current).add(input.commandId));
+            yield* Ref.update(sends, (all) => [...all, input]);
+          }
+          return {} as never;
+        }),
       isProviderInstanceEnabledForProject: (input) =>
         Effect.succeed(input.instanceId !== "codex-blocked"),
       getProjectThreadRecords: (input, fields, filter) =>
@@ -458,6 +475,7 @@ const makeThreadWorld = Effect.gen(function* () {
     poolSavesWork,
     poolGate,
     existingEvidence,
+    sends,
   };
 });
 
@@ -466,7 +484,11 @@ type ThreadWorld = Effect.Success<typeof makeThreadWorld>;
 const layerSupport = Layer.mergeAll(
   Layer.mock(ProjectService.ProjectService)({
     getById: (projectId: ProjectId) =>
-      Effect.succeedSome({ id: projectId, deletedAt: null } as Project),
+      Effect.succeedSome({
+        id: projectId,
+        title: `Title of ${projectId}`,
+        deletedAt: null,
+      } as Project),
   }),
   Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
     getInstance: (instanceId) => {
@@ -508,6 +530,7 @@ interface Services {
   readonly turnContext: BotTurnContext.BotTurnContext["Service"];
   readonly constraint: BotExecutionConstraint.BotExecutionConstraint["Service"];
   readonly diagnosis: BotFailureDiagnosis.BotFailureDiagnosis["Service"];
+  readonly updates: BotHomeUpdates.BotHomeUpdates["Service"];
 }
 
 /**
@@ -527,6 +550,7 @@ const withServices = <A, E>(
       turnContext: yield* BotTurnContext.BotTurnContext,
       constraint: yield* BotExecutionConstraint.BotExecutionConstraint,
       diagnosis: yield* BotFailureDiagnosis.BotFailureDiagnosis,
+      updates: yield* BotHomeUpdates.BotHomeUpdates,
     });
   }).pipe(
     Effect.provide(
@@ -535,6 +559,7 @@ const withServices = <A, E>(
         BotTurnContext.layer,
         BotExecutionConstraint.layer,
         BotFailureDiagnosis.layer,
+        BotHomeUpdates.layer,
       ).pipe(
         Layer.provideMerge(
           ScheduledTaskService.layer.pipe(Layer.provide(BotTaskService.layerRoutineTarget)),
@@ -895,6 +920,7 @@ const seedHomeRun = Effect.fn("BotTaskServiceTest.seedHomeRun")(function* (
     | "automatic"
     | "scheduled-ui"
     | "scheduled-mcp" = "ui",
+  projectId: ProjectId = campaign,
 ) {
   const runId = RunId.make(`user-run:${home}`);
   const messageId = MessageId.make(`user-message:${home}`);
@@ -916,7 +942,7 @@ const seedHomeRun = Effect.fn("BotTaskServiceTest.seedHomeRun")(function* (
     new Map(all).set(home, {
       thread: {
         id: home,
-        projectId: campaign,
+        projectId,
         deletedAt: null,
         archivedAt: null,
       } as OrchestrationV2ThreadProjection["thread"],
@@ -1244,16 +1270,24 @@ it.effect.each([
   }).pipe(Effect.provide(layerDatabase)),
 );
 
+const atlas = ProjectId.make("project-atlas");
+
 it.effect(
-  "runs no task in a Bot's own Home project, and removing that Home stops only the tasks it started",
+  "the Bot's own Home starts tasks in its projects and holds their cards; removing it stops them",
   () =>
     Effect.gen(function* () {
       yield* seedProject;
+      const main = yield* SqlClient.SqlClient;
+      yield* main`INSERT INTO projection_projects (project_id, title, workspace_root,
+        default_model_selection_json, scripts_json, created_at, updated_at, deleted_at)
+        SELECT ${atlas}, 'Atlas', '/campaigns/atlas', NULL, '[]', created_at, updated_at, NULL
+        FROM projection_projects WHERE project_id = ${campaign}`;
       const world = yield* makeThreadWorld;
       const sql = yield* BotDatabase.BotDatabase;
       yield* withServices(world, (services) =>
         Effect.gen(function* () {
-          yield* attachBot(services);
+          const projectHome = yield* attachBot(services);
+          yield* services.bots.attachProject({ botId, projectId: atlas });
           const home = (yield* services.bots.openHome({ botId })).home ?? assert.fail("no Home");
           for (const refused of [
             Effect.asVoid(
@@ -1265,28 +1299,201 @@ it.effect(
             assert.include(error.message, "never in its own Home's project");
           }
 
-          const own = yield* services.tasks.start({ botId, projectId: campaign, prompt: "A." });
-          const started = yield* services.tasks.start({
-            botId,
+          // The project's Home decides how its tasks run, not the Home that asked.
+          yield* world.update(projectHome, { runtimeMode: "approval-required" });
+          yield* world.update(home.homeThreadId, { runtimeMode: "full-access" });
+          yield* seedHomeRun(world, home.homeThreadId, "ui", home.projectId);
+          yield* services.bots.update({ botId, taskLimit: 1 });
+          const fromHome = (prompt: string, projectId: ProjectId, returnToHome = false) =>
+            services.tasks.start(
+              { botId, projectId, prompt },
+              {
+                requestedIn: home.homeThreadId,
+                ...(returnToHome ? { returnToHomeFrom: home.homeThreadId } : {}),
+              },
+            );
+          // Its results come back as updates, so a return to Home is not held for it.
+          const running = yield* fromHome("A.", campaign, true);
+          const waiting = yield* fromHome("B.", atlas);
+          assert.deepInclude(running, {
+            homeThreadId: home.homeThreadId,
             projectId: campaign,
-            prompt: "B.",
+            runtimeMode: "approval-required",
+            returnToHome: false,
           });
-          // Stands in for routing from the Bot-level Home, which starts tasks in attached projects.
-          yield* sql`UPDATE bot_tasks SET home_thread_id = ${home.homeThreadId}
-            WHERE task_id = ${started.id}`;
+          assert.deepInclude(waiting, { homeThreadId: home.homeThreadId, projectId: atlas });
+          assert.include(waiting.detail, "Waiting for a free slot");
+          // The user's own turn in that Home asked, so the task is theirs.
+          const [byHand] = yield* sql<{ readonly by_hand: number }>`
+            SELECT by_hand FROM bot_tasks WHERE task_id = ${running.id}`;
+          assert.equal(byHand?.by_hand, 1);
+          const unattached = yield* Effect.flip(fromHome("C.", ProjectId.make("project-other")));
+          assert.include(unattached.message, "not attached to this project");
+
+          const own = yield* services.tasks.start(
+            { botId, projectId: campaign, prompt: "Own." },
+            { requestedIn: projectHome },
+          );
+          assert.equal(own.homeThreadId, projectHome);
+          const cardsOf = (homeThreadId: ThreadId) =>
+            services.tasks
+              .list({ homeThreadId })
+              .pipe(Effect.map(({ tasks }) => tasks.map((task) => task.id)));
+          assert.sameMembers(yield* cardsOf(home.homeThreadId), [running.id, waiting.id]);
+          assert.deepEqual(yield* cardsOf(projectHome), [own.id]);
+
           yield* services.bots.removeHome({ botId });
           const rows = yield* sql<{
             readonly task_id: string;
+            readonly status: string;
             readonly cancel_requested_at: string | null;
             readonly detail: string | null;
-          }>`SELECT task_id, cancel_requested_at, detail FROM bot_tasks ORDER BY task_id`;
+          }>`SELECT task_id, status, cancel_requested_at, detail FROM bot_tasks`;
           const byId = new Map(rows.map((row) => [row.task_id, row]));
           assert.isNull(byId.get(own.id)?.cancel_requested_at);
-          assert.isNotNull(byId.get(started.id)?.cancel_requested_at);
-          assert.equal(byId.get(started.id)?.detail, "Stopped because the Bot's Home was removed.");
+          for (const task of [running, waiting])
+            assert.equal(byId.get(task.id)?.detail, "Stopped because the Bot's Home was removed.");
+          // The waiting one ends at once and never starts.
+          assert.equal(byId.get(waiting.id)?.status, "cancelled");
+          assert.isFalse((yield* Ref.get(world.threads)).has(workThreadOf(waiting)));
+
+          // A start the removal did not see, as after a crash, is stopped by the next pass.
+          yield* services.bots.openHome({ botId });
+          const late = yield* fromHome("D.", campaign);
+          yield* sql`UPDATE bot_project_contexts SET detached_at = updated_at
+            WHERE home_thread_id = ${home.homeThreadId}`;
+          yield* services.tasks.reconcile;
+          assert.deepInclude(yield* services.tasks.get(late.id), {
+            homeThreadId: home.homeThreadId,
+            detail: "Stopped because the Bot's Home was removed.",
+          });
         }),
       );
     }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect("the Bot's own Home is told once of each task it started that ends or asks", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(START);
+    yield* seedProject;
+    const world = yield* makeThreadWorld;
+    const sql = yield* BotDatabase.BotDatabase;
+    const updates = Ref.get(world.sends).pipe(
+      Effect.map((all) => all.filter((send) => send.messageId.startsWith("bot-task-update:"))),
+    );
+    const { home, tasks } = yield* withServices(world, (services) =>
+      Effect.gen(function* () {
+        yield* attachBot(services);
+        yield* services.bots.update({ botId, taskLimit: 10 });
+        const home = (yield* services.bots.openHome({ botId })).home ?? assert.fail("no Home");
+        const fromHome = (title: string) =>
+          services.tasks.start(
+            { botId, projectId: campaign, prompt: `${title}.`, title },
+            { requestedIn: home.homeThreadId },
+          );
+        const tasks = {
+          done: yield* fromHome("Done"),
+          unproven: yield* fromHome("Unproven"),
+          failed: yield* fromHome("Failed"),
+          asking: yield* fromHome("Asking"),
+          cancelled: yield* fromHome("Cancelled"),
+          // A project Home's task is no update: its card and return work as before.
+          own: yield* services.tasks.start({ botId, projectId: campaign, prompt: "Own." }),
+        };
+        const work = (task: BotTaskSummary) => task.workThreadId ?? assert.fail("not launched");
+        yield* finishRun(world, work(tasks.done), DONE_RESULT);
+        yield* finishRun(
+          world,
+          work(tasks.unproven),
+          `Changed it.\n${report({ evidence: ["branch: bot/missing"] })}`,
+        );
+        yield* endRun(world, work(tasks.failed), "failed");
+        yield* world.update(work(tasks.asking), { status: "running", blockingRequest: true });
+        yield* Ref.update(world.records, (all) =>
+          new Map(all).set(work(tasks.asking), {
+            thread: { id: work(tasks.asking), projectId: campaign, deletedAt: null } as never,
+            runs: [],
+            messages: [],
+            turnItems: [
+              {
+                type: "user_input_request",
+                requestId: "request",
+                questions: [{ question: "Which branch should I use?" }],
+              } as never,
+            ],
+          }),
+        );
+        yield* services.tasks.cancel({ taskId: tasks.cancelled.id });
+        yield* finishRun(world, work(tasks.own), DONE_RESULT);
+        yield* services.tasks.reconcile;
+        yield* services.tasks.reconcile;
+        yield* services.updates.deliverOwed;
+        yield* services.updates.deliverOwed;
+        return { home, tasks };
+      }),
+    );
+    const sent = yield* updates;
+    assert.deepEqual(
+      sent.map((send) => send.senderThreadId ?? null),
+      [tasks.done, tasks.unproven, tasks.failed, tasks.asking].map((task) => task.workThreadId),
+    );
+    for (const send of sent) {
+      // From the work thread and queued, so it waits for the Home's running turn.
+      assert.deepInclude(send, {
+        threadId: home.homeThreadId,
+        projectId: home.projectId,
+        mode: "queue",
+        createdBy: "agent",
+        creationSource: "server",
+      });
+      assert.equal<string>(send.commandId, send.messageId);
+    }
+    const [done, unproven, failed, asking] = sent.map((send) => send.text);
+    assert.include(done, "a task you started finished.");
+    assert.include(done, "Project: Title of project-campaign (project-campaign)");
+    assert.include(done, "Result: Prepared the notes.");
+    assert.include(done, "Result check: passed.");
+    assert.notInclude(done, "T3_RESULT");
+    assert.include(unproven, "finished, but its result waits for the user");
+    assert.include(unproven, "Result check: not done. “branch: bot/missing” does not exist.");
+    assert.include(failed, "a task you started failed.");
+    assert.include(asking, "is waiting for the user");
+    assert.include(asking, "Question: Which branch should I use?");
+    // What waits for the user is noted in the Home that started it.
+    const [waitingNote] = yield* sql<{ readonly home_thread_id: string }>`
+      SELECT home_thread_id FROM bot_continuation_revisions
+      WHERE update_id = ${`task-waiting:${tasks.unproven.id}`}`;
+    assert.equal(waitingNote?.home_thread_id, home.homeThreadId);
+
+    // A restart tells nothing twice. A crash after a send and before its record replays it.
+    yield* sql`CREATE TRIGGER fail_update_insert BEFORE INSERT ON bot_home_updates
+      BEGIN SELECT RAISE(ABORT, 'injected crash after the send'); END`;
+    yield* sql`CREATE TRIGGER fail_update_update BEFORE UPDATE ON bot_home_updates
+      BEGIN SELECT RAISE(ABORT, 'injected crash after the send'); END`;
+    yield* withServices(world, (services) =>
+      Effect.gen(function* () {
+        yield* services.tasks.reconcile;
+        yield* services.updates.deliverOwed;
+        assert.lengthOf(yield* updates, 4);
+        yield* world.update(tasks.asking.workThreadId!, { blockingRequest: false });
+        yield* finishRun(world, tasks.asking.workThreadId!, DONE_RESULT);
+        yield* services.tasks.reconcile;
+        yield* services.updates.deliverOwed;
+      }),
+    );
+    yield* sql`DROP TRIGGER fail_update_insert`;
+    yield* sql`DROP TRIGGER fail_update_update`;
+    yield* withServices(world, (services) =>
+      Effect.gen(function* () {
+        yield* services.updates.deliverOwed;
+        yield* services.updates.deliverOwed;
+      }),
+    );
+    const after = yield* updates;
+    assert.lengthOf(after, 5);
+    assert.include(after[4]?.text, "“Asking”");
+    assert.include(after[4]?.text, "finished");
+  }).pipe(Effect.provide(layerDatabase)),
 );
 
 it.effect(
@@ -3327,53 +3534,57 @@ it.effect(
       yield* seedProject;
       const world = yield* makeThreadWorld;
       const sql = yield* BotDatabase.BotDatabase;
-      yield* withServices(world, (services) =>
-        Effect.gen(function* () {
-          yield* attachBot(services);
-          const task = yield* services.tasks.start({
-            botId,
-            projectId: campaign,
-            prompt: "Fix the typo.",
-          });
-          const thread = task.workThreadId ?? assert.fail();
-          const worktreePath = `/worktrees/${task.branch}`;
-          yield* world.update(thread, { status: "running" });
-          yield* services.tasks.reconcile;
-          assert.deepEqual(yield* Ref.get(world.poolParks), []);
+      yield* withServices(
+        world,
+        (services) =>
+          Effect.gen(function* () {
+            yield* attachBot(services);
+            const task = yield* services.tasks.start({
+              botId,
+              projectId: campaign,
+              prompt: "Fix the typo.",
+            });
+            const thread = task.workThreadId ?? assert.fail();
+            const worktreePath = `/worktrees/${task.branch}`;
+            yield* world.update(thread, { status: "running" });
+            yield* services.tasks.reconcile;
+            assert.deepEqual(yield* Ref.get(world.poolParks), []);
 
-          // Its run never started, so the install may be unfinished: the next task sets up again.
-          const setupOf = sql<{ readonly setup_signature: string | null }>`
+            // Its run never started, so the install may be unfinished: the next task sets up again.
+            const setupOf = sql<{ readonly setup_signature: string | null }>`
             SELECT setup_signature FROM bot_tasks WHERE task_id = ${task.id}`.pipe(
-            Effect.map((rows) => rows[0]?.setup_signature),
-          );
-          yield* sql`UPDATE bot_tasks SET setup_signature = 'lock-a' WHERE task_id = ${task.id}`;
-          yield* Ref.set(world.poolSavesWork, true);
-          yield* services.tasks.cancel({ taskId: task.id });
-          yield* services.tasks.reconcile;
-          const cancelled = yield* services.tasks.get(task.id);
-          assert.deepInclude(cancelled, {
-            status: "cancelled",
-            branch: task.branch,
-            unfinishedWork: true,
-          });
-          assert.deepEqual(yield* Ref.get(world.poolParks), [worktreePath]);
-          assert.isNull(yield* setupOf);
+              Effect.map((rows) => rows[0]?.setup_signature),
+            );
+            yield* sql`UPDATE bot_tasks SET setup_signature = 'lock-a' WHERE task_id = ${task.id}`;
+            yield* Ref.set(world.poolSavesWork, true);
+            yield* services.tasks.cancel({ taskId: task.id });
+            yield* services.tasks.reconcile;
+            const cancelled = yield* services.tasks.get(task.id);
+            assert.deepInclude(cancelled, {
+              status: "cancelled",
+              branch: task.branch,
+              unfinishedWork: true,
+            });
+            assert.deepEqual(yield* Ref.get(world.poolParks), [worktreePath]);
+            assert.isNull(yield* setupOf);
 
-          // A follow-up took a worktree again at turn start; it goes back when that turn ends.
-          // Once a run started, the install it set up is trusted.
-          yield* sql`UPDATE bot_tasks SET setup_signature = 'lock-a' WHERE task_id = ${task.id}`;
-          yield* world.update(thread, { started: true });
-          yield* sql`UPDATE bot_tasks SET worktree_state = 'held' WHERE task_id = ${task.id}`;
-          yield* Ref.set(world.poolSavesWork, false);
-          yield* world.update(thread, { status: "running" });
-          yield* services.tasks.reconcile;
-          assert.lengthOf(yield* Ref.get(world.poolParks), 1);
-          yield* world.update(thread, { status: "completed" });
-          yield* services.tasks.reconcile;
-          assert.deepEqual(yield* Ref.get(world.poolParks), [worktreePath, worktreePath]);
-          assert.isTrue((yield* services.tasks.get(task.id)).unfinishedWork);
-          assert.equal(yield* setupOf, "lock-a");
-        }),
+            // A follow-up took a worktree again at turn start; it goes back when that turn ends.
+            // Once a run started, the install it set up is trusted.
+            yield* sql`UPDATE bot_tasks SET setup_signature = 'lock-a' WHERE task_id = ${task.id}`;
+            yield* world.update(thread, { started: true });
+            yield* sql`UPDATE bot_tasks SET worktree_state = 'held' WHERE task_id = ${task.id}`;
+            yield* Ref.set(world.poolSavesWork, false);
+            yield* world.update(thread, { status: "running" });
+            yield* services.tasks.reconcile;
+            assert.lengthOf(yield* Ref.get(world.poolParks), 1);
+            yield* world.update(thread, { status: "completed" });
+            yield* services.tasks.reconcile;
+            assert.deepEqual(yield* Ref.get(world.poolParks), [worktreePath, worktreePath]);
+            assert.isTrue((yield* services.tasks.get(task.id)).unfinishedWork);
+            assert.equal(yield* setupOf, "lock-a");
+          }),
+        // Only the passes above: a scheduled one running beside them would release once more.
+        Effect.never,
       );
     }).pipe(Effect.provide(layerDatabase)),
 );

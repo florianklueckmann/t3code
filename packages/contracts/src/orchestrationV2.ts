@@ -691,18 +691,21 @@ export const botMaintenanceCompactionId = (home: string, sequence: number) =>
 export const BOT_HOME_CHECK_MESSAGE_ID_PREFIX = "bot-home-check:";
 export const BOT_EARLY_HOME_CHECK_MESSAGE_ID_PREFIX = "bot-home-check-early:";
 export const BOT_MAINTENANCE_NOTE_MESSAGE_ID_PREFIX = "bot-maintenance:note:";
+/** The server's report to a Bot's own Home that a task it started finished, failed or asks. */
+export const BOT_TASK_UPDATE_MESSAGE_ID_PREFIX = "bot-task-update:";
 
 /** A prompt the server wrote to start the Bot's own unattended run in its Home. */
 export function botHomeRunOf(message: {
   readonly id?: string | undefined;
   readonly createdBy?: OrchestrationV2Actor | undefined;
   readonly creationSource?: OrchestrationV2CreationSource | undefined;
-}): "homeCheck" | "earlyHomeCheck" | "noteRefresh" | undefined {
+}): "homeCheck" | "earlyHomeCheck" | "noteRefresh" | "taskUpdate" | undefined {
   if (message.createdBy !== "agent" || message.creationSource !== "server") return undefined;
   const id = message.id ?? "";
   if (id.startsWith(BOT_HOME_CHECK_MESSAGE_ID_PREFIX)) return "homeCheck";
   if (id.startsWith(BOT_EARLY_HOME_CHECK_MESSAGE_ID_PREFIX)) return "earlyHomeCheck";
   if (id.startsWith(BOT_MAINTENANCE_NOTE_MESSAGE_ID_PREFIX)) return "noteRefresh";
+  if (id.startsWith(BOT_TASK_UPDATE_MESSAGE_ID_PREFIX)) return "taskUpdate";
   return undefined;
 }
 

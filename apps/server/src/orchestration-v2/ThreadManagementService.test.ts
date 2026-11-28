@@ -362,6 +362,12 @@ it.effect.each([
     },
     expected: queued,
   },
+  {
+    label: "queues a task's update from its work thread",
+    mode: "queue",
+    sender: ThreadId.make("bot-work:bot-task:1"),
+    expected: queued,
+  },
   { label: "steers the Home's own send", mode: "steer", sender: botHome, expected: "steer_active" },
   { label: "steers from the user's own MCP client", mode: "auto", expected: "steer_active" },
   {

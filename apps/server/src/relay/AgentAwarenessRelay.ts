@@ -1,6 +1,8 @@
 import type { AgentAwarenessThread } from "../orchestration-v2/ProjectionStore.ts";
 import {
+  BOT_TASK_UPDATE_MESSAGE_ID_PREFIX,
   isListedThreadLineage,
+  mayBeBotHomeThreadId,
   type EnvironmentId,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2TurnItem,
@@ -735,6 +737,21 @@ export const make = Effect.gen(function* () {
         : state;
     });
     snapshot = { ...snapshot, state: projectTaskState(snapshot.state) };
+    // A Home turn that answers a task update stays quiet: the task's own result already alerted.
+    if (
+      (snapshot.state?.phase === "completed" || snapshot.state?.phase === "failed") &&
+      Option.isSome(thread) &&
+      thread.value.latestRunId !== null &&
+      mayBeBotHomeThreadId(threadId)
+    ) {
+      const latestRunId = thread.value.latestRunId;
+      const { runs } = yield* threads.getThreadRecords(threadId, ["runs"], {
+        runIds: [latestRunId],
+      });
+      const run = runs.find((candidate) => candidate.id === latestRunId);
+      if (run?.userMessageId.startsWith(BOT_TASK_UPDATE_MESSAGE_ID_PREFIX))
+        snapshot = { ...snapshot, state: null };
+    }
     const publishedStateByThread = yield* Ref.get(publishedStateByThreadRef);
     if (
       (snapshot.state?.phase === "completed" || snapshot.state?.phase === "failed") &&
