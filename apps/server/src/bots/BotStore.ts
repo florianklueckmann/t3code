@@ -529,6 +529,9 @@ export const layer = Layer.effect(
               DELETE FROM bot_learning_suggestions
               WHERE entry_id NOT IN (SELECT entry_id FROM bot_learning_revisions)
             `;
+            yield* sql`INSERT INTO deleted_bot_homes (home_thread_id)
+              SELECT home_thread_id FROM bot_project_contexts WHERE project_id = ${projectId}
+              ON CONFLICT (home_thread_id) DO NOTHING`;
             yield* sql`DELETE FROM bot_project_contexts WHERE project_id = ${projectId}`;
           }),
         );

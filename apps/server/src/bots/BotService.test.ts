@@ -1589,6 +1589,7 @@ it.effect(
         parent: string | null,
         relationship: "fork" | "subagent" | null,
         createdBy?: string,
+        projectId = campaignA,
       ) =>
         Effect.gen(function* () {
           const lineage = {
@@ -1604,12 +1605,12 @@ it.effect(
             thread_id, project_id, title, default_provider, runtime_mode, interaction_mode,
             created_at, updated_at, payload_json
           ) VALUES (
-            ${id}, ${campaignA}, ${id}, 'codex', 'full-access', 'default',
+            ${id}, ${projectId}, ${id}, 'codex', 'full-access', 'default',
             '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', ${JSON.stringify({ lineage, createdByThreadId })}
           )
         `;
         });
-      yield* withServices(world.threadLayer, ({ bots, turnContext, settings }) =>
+      yield* withServices(world.threadLayer, ({ bots, turnContext, settings, guard }) =>
         Effect.gen(function* () {
           yield* seedCatalog(settings);
           yield* createCampaignBot(bots);
@@ -1625,13 +1626,13 @@ it.effect(
           yield* thread("helper", home, "subagent");
           yield* thread("helper-fork", "helper", "fork");
           yield* thread("nested-helper", "helper-fork", "subagent");
-          yield* thread("plain", null, null);
+          yield* thread("plain", null, null, undefined, campaignB);
           yield* thread("plain-fork", "plain", "fork");
           yield* thread("orphan", "deleted-parent", "subagent");
           yield* thread("loop-a", "loop-b", "fork");
           yield* thread("loop-b", "loop-a", "fork");
           // Top-level threads a Bot's line launched with t3_thread_launch or create_threads.
-          yield* thread("launched", null, null, home);
+          yield* thread("launched", null, null, home, campaignB);
           yield* thread("launched-by-helper", null, null, "helper");
           yield* thread("launched-fork", "launched", "fork");
           yield* thread("launched-by-plain", null, null, "plain");
@@ -1684,6 +1685,16 @@ it.effect(
           const detached = yield* access("nested-helper");
           assert.equal(detached._tag, "refused");
           assert.include(detached._tag === "refused" ? detached.message : "", "detached");
+
+          const deletedAt = "2026-02-01T00:00:00.000Z";
+          yield* sql`UPDATE orchestration_v2_projection_threads SET deleted_at = ${deletedAt}
+            WHERE project_id = ${campaignA}`;
+          yield* sql`UPDATE projection_projects SET deleted_at = ${deletedAt}
+            WHERE project_id = ${campaignA}`;
+          yield* guard.forgetProject(campaignA);
+          assert.equal((yield* access("launched"))._tag, "refused");
+          assert.deepEqual(yield* access("plain"), { _tag: "none" });
+          assert.isEmpty((yield* bots.get({ botId })).projects);
         }),
       );
     }).pipe(Effect.provide(layerDatabase)),
