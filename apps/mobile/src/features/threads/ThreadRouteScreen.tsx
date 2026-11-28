@@ -30,6 +30,7 @@ import {
   AuthTerminalReadScope,
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
+  isBotHomeProjectId,
   isProviderNativeSubagentThread,
   MessageId,
   ThreadId,
@@ -539,9 +540,11 @@ function ThreadRouteContent(
   // The title it had at delegation, until this client sees the parent itself.
   const delegatedFromThread = useThreadShell(delegatedFromRef);
   const homeThreadBot = useHomeThreadBot(selectedThread);
+  // A Bot's own Home sits in a hidden project whose folder holds none of the user's work.
+  const isBotOwnHomeThread = isBotHomeProjectId(selectedThread?.projectId ?? "");
   const headerSubtitle = [
     homeThreadBot === null ? null : `Bot ${homeThreadBot.name}`,
-    selectedThreadProject?.title ?? null,
+    isBotOwnHomeThread ? null : (selectedThreadProject?.title ?? null),
     selectedEnvironmentConnection?.environmentLabel ?? null,
     // A linked environment's delegated task names its parent; other linked work its origin.
     delegatedFrom !== null
@@ -1010,6 +1013,7 @@ function ThreadRouteContent(
                 subtitle={threadSyncLabel ?? headerSubtitle}
                 gitControls={threadGitControlProps}
                 hasThreadCwd={selectedThreadCwd !== null}
+                projectActions={!isBotOwnHomeThread}
                 inspectorMode={inspectorMode}
                 onOpenFilesInspector={handleOpenFilesInspector}
                 onReturnToThread={props.onReturnToThread}

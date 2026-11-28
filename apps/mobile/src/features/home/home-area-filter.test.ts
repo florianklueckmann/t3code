@@ -69,6 +69,7 @@ function bot(id: string, projectIds: readonly string[]) {
         homeThreadId: `bot-home:${id}:${projectId}`,
         detachedAt: null,
       })),
+      home: { homeThreadId: `bot-home:${id}:bot-home-${id}` },
     },
   };
 }
@@ -119,6 +120,11 @@ describe("home area filter", () => {
     // The rail shows this Bot for `api`, though its `api` Home is not loaded.
     expect(resolve([thread("bot-home:both:garden", "garden")])).toBeNull();
     expect(resolve([thread("bot-home:gardener:garden", "garden")])).toBe("approval");
+    // A Bot's own Home follows its Bot, whatever area it is in.
+    expect(resolve([thread("bot-home:both:bot-home-both", "bot-home-both")])).toBeNull();
+    expect(resolve([thread("bot-home:gardener:bot-home-gardener", "bot-home-gardener")])).toBe(
+      "approval",
+    );
     // Another environment's list threads follow the environment filter; the Bot row does not.
     const onlyOther = (threads: EnvironmentThreadShell[]) =>
       resolveHomeAreaDot({
@@ -146,5 +152,7 @@ describe("home area filter", () => {
     expect(opens("bot-home:both:garden", "garden")).toBe(false);
     expect(opens("bot-home:gardener:garden", "garden")).toBe(true);
     expect(opens("bot-home:unknown:garden", "garden")).toBeNull();
+    expect(opens("bot-home:both:bot-home-both", "bot-home-both")).toBe(false);
+    expect(opens("bot-home:gardener:bot-home-gardener", "bot-home-gardener")).toBe(true);
   });
 });

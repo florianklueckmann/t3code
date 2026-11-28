@@ -1,5 +1,10 @@
 import { resolveBotAppearance } from "@t3tools/client-runtime/bot-appearance";
-import { rankBotConversations } from "@t3tools/client-runtime/bots";
+import {
+  BOT_OWN_HOME_LABEL,
+  botOwnHome,
+  botRailConversations,
+  isBotOwnHome,
+} from "@t3tools/client-runtime/bots";
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { settlePromise } from "@t3tools/client-runtime/state/runtime";
 import type { BotSummary, EnvironmentId } from "@t3tools/contracts";
@@ -172,7 +177,11 @@ function BotRailItem({
   const routeRef = resolveThreadRouteRef(useParams({ strict: false }));
   const projects = useProjects();
   const localLastVisitedAtById = useUiStateStore((state) => state.threadLastVisitedAtById);
-  const contexts = bot.projects.filter((context) => context.detachedAt === null);
+  const ownHome = botOwnHome(bot);
+  const contexts = [
+    ...bot.projects.filter((context) => context.detachedAt === null),
+    ...(ownHome === null ? [] : [ownHome]),
+  ];
   const shells = useQuietThreadShellsByRefs(
     contexts.map((context) => scopeThreadRef(environmentId, context.homeThreadId)),
   );
@@ -187,7 +196,7 @@ function BotRailItem({
       return [[shell.id as string, { ...shell, lastVisitedAt }] as const];
     }),
   );
-  const conversations = rankBotConversations(
+  const rail = botRailConversations(
     bot,
     (threadId) => shellByThreadId.get(threadId) ?? null,
     (thread) => {
@@ -195,15 +204,21 @@ function BotRailItem({
       return dot === null ? 0 : DOT_URGENCY[dot];
     },
   );
-  const target = conversations[0] ?? null;
-  const dot = target?.thread ? threadDot(target.thread) : null;
+  const conversations = rail.projects;
+  const target = rail.target;
+  const dot = rail.mostUrgent === null ? null : threadDot(rail.mostUrgent);
   const selected =
     routeRef !== null &&
     routeRef.environmentId === environmentId &&
     contexts.some((context) => context.homeThreadId === routeRef.threadId);
   const projectTitle = (projectId: string) =>
-    projects.find((project) => project.environmentId === environmentId && project.id === projectId)
-      ?.title ?? "Unknown project";
+    isBotOwnHome({ projectId })
+      ? BOT_OWN_HOME_LABEL
+      : (projects.find(
+          (project) => project.environmentId === environmentId && project.id === projectId,
+        )?.title ?? "Unknown project");
+  const menuConversations =
+    rail.ownHome === null ? conversations : [rail.ownHome, ...conversations];
 
   const openSettings = () => {
     closeMobileSidebar();
@@ -231,7 +246,7 @@ function BotRailItem({
       const clicked = await settlePromise(() =>
         api.contextMenu.show(
           [
-            ...conversations.map(({ context, thread }) => {
+            ...menuConversations.map(({ context, thread }) => {
               const conversationDot = thread ? threadDot(thread) : null;
               return {
                 id: `open:${context.homeThreadId}`,
@@ -244,7 +259,7 @@ function BotRailItem({
               id: "settings",
               label: "Bot settings",
               icon: "settings",
-              separatorBefore: conversations.length > 0,
+              separatorBefore: menuConversations.length > 0,
             },
           ],
           position,
@@ -255,7 +270,7 @@ function BotRailItem({
         openSettings();
         return;
       }
-      const conversation = conversations.find(
+      const conversation = menuConversations.find(
         ({ context }) => `open:${context.homeThreadId}` === clicked.value,
       );
       if (conversation) openConversation(conversation.context.homeThreadId);
@@ -265,8 +280,8 @@ function BotRailItem({
   const description =
     target === null
       ? "No project attached"
-      : conversations.length > 1
-        ? `${projectTitle(target.context.projectId)} and ${conversations.length - 1} more`
+      : menuConversations.length > 1
+        ? `${projectTitle(target.context.projectId)} and ${menuConversations.length - 1} more`
         : projectTitle(target.context.projectId);
 
   return (

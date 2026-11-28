@@ -16,6 +16,9 @@ import {
   type BotFailureDiagnosisView,
   type BotRecordLearningInput,
   type BotWorktreePool,
+  BOT_HOME_THREAD_ID_PREFIX,
+  isBotHomeProjectId,
+  mayBeBotHomeThreadId,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import * as Option from "effect/Option";
@@ -32,7 +35,10 @@ import type {
   BotProjectContextSummary,
   BotSourcePreference,
   BotCapabilities,
+  BotHome,
+  BotHomeAccess,
   BotSummary,
+  BotTaskListInput,
   BotTaskResult,
   BotTaskStatus,
   BotTaskSummary,
@@ -93,6 +99,11 @@ export function botModelCapabilities(
 export const BOT_EDITOR_SECTIONS = [
   { id: "mcp", title: "MCP connections", searchTerms: ["tools", "calendars", "grants"] },
   {
+    id: "home",
+    title: "Own Home",
+    searchTerms: ["bot home", "distribute", "read access", "full access"],
+  },
+  {
     id: "projects",
     title: "Projects",
     searchTerms: ["routines", "working notes", "preferred sources", "attach"],
@@ -110,7 +121,7 @@ export function isBotEditorSectionId(value: unknown): value is BotEditorSectionI
   return BOT_EDITOR_SECTIONS.some((section) => section.id === value);
 }
 
-type BotCapabilityFeature = "mcpGrants" | "ownMcpServers" | "noChangesRoutines";
+type BotCapabilityFeature = "mcpGrants" | "ownMcpServers" | "noChangesRoutines" | "home";
 const BOT_CAPABILITY_LABELS: Record<BotCapabilityFeature, ReadonlyMap<string, string>> = {
   mcpGrants: new Map([
     [
@@ -138,7 +149,57 @@ const BOT_CAPABILITY_LABELS: Record<BotCapabilityFeature, ReadonlyMap<string, st
     ],
     ["provider", "No changes needs a Codex or Claude model for this Bot."],
   ]),
+  home: new Map([
+    [
+      "pi_unsupported",
+      "Read access isn't available on Pi, because Pi can't enforce it. Use full access, or switch the Bot to a Codex or Claude model.",
+    ],
+    [
+      "provider",
+      "Read access needs a Codex or Claude model for this Bot. Use full access instead.",
+    ],
+  ]),
 };
+
+/**
+ * Why the Bot's own Home can't run with read access on this Bot's model or server, or null when it
+ * can. Read access is enforced like No changes, so it needs a Mac server too.
+ */
+export function botOwnHomeReadUnavailableLabel(input: {
+  readonly capabilities: BotCapabilities | undefined;
+  readonly platformOs: string | undefined;
+}): string | null {
+  return (
+    botCapabilityUnavailableLabel(input.capabilities, "home") ??
+    (input.platformOs === undefined || input.platformOs === "darwin"
+      ? null
+      : "Read access runs only when this server is a Mac. Use full access on this server.")
+  );
+}
+
+export const BOT_OWN_HOME_DESCRIPTION =
+  "A Home above the Bot's projects. Bring it work without choosing a project: it asks when something is unclear, then starts a task in each project the work belongs to and reports the results here one by one. It does not do the work itself.";
+
+export const BOT_OWN_HOME_ACCESS_OPTIONS = [
+  {
+    value: "read",
+    label: "Read",
+    description:
+      "It can read the attached projects and changes things only by starting tasks. On Codex it can read the whole disk.",
+  },
+  {
+    value: "full",
+    label: "Full",
+    description: "It works like a project Home and can also change things itself.",
+  },
+] as const satisfies ReadonlyArray<{
+  readonly value: BotHomeAccess;
+  readonly label: string;
+  readonly description: string;
+}>;
+
+export const BOT_OWN_HOME_REMOVE_DESCRIPTION =
+  "Removing it archives its conversation and cancels the tasks it started. Opening it again restores the conversation.";
 /**
  * Why a Bot's model can't use a feature, or null when it can. Servers without `capabilities` run
  * Bots on Codex, where everything is available; unknown reasons from newer servers stay readable.
@@ -458,14 +519,62 @@ export interface BotConversation {
   readonly context: BotProjectContextSummary;
 }
 
-/** Home conversations of Bots that are neither archived nor detached from the project. */
+/** How clients name the Bot's own Home, above its projects. */
+export const BOT_OWN_HOME_LABEL = "Own Home";
+
+/** Whether this Home is the Bot's own one, in its hidden project, rather than a project Home. */
+export function isBotOwnHome(context: { readonly projectId: string }): boolean {
+  return isBotHomeProjectId(context.projectId);
+}
+
+/**
+ * Whether a thread id is a Bot's own Home (`bot-home:<botId>:bot-home-<botId>`), decided from the
+ * id alone, so it holds before the thread's shell or the Bot list has loaded.
+ */
+export function isBotOwnHomeThreadId(threadId: string): boolean {
+  if (!mayBeBotHomeThreadId(threadId)) return false;
+  const rest = threadId.slice(BOT_HOME_THREAD_ID_PREFIX.length);
+  const separator = rest.indexOf(":");
+  return separator > 0 && isBotHomeProjectId(rest.slice(separator + 1));
+}
+
+/** A Bot's Homes, attached or not: its project Homes, then its own Home once it was opened. */
+function botHomeContexts(
+  bot: Pick<BotSummary, "projects" | "home">,
+): ReadonlyArray<BotProjectContextSummary> {
+  return bot.home == null ? bot.projects : [...bot.projects, bot.home];
+}
+
+/** The Bot's own Home while it is open and the Bot active, else null. */
+export function botOwnHome(bot: Pick<BotSummary, "archivedAt" | "home">): BotHome | null {
+  return bot.archivedAt === null && bot.home != null && bot.home.detachedAt === null
+    ? bot.home
+    : null;
+}
+
+/** Whether `projectId` is one of the Bot's Homes that takes turns: an attached project or its open own Home. */
+export function isBotHomeActive(
+  bot: Pick<BotSummary, "archivedAt" | "projects" | "home">,
+  projectId: string,
+): boolean {
+  return (
+    bot.archivedAt === null &&
+    botHomeContexts(bot).some(
+      (context) => context.projectId === projectId && context.detachedAt === null,
+    )
+  );
+}
+
+/** Home conversations of active Bots: attached project Homes, then each Bot's open own Home. */
 export function activeBotConversations(
   bots: ReadonlyArray<BotSummary>,
 ): ReadonlyArray<BotConversation> {
   return bots.flatMap((bot) =>
     bot.archivedAt !== null
       ? []
-      : bot.projects.flatMap((context) => (context.detachedAt === null ? [{ bot, context }] : [])),
+      : botHomeContexts(bot).flatMap((context) =>
+          context.detachedAt === null ? [{ bot, context }] : [],
+        ),
   );
 }
 
@@ -509,6 +618,46 @@ export function rankBotConversations<T extends { readonly updatedAt: string }>(
   );
 }
 
+export interface BotRailConversations<T> {
+  /** The Bot's own Home while it is open. */
+  readonly ownHome: RankedBotConversation<T> | null;
+  /** Its attached project Homes, ranked as `rankBotConversations` does. */
+  readonly projects: ReadonlyArray<RankedBotConversation<T>>;
+  /** What a click on the Bot opens: its own Home once open, else the first project Home. */
+  readonly target: RankedBotConversation<T> | null;
+  /** The Home whose state the Bot's dot shows: the most urgent of all its Homes. */
+  readonly mostUrgent: T | null;
+}
+
+/** A Bot's entry on the rail: what a click opens, what its menu lists and what its dot shows. */
+export function botRailConversations<T extends { readonly updatedAt: string }>(
+  bot: BotSummary,
+  threadOf: (threadId: ThreadId) => T | null,
+  urgency: (thread: T) => number,
+): BotRailConversations<T> {
+  const projects = rankBotConversations(bot, threadOf, urgency);
+  const home = botOwnHome(bot);
+  const ownHome = home === null ? null : { context: home, thread: threadOf(home.homeThreadId) };
+  const candidates = [ownHome?.thread ?? null, projects[0]?.thread ?? null].filter(
+    (thread): thread is T => thread !== null,
+  );
+  const mostUrgent = candidates.reduce<T | null>(
+    (best, thread) => (best === null || urgency(thread) > urgency(best) ? thread : best),
+    null,
+  );
+  return { ownHome, projects, target: ownHome ?? projects[0] ?? null, mostUrgent };
+}
+
+/**
+ * The task list a Home's cards come from: a project Home's tasks in its project, or every task the
+ * Bot's own Home started, across projects.
+ */
+export function botHomeTaskListInput({ bot, context }: BotConversation): BotTaskListInput {
+  return isBotOwnHome(context)
+    ? { botId: bot.id, homeThreadId: context.homeThreadId }
+    : { botId: bot.id, projectId: context.projectId };
+}
+
 /** The active Bot that started this work thread, if it is one. */
 export function botOfWorkThread(
   bots: ReadonlyArray<BotSummary>,
@@ -526,7 +675,7 @@ export function botConversationForThread(
   threadId: ThreadId,
 ): BotConversation | null {
   for (const bot of bots) {
-    const context = bot.projects.find((project) => project.homeThreadId === threadId);
+    const context = botHomeContexts(bot).find((project) => project.homeThreadId === threadId);
     if (context !== undefined) return { bot, context };
   }
   return null;

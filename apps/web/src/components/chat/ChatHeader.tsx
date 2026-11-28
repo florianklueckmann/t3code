@@ -1,5 +1,6 @@
 import {
   AuthOrchestrationOperateScope,
+  isBotHomeProjectId,
   mayBeBotHomeThreadId,
   type EnvironmentId,
   type ScopedThreadRef,
@@ -261,7 +262,8 @@ export const ChatHeader = memo(function ChatHeader({
         ariaLabel="Thread breadcrumb"
         className="flex-1 overflow-clip [overflow-clip-margin:2px]"
       >
-        {activeProject ? (
+        {/* A Bot's own Home sits in a hidden project; the Bot's badge names it instead. */}
+        {activeProject && !isBotHomeProjectId(activeProject.id) ? (
           <>
             <WorkspaceBreadcrumbItem className="shrink">
               <Tooltip>

@@ -1,6 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
   botConversationForThread,
+  botHomeTaskListInput,
   botTaskAcceptanceLines,
   botTaskBranchLabel,
   botTaskCardKey,
@@ -8,6 +9,7 @@ import {
   HiddenBotTaskCards,
   hideBotTaskCard,
   homeBotTaskCards,
+  isBotOwnHome,
   isBotTaskOpen,
   isBotTaskWaitingOnYou,
   showBotTaskCards,
@@ -25,6 +27,7 @@ import { useState } from "react";
 import { useLocalStorage } from "../../hooks/useLocalStorage";
 import { useClientSettings } from "../../hooks/useSettings";
 import { useNowMinute } from "../../hooks/useNowMinute";
+import { useProjects } from "../../state/entities";
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -46,10 +49,13 @@ export function useUpcomingInstantFormatter(): (iso: string) => string {
 export function BotTaskRow({
   environmentId,
   task,
+  projectTitle,
   onHide,
 }: {
   readonly environmentId: EnvironmentId;
   readonly task: BotTaskSummary;
+  /** The project the task works in, shown where cards come from several projects. */
+  readonly projectTitle?: string | undefined;
   /** Home passes it for finished tasks only; history rows leave it out. */
   readonly onHide?: (() => void) | undefined;
 }) {
@@ -93,6 +99,7 @@ export function BotTaskRow({
         <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-muted-foreground">
           <BotTaskStatusBadge status={task.status} needsYou={isBotTaskWaitingOnYou(task)} />
           <span>
+            {projectTitle === undefined ? null : `${projectTitle} · `}
             {when}
             {task.sessionAt === null ? null : ` · session ${formatInstant(task.sessionAt)}`}
           </span>
@@ -190,9 +197,18 @@ export function BotTaskCards({
       ? null
       : serverEnvironment.botTasksLive({
           environmentId,
-          input: { botId: conversation.bot.id, projectId: conversation.context.projectId },
+          input: botHomeTaskListInput(conversation),
         }),
   );
+  const projects = useProjects();
+  // Cards in the Bot's own Home come from several projects, so each names its own.
+  const projectTitleOf =
+    conversation !== null && isBotOwnHome(conversation.context)
+      ? (task: BotTaskSummary) =>
+          projects.find(
+            (project) => project.environmentId === environmentId && project.id === task.projectId,
+          )?.title ?? "Unknown project"
+      : null;
   const [hidden, setHidden] = useLocalStorage(
     HIDDEN_BOT_TASK_CARDS_STORAGE_KEY,
     [],
@@ -213,6 +229,7 @@ export function BotTaskCards({
               key={task.id}
               environmentId={environmentId}
               task={task}
+              projectTitle={projectTitleOf?.(task)}
               onHide={
                 botTaskCardKey(environmentId, task) === null
                   ? undefined

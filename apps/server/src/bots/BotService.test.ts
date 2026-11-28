@@ -7,6 +7,7 @@ import {
   BotError,
   BotId,
   botHomeProjectId,
+  type BotTaskAcceptance as BotTaskAcceptanceValue,
   BotTaskId,
   MAC_CALENDAR_CONNECTION_ID,
   McpConnectionId,
@@ -526,13 +527,20 @@ it.effect(
           assert.isTrue((yield* Ref.get(world.threads)).get(home.homeThreadId)?.archived);
           assert.equal(yield* instructionsFor(turnContext, home.homeThreadId), "inactive");
 
-          const reopened = yield* bots.openHome({ botId, access: "full" });
+          // An access change racing a removal elsewhere must not reopen the Home.
+          const refused = yield* bots.openHome({ botId, access: "full" }).pipe(Effect.flip);
+          assert.include(refused.message, "Reopen it before changing its access");
+          assert.isTrue((yield* Ref.get(world.threads)).get(home.homeThreadId)?.archived);
+
+          const reopened = yield* bots.openHome({ botId });
           assert.deepInclude(reopened.home, {
             homeThreadId: home.homeThreadId,
             detachedAt: null,
-            access: "full",
+            access: "read",
           });
           assert.isFalse((yield* Ref.get(world.threads)).get(home.homeThreadId)?.archived);
+          const full = yield* bots.openHome({ botId, access: "full" });
+          assert.deepInclude(full.home, { detachedAt: null, access: "full" });
         }),
       );
       const homeLaunches = (yield* Ref.get(world.launches)).filter(
@@ -611,17 +619,21 @@ const insertBotTask = (
     readonly status: string;
     readonly createdAt: string;
     readonly cancelRequestedAt?: string;
+    readonly completedAt?: string;
+    readonly acceptance?: BotTaskAcceptanceValue;
   },
 ) =>
   sql`
     INSERT INTO bot_tasks (
       task_id, bot_id, project_id, home_thread_id, work_thread_id, origin, title, prompt,
-      runtime_mode, status, cancel_requested_at, created_at, updated_at
+      runtime_mode, status, cancel_requested_at, created_at, updated_at, completed_at,
+      acceptance_json
     ) VALUES (
       ${task.taskId}, ${botId}, ${task.projectId}, ${task.homeThreadId},
       ${`bot-work:${task.taskId}`}, 'direct', ${`Task ${task.taskId}`}, 'Do the work.',
       'full-access', ${task.status}, ${task.cancelRequestedAt ?? null}, ${task.createdAt},
-      ${task.createdAt}
+      ${task.createdAt}, ${task.completedAt ?? null},
+      ${task.acceptance === undefined ? null : JSON.stringify(task.acceptance)}
     )
   `.pipe(Effect.orDie);
 
@@ -663,6 +675,9 @@ it.effect(
   "gives the Bot-level Home its attached projects, every unfinished task, its notes and its learning",
   () =>
     Effect.gen(function* () {
+      yield* TestClock.setTime(
+        DateTime.toEpochMillis(DateTime.makeUnsafe("2026-11-05T00:00:00.000Z")),
+      );
       yield* seedProjects;
       const world = yield* makeThreadWorld;
       const db = yield* BotDatabase.BotDatabase;
@@ -723,6 +738,25 @@ it.effect(
               status,
               createdAt: "2026-11-04T00:00:00.000Z",
               ...(cancelRequestedAt === undefined ? {} : { cancelRequestedAt }),
+            });
+          }
+          const needsYou = (question: string): BotTaskAcceptanceValue => ({
+            state: "needs_you",
+            missing: ["The result names no evidence."],
+            report: { result: "Drafted.", status: "done", evidence: [], openQuestions: [question] },
+          });
+          for (const [taskId, completedAt] of [
+            ["task-needs-you", "2026-11-05T00:00:00.000Z"],
+            ["task-needs-you-old", "2026-10-28T23:59:59.000Z"],
+          ] as const) {
+            yield* insertBotTask(db, {
+              taskId,
+              projectId: campaignB,
+              homeThreadId: home,
+              status: "completed",
+              createdAt: "2026-10-28T00:00:00.000Z",
+              completedAt,
+              acceptance: needsYou(`Keep the ${taskId} heading?`),
             });
           }
 
@@ -788,7 +822,8 @@ it.effect(
             `- "Task task-waiting" (taskId "task-waiting") · project "Faerun" (projectId "${campaignB}") · waiting · started 2026-11-03T00:00:00.000Z\n  Question waiting for the user: Which changelog format should both repos use?`,
           );
           assert.notInclude(turn, "Should the old format stay?");
-          assert.lengthOf(turn.match(/\(taskId "/g) ?? [], 30);
+          const unfinished = turn.slice(0, turn.indexOf("Completed tasks whose result"));
+          assert.lengthOf(unfinished.match(/\(taskId "/g) ?? [], 30);
           assert.isBelow(turn.indexOf('"task-waiting"'), turn.indexOf('"task-31"'));
           assert.isBelow(turn.indexOf('"task-31"'), turn.indexOf('"task-30"'));
           assert.include(turn, '"task-03"');
@@ -796,6 +831,12 @@ it.effect(
           assert.include(turn, "(2 more unfinished tasks are not shown.)");
           assert.notInclude(turn, "task-done");
           assert.notInclude(turn, "task-stopping");
+          // A week of results that wait for the user, so a compacted Home still names them.
+          assert.include(
+            turn,
+            `- "Task task-needs-you" (taskId "task-needs-you") · project "Faerun" (projectId "${campaignB}") · completed 2026-11-05T00:00:00.000Z · The result names no evidence. Open question: Keep the task-needs-you heading?`,
+          );
+          assert.notInclude(turn, "task-needs-you-old");
           assert.include(turn, "Split the changelog work once the format is chosen.");
           assert.include(turn, `projectId "${homeProject}": pass both ids`);
           assert.notInclude(turn, "Active Bot tasks only");

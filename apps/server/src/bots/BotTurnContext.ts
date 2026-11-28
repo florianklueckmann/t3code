@@ -4,6 +4,7 @@ import {
   type BotId,
   type BotMcpGrants,
   BotSourcePreference,
+  BotTaskAcceptance as BotTaskAcceptanceSchema,
   BotTaskId,
   type McpConnectionId,
   type OrchestrationV2AppThread,
@@ -183,6 +184,7 @@ function buildBotHomeInstructions(input: {
   readonly projectId: string;
   readonly projects: ReadonlyArray<AttachedProject>;
   readonly tasks: UnfinishedTasks;
+  readonly waitingResults: WaitingResults;
   readonly learningPolicy: string;
   readonly continuation: string;
   readonly activeLearning: ReturnType<typeof BotLearning.turnLearning>;
@@ -221,7 +223,15 @@ function buildBotHomeInstructions(input: {
     }),
     otherAgentsSection(input.botName),
   ];
-  return assemble({ ...input, lasting, turnSections: [unfinishedTasksSection(input.tasks)] });
+  const waitingResults = waitingResultsSection(input.waitingResults);
+  return assemble({
+    ...input,
+    lasting,
+    turnSections: [
+      unfinishedTasksSection(input.tasks),
+      ...(waitingResults === null ? [] : [waitingResults]),
+    ],
+  });
 }
 
 interface AttachedProject {
@@ -258,6 +268,49 @@ function unfinishedTasksSection({ shown, total }: UnfinishedTasks): string {
       ? [`(${total - shown.length} more unfinished tasks are not shown.)`]
       : []),
   ].join("\n");
+}
+
+interface WaitingResults {
+  readonly shown: ReadonlyArray<{
+    readonly taskId: string;
+    readonly title: string;
+    readonly projectId: string;
+    readonly projectTitle: string;
+    readonly completedAt: string;
+    /** What the result check found missing and the report's open questions, shortened. */
+    readonly reason: string;
+  }>;
+  readonly total: number;
+}
+
+const WAITING_RESULTS_SHOWN = 10;
+const WAITING_RESULTS_DAYS = 7;
+
+function waitingResultsSection({ shown, total }: WaitingResults): string | null {
+  if (shown.length === 0) return null;
+  return [
+    `Completed tasks whose result waits for the user (Needs you) from the last ${WAITING_RESULTS_DAYS} days, newest first. Rebuilt at every turn like the list above. The user may already have settled one in its work thread, so name them when they matter instead of repeating them every turn:`,
+    ...shown.map(
+      (task) =>
+        `- "${task.title}" (taskId "${task.taskId}") · project "${task.projectTitle}" (projectId "${task.projectId}") · completed ${task.completedAt} · ${task.reason}`,
+    ),
+    ...(total > shown.length
+      ? [`(${total - shown.length} more results that wait for the user are not shown.)`]
+      : []),
+  ].join("\n");
+}
+
+function waitingReason(acceptanceJson: string): string {
+  const acceptance = Option.getOrUndefined(decodeAcceptance(acceptanceJson));
+  const text = [
+    ...(acceptance?.missing ?? []),
+    ...(acceptance?.report?.openQuestions ?? []).map((question) => `Open question: ${question}`),
+  ]
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const shown = text === "" ? "The result needs the user's review." : text;
+  return shown.length > QUESTION_CHARS ? `${shown.slice(0, QUESTION_CHARS)}…` : shown;
 }
 
 const earlierConversationSection = [
@@ -399,6 +452,8 @@ function workTaskSection(task: WorkTask): string {
 const decodeSources = Schema.decodeUnknownEffect(
   Schema.fromJsonString(Schema.Array(BotSourcePreference)),
 );
+
+const decodeAcceptance = Schema.decodeUnknownOption(Schema.fromJsonString(BotTaskAcceptanceSchema));
 
 const decodeRequestItem = Schema.decodeUnknownOption(
   Schema.fromJsonString(
@@ -687,6 +742,42 @@ export const layer = Layer.effect(
       } satisfies UnfinishedTasks;
     });
 
+    /** The Bot's recent completed tasks whose result waits for the user, newest first. */
+    const waitingResults = Effect.fn("BotTurnContext.waitingResults")(function* (botId: string) {
+      const since = DateTime.formatIso(
+        DateTime.subtract(yield* DateTime.now, { days: WAITING_RESULTS_DAYS }),
+      );
+      const rows = yield* sql<{
+        readonly task_id: string;
+        readonly project_id: string;
+        readonly title: string;
+        readonly completed_at: string;
+        readonly acceptance_json: string;
+        readonly total: number;
+      }>`
+        SELECT task_id, project_id, title, completed_at, acceptance_json, COUNT(*) OVER() AS total
+        FROM bot_tasks
+        WHERE bot_id = ${botId} AND status = 'completed'
+          AND json_extract(acceptance_json, '$.state') = 'needs_you'
+          AND completed_at >= ${since}
+        ORDER BY completed_at DESC, task_id DESC LIMIT ${WAITING_RESULTS_SHOWN}
+      `.pipe(
+        Effect.mapError((cause) => new BotStore.BotStoreError({ operation: "read-tasks", cause })),
+      );
+      const projects = yield* projectsById(rows.map((row) => row.project_id));
+      return {
+        shown: rows.map((row) => ({
+          taskId: row.task_id,
+          title: row.title.slice(0, 160),
+          projectId: row.project_id,
+          projectTitle: projects.get(row.project_id)?.title ?? row.project_id,
+          completedAt: row.completed_at,
+          reason: waitingReason(row.acceptance_json),
+        })),
+        total: rows[0]?.total ?? 0,
+      } satisfies WaitingResults;
+    });
+
     const botHomeContext = Effect.fn("BotTurnContext.botHomeContext")(function* (
       bot: BotStore.BotRow,
       context: BotStore.BotContextRow,
@@ -705,6 +796,7 @@ export const layer = Layer.effect(
           return project === undefined ? [] : [project];
         }),
         tasks: yield* unfinishedTasks(bot.bot_id),
+        waitingResults: yield* waitingResults(bot.bot_id),
         learningPolicy: bot.learning_policy,
         activeLearning: BotLearning.turnLearning(
           yield* store.listLearning(bot.bot_id),

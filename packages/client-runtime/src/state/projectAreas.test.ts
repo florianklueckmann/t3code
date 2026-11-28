@@ -115,19 +115,28 @@ describe("threadsHiddenByProjectScope", () => {
     // Its Bot also works in `api`, whose Home was trimmed from the loaded threads.
     const railHome = thread("bot-home:both:garden", "garden");
     const offRailHome = thread("bot-home:elsewhere:garden", "garden");
+    // A Bot's own Home sits in no area's project, so it follows its Bot.
+    const railOwnHome = thread("bot-home:both:bot-home-both", "bot-home-both");
+    const offRailOwnHome = thread("bot-home:elsewhere:bot-home-elsewhere", "bot-home-elsewhere");
     const threads = [
       thread("t-0", "api"),
       outside,
       thread("t-2", "garden", "2026-11-01T00:00:00.000Z"),
       railHome,
       offRailHome,
+      railOwnHome,
+      offRailOwnHome,
     ];
     const rail = botRailKeys(
       [bot("both", ["api", "garden"]), bot("elsewhere", ["garden"]), bot("gone", ["api"], "x")],
       scoped,
     );
     expect(rail).toEqual(new Set([`${local}:both`]));
-    expect(threadsHiddenByProjectScope(threads, scoped, rail)).toEqual([outside, offRailHome]);
+    expect(threadsHiddenByProjectScope(threads, scoped, rail)).toEqual([
+      outside,
+      offRailHome,
+      offRailOwnHome,
+    ]);
   });
 
   it("keeps a Bot with a loaded Home in the area on the rail while its Bots load", () => {

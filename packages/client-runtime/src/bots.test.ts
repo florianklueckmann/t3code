@@ -32,8 +32,12 @@ import {
   botLearningRevisionInput,
   botLearningScopeChange,
   botLearningViews,
+  botConversationForThread,
+  botHomeTaskListInput,
   botModelCapabilities,
   botOfHomeThread,
+  botOwnHomeReadUnavailableLabel,
+  botRailConversations,
   botProjectContextChanges,
   botProjectContextDraft,
   botProviderDrivers,
@@ -47,6 +51,7 @@ import {
   botTaskResultMatchesThread,
   botTurnLearningView,
   emptyBotSourceDraft,
+  isBotOwnHomeThreadId,
   type HiddenBotTaskCards,
   hideBotTaskCard,
   homeBotTaskCards,
@@ -196,6 +201,162 @@ describe("rankBotConversations", () => {
 
   it("offers nothing for an archived Bot", () => {
     expect(rank(bot([context("new")], "2026-01-04T00:00:00.000Z"))).toEqual([]);
+  });
+
+  describe("with the Bot's own Home", () => {
+    const ownHome = (detachedAt: string | null = null) => ({
+      ...context("bot-home-companion"),
+      detachedAt,
+      access: "read" as const,
+    });
+    const rail = (summary: BotSummary, urgency: Record<string, number> = {}) => {
+      const entry = botRailConversations(
+        summary,
+        (threadId) => {
+          const thread = threads[threadId] ?? (urgency[threadId] === undefined ? null : {});
+          return thread === null
+            ? null
+            : { updatedAt: "2026-01-01T00:00:00.000Z", urgency: 0, ...thread, id: threadId };
+        },
+        (thread) => urgency[thread.id] ?? thread.urgency,
+      );
+      return {
+        target: entry.target?.context.projectId ?? null,
+        menu: entry.projects.map(({ context }) => context.projectId),
+        dot: entry.mostUrgent?.id ?? null,
+      };
+    };
+    const own = "bot-home:companion:bot-home-companion";
+
+    it.each([
+      [
+        "opens the own Home and keeps the project Homes in the menu",
+        bot([context("asks"), context("new")]),
+        { home: ownHome() },
+        {},
+        { target: "bot-home-companion", menu: ["asks", "new"], dot: "bot-home:companion:asks" },
+      ],
+      [
+        "shows the own Home's dot when it is the most urgent",
+        bot([context("asks")]),
+        { home: ownHome() },
+        { [own]: 4 },
+        { target: "bot-home-companion", menu: ["asks"], dot: own },
+      ],
+      [
+        "opens the most urgent project Home while the own Home is removed",
+        bot([context("new"), context("asks")]),
+        { home: ownHome("2026-01-04T00:00:00.000Z") },
+        { [own]: 4 },
+        { target: "asks", menu: ["asks", "new"], dot: "bot-home:companion:asks" },
+      ],
+      [
+        "opens the own Home of a Bot without projects",
+        bot([]),
+        { home: ownHome() },
+        { [own]: 0 },
+        { target: "bot-home-companion", menu: [], dot: own },
+      ],
+      [
+        "opens nothing for a Bot without any Home",
+        bot([]),
+        { home: null },
+        {},
+        { target: null, menu: [], dot: null },
+      ],
+    ])("%s", (_case, summary, home, urgency, expected) => {
+      expect(rail({ ...summary, ...home }, urgency)).toEqual(expected);
+    });
+  });
+});
+
+describe("the Bot's own Home", () => {
+  const ownHomeContext = {
+    projectId: ProjectId.make("bot-home-companion"),
+    homeThreadId: ThreadId.make("bot-home:companion:bot-home-companion"),
+    attachedAt: "2026-01-01T00:00:00.000Z",
+    detachedAt: null,
+    access: "read" as const,
+  };
+  const projectContext = {
+    projectId: ProjectId.make("campaign-a"),
+    homeThreadId: ThreadId.make("bot-home:companion:campaign-a"),
+    attachedAt: "2026-01-01T00:00:00.000Z",
+    detachedAt: null,
+  };
+  const bot: BotSummary = {
+    id: BotId.make("companion"),
+    name: "Companion",
+    modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
+    learningPolicy: "after_adoption",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    archivedAt: null,
+    pendingLearning: 0,
+    projects: [projectContext],
+    home: ownHomeContext,
+  };
+
+  it.each([
+    [ownHomeContext.homeThreadId, true],
+    [projectContext.homeThreadId, false],
+    ["bot-home:companion", false],
+    ["thread:bot-home-companion", false],
+  ])("tells the own Home's thread %s from its id alone", (threadId, expected) => {
+    expect(isBotOwnHomeThreadId(threadId)).toBe(expected);
+  });
+
+  it("loads a project Home's cards by project and the own Home's by the Home that started them", () => {
+    const inputOf = (threadId: string) => {
+      const conversation = botConversationForThread([bot], ThreadId.make(threadId));
+      return conversation === null ? null : botHomeTaskListInput(conversation);
+    };
+    expect(inputOf(projectContext.homeThreadId)).toEqual({
+      botId: bot.id,
+      projectId: projectContext.projectId,
+    });
+    expect(inputOf(ownHomeContext.homeThreadId)).toEqual({
+      botId: bot.id,
+      homeThreadId: ownHomeContext.homeThreadId,
+    });
+  });
+
+  it.each<[string, BotSummary, string | null]>([
+    ["the open own Home", bot, "Companion"],
+    [
+      "a removed own Home",
+      { ...bot, home: { ...ownHomeContext, detachedAt: "2026-01-02T00:00:00.000Z" } },
+      null,
+    ],
+    ["an own Home that was never opened", { ...bot, home: null }, null],
+  ])("names the Bot of %s", (_case, summary, name) => {
+    expect(
+      botOfHomeThread([summary], {
+        id: ownHomeContext.homeThreadId,
+        projectId: ownHomeContext.projectId,
+      })?.name ?? null,
+    ).toBe(name);
+  });
+
+  it.each([
+    ["Codex on a Mac", { home: null }, "darwin", null],
+    ["Codex on a server whose platform is not reported", { home: null }, undefined, null],
+    ["a server that is not a Mac", { home: null }, "linux", "Read access runs only"],
+    ["Pi", { home: "pi_unsupported" }, "darwin", "Read access isn't available on Pi"],
+    ["a reason a newer server added", { home: "future" }, "darwin", "Not available on this Bot's"],
+  ])("explains when read access is unavailable on %s", (_case, home, platformOs, expected) => {
+    const capabilities = {
+      mcpGrants: null,
+      ownMcpServers: null,
+      noChangesRoutines: null,
+      maintenance: null,
+      homeCheck: null,
+      failureDiagnosis: null,
+      ...home,
+    };
+    const label = botOwnHomeReadUnavailableLabel({ capabilities, platformOs });
+    if (expected === null) expect(label).toBeNull();
+    else expect(label).toContain(expected);
   });
 });
 

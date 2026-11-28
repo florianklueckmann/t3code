@@ -66,6 +66,7 @@ import {
   type AssistantCitation,
   type ResponseContextRecord,
   type ChatFileAttachment,
+  isBotHomeProjectId,
   isProviderNativeSubagentThread,
   mayBeBotHomeThreadId,
   type EnvironmentId,
@@ -1141,12 +1142,18 @@ export default function ChatView(props: ChatViewProps) {
       ? scopeProjectRef(activeThreadEnvironmentId, activeThreadProjectId)
       : null;
   const activeProject = useProject(activeProjectRef);
+  // A Bot's own Home runs in its hidden project's folder, which holds none of the user's work, so
+  // terminals, files, git, scripts and pull requests stay out.
+  const isBotOwnHomeThread = activeProject !== null && isBotHomeProjectId(activeProject.id);
+  const workspaceProject = isBotOwnHomeThread ? null : activeProject;
   const activeProjectSettings = resolveProjectSettings(
     settings,
     activeProject?.id ?? null,
     activeProject ?? undefined,
   );
-  const activeProjectScripts = activeProject ? resolveProjectScripts(settings, activeProject) : [];
+  const activeProjectScripts = workspaceProject
+    ? resolveProjectScripts(settings, workspaceProject)
+    : [];
   const { projectCloneBannerItem, projectCloneSendBlockReason } =
     useProjectCloneBanner(activeProjectRef);
   const activeProjectDefaultModelSelection =
@@ -1694,7 +1701,7 @@ export default function ChatView(props: ChatViewProps) {
   const hostEnvironmentId = useAtomValue(hostEnvironmentIdAtom);
   const remoteOpenState = useRemoteOpenState(openInEnvironmentId);
   const showOpenInPicker = shouldShowOpenInPicker({
-    activeProjectName: activeProject?.title,
+    activeProjectName: workspaceProject?.title,
     activeThreadEnvironmentId: openInEnvironmentId,
     primaryEnvironmentId: primaryEnvironment?.environmentId ?? null,
     hostEnvironmentId,
@@ -1768,7 +1775,9 @@ export default function ChatView(props: ChatViewProps) {
       rememberCheckoutIsRepo(environmentId, gitStatusCwd, liveIsGitRepo);
     }
   }, [environmentId, gitStatusCwd, liveIsGitRepo]);
-  const isGitRepo = liveIsGitRepo ?? recallCheckoutIsRepo(environmentId, gitStatusCwd) ?? true;
+  const isGitRepo =
+    !isBotOwnHomeThread &&
+    (liveIsGitRepo ?? recallCheckoutIsRepo(environmentId, gitStatusCwd) ?? true);
   // Provider-native subagents cannot take messages; approvals and questions go to the top-level parent.
   const showProviderSubagentBar = isProviderSubagent;
   const composerMounted = !showProviderSubagentBar;
@@ -1800,7 +1809,7 @@ export default function ChatView(props: ChatViewProps) {
     shouldShowComposerContextStrip({
       isDraftHeroState,
       persistInActiveThreads: settings.persistComposerContextStrip,
-      hasActiveProject: activeProject !== null && !showProviderSubagentBar,
+      hasActiveProject: workspaceProject !== null && !showProviderSubagentBar,
       isGitRepo,
       showEnvironmentIndicator: showComposerEnvironmentIndicator,
     });
@@ -1945,7 +1954,7 @@ export default function ChatView(props: ChatViewProps) {
     activeThread,
     activeThreadId,
     activeThreadRef,
-    activeProject,
+    activeProject: workspaceProject,
     activeRightPanelSurface,
     runningTerminalIds,
     activeServerOrderedTerminalIds,
@@ -2046,7 +2055,7 @@ export default function ChatView(props: ChatViewProps) {
     latestRun: activeLatestRun,
     latestRunSettled,
     turnDiffSummaries,
-    isGitRepo: gitStatusQuery.data?.isRepo,
+    isGitRepo: isBotOwnHomeThread ? false : gitStatusQuery.data?.isRepo,
     linkedPullRequest: linkedThreadPullRequest,
     hasLinkedPullRequestDetail,
     pullRequestsKey: proactivePullRequestsKey,
@@ -2438,7 +2447,8 @@ export default function ChatView(props: ChatViewProps) {
     onDiffPanelOpen,
     closeRightPanelSurface,
   });
-  const pullRequestSurfaceAvailable = supportsPullRequests && pullRequestPanelTarget !== null;
+  const pullRequestSurfaceAvailable =
+    supportsPullRequests && pullRequestPanelTarget !== null && !isBotOwnHomeThread;
   const {
     acknowledgeActiveThreadWoke,
     activeBranchMismatchKey,
@@ -2798,7 +2808,7 @@ export default function ChatView(props: ChatViewProps) {
     },
     fallback: (command) => {
       const scriptId = projectScriptIdFromCommand(command);
-      if (!scriptId || !activeProject || !canOperateTerminal) return undefined;
+      if (!scriptId || !workspaceProject || !canOperateTerminal) return undefined;
       const script = activeProjectScripts.find((entry) => entry.id === scriptId);
       return script ? () => void runProjectScriptStable(script) : undefined;
     },
@@ -3290,7 +3300,7 @@ export default function ChatView(props: ChatViewProps) {
     />
   ) : null;
   const panelToggleControlProps = {
-    terminalAvailable: activeProject !== null,
+    terminalAvailable: workspaceProject !== null,
     terminalOpen: terminalUiState.terminalOpen,
     terminalShortcutLabel: shortcutLabelForCommand(keybindings, "terminal.toggle"),
     threadPanelOpen,
@@ -3454,7 +3464,7 @@ export default function ChatView(props: ChatViewProps) {
                   citationHistory={citationHistory}
                   onCiteAssistantText={citeAssistantTextStable}
                   onReplyToResponse={replyToResponseStable}
-                  {...(activeProject
+                  {...(workspaceProject
                     ? { onRunShellCommand: parentPanel?.runShellCommand ?? runShellCommandStable }
                     : {})}
                   isWorking={isWorking}
@@ -3501,11 +3511,16 @@ export default function ChatView(props: ChatViewProps) {
                   routeThreadKey={displayedTimelineKey}
                   displayThreadKey={displayedTimelineKey}
                   announceTurnStatus={!isProviderSubagent}
-                  onOpenToolDiff={parentPanel?.openToolDiff ?? onOpenToolDiffStable}
+                  {...(isBotOwnHomeThread
+                    ? {}
+                    : { onOpenToolDiff: parentPanel?.openToolDiff ?? onOpenToolDiffStable })}
                   // Side chat runs keep no checkpoints to diff, and a fork would promote the side chat.
                   {...(embedded
                     ? {}
-                    : { onOpenTurnDiff: onOpenTurnDiffStable, onForkFromRun: onForkFromRunStable })}
+                    : {
+                        ...(isBotOwnHomeThread ? {} : { onOpenTurnDiff: onOpenTurnDiffStable }),
+                        onForkFromRun: onForkFromRunStable,
+                      })}
                   onOpenThread={onOpenRelatedThreadStable}
                   parentThreadLink={parentThreadLink}
                   workflowOpening={workflowOpening}
@@ -3923,10 +3938,12 @@ export default function ChatView(props: ChatViewProps) {
                   isServerThread={isServerThread}
                   {...(draftId ? { draftId } : {})}
                   composerDraftTarget={composerDraftTarget}
-                  activeProjectName={activeProject?.title}
-                  activeProjectScripts={activeProject ? activeProjectScripts : undefined}
+                  activeProjectName={workspaceProject?.title}
+                  activeProjectScripts={workspaceProject ? activeProjectScripts : undefined}
                   preferredScriptId={
-                    activeProject ? (lastInvokedScriptByProjectId[activeProject.id] ?? null) : null
+                    workspaceProject
+                      ? (lastInvokedScriptByProjectId[workspaceProject.id] ?? null)
+                      : null
                   }
                   keybindings={keybindings}
                   availableEditors={availableEditors}
@@ -4063,9 +4080,9 @@ export default function ChatView(props: ChatViewProps) {
           onAddDevice={addDeviceSurfaceStable}
           onAddSideChat={sideChatsOffered ? openSideChatStable : undefined}
           browserAvailable={canOperatePreview && browserAvailable}
-          terminalAvailable={activeProject !== null && canOperateTerminal}
+          terminalAvailable={workspaceProject !== null && canOperateTerminal}
           diffAvailable={isServerThread && isGitRepo}
-          filesAvailable={activeProject !== null}
+          filesAvailable={workspaceProject !== null}
           pullRequestAvailable={pullRequestSurfaceAvailable}
           pullRequestsAvailable={pullRequestsSurfaceAvailable}
           deviceAvailable={activeThreadRef !== null}

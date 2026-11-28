@@ -9,6 +9,12 @@ import {
   type EnvironmentThreadSearchMatch,
   type ShownOrder,
 } from "@t3tools/client-runtime/state/thread-search";
+import {
+  activeBotConversations,
+  BOT_OWN_HOME_LABEL,
+  isBotOwnHome,
+  isBotOwnHomeThreadId,
+} from "@t3tools/client-runtime/bots";
 import { isShownUnderParent } from "@t3tools/client-runtime/state/threads";
 import { THREAD_JUMP_KEYBINDING_COMMANDS } from "@t3tools/contracts";
 import {
@@ -405,10 +411,16 @@ export function CommandPalette(props: {
       });
     }
     if (activeThreadRef) {
+      // A Bot's own Home has no project folder to browse, run or review.
+      const projectActions = isBotOwnHomeThreadId(activeThreadRef.threadId)
+        ? []
+        : ([
+            ["files", "Go to file", ["open", "files", "browse", "search"]],
+            ["terminal", "Open terminal", ["shell", "console"]],
+            ["review", "Review changes", ["diff", "git", "pull request"]],
+          ] as const);
       const threadActions = [
-        ["files", "Go to file", ["open", "files", "browse", "search"]],
-        ["terminal", "Open terminal", ["shell", "console"]],
-        ["review", "Review changes", ["diff", "git", "pull request"]],
+        ...projectActions,
         ["copyThreadReference", "Copy PR link or thread", ["reference", "clipboard"]],
       ] as const;
       actions.push(
@@ -447,31 +459,31 @@ export function CommandPalette(props: {
     }));
     // Listed with projects, so they show once a query matches instead of crowding the open palette.
     const botItems: CommandPaletteItem[] = bots.flatMap(({ environmentId, bot }) =>
-      bot.archivedAt !== null
-        ? []
-        : bot.projects.flatMap((context) => {
-            if (context.detachedAt !== null) return [];
-            const project = projectByKey.get(scopedProjectKey(environmentId, context.projectId));
-            const projectTitle = project?.title ?? "project";
-            return [
-              {
-                key: `bot:${scopedThreadKey(environmentId, context.homeThreadId)}`,
-                kind: "project" as const,
-                ...(project ? { project } : {}),
-                title: `Open ${bot.name} in ${projectTitle}`,
-                detail: `Bot · ${savedConnectionsById[environmentId]?.environmentLabel ?? environmentId}`,
-                searchTerms: ["bot", bot.name, projectTitle],
-                run: () =>
-                  selectDetail({
-                    name: "Thread",
-                    params: {
-                      environmentId: String(environmentId),
-                      threadId: String(context.homeThreadId),
-                    },
-                  }),
-              },
-            ];
-          }),
+      activeBotConversations([bot]).flatMap(({ context }) => {
+        const ownHome = isBotOwnHome(context);
+        const project = ownHome
+          ? undefined
+          : projectByKey.get(scopedProjectKey(environmentId, context.projectId));
+        const projectTitle = ownHome ? BOT_OWN_HOME_LABEL : (project?.title ?? "project");
+        return [
+          {
+            key: `bot:${scopedThreadKey(environmentId, context.homeThreadId)}`,
+            kind: "project" as const,
+            ...(project ? { project } : {}),
+            title: ownHome ? `Open ${bot.name}` : `Open ${bot.name} in ${projectTitle}`,
+            detail: `Bot · ${savedConnectionsById[environmentId]?.environmentLabel ?? environmentId}`,
+            searchTerms: ["bot", bot.name, projectTitle],
+            run: () =>
+              selectDetail({
+                name: "Thread",
+                params: {
+                  environmentId: String(environmentId),
+                  threadId: String(context.homeThreadId),
+                },
+              }),
+          },
+        ];
+      }),
     );
     const threadItems: CommandPaletteItem[] = threads
       .filter(

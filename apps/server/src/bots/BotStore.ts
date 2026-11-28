@@ -152,6 +152,11 @@ export class BotStore extends Context.Service<
       botId: BotId,
       access: BotHomeAccess,
     ) => Effect.Effect<void, BotStoreError>;
+    /** Sets the access only while the Bot-level Home is attached, in one statement; false otherwise. */
+    readonly setOpenHomeAccess: (
+      botId: BotId,
+      access: BotHomeAccess,
+    ) => Effect.Effect<boolean, BotStoreError>;
     readonly upsertContext: (row: BotContextRow) => Effect.Effect<void, BotStoreError>;
     /** Clears a sync only if no newer transition replaced it. */
     readonly clearThreadSync: (input: {
@@ -480,6 +485,21 @@ export const layer = Layer.effect(
       Effect.mapError(fail("set-home-access")),
     );
 
+    const setOpenHomeAccess = Effect.fn("BotStore.setOpenHomeAccess")(
+      function* (botId: BotId, access: BotHomeAccess) {
+        const rows = yield* sql<{ readonly bot_id: string }>`
+          UPDATE bots SET home_access = ${access}
+          WHERE bot_id = ${botId} AND EXISTS (
+            SELECT 1 FROM bot_project_contexts
+            WHERE bot_id = ${botId} AND kind = 'bot' AND detached_at IS NULL
+          )
+          RETURNING bot_id
+        `;
+        return rows.length > 0;
+      },
+      Effect.mapError(fail("set-home-access")),
+    );
+
     const clearThreadSync = Effect.fn("BotStore.clearThreadSync")(
       function* (input: { readonly homeThreadId: ThreadId; readonly revision: number }) {
         yield* sql`
@@ -774,6 +794,7 @@ export const layer = Layer.effect(
       insertBot,
       updateBot,
       setHomeAccess,
+      setOpenHomeAccess,
       upsertContext,
       clearThreadSync,
       pendingThreadSyncs: sql<BotContextRow>`

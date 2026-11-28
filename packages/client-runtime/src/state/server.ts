@@ -60,7 +60,7 @@ import {
 import * as EnvironmentRegistry from "../connection/registry.ts";
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import { safeErrorLogAttributes } from "../errors/safeLog.ts";
-import { botOfWorkThread } from "../bots.ts";
+import { botOfWorkThread, isBotHomeActive } from "../bots.ts";
 import * as Persistence from "../platform/persistence.ts";
 import { runCachePersistence } from "./cachePersistence.ts";
 import {
@@ -1441,13 +1441,7 @@ export function createServerEnvironmentAtoms<R, E>(
       const list = AsyncResult.getOrElse(result, () => null);
       if (list === null) return null;
       const bot = list.bots.find((entry) => entry.id === input.botId);
-      return (
-        bot !== undefined &&
-        bot.archivedAt === null &&
-        bot.projects.some(
-          (project) => project.projectId === input.projectId && project.detachedAt === null,
-        )
-      );
+      return bot !== undefined && isBotHomeActive(bot, input.projectId);
     });
   });
   /**
@@ -1468,10 +1462,11 @@ export function createServerEnvironmentAtoms<R, E>(
     return Atom.make((get) => {
       const active = get(botContinuationActiveFamily(key));
       const list = AsyncResult.getOrElse(get(botsLive({ environmentId, input: {} })), () => null);
-      const project = list?.bots
-        .find((entry) => entry.id === input.botId)
-        ?.projects.find((entry) => entry.projectId === input.projectId);
-      return JSON.stringify([active, project?.notesRevision ?? null]);
+      const bot = list?.bots.find((entry) => entry.id === input.botId);
+      const home =
+        bot?.projects.find((entry) => entry.projectId === input.projectId) ??
+        (bot?.home?.projectId === input.projectId ? bot.home : undefined);
+      return JSON.stringify([active, home?.notesRevision ?? null]);
     });
   });
   const botContinuationQuery = createEnvironmentRpcQueryAtomFamily(runtime, {
@@ -2351,6 +2346,19 @@ export function createServerEnvironmentAtoms<R, E>(
     detachBotProject: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:bots:detach-project",
       tag: WS_METHODS.botsDetachProject,
+      scheduler: configScheduler,
+      concurrency: configConcurrency,
+    }),
+    /** Opens or restores the Bot's own Home; with `access`, also sets its access. */
+    openBotHome: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bots:open-home",
+      tag: WS_METHODS.botsOpenHome,
+      scheduler: configScheduler,
+      concurrency: configConcurrency,
+    }),
+    removeBotHome: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bots:remove-home",
+      tag: WS_METHODS.botsRemoveHome,
       scheduler: configScheduler,
       concurrency: configConcurrency,
     }),

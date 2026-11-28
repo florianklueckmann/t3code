@@ -28,6 +28,8 @@ type ScopedBots = ReadonlyArray<{
       readonly homeThreadId: string;
       readonly detachedAt: unknown;
     }>;
+    /** The Bot's own Home, which follows the Bot rather than an area. */
+    readonly home?: { readonly homeThreadId: string } | null;
   };
 }>;
 
@@ -36,7 +38,8 @@ const isHomeOf = (
   thread: Pick<EnvironmentThreadShell, "environmentId" | "id">,
 ) =>
   environmentId === thread.environmentId &&
-  bot.projects.some((context) => context.homeThreadId === thread.id);
+  (bot.home?.homeThreadId === thread.id ||
+    bot.projects.some((context) => context.homeThreadId === thread.id));
 
 /**
  * The dot on the project filter while an area hides part of the list: the most urgent state among

@@ -5,9 +5,11 @@ import {
   BOT_LEARNING_STATUS_LABELS,
   BOT_LEARNING_SUGGESTION_LABEL,
   BOT_ROUTINE_WATCH_DESCRIPTION,
+  BOT_OWN_HOME_LABEL,
   BOT_TASK_LIMIT_DESCRIPTION,
   BOT_TURN_LEARNING_EXPLANATION,
   botLearningConfirmedLabel,
+  botOwnHome,
   parseBotTaskLimit,
   botLearningOriginLabel,
   botLearningRevisionInput,
@@ -46,6 +48,8 @@ import {
 import {
   BOT_TASK_LIMIT_MAX,
   BotId,
+  botHomeProjectId,
+  isBotHomeProjectId,
   CommandId,
   type BotAppearance,
   type BotDetail,
@@ -118,6 +122,7 @@ import { BotAttentionSetting } from "./BotAttentionSetting";
 import { BotHomeCheckSetting } from "./BotHomeCheckSetting";
 import { BotMcpGrantsSetting } from "./BotMcpGrantsSetting";
 import { BotMaintenanceSetting } from "./BotMaintenanceSetting";
+import { BotOwnHomeSetting } from "./BotOwnHomeSetting";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import {
   ScheduledRelativeLabel,
@@ -185,7 +190,9 @@ function useEnvironmentProjectTitles(environmentId: EnvironmentId) {
   return {
     projects,
     titleOf: (projectId: ProjectId) =>
-      projects.find((project) => project.id === projectId)?.title ?? "Unknown project",
+      isBotHomeProjectId(projectId)
+        ? BOT_OWN_HOME_LABEL
+        : (projects.find((project) => project.id === projectId)?.title ?? "Unknown project"),
   };
 }
 
@@ -369,6 +376,7 @@ function BotRow({
   const { titleOf } = useEnvironmentProjectTitles(environmentId);
   const openConversation = useOpenBotConversation(environmentId);
   const archived = bot.archivedAt !== null;
+  const ownHome = botOwnHome(bot);
   const toggleArchived = async () => {
     setBusy(true);
     const result = await setArchived({
@@ -392,11 +400,11 @@ function BotRow({
       }
       description={modelLabel(entries, bot.modelSelection)}
       status={
-        bot.projects.length === 0 ? (
+        bot.projects.length === 0 && ownHome === null ? (
           "Not attached to a project"
         ) : (
           <ul className="space-y-1">
-            {bot.projects.map((context) => (
+            {[...(ownHome === null ? [] : [ownHome]), ...bot.projects].map((context) => (
               <li key={context.projectId} className="flex flex-wrap items-center gap-2">
                 <span className="min-w-0 wrap-anywhere">{titleOf(context.projectId)}</span>
                 {context.detachedAt !== null ? (
@@ -902,6 +910,25 @@ function BotEditorForm({
               botId={current.id}
               capabilities={current.capabilities}
               formLocked={saving || archived}
+            />
+          ) : null}
+          {current !== null ? (
+            <BotOwnHomeSetting
+              ref={sectionRef("home")}
+              environmentId={environmentId}
+              bot={current}
+              disabled={saving || archived}
+              onChanged={refreshDetail}
+              learning={
+                <BotLearningList
+                  environmentId={environmentId}
+                  bot={current}
+                  projectId={botHomeProjectId(current.id)}
+                  titleOf={titleOf}
+                  disabled={saving || archived}
+                  onChanged={refreshDetail}
+                />
+              }
             />
           ) : null}
           {current !== null ? (

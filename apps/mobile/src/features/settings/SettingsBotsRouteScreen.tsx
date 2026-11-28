@@ -3,7 +3,11 @@ import { useNavigation, usePreventRemove } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import type { AtomCommandResult } from "@t3tools/client-runtime/state/runtime";
 import { defaultBotAppearance, resolveBotAppearance } from "@t3tools/client-runtime/bot-appearance";
-import { BOT_TASK_LIMIT_DESCRIPTION } from "@t3tools/client-runtime/bots";
+import {
+  BOT_OWN_HOME_LABEL,
+  BOT_TASK_LIMIT_DESCRIPTION,
+  botOwnHome,
+} from "@t3tools/client-runtime/bots";
 import { BotId, resolveEnvironmentMachineKind } from "@t3tools/contracts";
 import type { BotDetail, BotSummary, EnvironmentId, ProjectId } from "@t3tools/contracts";
 import { Fragment, useRef, useState } from "react";
@@ -26,6 +30,7 @@ import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { ThreadSettingsPickerScreen } from "../threads/ThreadSettingsSheet";
 import { reportBotFailure } from "../bots/reportBotFailure";
+import { BotOwnHomeSection } from "./BotOwnHomeSection";
 import { useSelectWorkspaceDetail } from "../layout/workspace/useSelectWorkspaceDetail";
 import { useBotEditor, startBotEditor, startNewBotEditor } from "./bot-editor";
 import { BotContinuationSection } from "./BotContinuationSection";
@@ -239,6 +244,7 @@ function EnvironmentBots({
                 type="monochrome"
               />
             </Pressable>
+            <OwnHomeRow environmentId={environmentId} bot={bot} />
             {bot.projects.length === 0 ? (
               <Text className="text-sm text-foreground-muted">No projects attached.</Text>
             ) : (
@@ -296,6 +302,36 @@ function EnvironmentBots({
         <SymbolView name="plus" size={16} tintColorClassName="accent-icon" />
       </Pressable>
     </>
+  );
+}
+
+function OwnHomeRow(props: { readonly environmentId: EnvironmentId; readonly bot: BotSummary }) {
+  const selectDetail = useSelectWorkspaceDetail();
+  const home = botOwnHome(props.bot);
+  if (home === null) return null;
+  return (
+    <View className="min-h-8 flex-row items-center gap-3">
+      <Text className="min-w-0 flex-1 text-sm text-foreground" numberOfLines={1}>
+        {BOT_OWN_HOME_LABEL}
+      </Text>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`Open ${props.bot.name}'s own Home`}
+        hitSlop={8}
+        onPress={() =>
+          selectDetail({
+            name: "Thread",
+            params: {
+              environmentId: String(props.environmentId),
+              threadId: String(home.homeThreadId),
+            },
+          })
+        }
+        className="active:opacity-70"
+      >
+        <Text className="text-sm text-primary-text">Open conversation</Text>
+      </Pressable>
+    </View>
   );
 }
 
@@ -652,6 +688,13 @@ function BotForm({
             environmentLabel={environmentLabel ?? "this environment"}
             botId={draft.botId}
             formLocked={saving || archiving || environmentUnavailable}
+          />
+        ) : null}
+        {baseline.created ? (
+          <BotOwnHomeSection
+            environmentId={environmentId}
+            botId={draft.botId}
+            disabled={readOnly}
           />
         ) : null}
         {baseline.created ? (
