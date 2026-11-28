@@ -1,7 +1,11 @@
 import type { MenuAction } from "@react-native-menu/menu";
 import { useNavigation } from "@react-navigation/native";
 import { resolveBotAppearance } from "@t3tools/client-runtime/bot-appearance";
-import { rankBotConversations } from "@t3tools/client-runtime/bots";
+import {
+  BOT_OWN_HOME_LABEL,
+  botRailConversations,
+  isBotOwnHome,
+} from "@t3tools/client-runtime/bots";
 import { botRailKeys } from "@t3tools/client-runtime/state/project-areas";
 import type {
   EnvironmentProject,
@@ -97,24 +101,30 @@ export function BotRail(props: {
       contentContainerClassName={cn("gap-1 pb-2", sidebar ? "px-1" : "px-3")}
     >
       {bots.map(({ environmentId, bot }) => {
-        const conversations = rankBotConversations(
+        const rail = botRailConversations(
           bot,
           (threadId) => homeThreadByKey.get(scopedThreadKey(environmentId, threadId)) ?? null,
           threadUrgency,
-        ).map(({ context, thread }) => ({
+        );
+        // The Bot's own Home leads the menu, above its project Homes.
+        const conversations = [
+          ...(rail.ownHome === null ? [] : [rail.ownHome]),
+          ...rail.projects,
+        ].map(({ context, thread }) => ({
           context,
           attention: thread === null ? null : resolveThreadListV2Attention(thread),
-          title:
-            projectTitleByKey.get(scopedProjectKey(environmentId, context.projectId)) ??
-            "Unknown project",
+          title: isBotOwnHome(context)
+            ? BOT_OWN_HOME_LABEL
+            : (projectTitleByKey.get(scopedProjectKey(environmentId, context.projectId)) ??
+              "Unknown project"),
         }));
-        const attention = conversations[0]?.attention ?? null;
+        const attention =
+          rail.mostUrgent === null ? null : resolveThreadListV2Attention(rail.mostUrgent);
         const environmentLabel = showsEnvironment
           ? (savedConnectionsById[environmentId]?.environmentLabel ?? null)
           : null;
         const open = () => {
-          const first = conversations[0];
-          if (first === undefined) {
+          if (rail.target === null) {
             openBotSettings(environmentId, bot);
             return;
           }
@@ -122,7 +132,7 @@ export function BotRail(props: {
             name: "Thread",
             params: {
               environmentId: String(environmentId),
-              threadId: String(first.context.homeThreadId),
+              threadId: String(rail.target.context.homeThreadId),
             },
           });
         };

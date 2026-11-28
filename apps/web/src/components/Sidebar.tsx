@@ -83,6 +83,7 @@ import {
   listProjectAreas,
   projectGroupAreas,
 } from "@t3tools/client-runtime/state/project-areas";
+import { botConversationForThread } from "@t3tools/client-runtime/bots";
 import { buildProjectAreaMenu } from "../projectAreas";
 import {
   useEffect,
@@ -1218,9 +1219,9 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   const routeHomeBot =
     routeHomeRef === null
       ? undefined
-      : routeHomeBots?.find((bot) =>
-          bot.projects.some((context) => context.homeThreadId === routeHomeRef.threadId),
-        );
+      : routeHomeBots === null
+        ? undefined
+        : (botConversationForThread(routeHomeBots, routeHomeRef.threadId)?.bot ?? undefined);
   const revealsHiddenBotHome =
     routeHomeRef !== null &&
     routeHomeBot !== undefined &&

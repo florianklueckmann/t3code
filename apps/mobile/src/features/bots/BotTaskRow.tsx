@@ -24,6 +24,8 @@ import { reportBotFailure } from "./reportBotFailure";
 export function BotTaskRow(props: {
   readonly environmentId: EnvironmentId;
   readonly task: BotTaskSummary;
+  /** The project the task works in, shown where cards come from several projects. */
+  readonly projectTitle?: string | undefined;
   readonly onOpen: (threadId: ThreadId) => void;
   /** Home passes it for finished tasks only; history rows leave it out. */
   readonly onHide?: (() => void) | undefined;
@@ -84,7 +86,7 @@ export function BotTaskRow(props: {
       <BotTaskStatusLine
         status={task.status}
         needsYou={isBotTaskWaitingOnYou(task)}
-        trailing={when}
+        trailing={props.projectTitle === undefined ? when : `${props.projectTitle} · ${when}`}
         numberOfLines={1}
       />
       {diagnosisLabel === null ? null : (

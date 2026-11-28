@@ -1,5 +1,10 @@
 import { resolveBotAppearance } from "@t3tools/client-runtime/bot-appearance";
-import { activeBotConversations, BOT_EDITOR_SECTIONS } from "@t3tools/client-runtime/bots";
+import {
+  activeBotConversations,
+  BOT_EDITOR_SECTIONS,
+  BOT_OWN_HOME_LABEL,
+  isBotOwnHome,
+} from "@t3tools/client-runtime/bots";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
@@ -30,15 +35,17 @@ export function useCommandPaletteBotItems(environmentId: EnvironmentId | null): 
   if (environmentId === null || botsQuery.data === null) return NO_ITEMS;
   const bots = botsQuery.data.bots;
   const actions = activeBotConversations(bots).map(({ bot, context }) => {
-    const projectTitle =
-      projects.find(
-        (project) => project.environmentId === environmentId && project.id === context.projectId,
-      )?.title ?? "Unknown project";
+    const ownHome = isBotOwnHome(context);
+    const projectTitle = ownHome
+      ? BOT_OWN_HOME_LABEL
+      : (projects.find(
+          (project) => project.environmentId === environmentId && project.id === context.projectId,
+        )?.title ?? "Unknown project");
     return {
       kind: "action" as const,
       value: `action:bot-conversation:${environmentId}:${context.homeThreadId}`,
       searchTerms: ["bot", bot.name, projectTitle],
-      title: `Open ${bot.name} in ${projectTitle}`,
+      title: ownHome ? `Open ${bot.name}` : `Open ${bot.name} in ${projectTitle}`,
       icon: (
         <BotAvatar appearance={resolveBotAppearance(bot)} size={16} className={ITEM_ICON_CLASS} />
       ),

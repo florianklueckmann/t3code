@@ -415,20 +415,21 @@ export function useChatTerminalActions(input: ChatTerminalActionsInput) {
     "terminal.toggle": () => {
       if (
         !terminalUiState.terminalOpen &&
-        !readEnvironmentScope(environmentId, AuthTerminalReadScope) &&
-        !hasTerminalWriteAccess()
+        (activeProject === null ||
+          (!readEnvironmentScope(environmentId, AuthTerminalReadScope) &&
+            !hasTerminalWriteAccess()))
       )
         return false;
       toggleTerminalVisibility();
     },
     "terminal.split": ({ terminalFocusOwner }) => {
-      if (!hasTerminalWriteAccess()) return false;
+      if (!hasTerminalWriteAccess() || activeProject === null) return false;
       if (terminalFocusOwner === "right-panel") return void splitPanelTerminal();
       openTerminalIfClosed();
       splitTerminal();
     },
     "terminal.splitVertical": ({ terminalFocusOwner }) => {
-      if (!hasTerminalWriteAccess()) return false;
+      if (!hasTerminalWriteAccess() || activeProject === null) return false;
       if (terminalFocusOwner === "right-panel") return void splitPanelTerminal("vertical");
       openTerminalIfClosed();
       splitTerminal("vertical");
@@ -442,7 +443,7 @@ export function useChatTerminalActions(input: ChatTerminalActionsInput) {
       if (terminalUiState.terminalOpen) requestCloseTerminal(terminalUiState.activeTerminalId);
     },
     "terminal.new": ({ terminalFocusOwner }) => {
-      if (!hasTerminalWriteAccess()) return false;
+      if (!hasTerminalWriteAccess() || activeProject === null) return false;
       if (terminalFocusOwner === "right-panel") return void addTerminalSurface();
       openTerminalIfClosed();
       createNewTerminal();

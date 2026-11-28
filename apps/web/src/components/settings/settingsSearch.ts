@@ -1373,7 +1373,9 @@ export const SETTINGS_SEARCH_ITEMS = [
     id: "bots",
     title: "Bots",
     to: "/settings/bots",
-    searchTerms: ["assistant agent instructions project conversation preferred sources learning"],
+    searchTerms: [
+      "assistant agent instructions project conversation preferred sources learning own home distribute tasks",
+    ],
   },
   {
     id: "mcp-connections",

@@ -19,14 +19,16 @@ gives it a generated title, and you can rename it. Renaming the Bot does not
 change the title. The conversation header always shows the Bot's current name.
 
 Your Bots sit in a column left of the thread list, on mobile in a row above
-it. Click a Bot to open its conversation: the one that needs you, otherwise the
+it. Click a Bot to open its [own Home](#the-bots-own-home) once you opened one;
+otherwise the click opens the project conversation that needs you, or else the
 one you used last. Right-click it (on mobile, long-press) to pick another
-project or open its settings. A dot shows when a conversation needs you, is
-done, failed or is working. Bot conversations live only there, not in the
-thread list; threads a Bot works on for a task show its figure in the list. A
-Bot without a project opens its settings. You can also choose **Open
-conversation** next to the project in **Settings → Bots**, or search the command
-palette for the Bot or project name and pick **Open \<Bot\> in \<project\>**.
+conversation or open its settings. A dot shows the most urgent state across its
+conversations: one needs you, is done, failed or is working. Bot conversations
+live only there, not in the thread list; threads a Bot works on for a task show
+its figure in the list. A Bot without a project or own Home opens its settings.
+You can also choose **Open conversation** in **Settings → Bots**, or search the
+command palette for the Bot or project name and pick **Open \<Bot\> in
+\<project\>**, or **Open \<Bot\>** for its own Home.
 
 Changes to a Bot's instructions, guidance or sources apply from its next turn,
 including in conversations that are already running. Changing its model
@@ -67,6 +69,46 @@ Each Bot gets its own little figure. To change its color, face or topper, open
 the Bot and select the figure next to its name (on mobile, **Change look**).
 The look is shared by all of the Bot's projects and only changes how it
 appears, never how it works. **Reset** returns it to its default.
+
+## The Bot's own Home
+
+A Bot can have one Home above its projects, for work where you don't want to
+choose a project first, such as "update the changelog format in both repos". It
+distributes the work and does not do it itself: when a request is unclear it
+asks you first, then starts one task in each attached project the work belongs
+to, each with a brief that says when it counts as done, and tells you what it
+started. It starts tasks only in the Bot's attached projects.
+
+To start, edit the Bot in **Settings → Bots** and choose **Open Home** under
+**Own Home**. From then on a click on the Bot opens it, and the project
+conversations stay in the Bot's menu.
+
+Results come back one by one: each task that finishes, fails or asks a question
+starts its own **Task update** turn in this Home, and its card there names the
+task's project. You answer a task's question in that task's work thread, which
+**Open thread** on its card opens. The phone alert comes from the task, under
+the rules in [Tasks and routines](#tasks-and-routines); the Home's follow-up does
+not alert again. After a compaction or a fresh start, the Home still knows its
+unfinished tasks and the results from the last week that wait for you.
+
+**Access** decides what the Home itself may do:
+
+- **Read**, the default, lets it read the attached projects and change things
+  only by starting or cancelling tasks, saving its working notes and recording
+  what it learned. This is enforced like [No changes](#tasks-and-routines), so it
+  works only with a Codex or Claude model on a macOS server. On Codex it can read
+  the whole disk, not only the attached projects. Elsewhere, and on Pi, its
+  turns are refused until you switch it to Full; settings say why.
+- **Full** runs it like a project Home.
+
+As with a project Home, a Home whose conversation runs in a supervised
+permission mode cannot start tasks; switch the conversation to Full access.
+
+Its working notes and learning sit under **Own Home** in settings. Maintenance,
+the Daily Home check, routines, guidance and preferred sources are not
+available for it. **Remove Home** archives its conversation and cancels the
+tasks it started; **Reopen Home** brings back the conversation with its
+history.
 
 ## Project guidance and preferred sources
 
@@ -132,7 +174,9 @@ children to finish; newer direct input cancels the pending return. Failed or
 cancelled tasks, and results that wait for you, keep their status on the card
 without starting a result turn.
 Detach, archive, and cancelling the task revoke a pending return. Routines and
-older tasks do not gain automatic returns.
+older tasks do not gain automatic returns. Tasks from the
+[Bot's own Home](#the-bots-own-home) always report back there, one by one, so
+they don't use this return.
 
 A direct task starts with the Bot's model by default. The Bot can choose a
 different Codex, Claude or Pi model for a task or subagent and can use a specific
@@ -330,9 +374,9 @@ to Waiting. It gives the Bot no other permissions.
 
 ## Working notes
 
-Each Bot keeps short working notes per project so it can pick up unfinished
-business after a restart or a compacted conversation. They sit under the
-project in **Settings → Bots** in four parts: **Open requests**, **Waiting on
+Each Bot keeps short working notes per project, and for its own Home, so it can
+pick up unfinished business after a restart or a compacted conversation. They
+sit under the project in **Settings → Bots** in four parts: **Open requests**, **Waiting on
 you** (its questions and proposals), **Decided** and **Context**. A proposal
 stays a proposal until you decide; only **Decided** records your choices.
 Running tasks show under **Active work** from their live status, not from the
@@ -630,6 +674,8 @@ before asking the Bot to try again.
   Diagnose failed routines, maintenance and own MCP servers are not available.
   A granted connection that can't start on Pi leaves its tools out without the
   conversation naming it.
+- The Bot's own Home with read access needs a Codex or Claude model on a macOS
+  server, and on Codex it can read the whole disk.
 - Bots turn off Claude's automatic memory.
 - Built-in email connections are not available. Calendar (this Mac) uses Apple
   Calendar on the Mac that runs the environment.
@@ -642,7 +688,8 @@ with its history, switched to the Bot's current model.
 
 **Archive** stops the Bot everywhere and archives all of its conversations. An
 archived Bot cannot be edited or attached to projects. **Restore** brings back the
-Bot and the conversations of its attached projects. Bots cannot be deleted.
+Bot, the conversations of its attached projects and its own Home. Bots cannot be
+deleted.
 
 Detach and archive also pause the Bot's routines there and stop its unfinished
 tasks. Reattach and restore leave routines paused; resume each one when you want

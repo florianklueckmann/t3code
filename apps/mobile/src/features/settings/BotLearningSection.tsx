@@ -4,8 +4,10 @@ import {
   BOT_LEARNING_RETIRE_SUGGESTION_TEXT,
   BOT_LEARNING_STATUS_LABELS,
   BOT_LEARNING_SUGGESTION_LABEL,
+  BOT_OWN_HOME_LABEL,
   BOT_TURN_LEARNING_EXPLANATION,
   botLearningConfirmedLabel,
+  isBotOwnHome,
   botLearningOriginLabel,
   botLearningRevisionInput,
   botLearningScopeChange,
@@ -96,8 +98,10 @@ export function BotLearningSection({
   });
   const projects = useProjects();
   const titleOf = (id: ProjectId) =>
-    projects.find((project) => project.environmentId === environmentId && project.id === id)
-      ?.title ?? "Unknown project";
+    isBotOwnHome({ projectId: id })
+      ? BOT_OWN_HOME_LABEL
+      : (projects.find((project) => project.environmentId === environmentId && project.id === id)
+          ?.title ?? "Unknown project");
   const views = detail.data
     ? botLearningViews(
         detail.data.learning,

@@ -1,16 +1,19 @@
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import {
   botConversationForThread,
+  botHomeTaskListInput,
   botTaskCardKey,
   hideBotTaskCard,
   homeBotTaskCards,
+  isBotOwnHome,
   showBotTaskCards,
 } from "@t3tools/client-runtime/bots";
-import type { BotId, EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
+import type { BotTaskListInput, BotTaskSummary, EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
 import { View } from "react-native";
 
 import { cn } from "../../lib/cn";
+import { useProjects } from "../../state/entities";
 import { useEnvironmentQuery } from "../../state/query";
 import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
 import { serverEnvironment } from "../../state/server";
@@ -32,8 +35,8 @@ export function BotHomeTaskCards(props: {
     <HomeTaskCards
       environmentId={props.environmentId}
       threadId={props.threadId}
-      botId={conversation.bot.id}
-      projectId={conversation.context.projectId}
+      input={botHomeTaskListInput(conversation)}
+      ownHome={isBotOwnHome(conversation.context)}
     />
   );
 }
@@ -41,18 +44,24 @@ export function BotHomeTaskCards(props: {
 function HomeTaskCards(props: {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
-  readonly botId: BotId;
-  readonly projectId: ProjectId;
+  readonly input: BotTaskListInput;
+  /** Cards in the Bot's own Home come from several projects, so each names its own. */
+  readonly ownHome: boolean;
 }) {
   const openLinkedThread = useOpenLinkedThread();
   const preferences = useAtomValue(mobilePreferencesAtom);
   const updatePreferences = useAtomSet(updateMobilePreferencesAtom);
+  const projects = useProjects();
   const tasks = useEnvironmentQuery(
-    serverEnvironment.botTasksLive({
-      environmentId: props.environmentId,
-      input: { botId: props.botId, projectId: props.projectId },
-    }),
+    serverEnvironment.botTasksLive({ environmentId: props.environmentId, input: props.input }),
   );
+  const projectTitleOf = (task: BotTaskSummary) =>
+    props.ownHome
+      ? (projects.find(
+          (project) =>
+            project.environmentId === props.environmentId && project.id === task.projectId,
+        )?.title ?? "Unknown project")
+      : undefined;
   // Waiting for preferences keeps hidden cards from flashing in on launch.
   if (!AsyncResult.isSuccess(preferences)) return null;
   const loadedTasks = tasks.data?.tasks ?? [];
@@ -70,6 +79,7 @@ function HomeTaskCards(props: {
           key={task.id}
           environmentId={props.environmentId}
           task={task}
+          projectTitle={projectTitleOf(task)}
           borderTop={index > 0}
           onOpen={(threadId) => openLinkedThread({ environmentId: props.environmentId, threadId })}
           onHide={

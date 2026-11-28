@@ -1,6 +1,11 @@
 import { resolveBotAppearance } from "@t3tools/client-runtime/bot-appearance";
 import { botOfHomeThread } from "@t3tools/client-runtime/bots";
-import type { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
+import {
+  type EnvironmentId,
+  isBotHomeProjectId,
+  type ProjectId,
+  type ThreadId,
+} from "@t3tools/contracts";
 
 import { useEnvironment } from "../../state/environments";
 import { useEnvironmentQuery } from "../../state/query";
@@ -45,7 +50,11 @@ export function BotIdentityBadge(props: {
           {bot.name}
         </span>
       </TooltipTrigger>
-      <TooltipPopup side="top">Home conversation of the Bot {bot.name}</TooltipPopup>
+      <TooltipPopup side="top">
+        {isBotHomeProjectId(props.projectId)
+          ? `Own Home of the Bot ${bot.name}, above its projects`
+          : `Home conversation of the Bot ${bot.name}`}
+      </TooltipPopup>
     </Tooltip>
   );
 }
