@@ -568,7 +568,7 @@ it.effect.each([
     }).pipe(Effect.provide(layerDatabase)),
 );
 
-it.effect("rejects deleting a project while a Bot is attached and forgets it once detached", () =>
+it.effect("rejects deleting an attached project and remembers its Bot Home after deletion", () =>
   Effect.gen(function* () {
     const sql = yield* BotDatabase.BotDatabase;
     const projectId = ProjectId.make("project:bot-attached");
@@ -612,6 +612,9 @@ it.effect("rejects deleting a project while a Bot is attached and forgets it onc
         SELECT 1 FROM bot_project_contexts WHERE project_id = ${projectId}
       `;
       assert.lengthOf(remaining, 0);
+      assert.deepEqual(yield* sql`SELECT home_thread_id FROM deleted_bot_homes`, [
+        { home_thread_id: "bot-home:campaign-bot:project:bot-attached" },
+      ]);
     }).pipe(Effect.provide(layerServices));
   }).pipe(Effect.provide(layerDatabase)),
 );

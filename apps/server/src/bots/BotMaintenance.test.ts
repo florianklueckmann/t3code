@@ -473,13 +473,14 @@ it.effect(
       yield* bots`ALTER TABLE bot_learning_revisions DROP COLUMN restored_from`;
       yield* bots`ALTER TABLE bot_learning_revisions DROP COLUMN reinforced_at`;
       yield* bots`DROP TABLE bot_home_updates`;
+      yield* bots`DROP TABLE deleted_bot_homes`;
       yield* bots`DELETE FROM effect_sql_migrations WHERE migration_id >= 11`;
       yield* BotMigrations.runMigrations().pipe(Effect.provideService(SqlClient.SqlClient, bots));
       const history = yield* bots<{
         readonly migration_id: number;
         readonly name: string;
       }>`SELECT migration_id, name FROM effect_sql_migrations ORDER BY migration_id`;
-      assert.deepEqual(history.slice(-22), [
+      assert.deepEqual(history.slice(-23), [
         { migration_id: 11, name: "BotMaintenance" },
         { migration_id: 12, name: "BotMaintenanceReceipts" },
         { migration_id: 13, name: "BotMaintenanceNightly" },
@@ -502,6 +503,7 @@ it.effect(
         { migration_id: 30, name: "BotTaskLimit" },
         { migration_id: 31, name: "BotHomeUpdates" },
         { migration_id: 32, name: "BotWorktreeSlots" },
+        { migration_id: 33, name: "DeletedBotHomes" },
       ]);
       const maintenance = yield* BotMaintenance.BotMaintenance;
       const view = yield* maintenance.get(scope);

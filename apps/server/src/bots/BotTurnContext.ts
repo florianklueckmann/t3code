@@ -554,7 +554,20 @@ export const layer = Layer.effect(
       const context =
         homeContext ??
         (task === null ? undefined : yield* store.getContext(task.botId, task.projectId));
-      if (context === undefined) return undefined;
+      if (context === undefined) {
+        const deleted = yield* sql`
+          SELECT 1 FROM deleted_bot_homes WHERE home_thread_id = ${task?.homeThreadId ?? threadId}
+        `.pipe(
+          Effect.mapError(
+            (cause) => new BotStore.BotStoreError({ operation: "read-deleted-home", cause }),
+          ),
+        );
+        if (deleted.length === 0) return undefined;
+        return {
+          _tag: "inactive",
+          message: "This Bot conversation's project is no longer available.",
+        } as const;
+      }
       const bot = yield* store.getBot(context.bot_id);
       if (bot === undefined || bot.archived_at !== null) {
         return {
