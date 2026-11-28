@@ -2278,7 +2278,7 @@ const make = Effect.gen(function* () {
   return OrchestratorMcpService.of({
     scheduleTask: Effect.fn("OrchestratorMcpService.scheduleTask")(function* (scope, input) {
       const { parent, limits } = yield* loadCaller(scope, ["runs"]);
-      yield* assertManagesScheduledTask(scheduledTaskOwners, scope.thread?.threadId, {
+      yield* assertManagesScheduledTask(scheduledTaskOwners, scope, {
         botId: input.botId,
       });
       const projectId = yield* resolveProjectTarget(parent, input.projectId);
@@ -2402,7 +2402,7 @@ const make = Effect.gen(function* () {
         .upsert(
           upsertInput,
           parent === undefined ? undefined : { createdByThreadId: parent.thread.id },
-          scheduledTaskAccess(scheduledTaskOwners, scope.thread?.threadId),
+          scheduledTaskAccess(scheduledTaskOwners, scope),
         )
         .pipe(Effect.mapError((error) => scheduledTaskFailure(error, "Could not schedule task: ")));
       return yield* summarizeScheduledTask(scope, { parent, limits }, task);
@@ -2433,7 +2433,7 @@ const make = Effect.gen(function* () {
       function* (scope, input) {
         const { parent, limits } = yield* loadCaller(scope, ["runs"]);
         const existing = yield* loadScheduledTask(input.scheduledTaskId, limits);
-        yield* assertManagesScheduledTask(scheduledTaskOwners, scope.thread?.threadId, {
+        yield* assertManagesScheduledTask(scheduledTaskOwners, scope, {
           botId: existing.bot?.botId,
           id: existing.id,
         });
@@ -2533,11 +2533,7 @@ const make = Effect.gen(function* () {
               }),
         };
         const { task } = yield* scheduledTasks
-          .upsert(
-            upsertInput,
-            undefined,
-            scheduledTaskAccess(scheduledTaskOwners, scope.thread?.threadId),
-          )
+          .upsert(upsertInput, undefined, scheduledTaskAccess(scheduledTaskOwners, scope))
           .pipe(
             Effect.mapError((error) =>
               scheduledTaskFailure(error, "Could not update scheduled task: "),
@@ -2550,16 +2546,13 @@ const make = Effect.gen(function* () {
       function* (scope, input) {
         const { parent, limits } = yield* loadCaller(scope, ["runs"]);
         const existing = yield* loadScheduledTask(input.scheduledTaskId, limits);
-        yield* assertManagesScheduledTask(scheduledTaskOwners, scope.thread?.threadId, {
+        yield* assertManagesScheduledTask(scheduledTaskOwners, scope, {
           botId: existing.bot?.botId,
           id: existing.id,
         });
         yield* assertLiveCallerForOtherProject(scope, parent, existing.projectId);
         yield* scheduledTasks
-          .delete(
-            { id: existing.id },
-            scheduledTaskAccess(scheduledTaskOwners, scope.thread?.threadId),
-          )
+          .delete({ id: existing.id }, scheduledTaskAccess(scheduledTaskOwners, scope))
           .pipe(
             Effect.mapError((error) =>
               scheduledTaskFailure(error, "Could not delete scheduled task: "),
@@ -3281,6 +3274,9 @@ const make = Effect.gen(function* () {
                   ...(parent.thread.linkOrigin === undefined
                     ? {}
                     : { linkOrigin: parent.thread.linkOrigin }),
+                  ...(parent.thread.botOrigin === undefined
+                    ? {}
+                    : { botOrigin: parent.thread.botOrigin }),
                   ...(initialMessage === undefined ? {} : { initialMessage }),
                 })
                 .pipe(

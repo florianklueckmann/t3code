@@ -7,8 +7,10 @@ import {
   BotSourcePreference,
   BotTaskAcceptance as BotTaskAcceptanceSchema,
   BotTaskId,
+  type EnvironmentId,
   type McpConnectionId,
   type OrchestrationV2AppThread,
+  OrchestrationV2BotOrigin,
   type ProjectId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -76,9 +78,32 @@ export type BotMcpAccess =
       readonly calendarIds?: BotMcpGrants["calendarIds"];
       readonly direct?: "home" | "work";
       readonly ownCodexMcpServers: boolean;
+      /** The environment of a Bot whose work a link started here; it has no grants here. */
+      readonly environmentId?: EnvironmentId;
     };
 
-type BotMcpAccessThread = Pick<OrchestrationV2AppThread, "id" | "lineage" | "createdByThreadId">;
+type BotMcpAccessThread = Pick<
+  OrchestrationV2AppThread,
+  "id" | "lineage" | "createdByThreadId" | "botOrigin"
+>;
+
+/** Where a thread's line goes next, and the other environment's Bot it was stamped with. */
+interface LineStep {
+  readonly parent: ThreadId | null;
+  readonly botOrigin: OrchestrationV2BotOrigin | undefined;
+}
+
+const foreignBot = (origin: OrchestrationV2BotOrigin) =>
+  ({
+    _tag: "bot",
+    botId: origin.botId,
+    botName: origin.botName,
+    connectionIds: [],
+    ownCodexMcpServers: false,
+    environmentId: origin.environmentId,
+  }) as const;
+
+const decodeBotOrigin = Schema.decodeUnknownEffect(Schema.fromJsonString(OrchestrationV2BotOrigin));
 
 const MAX_LINEAGE_DEPTH = 16;
 
@@ -589,35 +614,40 @@ export const layer = Layer.effect(
       return { _tag: "active", bot, context, task } as const;
     });
 
-    const parentOf = Effect.fn("BotTurnContext.parentOf")(function* (threadId: ThreadId) {
-      const rows = yield* main<{
-        readonly parent_thread_id: string | null;
-        readonly relationship: string | null;
-        readonly created_by_thread_id: string | null;
-      }>`
+    const stepOf = Effect.fn("BotTurnContext.stepOf")(
+      function* (threadId: ThreadId) {
+        const rows = yield* main<{
+          readonly parent_thread_id: string | null;
+          readonly relationship: string | null;
+          readonly created_by_thread_id: string | null;
+          readonly bot_origin: string | null;
+        }>`
         SELECT
           json_extract(payload_json, '$.lineage.parentThreadId') AS parent_thread_id,
           json_extract(payload_json, '$.lineage.relationshipToParent') AS relationship,
-          json_extract(payload_json, '$.createdByThreadId') AS created_by_thread_id
+          json_extract(payload_json, '$.createdByThreadId') AS created_by_thread_id,
+          json_extract(payload_json, '$.botOrigin') AS bot_origin
         FROM orchestration_v2_projection_threads WHERE thread_id = ${threadId}
-      `.pipe(
-        Effect.mapError(
-          (cause) => new BotStore.BotStoreError({ operation: "read-lineage", cause }),
-        ),
-      );
-      const row = rows[0];
-      return row === undefined
-        ? undefined
-        : lineageParent(row.parent_thread_id, row.relationship, row.created_by_thread_id);
-    });
+      `;
+        const row = rows[0];
+        if (row === undefined) return undefined;
+        return {
+          parent: lineageParent(row.parent_thread_id, row.relationship, row.created_by_thread_id),
+          botOrigin: row.bot_origin === null ? undefined : yield* decodeBotOrigin(row.bot_origin),
+        } satisfies LineStep;
+      },
+      Effect.mapError((cause) => new BotStore.BotStoreError({ operation: "read-lineage", cause })),
+    );
 
     const accessFrom = Effect.fn("BotTurnContext.accessFrom")(function* (
       start: ThreadId,
-      startParent: ThreadId | null,
+      startStep: LineStep,
     ) {
       let threadId = start;
-      let parent = startParent;
+      let step = startStep;
       for (let depth = 0; depth < MAX_LINEAGE_DEPTH; depth++) {
+        // Tombstoned threads keep their record, so a deleted stamped ancestor still counts.
+        if (step.botOrigin !== undefined) return foreignBot(step.botOrigin);
         const owner = yield* botOfThread(threadId);
         if (owner?._tag === "inactive") return { _tag: "refused", message: owner.message } as const;
         if (owner !== undefined) {
@@ -639,11 +669,11 @@ export const layer = Layer.effect(
             ownCodexMcpServers: grants?.ownCodexMcpServers === true,
           } as const;
         }
-        if (parent === null) return { _tag: "none" } as const;
-        threadId = parent;
-        const next = yield* parentOf(threadId);
+        if (step.parent === null) return { _tag: "none" } as const;
+        threadId = step.parent;
+        const next = yield* stepOf(threadId);
         if (next === undefined) break;
-        parent = next;
+        step = next;
       }
       // An ancestor that cannot be read could be a Bot's, so its MCP access is unknown.
       return {
@@ -654,22 +684,22 @@ export const layer = Layer.effect(
     });
 
     const mcpAccessForThread = (thread: BotMcpAccessThread) =>
-      accessFrom(
-        thread.id,
-        lineageParent(
+      accessFrom(thread.id, {
+        parent: lineageParent(
           thread.lineage.parentThreadId,
           thread.lineage.relationshipToParent,
           thread.createdByThreadId ?? null,
         ),
-      );
+        botOrigin: thread.botOrigin,
+      });
 
     const mcpAccessForThreadId = Effect.fn("BotTurnContext.mcpAccessForThreadId")(function* (
       threadId: ThreadId,
     ) {
-      const parent = yield* parentOf(threadId);
+      const step = yield* stepOf(threadId);
       // A thread with no projection row cannot be placed in any Bot's line.
-      if (parent === undefined) return { _tag: "none" } as const;
-      return yield* accessFrom(threadId, parent);
+      if (step === undefined) return { _tag: "none" } as const;
+      return yield* accessFrom(threadId, step);
     });
 
     const projectsById = Effect.fn("BotTurnContext.projectsById")(function* (

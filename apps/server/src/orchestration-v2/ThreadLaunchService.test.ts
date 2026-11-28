@@ -17,6 +17,7 @@ import {
   type ChatAttachment,
   CommandId,
   DEFAULT_SERVER_SETTINGS,
+  BotId,
   EnvironmentId,
   GitCommandError,
   MessageId,
@@ -468,7 +469,7 @@ it.effect(
   },
 );
 
-it.effect("leaves a task delegated from a linked environment out of the top-level list", () => {
+it.effect("keeps a linked environment's delegated task off the top level, with its Bot", () => {
   const harness = makeHarness();
   return Effect.gen(function* () {
     const launches = yield* ThreadLaunch.ThreadLaunchService;
@@ -476,6 +477,11 @@ it.effect("leaves a task delegated from a linked environment out of the top-leve
     yield* launches.launch(
       launchInput({ command: "command:top-level", thread: "thread:top-level" }),
     );
+    const botOrigin = {
+      environmentId: EnvironmentId.make("environment:linked"),
+      botId: BotId.make("researcher"),
+      botName: "Researcher",
+    };
     const delegated = yield* launches.launch({
       ...launchInput({ command: "command:delegated", thread: "thread:delegated" }),
       createdBy: "agent",
@@ -486,7 +492,10 @@ it.effect("leaves a task delegated from a linked environment out of the top-leve
         threadId: ThreadId.make("thread:remote-parent"),
         title: "Remote parent",
       },
+      botOrigin,
     });
+    const record = yield* threads.getThreadRecords(delegated.threadId, []);
+    assert.deepEqual(record.thread.botOrigin, botOrigin);
     const listed = yield* threads.listProjectThreads({ projectId, includeSubagents: false });
     assert.deepEqual(
       listed.map((thread) => thread.id),

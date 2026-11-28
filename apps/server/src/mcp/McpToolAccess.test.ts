@@ -1,6 +1,7 @@
 import { layerCallerChangesAllowed } from "./McpToolAccess.testkit.ts";
 import { expect, it } from "@effect/vitest";
 import {
+  BotId,
   EnvironmentId,
   OrchestratorMcpEnvironmentTarget,
   OrchestratorMcpFailure,
@@ -193,6 +194,7 @@ const ProbeToolkit = Toolkit.make(
       interactionMode: Schema.optional(ProviderInteractionMode),
     }),
   }),
+  Tool.make("starts_unstamped", probe),
   Tool.make("writes_environment", probe),
   Tool.make("writes_bot_tasks", probe),
 );
@@ -210,8 +212,20 @@ const probeHandlers: McpToolAccess.Handlers<typeof ProbeToolkit.tools> = {
   ),
   starts_threads: McpToolAccess.startsThreads(
     (input) => input,
-    (_, modes) => Effect.succeed({ ran: `${modes.runtimeMode}/${modes.interactionMode}` }),
+    (_, modes) =>
+      Effect.succeed({
+        ran: `${modes.runtimeMode}/${modes.interactionMode}${
+          modes.botOrigin === undefined ? "" : ` for ${modes.botOrigin.botName}`
+        }`,
+      }),
     "stamped",
+  ),
+  starts_unstamped: McpToolAccess.startsThreads(
+    () => ({}),
+    () => ran,
+    {
+      refused: "start what cannot carry it",
+    },
   ),
   writes_environment: McpToolAccess.writesEnvironment(() => ran),
   writes_bot_tasks: McpToolAccess.writesBotTasks(() => ran),
@@ -253,6 +267,7 @@ export const refusedAtCompileTime = () => {
       writes_with_capability: unchecked,
       writes_threads: unchecked,
       starts_threads: unchecked,
+      starts_unstamped: unchecked,
       writes_environment: unchecked,
       writes_bot_tasks: unchecked,
     }),
@@ -311,6 +326,18 @@ const fullAccessLinkedClient: McpInvocationContext.McpInvocationScope = {
   ...fullAccessClient,
   client: { ...fullAccessClient.client!, linked: true },
 };
+// Such a link's request made for its environment's Bot.
+const botLinkedClient: McpInvocationContext.McpInvocationScope = {
+  ...fullAccessLinkedClient,
+  client: {
+    ...fullAccessLinkedClient.client!,
+    botOrigin: {
+      environmentId: EnvironmentId.make("environment-laptop"),
+      botId: BotId.make("researcher"),
+      botName: "Researcher",
+    },
+  },
+};
 const previewOnly = { ...fullAccess, capabilities: new Set(["preview"] as const) };
 const sealedLoad = { ...fullAccess, thread: { ...fullAccess.thread!, sealedLoad: true as const } };
 const noChanges = threadCaller(noChangesThreadId);
@@ -358,6 +385,11 @@ it.effect.each([
   ["writes_with_capability", linkedClient, {}, "capability_denied"],
   ["writes", fullAccessLinkedClient, {}, "ran"],
   ["writes_with_capability", fullAccessLinkedClient, {}, "ran"],
+  // What a link starts for its Bot carries that Bot, or is not started.
+  ["starts_threads", fullAccessLinkedClient, {}, "full-access/default"],
+  ["starts_threads", botLinkedClient, {}, "full-access/default for Researcher"],
+  ["starts_unstamped", fullAccessLinkedClient, {}, "ran"],
+  ["starts_unstamped", botLinkedClient, {}, "capability_denied"],
 
   ["writes_threads", supervised, {}, "ran"],
   ["writes_threads", supervised, { threadId: planThreadId }, "ran"],

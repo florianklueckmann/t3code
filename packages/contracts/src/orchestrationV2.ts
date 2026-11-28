@@ -57,7 +57,7 @@ import {
   OrchestrationGetTurnDiffResult,
 } from "./checkpointDiff.ts";
 import { ModelSelection } from "./modelSelection.ts";
-import { BotId, BotTaskId } from "./bot.ts";
+import { BotId, BotName, BotTaskId } from "./bot.ts";
 import {
   ThreadLinkedPullRequest,
   ThreadPullRequestLink,
@@ -140,6 +140,17 @@ export const OrchestrationV2DelegatedFrom = Schema.Struct({
   title: Schema.String,
 });
 export type OrchestrationV2DelegatedFrom = typeof OrchestrationV2DelegatedFrom.Type;
+
+/**
+ * The Bot of another environment whose work a linked environment started here. Set with
+ * `linkOrigin` and never changed; it holds the thread and its line to a Bot's limits there.
+ */
+export const OrchestrationV2BotOrigin = Schema.Struct({
+  environmentId: EnvironmentId,
+  botId: BotId,
+  botName: BotName,
+});
+export type OrchestrationV2BotOrigin = typeof OrchestrationV2BotOrigin.Type;
 
 /**
  * The thread in a linked environment whose agent sent this message here, and its title
@@ -482,6 +493,7 @@ export const OrchestrationV2AppThread = Schema.Struct({
   historyOrigin: Schema.optional(OrchestrationV2ThreadHistoryOrigin),
   linkOrigin: Schema.optional(OrchestrationV2LinkOrigin),
   delegatedFrom: Schema.optional(OrchestrationV2DelegatedFrom),
+  botOrigin: Schema.optional(OrchestrationV2BotOrigin),
   /** The thread whose agent created this one with T3 Code's tools, unlike `lineage` a top-level thread. */
   createdByThreadId: Schema.optional(ThreadId),
   lineage: OrchestrationV2AppThreadLineage,
@@ -3251,6 +3263,8 @@ export const OrchestrationV2Command = Schema.Union([
     linkOrigin: Schema.optional(OrchestrationV2LinkOrigin),
     /** Only the server sets this, with `linkOrigin`, for a linked environment's delegated task. */
     delegatedFrom: Schema.optional(OrchestrationV2DelegatedFrom),
+    /** Only the server sets this, with `linkOrigin`, for work a linked environment's Bot started. */
+    botOrigin: Schema.optional(OrchestrationV2BotOrigin),
     /** Only the server sets this, for a thread an agent's T3 Code tool created. */
     createdByThreadId: Schema.optional(ThreadId),
     importedNativeThread: Schema.optional(
@@ -3676,6 +3690,8 @@ export const OrchestrationV2Command = Schema.Union([
     title: Schema.optional(TrimmedNonEmptyString),
     sideChat: Schema.optional(Schema.Boolean),
     createdAt: Schema.optional(Schema.DateTimeUtc),
+    /** Only the server sets this, for a fork a linked environment's Bot asked for. */
+    botOrigin: Schema.optional(OrchestrationV2BotOrigin),
   }),
   Schema.Struct({
     type: Schema.Literal("thread.merge_back"),

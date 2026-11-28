@@ -3836,6 +3836,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ...(command.linkOrigin === undefined || command.delegatedFrom === undefined
         ? {}
         : { delegatedFrom: command.delegatedFrom }),
+      ...(command.linkOrigin === undefined || command.botOrigin === undefined
+        ? {}
+        : { botOrigin: command.botOrigin }),
       ...(command.createdByThreadId === undefined
         ? {}
         : { createdByThreadId: command.createdByThreadId }),
@@ -5844,6 +5847,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         targetThreadId: command.targetThreadId,
         ...(command.title === undefined ? {} : { title: command.title }),
         ...(command.sideChat ? { sideChat: true } : {}),
+        ...(command.botOrigin === undefined ? {} : { botOrigin: command.botOrigin }),
         createdBy: command.createdBy,
         creationSource: command.creationSource,
         createdAt: now,

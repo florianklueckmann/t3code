@@ -1,7 +1,9 @@
 import { NodeHttpServer } from "@effect/platform-node";
 import { expect, it } from "@effect/vitest";
 import {
+  BotId,
   EnvironmentId,
+  type OrchestrationV2BotOrigin,
   OrchestrationV2LinkedSender,
   OrchestratorMcpFailure,
   ThreadId,
@@ -48,7 +50,13 @@ const toolkit = Toolkit.make(
 );
 
 /** One `probe` call to a linked peer at a remote address, answered by `http`. */
-const probeThrough = Effect.fn(function* (http: HttpClient.HttpClient) {
+const probeThrough = Effect.fn(function* (
+  http: HttpClient.HttpClient,
+  options?: {
+    readonly keepsBotLimits: () => boolean;
+    readonly botOrigin: OrchestrationV2BotOrigin;
+  },
+) {
   const box = descriptorOf("environment-box", "Box");
   const context = yield* Layer.build(
     PeerMcpClient.layer.pipe(
@@ -57,7 +65,7 @@ const probeThrough = Effect.fn(function* (http: HttpClient.HttpClient) {
           Layer.succeed(HttpClient.HttpClient, http),
           Layer.mock(PeerLinks.PeerLinks)({
             resolve: () =>
-              Effect.succeed({
+              Effect.sync(() => ({
                 link: {
                   environmentId: box.environmentId,
                   label: box.label,
@@ -70,7 +78,8 @@ const probeThrough = Effect.fn(function* (http: HttpClient.HttpClient) {
                 },
                 url: "https://peer.example",
                 token: "fixture",
-              }),
+                keepsBotLimits: options?.keepsBotLimits() ?? true,
+              })),
             recordOutcome: () => Effect.void,
           }),
         ),
@@ -82,6 +91,7 @@ const probeThrough = Effect.fn(function* (http: HttpClient.HttpClient) {
     tool: "probe",
     arguments: {},
     limits: { runtimeMode: "approval-required", interactionMode: "plan" },
+    ...(options === undefined ? {} : { botOrigin: options.botOrigin }),
     success: Result,
   });
 });
@@ -299,6 +309,7 @@ it.effect("renews a missing peer session once and reuses its replacement", () =>
                   },
                   url: "https://peer.example",
                   token: "fixture",
+                  keepsBotLimits: true,
                 }),
               recordOutcome: (_, outcome) => Effect.sync(() => outcomes.push(outcome.error)),
             }),
@@ -339,6 +350,41 @@ it.effect("renews a missing peer session once and reuses its replacement", () =>
       "renewed",
       "renewed",
     ]);
+  }),
+);
+
+it.effect("checks Bot support again when a peer session disappears", () =>
+  Effect.gen(function* () {
+    let keepsBotLimits = true;
+    const statuses = [200, 202, 404, 200, 202, 200];
+    const requests: number[] = [];
+    const http = HttpClient.make((request) =>
+      Effect.sync(() => {
+        const status = statuses[requests.length];
+        if (status === undefined) throw new Error("Unexpected peer request");
+        requests.push(status);
+        if (status === 404) keepsBotLimits = false;
+        return HttpClientResponse.fromWeb(
+          request,
+          new Response(requests.length === statuses.length ? probeResult : "", {
+            status,
+            headers: { "mcp-session-id": keepsBotLimits ? "old" : "new" },
+          }),
+        );
+      }),
+    );
+    const probe = yield* probeThrough(http, {
+      keepsBotLimits: () => keepsBotLimits,
+      botOrigin: {
+        environmentId: EnvironmentId.make("environment-a"),
+        botId: BotId.make("test-bot"),
+        botName: "Test Bot",
+      },
+    });
+    expect(yield* Effect.result(probe)).toMatchObject({
+      _tag: "Failure",
+      failure: { code: "capability_denied" },
+    });
   }),
 );
 

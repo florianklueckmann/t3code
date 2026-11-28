@@ -115,7 +115,7 @@ const access = Effect.gen(function* () {
 export const layer = McpToolAccess.toLayer(ProjectToolkit, {
   t3_thread_launch: McpToolAccess.startsThreads(
     (input) => input,
-    (input, { runtimeMode, interactionMode, linkOrigin }) =>
+    (input, { runtimeMode, interactionMode, linkOrigin, botOrigin }) =>
       Effect.gen(function* () {
         const scope = yield* McpInvocationContext.McpInvocationContext;
         const context = yield* readCaller();
@@ -294,8 +294,9 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
           creationSource: "mcp",
           ...(caller === undefined ? {} : { createdByThreadId: caller.id }),
           ...(linkOrigin === undefined ? {} : { linkOrigin }),
-          // Kept only alongside linkOrigin: thread.create drops it otherwise.
+          // Kept only alongside linkOrigin: thread.create drops them otherwise.
           ...(input.delegatedFrom === undefined ? {} : { delegatedFrom: input.delegatedFrom }),
+          ...(botOrigin === undefined ? {} : { botOrigin }),
         }).pipe(
           Effect.mapError((error) => {
             if (error._tag === "AttachmentClaimError") {

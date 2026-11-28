@@ -67,7 +67,7 @@ const BOT_SOURCE_PREFERENCES_MAX = 50;
 export const BotLearningPolicy = Schema.Literals(["automatic", "after_adoption"]);
 export type BotLearningPolicy = typeof BotLearningPolicy.Type;
 
-const BotName = TrimmedNonEmptyString.check(Schema.isMaxLength(BOT_NAME_MAX_CHARS));
+export const BotName = TrimmedNonEmptyString.check(Schema.isMaxLength(BOT_NAME_MAX_CHARS));
 const BotInstructions = TrimmedString.check(Schema.isMaxLength(BOT_INSTRUCTIONS_MAX_CHARS));
 
 /**

@@ -241,6 +241,48 @@ it.effect("a Home thread launches top-level work on its current model", () =>
   }),
 );
 
+it.effect("a launch over a link records the link and the Bot it works for", () =>
+  Effect.gen(function* () {
+    const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
+    const harness = clientLaunchHarness({ runtimeModeCeiling: "full-access", launched });
+    const botOrigin = {
+      environmentId: EnvironmentId.make("environment-laptop"),
+      botId: BotId.make("researcher"),
+      botName: "Researcher",
+    };
+    const dependencies = Layer.mergeAll(
+      harness.dependencies,
+      Layer.succeed(McpInvocationContext.McpInvocationContext, {
+        environmentId: EnvironmentId.make("environment"),
+        requestNamespace: "client:link",
+        thread: undefined,
+        client: {
+          sessionId: "session:link",
+          label: "T3 Code · Laptop",
+          access: "full-access",
+          linked: true,
+          botOrigin,
+        },
+        issuedAt: 0,
+        capabilities: new Set(["orchestration" as const]),
+      }),
+    );
+    const toolkit = yield* ProjectToolkit.pipe(
+      Effect.provide(
+        McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(Layer.provide(dependencies)),
+      ),
+    );
+    const result = yield* toolkit
+      .handle("t3_thread_launch", { projectId: harness.projectId, title: "Research" })
+      .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
+    expect(result.at(-1)?.isFailure).toBe(false);
+    expect(launched[0]).toMatchObject({
+      linkOrigin: { sessionId: "session:link", access: "full-access" },
+      botOrigin,
+    });
+  }),
+);
+
 it.effect(
   "a client launches with the project's default model and mode, capped at its ceiling",
   () =>

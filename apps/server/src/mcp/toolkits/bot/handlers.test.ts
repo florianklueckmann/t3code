@@ -10,6 +10,7 @@ import {
   EnvironmentId,
   MessageId,
   OrchestratorMcpFailure,
+  type OrchestrationV2BotOrigin,
   type OrchestrationV2ConversationMessage,
   ProjectId,
   ProviderInstanceId,
@@ -126,6 +127,8 @@ const callTool = (
     readonly changes?: McpCallerChangesValue;
     readonly subagent?: boolean;
     readonly sealedLoad?: boolean;
+    /** With `external`, the caller is a link whose request works for this other machine's Bot. */
+    readonly linkedBot?: OrchestrationV2BotOrigin;
     /** Who started the Home's running turn; the user, typing, by default. */
     readonly turnStarter?: Partial<OrchestrationV2ConversationMessage>;
   } = {},
@@ -164,6 +167,9 @@ const callTool = (
                         sessionId: "session:bots",
                         label: "Test client",
                         access: access ?? "full-access",
+                        ...(caller.linkedBot === undefined
+                          ? {}
+                          : { linked: true, botOrigin: caller.linkedBot }),
                       },
                 capabilities: new Set(["orchestration" as const]),
                 issuedAt: 0,
@@ -538,6 +544,19 @@ it.effect("checks the task owner for Bot work threads and allows approved outsid
       expect(outside.calls).toEqual([
         input.action === "cancel_task" ? "outside cancel" : "start:null",
       ]);
+      // A link's request for its machine's Bot changes no Bot here, though its link may.
+      const forLaptopBot = yield* callTool(input, undefined, undefined, true, {
+        linkedBot: {
+          environmentId: EnvironmentId.make("environment-laptop"),
+          botId,
+          botName: "Laptop Researcher",
+        },
+      });
+      expect(forLaptopBot.calls).toEqual([]);
+      expect(forLaptopBot.result).toMatchObject({
+        code: "capability_denied",
+        message: expect.stringContaining("Laptop Researcher, a Bot on another machine"),
+      });
     }
   }),
 );

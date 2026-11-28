@@ -208,6 +208,12 @@ export const layer: Layer.Layer<
         // Elsewhere a Codex Bot without grants keeps Codex's own MCP setup, as documented; a Claude
         // or Pi Bot stays on T3 Code's server everywhere.
         const grantsPlatform = !codex || grantsVerified;
+        // That fallback would hand another machine's Bot this machine's own MCP servers.
+        if (!grantsPlatform && access._tag === "bot" && access.environmentId !== undefined) {
+          return yield* refuseMcp(
+            `${botName} is a Bot on another machine. Here its Codex threads can be kept to T3 Code's tools only on macOS and Linux, so nothing ran. Switch this thread to a Claude or Pi model.`,
+          );
+        }
         // The user's own servers are Codex's; on Claude a Bot thread loads T3 Code's server only.
         const userMcpServers =
           support.ownMcpServers && access._tag === "bot" && access.ownCodexMcpServers && !noChanges

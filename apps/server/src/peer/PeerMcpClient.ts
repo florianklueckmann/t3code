@@ -3,6 +3,7 @@ import {
   OrchestratorMcpFailure,
   type PeerLinkError,
   type ProviderInteractionMode,
+  type OrchestrationV2BotOrigin,
   type OrchestrationV2LinkedSender,
   type RuntimeMode,
 } from "@t3tools/contracts";
@@ -24,6 +25,13 @@ const PROTOCOL_VERSION = "2025-06-18";
 
 /** A title can be any length; the header carrying it stays well under HTTP header limits. */
 const SENDER_TITLE_MAX_LENGTH = 200;
+
+/** Whole code points, so a cut never leaves half an emoji for encodeURIComponent. */
+const shortened = (text: string) => Array.from(text).slice(0, SENDER_TITLE_MAX_LENGTH).join("");
+
+/** encodeURIComponent throws on an unpaired surrogate, which a title can hold. */
+const encodedParts = (parts: ReadonlyArray<string>) =>
+  parts.map((part) => encodeURIComponent(part.toWellFormed())).join("/");
 
 /** The limits a call carries to the peer: the calling agent's modes here. */
 export interface PeerCallLimits {
@@ -47,6 +55,13 @@ export class PeerMcpClient extends Context.Service<
       readonly limits: PeerCallLimits;
       /** The thread here the call is made for, sent as `T3-Sender-Thread`. */
       readonly sender?: OrchestrationV2LinkedSender;
+      /**
+       * The Bot whose work the call is, sent as `T3-Bot-Origin`. A peer that cannot keep a Bot's
+       * limits gets only its reads and stops.
+       */
+      readonly botOrigin?: OrchestrationV2BotOrigin;
+      /** The call only reads or stops work, which a peer without Bot limits may take for a Bot. */
+      readonly readsOrStops?: boolean;
       readonly success: S;
     }) => Effect.Effect<S["Type"], OrchestratorMcpFailure>;
   }
@@ -172,19 +187,38 @@ const make = Effect.gen(function* () {
       const limitHeader = {
         [McpInvocationContext.MODE_LIMIT_HEADER]: `${input.limits.runtimeMode}/${input.limits.interactionMode}`,
       };
+      const { botOrigin } = input;
+      // The Bot whose call needs the peer to keep its limits: anything but a read or a stop.
+      const limitedBot = input.readsOrStops === true ? undefined : botOrigin;
+      // The link answered, so like a refusal there this fails only the call.
+      const cannotKeepBotLimits = (peer: PeerLinks.ResolvedPeerLink, botName: string) =>
+        Result.fail(
+          new OrchestratorMcpFailure({
+            code: "capability_denied",
+            message: `${peer.link.label} runs a T3 Code version that cannot keep ${botName}'s limits, so ${botName} can only read and stop work there. Update ${peer.link.label} to let ${botName} work there.`,
+          }),
+        );
+      if (limitedBot !== undefined && !resolved.keepsBotLimits)
+        return cannotKeepBotLimits(resolved, limitedBot.botName);
       const senderHeader =
         input.sender === undefined
           ? {}
           : {
-              [McpInvocationContext.SENDER_THREAD_HEADER]: [
+              [McpInvocationContext.SENDER_THREAD_HEADER]: encodedParts([
                 input.sender.environmentId,
                 input.sender.threadId,
-                // Whole code points, so a cut never leaves half an emoji for encodeURIComponent.
-                Array.from(input.sender.title).slice(0, SENDER_TITLE_MAX_LENGTH).join(""),
-              ]
-                // encodeURIComponent throws on an unpaired surrogate, which a title can hold.
-                .map((part) => encodeURIComponent(part.toWellFormed()))
-                .join("/"),
+                shortened(input.sender.title),
+              ]),
+            };
+      const botHeader =
+        botOrigin === undefined
+          ? {}
+          : {
+              [McpInvocationContext.BOT_ORIGIN_HEADER]: encodedParts([
+                botOrigin.environmentId,
+                botOrigin.botId,
+                shortened(botOrigin.botName),
+              ]),
             };
       const sessionKey = `${input.environmentId} ${resolved.url}`;
       const callOnce = (sessionId: string) =>
@@ -200,6 +234,7 @@ const make = Effect.gen(function* () {
           {
             ...limitHeader,
             ...senderHeader,
+            ...botHeader,
             "mcp-session-id": sessionId,
             "mcp-protocol-version": PROTOCOL_VERSION,
           },
@@ -212,6 +247,13 @@ const make = Effect.gen(function* () {
       }
       let response = yield* callOnce(sessionId);
       if (response.status === 404) {
+        // A peer that lost the session may have restarted on another version.
+        if (limitedBot !== undefined) {
+          const restarted = yield* links
+            .resolve(input.environmentId)
+            .pipe(Effect.mapError(fromLinkError));
+          if (!restarted.keepsBotLimits) return cannotKeepBotLimits(restarted, limitedBot.botName);
+        }
         const renewed = yield* openSession(resolved.url, resolved.token, limitHeader);
         yield* Ref.update(sessions, (current) => new Map(current).set(sessionKey, renewed));
         response = yield* callOnce(renewed);

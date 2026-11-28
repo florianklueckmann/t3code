@@ -5,6 +5,7 @@ import {
   BotId,
   CommandId,
   EnvironmentId,
+  type OrchestrationV2BotOrigin,
   ProjectId,
   ProviderInstanceId,
   RunId,
@@ -66,11 +67,54 @@ const scheduledTasks = [
   { id: mailMadeSchedule },
   { id: removedCreatorSchedule },
 ];
+/** A thread here, or with `null` an approved outside client. */
+const callerScope = (callerThread: ThreadId | null): McpInvocationContext.McpInvocationScope => ({
+  environmentId: EnvironmentId.make("environment:here"),
+  requestNamespace: "provider:caller",
+  thread:
+    callerThread === null
+      ? undefined
+      : {
+          threadId: callerThread,
+          providerSessionId: "provider:caller",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+        },
+  client:
+    callerThread === null
+      ? {
+          sessionId: "approved-test-client",
+          label: "Test client",
+          access: "full-access",
+        }
+      : undefined,
+  capabilities: new Set(["orchestration" as const]),
+  issuedAt: 0,
+});
+/** A full-access link's call, with no thread here; `botOrigin` names the Bot it works for. */
+const linkScope = (
+  botOrigin?: OrchestrationV2BotOrigin,
+): McpInvocationContext.McpInvocationScope => ({
+  ...callerScope(null),
+  requestNamespace: "client:link",
+  client: {
+    sessionId: "session:link",
+    label: "T3 Code · Laptop",
+    access: "full-access",
+    linked: true,
+    ...(botOrigin === undefined ? {} : { botOrigin }),
+  },
+});
+const laptopBot = {
+  environmentId: EnvironmentId.make("environment-laptop"),
+  botId: mailBot,
+  botName: "Researcher",
+};
 const call = (
   name: string,
   params: unknown,
   callerThread: ThreadId | null = caller,
   scheduler?: ScheduledTasks.ScheduledTaskService["Service"],
+  scope = callerScope(callerThread),
 ) =>
   Effect.gen(function* () {
     const reached = yield* Ref.make<ReadonlyArray<string>>([]);
@@ -90,28 +134,7 @@ const call = (
         McpToolAccess.HandlersLayer.layer(ThreadHandlers.layer).pipe(
           Layer.provideMerge(
             Layer.mergeAll(
-              Layer.succeed(McpInvocationContext.McpInvocationContext, {
-                environmentId: EnvironmentId.make("environment:here"),
-                requestNamespace: "provider:caller",
-                thread:
-                  callerThread === null
-                    ? undefined
-                    : {
-                        threadId: callerThread,
-                        providerSessionId: "provider:caller",
-                        providerInstanceId: ProviderInstanceId.make("codex"),
-                      },
-                client:
-                  callerThread === null
-                    ? {
-                        sessionId: "approved-test-client",
-                        label: "Test client",
-                        access: "full-access",
-                      }
-                    : undefined,
-                capabilities: new Set(["orchestration" as const]),
-                issuedAt: 0,
-              }),
+              Layer.succeed(McpInvocationContext.McpInvocationContext, scope),
               layerCallerChangesAllowed,
               NodeCrypto.layer,
               Layer.mock(ThreadManagement.ThreadManagementService)({
@@ -120,7 +143,9 @@ const call = (
                   Effect.succeed(idleThreadProjection(liveThreadShell(threadId))),
                 dispatch: (command) =>
                   reach(
-                    command.type,
+                    command.type === "thread.fork" && command.botOrigin !== undefined
+                      ? `${command.type} for ${command.botOrigin.botName}`
+                      : command.type,
                     new ThreadManagement.ThreadManagementProviderInstanceDisabledError({
                       projectId: ProjectId.make("project:mcp-test"),
                       instanceId: ProviderInstanceId.make("codex"),
@@ -328,4 +353,32 @@ it.effect.each([
       });
     }).pipe(Effect.provide(ScheduledTasks.layer.pipe(Layer.provide(dependencies))));
   }).pipe(Effect.provide(Sqlite.layerMemory)),
+);
+
+it.effect("a fork a link asks for on its Bot's behalf carries that Bot", () =>
+  Effect.gen(function* () {
+    const fork = { action: "fork", threadId: plainThread } as const;
+    const plain = yield* call("t3_thread_transfer", fork, null, undefined, linkScope());
+    expect(plain.reached).toEqual(["thread.fork"]);
+    const forBot = yield* call("t3_thread_transfer", fork, null, undefined, linkScope(laptopBot));
+    expect(forBot.reached).toEqual(["thread.fork for Researcher"]);
+  }),
+);
+
+it.effect("a link runs schedules here, but not for its machine's Bot", () =>
+  Effect.gen(function* () {
+    for (const taskId of [plainSchedule, mailRoutine]) {
+      const runNow = { taskId };
+      const plain = yield* call("run_scheduled_task_now", runNow, null, undefined, linkScope());
+      expect(outcome(plain), taskId).toBe("reached");
+      const forBot = yield* call(
+        "run_scheduled_task_now",
+        runNow,
+        null,
+        undefined,
+        linkScope(laptopBot),
+      );
+      expect(outcome(forBot), taskId).toBe("capability_denied");
+    }
+  }),
 );

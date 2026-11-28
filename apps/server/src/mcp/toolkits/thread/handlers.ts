@@ -12,6 +12,7 @@ import * as Effect from "effect/Effect";
 import { modelSelectionCommandType } from "@t3tools/shared/model";
 import { topOfPinnedRunOrderKey } from "@t3tools/shared/pinOrderKey";
 
+import { callerBotOrigin } from "../../linkOrigin.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import {
@@ -129,10 +130,7 @@ const runScheduledTaskNow = (bots: BotService.BotService["Service"]) =>
           { id: input.taskId },
           {
             requestedIn: scope.thread?.threadId ?? null,
-            authorize: scheduledTaskAccess(
-              { bots, scheduledTasks: scheduler },
-              scope.thread?.threadId,
-            ),
+            authorize: scheduledTaskAccess({ bots, scheduledTasks: scheduler }, scope),
           },
         )
         .pipe(Effect.mapError((error) => scheduledTaskFailure(error)));
@@ -210,6 +208,8 @@ const handlers = {
             return { sequence: result.sequence, targetThreadId };
           }
           const targetThreadId = ThreadId.make(`${commandId}:fork`);
+          // A fork is new work, so a link's fork for its Bot is that Bot's work, like a launch.
+          const botOrigin = callerBotOrigin(yield* readCaller());
           const result = yield* threads
             .dispatch({
               type: "thread.fork",
@@ -218,6 +218,7 @@ const handlers = {
               targetThreadId,
               sourcePoint,
               ...(input.title === undefined ? {} : { title: input.title }),
+              ...(botOrigin === undefined ? {} : { botOrigin }),
               createdBy: "agent",
               creationSource: "mcp",
             })

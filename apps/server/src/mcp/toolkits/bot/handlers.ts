@@ -190,7 +190,15 @@ const writeOwner = Effect.fn("mcp.bot.writeOwner")(function* (
   bots: BotService.BotService["Service"],
 ) {
   const scope = yield* McpInvocationContext.McpInvocationContext;
-  if (scope.thread === undefined) return undefined;
+  if (scope.thread === undefined) {
+    const origin = scope.client?.botOrigin;
+    return origin === undefined
+      ? undefined
+      : yield* new OrchestratorMcpFailure({
+          code: "capability_denied",
+          message: BotService.foreignBotWrites(origin.botName),
+        });
+  }
   return yield* bots.writeOwnerOfThread(scope.thread.threadId).pipe(Effect.mapError(botFailure));
 });
 

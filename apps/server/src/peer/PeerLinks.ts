@@ -79,6 +79,8 @@ export interface ResolvedPeerLink {
   /** The first address that answered as this peer. */
   readonly url: string;
   readonly token: string;
+  /** Whether it holds a Bot's work there to the Bot's limits (`T3-Bot-Origin`). */
+  readonly keepsBotLimits: boolean;
 }
 
 export const LINKED_ENVIRONMENTS_OFF =
@@ -690,6 +692,7 @@ const make = Effect.gen(function* () {
         link: yield* withLabel(link, peer.label),
         url,
         token: new TextDecoder().decode(stored.value),
+        keepsBotLimits: peer.capabilities.botOrigin === true,
       };
     },
   );

@@ -3,6 +3,7 @@ import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
+  BotId,
   EnvironmentId,
   type OrchestrationV2Run,
   type OrchestrationV2ThreadShell,
@@ -22,6 +23,7 @@ import * as Ref from "effect/Ref";
 import * as TestClock from "effect/testing/TestClock";
 import { McpSchema, McpServer } from "effect/ai";
 
+import * as BotTurnContext from "../bots/BotTurnContext.ts";
 import * as ServerConfig from "../config.ts";
 import * as ThreadLaunch from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
@@ -271,6 +273,37 @@ const mcpClient = McpSchema.McpServerClient.of({
   getClient: Effect.die("unused"),
 });
 
+const desk = EnvironmentId.make("environment-desk");
+const researcher = {
+  _tag: "bot",
+  botId: BotId.make("researcher"),
+  botName: "Researcher",
+  connectionIds: [],
+  ownCodexMcpServers: false,
+} as const;
+
+/**
+ * The laptop's Bot lines: a Researcher thread, work the desk's Bot started here,
+ * and a thread of an archived Bot. Every other thread is ordinary.
+ */
+const laptopBots = Layer.mock(BotTurnContext.BotTurnContext)({
+  mcpAccessForThreadId: (threadId) =>
+    Effect.succeed(
+      threadId === "thread:laptop-bot"
+        ? researcher
+        : threadId === "thread:laptop-for-desk-bot"
+          ? {
+              ...researcher,
+              botId: BotId.make("desk-bot"),
+              botName: "Desk Bot",
+              environmentId: desk,
+            }
+          : threadId === "thread:laptop-archived-bot"
+            ? { _tag: "refused", message: "This Bot is archived. Restore it to continue." }
+            : { _tag: "none" },
+    ),
+});
+
 /**
  * Environment A: its own orchestrator toolkit with forwarding, and a thread
  * caller whose modes the test picks. Its local threads never matter here.
@@ -299,7 +332,7 @@ const makeLaptop = Effect.gen(function* () {
       ),
     ),
     Layer.provide(NodeServices.layer),
-    Layer.provide(PeerForwarding.layer),
+    Layer.provide(PeerForwarding.layer.pipe(Layer.provide(laptopBots))),
     Layer.provide(Layer.succeedContext(linking)),
     Layer.provide(NodeCrypto.layer),
     Layer.provideMerge(
@@ -553,6 +586,75 @@ it.effect("launches in a linked environment with the caller's modes, retry-safe"
       expect(failureOf(withUpload)).toMatchObject({ code: "invalid_request" });
       expect(yield* Ref.get(b.bearers)).toEqual([]);
       expect((yield* Ref.get(seen)).launches).toHaveLength(2);
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("a Bot's work there carries its Bot, and a box too old for that takes only reads", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const seen = yield* Ref.make<Seen>(nothingSeen);
+      const linkSession = yield* Ref.make("");
+      const b = yield* serveBox(seen, linkSession);
+      const keepsBotLimits = (botOrigin: boolean) =>
+        Ref.update(b.descriptor, (current) => ({
+          ...current,
+          capabilities: { ...current.capabilities, botOrigin },
+        }));
+      yield* keepsBotLimits(true);
+      const a = yield* makeLaptop;
+      yield* linkTo(a.links, b, "full-access");
+      yield* Ref.set(linkSession, (yield* b.linkedSessions)[0]!.sessionId);
+      const launch = (caller: string, key: string) =>
+        a.call(caller, "t3_thread_launch", {
+          environmentId: box.environmentId,
+          projectId: boxProject,
+          title: "Research there",
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
+          message: "Research.",
+          clientRequestId: key,
+        });
+
+      for (const caller of [
+        "thread:laptop-bot",
+        "thread:laptop-for-desk-bot",
+        "thread:laptop-full",
+      ]) {
+        expect((yield* launch(caller, "new")).isError, caller).toBe(false);
+      }
+      // The Bot is the laptop's own or, for work the desk's Bot started here, the desk's.
+      expect((yield* Ref.get(seen)).launches.map((input) => input.botOrigin)).toEqual([
+        { environmentId: laptop.environmentId, botId: "researcher", botName: "Researcher" },
+        { environmentId: desk, botId: "desk-bot", botName: "Desk Bot" },
+        undefined,
+      ]);
+      const archived = yield* launch("thread:laptop-archived-bot", "new");
+      expect(failureOf(archived)).toMatchObject({
+        code: "capability_denied",
+        message: expect.stringContaining("archived"),
+      });
+
+      yield* keepsBotLimits(false);
+      const old = yield* launch("thread:laptop-bot", "old");
+      expect(failureOf(old)).toMatchObject({
+        code: "capability_denied",
+        message: expect.stringContaining("Update Box to let Researcher work there."),
+      });
+      expect((yield* Ref.get(seen)).launches).toHaveLength(3);
+      // Reads and stopping work keep working there; ordinary work is not held back.
+      const listed = yield* a.call("thread:laptop-bot", "t3_thread_list", {
+        environmentId: box.environmentId,
+        projectId: boxProject,
+      });
+      expect(listed.isError).toBe(false);
+      const stopped = yield* a.call("thread:laptop-bot", "t3_thread_interrupt", {
+        environmentId: box.environmentId,
+        threadId: boxThread,
+        stop: true,
+      });
+      expect(stopped.isError).toBe(false);
+      expect((yield* launch("thread:laptop-full", "old")).isError).toBe(false);
+      expect((yield* Ref.get(seen)).launches).toHaveLength(4);
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );

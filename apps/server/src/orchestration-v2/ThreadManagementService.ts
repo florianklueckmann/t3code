@@ -90,6 +90,7 @@ export function withCreationProvenance(
       const {
         linkOrigin: _linkOrigin,
         delegatedFrom: _delegatedFrom,
+        botOrigin: _botOrigin,
         initialMessage: _initialMessage,
         createdByThreadId: _createdByThreadId,
         ...rest
@@ -100,7 +101,10 @@ export function withCreationProvenance(
       const { ifIdleAtSequence: _ifIdleAtSequence, ...rest } = command;
       return { ...rest, ...provenance };
     }
-    case "thread.fork":
+    case "thread.fork": {
+      const { botOrigin: _botOrigin, ...rest } = command;
+      return { ...rest, ...provenance };
+    }
     case "thread.merge_back":
     case "delegated_task.request":
       return { ...command, ...provenance };

@@ -16,6 +16,7 @@ import {
   type OrchestratorMcpListScheduledTasksInput,
   type Project,
   OrchestratorMcpTarget,
+  type OrchestrationV2BotOrigin,
   type OrchestrationV2ThreadShell,
   type ScheduledTask,
   ScheduledTaskId,
@@ -4027,8 +4028,19 @@ describe("OrchestratorMcpService provider resolution", () => {
       userMade: { ...existing, id: ScheduledTaskId.make("schedule:user-made") },
       botMade: { ...existing, id: ScheduledTaskId.make("schedule:bot-made") },
     } satisfies Record<string, ScheduledTask>;
+    /** A full-access link's call with no thread here, for its machine's Bot when `bot` is set. */
+    type LinkCaller = { readonly link: true; readonly bot?: OrchestrationV2BotOrigin };
+    const link: LinkCaller = { link: true };
+    const linkForBot: LinkCaller = {
+      link: true,
+      bot: {
+        environmentId: EnvironmentId.make("environment-laptop"),
+        botId: ownBot,
+        botName: "Laptop Companion",
+      },
+    };
     const ownershipCall = (
-      callerThreadId: ThreadId,
+      from: ThreadId | LinkCaller,
       call: (
         mcp: OrchestratorMcpService.OrchestratorMcpService["Service"],
         scope: McpInvocationScope,
@@ -4038,6 +4050,7 @@ describe("OrchestratorMcpService provider resolution", () => {
       Effect.gen(function* () {
         const writes = yield* Ref.make(0);
         const write = Ref.update(writes, (count) => count + 1);
+        const callerThreadId = typeof from === "string" ? from : plainCaller;
         const caller = { ...liveThreadShell(callerThreadId), projectId };
         const mcp = yield* OrchestratorMcpService.OrchestratorMcpService.pipe(
           Effect.provide(
@@ -4102,12 +4115,24 @@ describe("OrchestratorMcpService provider resolution", () => {
         const scope: McpInvocationScope = {
           environmentId: EnvironmentId.make("environment:scheduled-base"),
           requestNamespace: `provider:${callerThreadId}`,
-          thread: {
-            threadId: callerThreadId,
-            providerSessionId: `provider:${callerThreadId}`,
-            providerInstanceId: ProviderInstanceId.make("codex"),
-          },
-          client: undefined,
+          thread:
+            typeof from === "string"
+              ? {
+                  threadId: callerThreadId,
+                  providerSessionId: `provider:${callerThreadId}`,
+                  providerInstanceId: ProviderInstanceId.make("codex"),
+                }
+              : undefined,
+          client:
+            typeof from === "string"
+              ? undefined
+              : {
+                  sessionId: "session:laptop",
+                  label: "T3 Code · Laptop",
+                  access: "full-access",
+                  linked: true,
+                  ...(from.bot === undefined ? {} : { botOrigin: from.bot }),
+                },
           capabilities: new Set(["orchestration"]),
           issuedAt: 1,
         };
@@ -4250,6 +4275,13 @@ describe("OrchestratorMcpService provider resolution", () => {
         createRoutine(BotId.make("mail-sorter")),
       ],
       ["outside every Bot, creates any Bot's routine", "done", plainCaller, createRoutine(ownBot)],
+      ["is a link, creates a plain schedule", "done", link, createRoutine(undefined)],
+      [
+        "is a link working for its machine's Bot, creates a plain schedule",
+        "denied",
+        linkForBot,
+        createRoutine(undefined),
+      ],
     ] as const)("a caller that %s: %s", ([, expected, callerThreadId, input]) =>
       ownershipCall(callerThreadId, (mcp, scope) => mcp.scheduleTask(scope, input)).pipe(
         Effect.map((result) => assert.deepEqual(result, outcome(expected))),
@@ -4263,6 +4295,19 @@ describe("OrchestratorMcpService provider resolution", () => {
       ["a schedule the user made", "denied", botWork, ownership.userMade],
       ["another Bot's routine, outside every Bot", "done", plainCaller, ownership.other],
       ["a schedule the user made, outside every Bot", "done", plainCaller, ownership.userMade],
+      ["a schedule the user made, as a link", "done", link, ownership.userMade],
+      [
+        "a schedule the user made, as a link for its machine's Bot",
+        "denied",
+        linkForBot,
+        ownership.userMade,
+      ],
+      [
+        "a routine of a Bot with the same id, as a link for its machine's Bot",
+        "denied",
+        linkForBot,
+        ownership.own,
+      ],
     ] as const)("a caller updates and deletes %s: %s", ([, expected, callerThreadId, task]) =>
       Effect.gen(function* () {
         const updated = yield* ownershipCall(callerThreadId, (mcp, scope) =>

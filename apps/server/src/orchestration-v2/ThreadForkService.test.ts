@@ -1,11 +1,13 @@
 import { assert, it } from "@effect/vitest";
 import {
+  BotId,
   CommandId,
   ContextTransferId,
   EnvironmentId,
   MessageId,
   type ModelSelection,
   type OrchestrationV2AppThread,
+  type OrchestrationV2BotOrigin,
   type OrchestrationV2Run,
   type OrchestrationV2ThreadProjection,
   ProjectId,
@@ -112,7 +114,7 @@ function makeSourceProjection(sourceRun: OrchestrationV2Run): OrchestrationV2Thr
 const planFork = (
   sourceRun: OrchestrationV2Run,
   sourceProjection = makeSourceProjection(sourceRun),
-  options: { readonly sideChat?: boolean } = {},
+  options: { readonly sideChat?: boolean; readonly botOrigin?: OrchestrationV2BotOrigin } = {},
 ) =>
   Effect.gen(function* () {
     const service = yield* ThreadForkService.ThreadForkServiceV2;
@@ -188,6 +190,20 @@ it.effect("resets a fork's pin, snooze, settle and delegation state but keeps it
       threadId: sourceThreadId,
       runId: sourceRunId,
     });
+    assert.isUndefined(result.targetThread.botOrigin);
+
+    // A fork another machine's Bot asked for over a link is that Bot's work.
+    const botOrigin = {
+      environmentId: EnvironmentId.make("linked-environment"),
+      botId: BotId.make("researcher"),
+      botName: "Researcher",
+    };
+    const forBot = yield* planFork(
+      sourceRun,
+      { ...makeSourceProjection(sourceRun), thread: sourceThread },
+      { botOrigin },
+    );
+    assert.deepEqual(forBot.targetThread.botOrigin, botOrigin);
   }),
 );
 

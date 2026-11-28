@@ -6,6 +6,7 @@ import {
   PreviewAutomationUnavailableError,
   type ProviderInstanceId,
   type ProviderInteractionMode,
+  type OrchestrationV2BotOrigin,
   type OrchestrationV2LinkedSender,
   type RuntimeMode,
   type ThreadId,
@@ -86,6 +87,8 @@ export interface McpClientCaller {
   readonly narrowedTo?: ClientModes | undefined;
   /** A linked environment's thread this request is made for (`T3-Sender-Thread`). */
   readonly senderThread?: OrchestrationV2LinkedSender | undefined;
+  /** The Bot a linked environment's request works for (`T3-Bot-Origin`). */
+  readonly botOrigin?: OrchestrationV2BotOrigin | undefined;
   /** An outside client's thread links go through this hosted app, as Copy thread's do. */
   readonly hostedAppUrl?: string | undefined;
 }
@@ -104,6 +107,13 @@ export const MODE_LIMIT_HEADER = "t3-mode-limit";
  * it. Read only from a linked client.
  */
 export const SENDER_THREAD_HEADER = "t3-sender-thread";
+
+/**
+ * `T3-Bot-Origin: <environmentId>/<botId>/<botName>`, each URI-encoded: the Bot whose work a
+ * linked environment's request is, set by that environment's server. Read only from a linked
+ * client, and it only narrows: what that request starts here keeps the Bot's limits.
+ */
+export const BOT_ORIGIN_HEADER = "t3-bot-origin";
 
 export interface ClientModes {
   readonly runtimeMode: RuntimeMode;

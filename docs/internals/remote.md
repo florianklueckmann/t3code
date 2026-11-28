@@ -144,6 +144,22 @@ receiving environment's user. **A full-access link is therefore not fenced**:
 its agents can already do anything that user can, so the fence would only stop
 T3's own tools. Its work still carries `linkOrigin`, so clients show where it
 came from. A stamp without the access, from before it was recorded, is fenced.
+The exception is a Bot's work, which keeps the Bot's limits at any access: the
+sending server looks up the calling thread's Bot itself and sends it in
+`T3-Bot-Origin`, so the Bot's agent can neither set nor drop it, and the
+receiver reads it only from link sessions. It only narrows: a sender that
+leaves it out gets what the link gets. Threads that request starts carry it as
+`botOrigin` beside `linkOrigin`, as do forks it asks for, and
+[`BotTurnContext`](../../apps/server/src/bots/BotTurnContext.ts) resolves any
+line through such a thread to a Bot of another machine: Bot runtime policy with
+no grants here, and no `t3_bot` or scheduled-task writes. The link's own
+request is held to the same owner checks, since it has no thread to follow. A receiver that does not
+advertise `botOrigin` would drop the header, so the sender gives a Bot's work
+only reads and stops there, and it checks again when a lost session makes it
+reconnect. A message a Bot sends into an existing ordinary thread there still
+runs under that thread's own policy, as it would on one machine. This covers a
+confused Bot, not a full-access agent that reads the link's token and calls the
+peer itself.
 
 ## Hosted web is a client
 
