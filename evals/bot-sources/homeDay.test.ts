@@ -229,6 +229,31 @@ it("grades only the rows for coverage, project and recorded status", () => {
   ).toContain("recap includes the first batch in today's work");
 });
 
+it("reads qualified status cells and still rejects a duplicate qualified row", () => {
+  const qualified = summaryOf()
+    .replaceAll("needs you |", "needs you (finished with an unresolved result) |")
+    .replaceAll("completed |", "completed — file exists |")
+    .replace("failed |", "failed - no initial commit |")
+    .replace("cancelled |", "cancelled – by the user |");
+  expect(failed(day({}, qualified))).toEqual([]);
+  const duplicate =
+    "| Orders API | Rename /users query parameter | needs you (finished with an unresolved result) |";
+  expect(failed(day({}, qualified + "\n" + duplicate))).toEqual([
+    "summary gives usr-param as needs_you",
+  ]);
+  const open = records.map((record) =>
+    record.id === "bot-task:cart-rounding" ? { ...record, ...STATUS.open } : record,
+  );
+  expect(
+    failed(
+      day({ records: open }, qualified.replace("completed — file exists", "open (in progress)")),
+    ),
+  ).toEqual([]);
+  expect(
+    failed(day({}, qualified.replace("completed — file exists", "completedness — file exists"))),
+  ).toContain("summary gives cart-rounding as done");
+});
+
 it.each([
   "Deploy key rotation failed to start; the project needs a commit before the task can be retried. Deploy tools needs a commit before the rotation can be retried.",
   "Orders docs: Needs you: not confirmed done. Check its work thread before you count it as done.",

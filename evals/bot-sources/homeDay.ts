@@ -399,12 +399,13 @@ function recap(answer: string) {
     )
       continue;
     const [project, subject, status] = cells;
+    const label = status?.replace(/\s*\(.+\)$|(?:\s+-\s+|\s*[–—]\s*)\S.*$/, "");
     rows.push({
       project,
       subject: subject ?? "",
       category:
         cells.length === 3
-          ? Object.entries(categories).find(([label]) => label === status)?.[1]
+          ? Object.entries(categories).find(([name]) => name === label)?.[1]
           : undefined,
     });
   }
