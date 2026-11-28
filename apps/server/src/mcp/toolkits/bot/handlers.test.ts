@@ -188,6 +188,7 @@ const callTool = (
               caller.changes === undefined
                 ? layerCallerChangesAllowed
                 : Layer.succeed(McpCallerChanges.McpCallerChanges, {
+                    canReadThread: () => Effect.succeed(true),
                     forThread: () => Effect.succeed(caller.changes!),
                   }),
               Layer.mock(PeerForwarding.PeerForwarding)({
@@ -271,10 +272,11 @@ const callTool = (
                   ),
                 get: (id) =>
                   Effect.succeed({ ...taskSummary, id, botId: id === ownTask ? botId : otherBot }),
-                cancel: () =>
-                  Ref.update(calls, (current) => [...current, "cancel"]).pipe(
-                    Effect.as(taskSummary),
-                  ),
+                cancel: (_, requester) =>
+                  Ref.update(calls, (current) => [
+                    ...current,
+                    requester === null ? "outside cancel" : "cancel",
+                  ]).pipe(Effect.as(taskSummary)),
                 start: (input) =>
                   Ref.update(calls, (current) => [
                     ...current,
@@ -533,7 +535,9 @@ it.effect("checks the task owner for Bot work threads and allows approved outsid
         message: expect.stringContaining("own Bot"),
       });
       const outside = yield* callTool(input, undefined, undefined, true);
-      expect(outside.calls).toEqual([input.action === "cancel_task" ? "cancel" : "start:null"]);
+      expect(outside.calls).toEqual([
+        input.action === "cancel_task" ? "outside cancel" : "start:null",
+      ]);
     }
   }),
 );

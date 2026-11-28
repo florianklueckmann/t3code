@@ -108,6 +108,8 @@ const shells = new Map([
 
 /** Stands in for the Bot task lookup; an unreadable task answers "none", as the live port does. */
 const layerCallerChanges = Layer.succeed(McpCallerChanges.McpCallerChanges, {
+  canReadThread: (home, target) =>
+    Effect.succeed(home !== readHomeThreadId || target === botSubagentThreadId),
   forThread: (threadId) =>
     Effect.succeed(
       threadId === noChangesThreadId ||
@@ -169,6 +171,7 @@ const probe = {
 };
 const ProbeToolkit = Toolkit.make(
   Tool.make("reads", probe),
+  Tool.make("reads_thread", { ...probe, parameters: Schema.Struct({ threadId: ThreadId }) }),
   Tool.make("reads_as_caller", probe).annotate(
     McpSchema.EnabledWhen,
     McpInvocationContext.hiddenFromOutsideClients,
@@ -196,6 +199,7 @@ const ProbeToolkit = Toolkit.make(
 const ran = Effect.succeed({ ran: "ran" });
 const probeHandlers: McpToolAccess.Handlers<typeof ProbeToolkit.tools> = {
   reads: McpToolAccess.reads(() => ran),
+  reads_thread: McpToolAccess.readsThread(() => ran),
   reads_as_caller: McpToolAccess.readsAsCaller(() => ran),
   acts_as_caller: McpToolAccess.actsAsCaller(() => ran),
   writes: McpToolAccess.writes(() => ran),
@@ -432,6 +436,8 @@ it.effect.each([
   ["starts_threads", readHome, {}, "capability_denied"],
   ["writes_environment", readHome, {}, "capability_denied"],
   ["writes_bot_tasks", readHome, {}, "ran"],
+  ["reads_thread", readHome, { threadId: botSubagentThreadId }, "ran"],
+  ["reads_thread", readHome, { threadId: noChangesThreadId }, "capability_denied"],
   ["writes", readHomeSubagent, {}, "capability_denied"],
   ["writes_bot_tasks", readHomeSubagent, {}, "ran"],
   // Bot task writes keep every other check of an environment write.

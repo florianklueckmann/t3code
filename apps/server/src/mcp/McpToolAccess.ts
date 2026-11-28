@@ -212,6 +212,25 @@ export const reads = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>)
     () => Effect.void,
   );
 
+const checkThreadRead = Effect.fn("McpToolAccess.checkThreadRead")(function* (target?: ThreadId) {
+  const { thread } = yield* McpInvocationContext.McpInvocationContext;
+  if (thread === undefined || target === thread.threadId) return;
+  const changes = yield* McpCallerChanges.McpCallerChanges;
+  if (yield* changes.canReadThread(thread.threadId, target)) return;
+  return yield* new OrchestratorMcpFailure({
+    code: "capability_denied",
+    message: "This Home can read the work threads of tasks it started.",
+  });
+});
+
+export const readsThread = <P extends { readonly threadId: ThreadId }, A, E, R>(
+  handle: (params: P) => Effect.Effect<A, E, R>,
+) =>
+  declare(
+    (params: P) => checkThreadRead(params.threadId).pipe(Effect.andThen(handle(params))),
+    () => checkThreadRead(),
+  );
+
 export const readsAsCaller = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>) =>
   declare((params: P) => requireThreadCaller.pipe(Effect.flatMap(() => handle(params))), undefined);
 

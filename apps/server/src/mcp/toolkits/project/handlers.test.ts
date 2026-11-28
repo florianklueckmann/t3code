@@ -1122,6 +1122,7 @@ const callProjectMutation = Effect.fn("test.callProjectMutation")(function* (
               isScratchProject: () => Effect.succeed(false),
             }),
             Layer.succeed(McpCallerChanges.McpCallerChanges, {
+              canReadThread: () => Effect.succeed(true),
               forThread: () => Effect.succeed(callerChanges),
             }),
             Layer.mock(Project.ProjectService)({

@@ -131,7 +131,7 @@ function updateText(input: {
     failure == null ? null : `What went wrong: ${clip(failure, DETAIL_CHARS)}`,
     input.question === null ? null : `Question: ${clip(input.question, DETAIL_CHARS)}`,
     "",
-    "Tell the user in a few sentences what this means for their request. Start further tasks only if their request still needs them. You cannot answer a task's question for the user: they answer it in the task's work thread, from its card.",
+    "Report only this task, naming its project and task. If it asks a question, pass that question on now. You cannot answer a task's question for the user: they answer it in the task's work thread, from its card.",
   ]
     .filter((line) => line !== null)
     .join("\n");

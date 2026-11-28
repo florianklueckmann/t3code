@@ -3864,7 +3864,7 @@ export function claudeRuntimeQueryPolicyForRuntimePolicy(
     return {
       permissionMode: "dontAsk",
       tools: CLAUDE_SEALED_TOOLS,
-      allowedTools: [...CLAUDE_SEALED_TOOLS, CLAUDE_T3_BOT_TOOL],
+      allowedTools: [...CLAUDE_SEALED_TOOLS, CLAUDE_T3_BOT_TOOL, "mcp__t3-code__t3_thread_read"],
       installPermissionCallback: false,
     };
   // No built-in tool at all: no shell, files, web, subagents or skills.

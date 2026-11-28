@@ -238,7 +238,8 @@ const write = Effect.fn("mcp.bot.write")(function* (input: BotToolInput) {
       const task = yield* tasks.get(input.taskId).pipe(Effect.mapError(botFailure));
       if (task.botId !== owner) return yield* otherBotRefusal;
     }
-    const cancelled = tasks.cancel({ taskId: input.taskId });
+    const caller = yield* McpInvocationContext.McpInvocationContext;
+    const cancelled = tasks.cancel({ taskId: input.taskId }, caller.thread?.threadId ?? null);
     return { task: yield* cancelled.pipe(Effect.mapError(botFailure)) };
   }
   if (

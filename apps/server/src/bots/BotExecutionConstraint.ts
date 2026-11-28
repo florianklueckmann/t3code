@@ -67,8 +67,21 @@ export const layerMcpCallerChanges = Layer.effect(
   McpCallerChanges.McpCallerChanges,
   Effect.gen(function* () {
     const constraint = yield* BotExecutionConstraint;
+    const sql = yield* BotDatabase.BotDatabase;
     const main = yield* SqlClient.SqlClient;
     return McpCallerChanges.McpCallerChanges.of({
+      canReadThread: Effect.fn("BotExecutionConstraint.canReadThread")(
+        (caller: ThreadId, localTarget?: ThreadId) =>
+          sql`
+          SELECT 1 FROM bot_project_contexts c JOIN bots b ON b.bot_id = c.bot_id
+          WHERE c.home_thread_id = ${caller} AND c.kind = 'bot' AND b.home_access = 'read'
+            AND NOT EXISTS (SELECT 1 FROM bot_tasks t WHERE t.home_thread_id = c.home_thread_id
+              AND t.work_thread_id = ${localTarget ?? null})
+        `.pipe(
+            Effect.map((rows) => rows.length === 0),
+            Effect.orElseSucceed(() => false),
+          ),
+      ),
       forThread: Effect.fn("BotExecutionConstraint.mcpCallerChanges")(
         function* (threadId: ThreadId) {
           const own = yield* constraint.forThread(threadId);

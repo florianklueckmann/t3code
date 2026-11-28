@@ -1789,7 +1789,10 @@ function codexThreadRuntimeParams(input: {
                     ...t3Server,
                     disabled_tools: CODEX_DIRECT_ONLY_T3_TOOLS,
                     // As below: approval "never" would refuse t3_bot's writes before T3 sees them.
-                    tools: { t3_bot: { approval_mode: "approve" } },
+                    tools: {
+                      t3_bot: { approval_mode: "approve" },
+                      t3_thread_read: { approval_mode: "approve" },
+                    },
                   },
                 }
               : {

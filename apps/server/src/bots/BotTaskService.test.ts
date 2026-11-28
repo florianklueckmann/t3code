@@ -1536,7 +1536,11 @@ it.effect("the Bot's own Home is told once of each task it started that ends or 
           );
         // Answered after the shell was read: no update for a question nobody waits on.
         yield* card("completed");
-        yield* services.tasks.cancel({ taskId: tasks.cancelled.id });
+        yield* services.tasks.cancel({ taskId: tasks.cancelled.id }, home.homeThreadId);
+        assert.equal(
+          (yield* services.tasks.get(tasks.cancelled.id)).detail,
+          `Cancelled by the agent in thread ${home.homeThreadId}.`,
+        );
         yield* finishRun(world, work(tasks.own), DONE_RESULT);
         yield* services.tasks.reconcile;
         yield* services.tasks.reconcile;
@@ -2412,7 +2416,10 @@ it.effect.each(["before-thread", "before-message"] as const)(
           const workThreadId = task.workThreadId ?? assert.fail("no work thread");
           assert.equal((yield* Ref.get(world.threads)).get(workThreadId)?.status, "interrupted");
           yield* services.tasks.reconcile;
-          assert.equal((yield* services.tasks.get(taskId)).status, "cancelled");
+          assert.deepInclude(yield* services.tasks.get(taskId), {
+            status: "cancelled",
+            detail: "Cancelled by the user.",
+          });
         }),
       );
     }).pipe(Effect.provide(layerDatabase)),
@@ -2434,11 +2441,14 @@ it.effect("retries a stop that failed until the cancelled task ends", () =>
         const workThreadId = task.workThreadId ?? assert.fail("no work thread");
         yield* world.update(workThreadId, { status: "running" });
         yield* Ref.set(world.failNext, "thread.stop");
-        yield* services.tasks.cancel({ taskId: task.id }).pipe(Effect.exit);
+        yield* services.tasks.cancel({ taskId: task.id }, null).pipe(Effect.exit);
         assert.equal((yield* Ref.get(world.threads)).get(workThreadId)?.status, "running");
         yield* services.tasks.reconcile;
         yield* services.tasks.reconcile;
-        assert.equal((yield* services.tasks.get(task.id)).status, "cancelled");
+        assert.deepInclude(yield* services.tasks.get(task.id), {
+          status: "cancelled",
+          detail: "Cancelled by an outside agent.",
+        });
       }),
     );
   }).pipe(Effect.provide(layerDatabase)),

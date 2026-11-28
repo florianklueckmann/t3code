@@ -1,6 +1,7 @@
 import * as BotContinuation from "./BotContinuation.ts";
 import type { ApplicationInstructionParts } from "@t3tools/provider-core/server/ProviderAdapter";
 import {
+  BOT_TASK_UPDATE_MESSAGE_ID_PREFIX,
   type BotId,
   type BotMcpGrants,
   BotSourcePreference,
@@ -174,7 +175,7 @@ function buildBotInstructions(input: {
 
 /**
  * Turn context of a Bot's own Home, above its projects. It hands work to the attached projects as
- * tasks, so it gets their list and the Bot's unfinished tasks instead of one project's guidance.
+ * tasks, so it gets their list and the task records instead of one project's guidance.
  */
 function buildBotHomeInstructions(input: {
   readonly botId: string;
@@ -183,8 +184,7 @@ function buildBotHomeInstructions(input: {
   /** The hidden project that holds this Home's notes and learning. */
   readonly projectId: string;
   readonly projects: ReadonlyArray<AttachedProject>;
-  readonly tasks: UnfinishedTasks;
-  readonly waitingResults: WaitingResults;
+  readonly tasks: HomeTasks;
   readonly learningPolicy: string;
   readonly continuation: string;
   readonly activeLearning: ReturnType<typeof BotLearning.turnLearning>;
@@ -206,11 +206,11 @@ function buildBotHomeInstructions(input: {
     [
       "Distributing work:",
       "- You never do the work in this Home: do not edit files, run commands that change anything, or write the deliverable here. You may read your attached projects' files to decide where a piece of work belongs.",
-      "- If a request is unclear, such as what is wanted, which project it concerns or when it is done, ask the user first and start no task until it is clear.",
+      "- If a request is unclear, such as what is wanted, which project it concerns or when it is done, ask the user a direct clarifying question before starting any task.",
       `- Then start one task per piece of work, in the attached project the piece belongs to: call t3_bot with action "start_task", botId "${input.botId}", that project's projectId, a short \`title\` and a brief as \`task\`. A request that touches two projects becomes at least one task in each. Never start a task with this Home's projectId "${input.projectId}".`,
       '- A task\'s work thread sees only its brief and its project, not this conversation. Write each brief so it stands alone: what to do, the context it needs, and a last line "Done when: …" that states the condition for done.',
       "- Then tell the user which tasks you started, in which project, and when each counts as done.",
-      "- When a task finishes, fails or asks a question, report it to the user briefly. The user answers a task's question in that task's work thread, through its card; tell them so instead of answering it yourself.",
+      "- Report each Task update once, naming its project and task. Ask its open question in that update only. The user answers a task's question in that task's work thread, through its card; tell them so instead of answering it yourself.",
     ].join("\n"),
     earlierConversationSection,
     learnedSection("Learned for this Home and all your projects", input.activeLearning),
@@ -223,14 +223,10 @@ function buildBotHomeInstructions(input: {
     }),
     otherAgentsSection(input.botName),
   ];
-  const waitingResults = waitingResultsSection(input.waitingResults);
   return assemble({
     ...input,
     lasting,
-    turnSections: [
-      unfinishedTasksSection(input.tasks),
-      ...(waitingResults === null ? [] : [waitingResults]),
-    ],
+    turnSections: [homeTasksSection(input.tasks)],
   });
 }
 
@@ -240,77 +236,67 @@ interface AttachedProject {
   readonly workspaceRoot: string;
 }
 
-interface UnfinishedTasks {
+interface HomeTasks {
   readonly shown: ReadonlyArray<{
     readonly taskId: string;
     readonly title: string;
     readonly projectId: string;
     readonly projectTitle: string;
     readonly status: string;
+    readonly startedHere: boolean;
     readonly createdAt: string;
     readonly question: string | null;
   }>;
-  readonly total: number;
+  readonly omittedAttention: number;
+  readonly omittedEnded: number;
 }
 
-const UNFINISHED_TASKS_SHOWN = 30;
+const HOME_TASKS_SHOWN = 30;
 const QUESTION_CHARS = 300;
 
-function unfinishedTasksSection({ shown, total }: UnfinishedTasks): string {
-  if (shown.length === 0) return "Your unfinished tasks across all projects: none.";
+function homeTasksSection({ shown, omittedAttention, omittedEnded }: HomeTasks): string {
+  if (shown.length === 0) return "Your task records across projects: none.";
   return [
-    "Your unfinished tasks across all projects, newest first. This list is rebuilt from the task records at every turn; trust it over older messages about what is running:",
+    `You started ${shown.filter((task) => task.startedHere).length} of the tasks below in this Home. A fresh conversation keeps that work: include each matching row in a recap. Check the conversation and working notes before repeating a question. Leave user cancellations in place.`,
     ...shown.flatMap((task) => [
-      `- "${task.title}" (taskId "${task.taskId}") · project "${task.projectTitle}" (projectId "${task.projectId}") · ${task.status} · started ${task.createdAt}`,
+      `- "${task.title}" · project "${task.projectTitle}" · ${task.status}${task.startedHere ? "" : " · started by another Home"} · ${task.createdAt} (taskId "${task.taskId}", projectId "${task.projectId}")`,
       ...(task.question === null ? [] : [`  Question waiting for the user: ${task.question}`]),
     ]),
-    ...(total > shown.length
-      ? [`(${total - shown.length} more unfinished tasks are not shown.)`]
+    ...(omittedAttention
+      ? [`(${omittedAttention} more tasks needing attention: use list_tasks.)`]
       : []),
+    ...(omittedEnded ? [`(${omittedEnded} more ended tasks: use list_tasks.)`] : []),
   ].join("\n");
 }
 
-interface WaitingResults {
-  readonly shown: ReadonlyArray<{
-    readonly taskId: string;
-    readonly title: string;
-    readonly projectId: string;
-    readonly projectTitle: string;
-    readonly completedAt: string;
-    /** What the result check found missing and the report's open questions, shortened. */
-    readonly reason: string;
-  }>;
-  readonly total: number;
-}
-
-const WAITING_RESULTS_SHOWN = 10;
-const WAITING_RESULTS_DAYS = 7;
-
-function waitingResultsSection({ shown, total }: WaitingResults): string | null {
-  if (shown.length === 0) return null;
-  return [
-    `Completed tasks whose result waits for the user (Needs you) from the last ${WAITING_RESULTS_DAYS} days, newest first. Rebuilt at every turn like the list above. The user may already have settled one in its work thread, so name them when they matter instead of repeating them every turn:`,
-    ...shown.map(
-      (task) =>
-        `- "${task.title}" (taskId "${task.taskId}") · project "${task.projectTitle}" (projectId "${task.projectId}") · completed ${task.completedAt} · ${task.reason}`,
-    ),
-    ...(total > shown.length
-      ? [`(${total - shown.length} more results that wait for the user are not shown.)`]
-      : []),
-  ].join("\n");
-}
-
-function waitingReason(acceptanceJson: string): string {
-  const acceptance = Option.getOrUndefined(decodeAcceptance(acceptanceJson));
-  const text = [
-    ...(acceptance?.missing ?? []),
-    ...(acceptance?.report?.openQuestions ?? []).map((question) => `Open question: ${question}`),
-  ]
+function homeTaskStatus(
+  row: {
+    readonly status: string;
+    readonly detail: string | null;
+    readonly cancel_requested_at: string | null;
+    readonly acceptance_json: string | null;
+  },
+  replied: boolean,
+) {
+  if (row.status === "cancelled") return row.detail ? `cancelled · ${row.detail}` : "cancelled";
+  if (row.cancel_requested_at !== null) return `${row.status} (cancellation requested)`;
+  const reply = replied ? " · Home replied to this update" : "";
+  if (row.status === "waiting") return row.status + reply;
+  if (row.status !== "completed" || row.acceptance_json === null) return row.status;
+  const acceptance = Option.getOrUndefined(decodeAcceptance(row.acceptance_json));
+  if (acceptance?.state !== "needs_you") return row.status;
+  const questions = acceptance.report?.openQuestions ?? [];
+  const questionText = questions
+    .map((question) => `Open question: ${question}`)
     .join(" ")
     .replace(/\s+/g, " ")
     .trim();
-  const shown = text === "" ? "The result needs the user's review." : text;
-  return shown.length > QUESTION_CHARS ? `${shown.slice(0, QUESTION_CHARS)}…` : shown;
+  const reasons = [questionText, ...acceptance.missing].join(" ").replace(/\s+/g, " ").trim();
+  const more =
+    questions.length > 1 && questionText.length > QUESTION_CHARS
+      ? ` · ${questions.length} open questions. Read them in the work thread.`
+      : "";
+  return `needs you · ${reasons.slice(0, QUESTION_CHARS) || "Review the result."}${more}${questions.length ? reply : ""}`;
 }
 
 const earlierConversationSection = [
@@ -676,26 +662,68 @@ export const layer = Layer.effect(
         ),
       );
 
-    /** The Bot's unfinished tasks in every project, newest first, with a waiting task's question. */
-    const unfinishedTasks = Effect.fn("BotTurnContext.unfinishedTasks")(function* (botId: string) {
+    const homeTasks = Effect.fn("BotTurnContext.homeTasks")(function* (
+      botId: string,
+      homeThreadId: string,
+    ) {
+      const now = yield* DateTime.now;
+      const since = DateTime.formatIso(DateTime.subtract(now, { days: 1 }));
+      const reviewSince = DateTime.formatIso(DateTime.subtract(now, { days: 7 }));
       const rows = yield* sql<{
         readonly task_id: string;
         readonly project_id: string;
+        readonly home_thread_id: string;
         readonly work_thread_id: string | null;
         readonly title: string;
         readonly status: string;
         readonly created_at: string;
+        readonly detail: string | null;
+        readonly cancel_requested_at: string | null;
+        readonly acceptance_json: string | null;
+        readonly update_key: string | null;
         readonly total: number;
+        readonly attention: number;
+        readonly attention_total: number;
       }>`
-        SELECT task_id, project_id, work_thread_id, title, status, created_at,
-          COUNT(*) OVER() AS total
-        FROM bot_tasks
-        WHERE bot_id = ${botId} AND status IN ('accepted', 'running', 'waiting')
-          AND cancel_requested_at IS NULL
-        ORDER BY created_at DESC, task_id DESC LIMIT ${UNFINISHED_TASKS_SHOWN}
+        WITH eligible AS (SELECT t.task_id, project_id, home_thread_id, work_thread_id, title, status, created_at, detail,
+          cancel_requested_at, acceptance_json, u.update_key, COALESCE(completed_at, updated_at) AS activity,
+          CASE WHEN status IN ('accepted', 'running', 'waiting') OR (status = 'completed' AND
+            json_extract(acceptance_json, '$.state') = 'needs_you') THEN 1 ELSE 0 END AS attention
+        FROM bot_tasks t LEFT JOIN bot_home_updates u ON u.task_id = t.task_id
+        WHERE bot_id = ${botId} AND (
+          status IN ('accepted', 'running', 'waiting')
+          OR (home_thread_id = ${homeThreadId} AND COALESCE(completed_at, updated_at) >= ${since})
+          OR (status = 'completed' AND completed_at >= ${reviewSince}
+            AND json_extract(acceptance_json, '$.state') = 'needs_you'))
+        ) SELECT *, COUNT(*) OVER() AS total, SUM(attention) OVER() AS attention_total FROM eligible
+        ORDER BY attention DESC, activity DESC, task_id DESC LIMIT ${HOME_TASKS_SHOWN}
       `.pipe(
         Effect.mapError((cause) => new BotStore.BotStoreError({ operation: "read-tasks", cause })),
       );
+      const updateId = (row: (typeof rows)[number]) =>
+        `${BOT_TASK_UPDATE_MESSAGE_ID_PREFIX}${row.task_id}:${row.update_key}`;
+      const updates = rows
+        .filter(
+          (row) =>
+            row.update_key !== null && (row.status === "waiting" || row.acceptance_json !== null),
+        )
+        .map(updateId);
+      const answered =
+        updates.length === 0
+          ? []
+          : yield* main<{ readonly message_id: string }>`
+        SELECT m.message_id FROM orchestration_v2_projection_messages m
+        JOIN orchestration_v2_projection_runs r ON r.run_id = m.run_id AND r.thread_id = m.thread_id AND r.status = 'completed'
+        WHERE m.thread_id = ${homeThreadId} AND m.message_id IN ${main.in(updates)}
+          AND EXISTS (SELECT 1 FROM orchestration_v2_projection_messages a
+            WHERE a.thread_id = m.thread_id AND a.run_id = m.run_id AND a.role = 'assistant'
+              AND a.streaming = 0 AND length(trim(json_extract(a.payload_json, '$.text'))) > 0)
+      `.pipe(
+              Effect.mapError(
+                (cause) => new BotStore.BotStoreError({ operation: "read-updates", cause }),
+              ),
+            );
+      const answeredUpdates = new Set(answered.map((row) => row.message_id));
       const waiting = rows.flatMap((row) =>
         row.status === "waiting" && row.work_thread_id !== null ? [row.work_thread_id] : [],
       );
@@ -705,9 +733,10 @@ export const layer = Layer.effect(
           : yield* main<{
               readonly thread_id: string;
               readonly type: string;
+              readonly runtime_request_id: string;
               readonly payload_json: string;
             }>`
-              SELECT r.thread_id, i.type, i.payload_json
+              SELECT r.thread_id, r.runtime_request_id, i.type, i.payload_json
               FROM orchestration_v2_projection_runtime_requests r
               JOIN orchestration_v2_projection_turn_items i ON i.thread_id = r.thread_id
                 AND i.type IN ('user_input_request', 'approval_request')
@@ -720,62 +749,42 @@ export const layer = Layer.effect(
               ),
             );
       // Newest first, so the first request per thread is the one the task waits on now.
-      const questions = new Map<string, string>();
+      const questions = new Map<string, { id: string; text: string }>();
       for (const request of requests) {
         if (!questions.has(request.thread_id)) {
-          questions.set(request.thread_id, requestText(request.type, request.payload_json));
+          questions.set(request.thread_id, {
+            id: request.runtime_request_id,
+            text: requestText(request.type, request.payload_json),
+          });
         }
       }
       const projects = yield* projectsById(rows.map((row) => row.project_id));
       return {
-        shown: rows.map((row) => ({
-          taskId: row.task_id,
-          title: row.title.slice(0, 160),
-          projectId: row.project_id,
-          projectTitle: projects.get(row.project_id)?.title ?? row.project_id,
-          status: row.status,
-          createdAt: row.created_at,
-          question:
-            row.work_thread_id === null ? null : (questions.get(row.work_thread_id) ?? null),
-        })),
-        total: rows[0]?.total ?? 0,
-      } satisfies UnfinishedTasks;
-    });
-
-    /** The Bot's recent completed tasks whose result waits for the user, newest first. */
-    const waitingResults = Effect.fn("BotTurnContext.waitingResults")(function* (botId: string) {
-      const since = DateTime.formatIso(
-        DateTime.subtract(yield* DateTime.now, { days: WAITING_RESULTS_DAYS }),
-      );
-      const rows = yield* sql<{
-        readonly task_id: string;
-        readonly project_id: string;
-        readonly title: string;
-        readonly completed_at: string;
-        readonly acceptance_json: string;
-        readonly total: number;
-      }>`
-        SELECT task_id, project_id, title, completed_at, acceptance_json, COUNT(*) OVER() AS total
-        FROM bot_tasks
-        WHERE bot_id = ${botId} AND status = 'completed'
-          AND json_extract(acceptance_json, '$.state') = 'needs_you'
-          AND completed_at >= ${since}
-        ORDER BY completed_at DESC, task_id DESC LIMIT ${WAITING_RESULTS_SHOWN}
-      `.pipe(
-        Effect.mapError((cause) => new BotStore.BotStoreError({ operation: "read-tasks", cause })),
-      );
-      const projects = yield* projectsById(rows.map((row) => row.project_id));
-      return {
-        shown: rows.map((row) => ({
-          taskId: row.task_id,
-          title: row.title.slice(0, 160),
-          projectId: row.project_id,
-          projectTitle: projects.get(row.project_id)?.title ?? row.project_id,
-          completedAt: row.completed_at,
-          reason: waitingReason(row.acceptance_json),
-        })),
-        total: rows[0]?.total ?? 0,
-      } satisfies WaitingResults;
+        shown: rows.map((row) => {
+          const pending =
+            row.work_thread_id === null ? undefined : questions.get(row.work_thread_id);
+          const replied =
+            answeredUpdates.has(updateId(row)) &&
+            (row.status === "waiting"
+              ? row.update_key === `waiting:${pending?.id}`
+              : row.update_key?.startsWith("completed:") === true);
+          return {
+            taskId: row.task_id,
+            title: row.title.slice(0, 160),
+            projectId: row.project_id,
+            projectTitle: projects.get(row.project_id)?.title ?? row.project_id,
+            status: homeTaskStatus(row, replied),
+            startedHere: row.home_thread_id === homeThreadId,
+            createdAt: row.created_at,
+            question: pending?.text ?? null,
+          };
+        }),
+        omittedAttention: Math.max(0, (rows[0]?.attention_total ?? 0) - rows.length),
+        omittedEnded:
+          (rows[0]?.total ?? 0) -
+          (rows[0]?.attention_total ?? 0) -
+          rows.filter((row) => row.attention === 0).length,
+      } satisfies HomeTasks;
     });
 
     const botHomeContext = Effect.fn("BotTurnContext.botHomeContext")(function* (
@@ -795,8 +804,7 @@ export const layer = Layer.effect(
           const project = projects.get(row.project_id);
           return project === undefined ? [] : [project];
         }),
-        tasks: yield* unfinishedTasks(bot.bot_id),
-        waitingResults: yield* waitingResults(bot.bot_id),
+        tasks: yield* homeTasks(bot.bot_id, context.home_thread_id),
         learningPolicy: bot.learning_policy,
         activeLearning: BotLearning.turnLearning(
           yield* store.listLearning(bot.bot_id),

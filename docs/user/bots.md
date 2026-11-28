@@ -89,11 +89,11 @@ task's project. You answer a task's question in that task's work thread, which
 **Open thread** on its card opens. The phone alert comes from the task, under
 the rules in [Tasks and routines](#tasks-and-routines); the Home's follow-up does
 not alert again. After a compaction or a fresh start, the Home still knows its
-unfinished tasks and the results from the last week that wait for you.
+unfinished tasks, tasks it started that ended in the past day, and results from the last week that wait for you. It sees up to 30 tasks, with unfinished work and results waiting for you first, followed by the most recent ended tasks.
 
 **Access** decides what the Home itself may do:
 
-- **Read**, the default, lets it read the attached projects and change things
+- **Read**, the default, lets it read the attached projects and its tasks’ work threads, and change things
   only by starting or cancelling tasks, saving its working notes and recording
   what it learned. This is enforced like [No changes](#tasks-and-routines), so it
   works only with a Codex or Claude model on a macOS server. On Codex it can read
