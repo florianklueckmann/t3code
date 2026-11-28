@@ -160,11 +160,17 @@ worktree stays where it is as kept, outside the count, and each pass releases it
 once that terminal is gone. Nothing closes the user's terminal. Terminal startup
 leases only its own folder, so a shell can still open inside the worktree while
 release moves it; release asks again once the worktree is at rest and keeps it
-claimed if one did, since the shell follows the folder. A shell that opens while
-release removes the worktree loses its folder, which harms no other task, so that
-window is accepted rather than making every terminal wait for releases around it. The pool cap applies
-to starting tasks; a follow-up still gets a worktree when the pool is full, and
+claimed if one did, since the shell follows the folder. The pool cap applies to
+starting tasks; a follow-up still gets a worktree when the pool is full, and
 release removes the extra one.
+
+Known limitations: terminals are matched by the real path of their recorded
+folder, so one reached through an unusual path (a mount point, a case-insensitive
+spelling, a folder it changed to after it started) may not hold a worktree. A
+shell that opens while release removes the worktree loses its folder. Both are
+accepted: the shell lives outside T3's control, any removed worktree has the same
+exposure, and a stray write from it is saved as a WIP commit by the next release,
+which is cheaper than making every terminal wait for releases around it.
 
 ## Persistence and recovery
 

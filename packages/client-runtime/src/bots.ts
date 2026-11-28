@@ -1481,7 +1481,7 @@ export function canToggleBotFailureDiagnosis(
 export function botTaskBranchLabel(task: BotTaskSummary): string | null {
   if (task.branch === undefined) return null;
   return task.unfinishedWork === true
-    ? `Branch ${task.branch} holds unfinished work, saved as a WIP commit.`
+    ? `Branch ${task.branch} has a WIP commit of the changes left uncommitted.`
     : `Works on branch ${task.branch}.`;
 }
 

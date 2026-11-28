@@ -241,9 +241,8 @@ worktree unused for 7 days is removed. **Settings → Bots** shows each project'
 task worktrees and their disk use; **Clear free worktrees** removes the free ones
 now, for example when a stale build cache causes trouble.
 
-A task that fails or is cancelled with uncommitted changes keeps them as a WIP
-commit on its branch, and its card says the branch holds unfinished work. Nothing
-is pushed. A message in a finished task's thread takes a worktree again, on the
+Changes a task leaves uncommitted, also when it fails or is cancelled, are kept as
+a WIP commit on its branch, and its card says so. Nothing is pushed. A message in a finished task's thread takes a worktree again, on the
 task's branch, and gives it back when that turn ends. Its setup script does not
 run again for the follow-up. A worktree goes back only once the task's thread, any
 side chat working in it and its setup script have all finished.
