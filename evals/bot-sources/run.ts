@@ -51,6 +51,8 @@ import {
   type ProjectKey,
   TWIN_SOURCES,
 } from "./cases.ts";
+import { DAY_CASE_ID, DAY_WORKER_MODEL, gradeDay } from "./homeDay.ts";
+import { type DayUsage, runDaySample } from "./homeDayRun.ts";
 
 export interface SampleRun {
   readonly answers: ReadonlyArray<string>;
@@ -489,6 +491,35 @@ const runSample = Effect.fn("botSources.runSample")(function* (
   };
 });
 
+/** The day case's rows: pass, scenario and the Home's turns and tokens per sample. */
+const daySummary = (
+  days: ReadonlyArray<
+    | { readonly pass: boolean; readonly error: string }
+    | {
+        readonly pass: boolean;
+        readonly checks: ReadonlyArray<{ readonly check: string; readonly pass: boolean }>;
+        readonly usage: DayUsage;
+      }
+  >,
+) => {
+  if (days.length === 0) return [];
+  const rows = days.map((day, sample) => {
+    if ("error" in day) return `| ${sample} | error | | | | | ${day.error.slice(0, 80)} |`;
+    const { usage } = day;
+    const failed = day.checks.filter((check) => !check.pass).map((check) => check.check);
+    const scenario = day.checks.find((check) => check.check.startsWith("scenario held"))?.pass;
+    return `| ${sample} | ${day.pass ? "pass" : "fail"} | ${scenario ? "yes" : "no"} | ${usage.homeTurns} | ${usage.inputTokens} (${usage.cachedInputTokens} cached) | ${usage.outputTokens} | ${failed.join("; ")} |`;
+  });
+  return [
+    `${DAY_CASE_ID}: ${days.filter((day) => day.pass).length}/${days.length} passed.`,
+    "",
+    "| Sample | Result | Scenario held | Home turns | Home input tokens | Home output tokens | Failed checks |",
+    "| ------ | ------ | ------------- | ---------- | ----------------- | ------------------ | ------------- |",
+    ...rows,
+    "",
+  ];
+};
+
 const main = Effect.gen(function* () {
   const { values } = NodeUtil.parseArgs({
     options: {
@@ -552,16 +583,43 @@ const main = Effect.gen(function* () {
         ),
       { concurrency: Number(values.concurrency) },
     );
-  const rows = yield* withTools(baseDir, "bot-sources", (call) =>
+  const dayJobs = values.case?.includes(DAY_CASE_ID) === true ? samples : 0;
+  const runDays = (call: Call, modelSelection: BotModelSelection) =>
+    Effect.forEach(
+      Array.from({ length: dayJobs }, (_, sample) => sample),
+      (sample) =>
+        requireBotModel(call, DAY_WORKER_MODEL).pipe(
+          Effect.flatMap((workerSelection) =>
+            runDaySample(call, { work, baseDir, modelSelection, workerSelection }),
+          ),
+          Effect.map((run) => {
+            const checks = gradeDay(run);
+            return { id: DAY_CASE_ID, sample, pass: checks.every((c) => c.pass), checks, ...run };
+          }),
+          Effect.catch((error) =>
+            Effect.succeed({ id: DAY_CASE_ID, sample, pass: false, error: error.message }),
+          ),
+          Effect.tap((row) =>
+            Effect.sync(() =>
+              NodeFS.appendFileSync(NodePath.join(out, "results.jsonl"), `${encodeJson(row)}\n`),
+            ),
+          ),
+        ),
+      { concurrency: Number(values.concurrency) },
+    );
+  const results = yield* withTools(baseDir, "bot-sources", (call) =>
     Effect.gen(function* () {
       const modelSelection = yield* requireBotModel(call, {
         instance: values.instance,
         model: values.model,
         effort: values.effort,
       });
-      return yield* runJobs(call, modelSelection);
+      const caseRows = yield* runJobs(call, modelSelection);
+      const days = yield* runDays(call, modelSelection);
+      return { caseRows, days };
     }),
   );
+  const rows = results.caseRows;
   const lines = selected.map((testCase) => {
     const own = rows.filter((row) => row.id === testCase.id);
     const passed = own.filter((row) => row.pass).length;
@@ -576,6 +634,7 @@ const main = Effect.gen(function* () {
     "| ---- | ---- | ------ | ------ | ----------------------- |",
     ...lines,
     "",
+    ...daySummary(results.days),
   ].join("\n");
   NodeFS.writeFileSync(NodePath.join(out, "summary.md"), summary);
   yield* Effect.log(summary);
