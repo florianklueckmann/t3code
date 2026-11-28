@@ -125,7 +125,7 @@ interface BotTaskRow {
   /** The branch the task named to start from; null starts from the default branch. */
   readonly base_branch: string | null;
   readonly worktree_state: "root" | "held" | "released" | null;
-  /** 1 once uncommitted work in the worktree was saved as a commit on the branch. */
+  /** 1 when the latest worktree release saved uncommitted changes on the branch. */
   readonly unfinished_work: number;
   /** A completed direct task's BotTaskAcceptance; null for other tasks. */
   readonly acceptance_json: string | null;
@@ -2058,7 +2058,7 @@ const make = Effect.gen(function* () {
         UPDATE bot_tasks SET worktree_state = 'released' WHERE task_id = ${row.task_id}
       `.pipe(Effect.mapError(storageError));
     const branch = row.branch ?? taskBranchName(row);
-    const released = yield* withWorkspaceLease(
+    const shouldPublish = yield* withWorkspaceLease(
       path.resolve(worktreePath),
       Effect.gen(function* () {
         if (!(yield* worktreeAtRest(workThreadId, worktreePath))) return null;
@@ -2098,7 +2098,8 @@ const make = Effect.gen(function* () {
         // From the task row, so a release a restart interrupted still tells the thread, and before
         // the task counts as released, which ends these passes. Only a WIP branch: a branch the
         // agent switched to is one the thread already follows.
-        const saved = (yield* readRow(row.task_id))?.branch ?? null;
+        const updated = yield* readRow(row.task_id);
+        const saved = updated?.branch ?? null;
         if (
           saved !== null &&
           saved.startsWith(`${taskBranchName(row)}-wip-`) &&
@@ -2116,10 +2117,14 @@ const make = Effect.gen(function* () {
         yield* sql`UPDATE bot_tasks SET worktree_state = 'released' WHERE task_id = ${row.task_id}`.pipe(
           Effect.mapError(storageError),
         );
-        return parked;
+        return (
+          parked.savedWork ||
+          parked.savedOn !== null ||
+          updated?.unfinished_work !== row.unfinished_work
+        );
       }),
     );
-    if (released?.savedWork === true || released?.savedOn != null) yield* publish(row);
+    if (shouldPublish) yield* publish(row);
   });
 
   // A failed release leaves the worktree held; the next pass tries again.

@@ -957,14 +957,12 @@ it.effect("puts a released task's worktree back on its branch for a follow-up", 
     Effect.gen(function* () {
       const sql = yield* BotDatabase.BotDatabase;
       const task = yield* world.runTask(1, {
-        work: (worktreePath) =>
-          world
-            .write(`${worktreePath}/feature.txt`, "feature\n")
-            .pipe(
-              Effect.andThen(world.git(worktreePath, "add", "-A")),
-              Effect.andThen(world.git(worktreePath, "commit", "-m", "feature")),
-            ),
+        work: (worktreePath) => world.write(`${worktreePath}/feature.txt`, "feature\n"),
       });
+      const unfinishedWork = sql<{ readonly unfinished_work: number }>`
+        SELECT unfinished_work FROM bot_tasks WHERE work_thread_id = ${task.thread}`;
+      assert.equal((yield* unfinishedWork)[0]?.unfinished_work, 1);
+      const wip = yield* world.git(world.root, "rev-parse", task.branch);
       assert.isFalse(yield* world.exists(task.worktreePath));
       const thread = {
         id: task.thread,
@@ -985,6 +983,16 @@ it.effect("puts a released task's worktree back on its branch for a follow-up", 
       assert.isFalse(
         yield* world.pool.restore({ ...thread, id: ThreadId.make("not-a-bot-thread") }),
       );
+
+      yield* world.write(`${task.worktreePath}/feature.txt`, "finished\n");
+      yield* world.git(task.worktreePath, "commit", "-am", "Finish the feature");
+      assert.deepEqual(yield* world.release("task-1"), {
+        savedWork: false,
+        savedOn: null,
+        kept: null,
+      });
+      assert.equal((yield* unfinishedWork)[0]?.unfinished_work, 0);
+      assert.equal(yield* world.git(world.root, "rev-parse", `${task.branch}^`), wip);
     }),
   ),
 );

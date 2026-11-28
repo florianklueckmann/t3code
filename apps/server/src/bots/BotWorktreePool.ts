@@ -1084,7 +1084,7 @@ const make = Effect.gen(function* () {
           saved = yield* saveWork(located.at, input);
           // Before the worktree moves, so a restart after the move still names the saved work.
           yield* sql`
-            UPDATE bot_tasks SET unfinished_work = MAX(unfinished_work, ${saved.savedWork ? 1 : 0}),
+            UPDATE bot_tasks SET unfinished_work = ${saved.savedWork ? 1 : 0},
               branch = COALESCE(${saved.savedOn}, branch)
             WHERE work_thread_id = ${input.workThreadId}
           `.pipe(Effect.mapError(storage));

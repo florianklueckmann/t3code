@@ -487,8 +487,7 @@ const makeThreadWorld = Effect.gen(function* () {
           yield* Ref.update(poolKept, without);
           // The pool records saved work on the task itself, before the worktree moves.
           const savedWork = yield* Ref.get(poolSavesWork);
-          if (savedWork)
-            yield* botSql`UPDATE bot_tasks SET unfinished_work = 1
+          yield* botSql`UPDATE bot_tasks SET unfinished_work = ${savedWork ? 1 : 0}
               WHERE work_thread_id = ${input.workThreadId}`.pipe(Effect.orDie);
           return { savedWork, savedOn: null, kept: null };
         }),
@@ -3701,12 +3700,14 @@ it.effect(
             yield* services.tasks.reconcile;
             assert.lengthOf(yield* Ref.get(world.poolParks), 1);
             yield* world.update(thread, { status: "completed" });
+            const changes = yield* services.tasks.changes;
             yield* services.tasks.reconcile;
+            assert.deepEqual(yield* Stream.runCollect(changes.pipe(Stream.take(1))), [task.id]);
             assert.deepEqual(yield* Ref.get(world.poolParks), [
               `${worktreePath} (removed)`,
               worktreePath,
             ]);
-            assert.isTrue((yield* services.tasks.get(task.id)).unfinishedWork);
+            assert.isUndefined((yield* services.tasks.get(task.id)).unfinishedWork);
             assert.equal(yield* setupOf, "lock-a");
           }),
         // Only the passes above: a scheduled one running beside them would release once more.
