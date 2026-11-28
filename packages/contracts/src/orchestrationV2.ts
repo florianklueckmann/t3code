@@ -1735,6 +1735,17 @@ export type OrchestrationV2ModelSwitch = typeof OrchestrationV2ModelSwitch.Type;
 
 const AssistantMessagePhase = Schema.Literals(["commentary", "partial_answer", "final_answer"]);
 
+/**
+ * What a Stop found to end: a live run, the background work of a run that ended, or nothing,
+ * when its request only fences the last run against late tool calls.
+ */
+export const OrchestrationV2StopReach = Schema.Literals(["run", "background", "nothing"]);
+export type OrchestrationV2StopReach = typeof OrchestrationV2StopReach.Type;
+const OrchestrationV2AttributedStop = Schema.Struct({
+  commandId: CommandId,
+  reached: OrchestrationV2StopReach,
+});
+
 const OrchestrationV2TurnItemBaseFields = {
   /** Wire-only cursor for collapsed work; persisted items keep their complete history. */
   deferredWork: Schema.optionalKey(
@@ -1967,6 +1978,10 @@ export const OrchestrationV2TurnItem = Schema.Union([
     message: Schema.String,
     /** Set when the provider did not confirm the stop in time; clients then offer Force stop. */
     unresponsiveAt: Schema.optionalKey(Schema.DateTimeUtc),
+    /** The Bot task's Stop that reached this run, kept across later Stops. */
+    attributedStop: Schema.optionalKey(OrchestrationV2AttributedStop),
+    /** Set when a Stop ended background work the run left, not when that work finished on its own. */
+    backgroundStoppedAt: Schema.optionalKey(Schema.DateTimeUtc),
   }),
   Schema.Struct({
     ...OrchestrationV2TurnItemBaseFields,
@@ -2856,6 +2871,8 @@ export const OrchestrationV2TurnItemJson = Schema.Union([
     type: Schema.Literal("run_interrupt_request"),
     message: Schema.String,
     unresponsiveAt: Schema.optionalKey(Schema.DateTimeUtcFromString),
+    attributedStop: Schema.optionalKey(OrchestrationV2AttributedStop),
+    backgroundStoppedAt: Schema.optionalKey(Schema.DateTimeUtcFromString),
   }),
   Schema.Struct({
     ...OrchestrationV2TurnItemJsonBaseFields,

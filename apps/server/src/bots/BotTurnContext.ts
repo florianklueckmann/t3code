@@ -278,6 +278,7 @@ function homeTaskStatus(
     readonly status: string;
     readonly detail: string | null;
     readonly cancel_requested_at: string | null;
+    readonly stop_unanswered_run_id: string | null;
     readonly acceptance_json: string | null;
   },
   replied: boolean,
@@ -286,7 +287,10 @@ function homeTaskStatus(
     return `failed · Failure detail: ${HomeText.dataValue(row.detail, QUESTION_CHARS)}`;
   if (row.status === "cancelled")
     return row.detail ? `${row.status} · ${row.detail.slice(0, QUESTION_CHARS)}` : row.status;
-  if (row.cancel_requested_at !== null) return `${row.status} (cancellation requested)`;
+  if (row.stop_unanswered_run_id !== null) return `${row.status} · ${HomeText.STOP_UNANSWERED}`;
+  // A stop that found the result already finished leaves it, check included.
+  if (row.cancel_requested_at !== null && row.status !== "completed")
+    return `${row.status} (cancellation requested)`;
   const reply = replied ? " · Home replied to this update" : "";
   if (row.status === "waiting") return row.status + reply;
   if (row.status !== "completed" || row.acceptance_json === null) return row.status;
@@ -712,6 +716,7 @@ export const layer = Layer.effect(
         readonly created_at: string;
         readonly detail: string | null;
         readonly cancel_requested_at: string | null;
+        readonly stop_unanswered_run_id: string | null;
         readonly acceptance_json: string | null;
         readonly update_key: string | null;
         readonly total: number;
@@ -719,7 +724,7 @@ export const layer = Layer.effect(
         readonly attention_total: number;
       }>`
         WITH eligible AS (SELECT t.task_id, project_id, home_thread_id, work_thread_id, title, status, created_at, detail,
-          cancel_requested_at, acceptance_json, u.update_key, COALESCE(completed_at, updated_at) AS activity,
+          cancel_requested_at, stop_unanswered_run_id, acceptance_json, u.update_key, COALESCE(completed_at, updated_at) AS activity,
           CASE WHEN status IN ('accepted', 'running', 'waiting') OR (status = 'completed' AND
             json_extract(acceptance_json, '$.state') = 'needs_you') THEN 1 ELSE 0 END AS attention
         FROM bot_tasks t LEFT JOIN bot_home_updates u ON u.task_id = t.task_id

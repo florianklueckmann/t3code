@@ -16,6 +16,7 @@ import {
   type ModelSelection,
   type OrchestrationV2ServerCommand,
   type OrchestrationV2ThreadShell,
+  type OrchestrationV2TurnItem,
   type Project,
   ProjectId,
   RunId,
@@ -73,6 +74,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as BotExecutionConstraint from "./BotExecutionConstraint.ts";
 import * as BotFailureDiagnosis from "./BotFailureDiagnosis.ts";
 import * as BotHomeFolders from "./BotHomeFolders.ts";
+import { STOP_UNANSWERED } from "./BotHomeTaskText.ts";
 import * as BotHomeUpdates from "./BotHomeUpdates.ts";
 import * as BotProjectGuard from "./BotProjectGuard.ts";
 import * as BotService from "./BotService.ts";
@@ -237,6 +239,8 @@ const makeThreadWorld = Effect.gen(function* () {
     readonly entered: Deferred.Deferred<void>;
     readonly release: Deferred.Deferred<void>;
   } | null>(null);
+  /** Stops reach their run without an answer from its provider, until Force stop. */
+  const unansweredStops = yield* Ref.make(false);
   /** The next command of this type fails before it is recorded. */
   const failNext = yield* Ref.make<OrchestrationV2ServerCommand["type"] | null>(null);
   /** Branches, commits and files a result's evidence check finds. */
@@ -283,9 +287,46 @@ const makeThreadWorld = Effect.gen(function* () {
     if (command.type === "thread.unarchive") yield* update(command.threadId, { archived: false });
     if (command.type === "thread.stop") {
       const thread = (yield* Ref.get(threads)).get(command.threadId);
-      // Stop ends a run; a thread without one has nothing to stop.
-      if (thread !== undefined && thread.status !== "idle") {
-        yield* update(command.threadId, { status: "interrupted" });
+      const runId = thread?.queuedRunId ?? thread?.runId ?? null;
+      // As the orchestrator decides it: a live run, else the finished run's background work,
+      // else nothing but a fence. BotTaskStop.test.ts runs the real decision.
+      if (thread !== undefined && runId !== null) {
+        const ended = ["completed", "failed", "interrupted", "cancelled"].includes(thread.status);
+        const reached = !ended ? "run" : thread.backgroundTasks > 0 ? "background" : "nothing";
+        const unanswered = reached !== "nothing" && (yield* Ref.get(unansweredStops));
+        if (!unanswered && reached === "run") {
+          yield* update(command.threadId, { status: "interrupted" });
+        }
+        if (!unanswered && reached === "background") {
+          yield* update(command.threadId, { backgroundTasks: 0 });
+        }
+        const request = {
+          id: TurnItemId.make(`interrupt-request:${runId}`),
+          runId: RunId.make(runId),
+          type: "run_interrupt_request",
+          attributedStop: { commandId: command.commandId, reached },
+          ...(unanswered ? { unresponsiveAt: DateTime.makeUnsafe(START) } : {}),
+          ...(!unanswered && reached === "background"
+            ? { backgroundStoppedAt: DateTime.makeUnsafe(START) }
+            : {}),
+        } as unknown as OrchestrationV2TurnItem;
+        yield* Ref.update(records, (all) => {
+          const record = all.get(command.threadId) ?? {
+            thread: {
+              id: command.threadId,
+              projectId: thread.projectId,
+              deletedAt: null,
+            } as OrchestrationV2ThreadProjection["thread"],
+            runs: [],
+            messages: [],
+            turnItems: [],
+          };
+          const turnItems = record.turnItems.filter((item) => item.id !== request.id);
+          return new Map(all).set(command.threadId, {
+            ...record,
+            turnItems: [...turnItems, request],
+          });
+        });
       }
     }
     if (command.type === "bot-task.result.deliver" && !(yield* Ref.get(disposeReturn))) {
@@ -416,6 +457,15 @@ const makeThreadWorld = Effect.gen(function* () {
       withBotResultDelivery: (command, use) =>
         beforeDeliveryLock.pipe(Effect.andThen(use(dispatchLocked(command)))),
       getThreadShell,
+      forceStopThread: (input) =>
+        Effect.gen(function* () {
+          yield* Ref.update(commands, (all) => [
+            ...all,
+            `force-stop ${input.threadId} ${input.runId ?? ""}`,
+          ]);
+          yield* update(input.threadId, { status: "interrupted", backgroundTasks: 0 });
+          return {} as never;
+        }),
       sendToThread: (input) =>
         Effect.gen(function* () {
           if ((yield* Ref.get(threads)).get(input.threadId)?.archived === true)
@@ -576,6 +626,7 @@ const makeThreadWorld = Effect.gen(function* () {
     poolGate,
     existingEvidence,
     sends,
+    unansweredStops,
   };
 });
 
@@ -758,6 +809,7 @@ it.effect.each<{
                 () => ({}) as never,
               ),
               deletedAt: null,
+              latestRunId: null,
             },
     });
     assert.equal(status, expected);
@@ -1569,6 +1621,7 @@ it.effect("the Bot's own Home is told once of each task it started that ends or 
         };
         const work = (task: BotTaskSummary) => task.workThreadId ?? assert.fail("not launched");
         yield* finishRun(world, work(tasks.done), DONE_RESULT);
+        yield* services.tasks.cancel({ taskId: tasks.done.id });
         yield* finishRun(
           world,
           work(tasks.unproven),
@@ -2527,6 +2580,94 @@ it.effect("retries a stop that failed until the cancelled task ends", () =>
   }).pipe(Effect.provide(layerDatabase)),
 );
 
+it.effect.each([
+  { ended: "its result", backgroundTasks: 0, expected: "completed" },
+  {
+    ended: "its result, its background work still running",
+    backgroundTasks: 1,
+    expected: "cancelled",
+  },
+] as const)(
+  "a cancel after the work run ended with $ended leaves the task $expected",
+  ({ backgroundTasks, expected }) =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(START);
+      yield* seedProject;
+      const world = yield* makeThreadWorld;
+      yield* withServices(world, (services) =>
+        Effect.gen(function* () {
+          yield* attachBot(services);
+          const task = yield* services.tasks.start({
+            botId,
+            projectId: campaign,
+            prompt: "Prepare the notes.",
+          });
+          const workThreadId = task.workThreadId ?? assert.fail("no work thread");
+          yield* world.update(workThreadId, { status: "running" });
+          yield* services.tasks.reconcile;
+          // The run ends before the cancel lands.
+          yield* finishRun(world, workThreadId, DONE_RESULT);
+          yield* world.update(workThreadId, { backgroundTasks });
+          yield* services.tasks.cancel({ taskId: task.id });
+          yield* services.tasks.reconcile;
+
+          const ended = yield* services.tasks.get(task.id);
+          assert.equal(ended.status, expected);
+          const { result } = yield* services.tasks.getResult({ taskId: task.id });
+          assert.equal(result.state, expected === "completed" ? "available" : "not_completed");
+          assert.equal(ended.acceptance?.state, expected === "completed" ? "done" : undefined);
+          assert.lengthOf(
+            yield* world.commandsMatching("thread.mark-unread"),
+            expected === "completed" ? 1 : 0,
+          );
+          if (expected === "completed") assert.isNull(ended.detail);
+        }),
+      );
+    }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect(
+  "a stop the provider does not answer shows on the task until a second cancel forces it",
+  () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(START);
+      yield* seedProject;
+      const world = yield* makeThreadWorld;
+      yield* withServices(world, (services) =>
+        Effect.gen(function* () {
+          yield* attachBot(services);
+          const task = yield* services.tasks.start({
+            botId,
+            projectId: campaign,
+            prompt: "Summarize the last session.",
+          });
+          const workThreadId = task.workThreadId ?? assert.fail("no work thread");
+          yield* world.update(workThreadId, { status: "running" });
+          yield* Ref.set(world.unansweredStops, true);
+          yield* services.tasks.cancel({ taskId: task.id });
+          yield* services.tasks.reconcile;
+          // Reconciling again only replays the unanswered stop.
+          yield* services.tasks.reconcile;
+          assert.deepInclude(yield* services.tasks.get(task.id), {
+            status: "running",
+            detail: STOP_UNANSWERED,
+          });
+          assert.lengthOf(yield* world.commandsMatching(`thread.stop ${workThreadId}`), 1);
+
+          yield* services.tasks.cancel({ taskId: task.id });
+          assert.deepEqual(yield* world.commandsMatching("force-stop"), [
+            `force-stop ${workThreadId} run:${workThreadId}`,
+          ]);
+          yield* services.tasks.reconcile;
+          assert.deepInclude(yield* services.tasks.get(task.id), {
+            status: "cancelled",
+            detail: "Cancelled by the user.",
+          });
+        }),
+      );
+    }).pipe(Effect.provide(layerDatabase)),
+);
+
 it.effect("waits for Home's run to end before marking it unread and stops after a refusal", () =>
   Effect.gen(function* () {
     yield* TestClock.setTime(START);
@@ -3191,10 +3332,25 @@ it.effect.each<{
         return [task.id];
       }),
   },
-  ...[false, true].map((dropped) => ({
-    name: dropped
-      ? "a completed direct task whose Home return is dropped"
-      : "a completed direct task that returns to Home",
+  {
+    name: "a direct task whose result finished before Cancel",
+    run: (services, world) =>
+      Effect.gen(function* () {
+        const task = yield* services.tasks.start({ botId, projectId: campaign, prompt: "Pick." });
+        yield* finishRun(world, task.workThreadId ?? assert.fail("no work thread"), DONE_RESULT);
+        yield* services.tasks.cancel({ taskId: task.id });
+        yield* services.tasks.reconcile;
+        assert.equal((yield* services.tasks.get(task.id)).status, "completed");
+        return [task.id];
+      }),
+  },
+  ...(["delivered", "dropped", "late-cancel"] as const).map((returnState) => ({
+    name:
+      returnState === "late-cancel"
+        ? "a completed direct task with an opted-in Home return and a late Cancel"
+        : returnState === "dropped"
+          ? "a completed direct task whose Home return is dropped"
+          : "a completed direct task that returns to Home",
     run: (services: Services, world: ThreadWorld, home: ThreadId) =>
       Effect.gen(function* () {
         yield* seedHomeRun(world, home, "external-mcp");
@@ -3204,10 +3360,16 @@ it.effect.each<{
         );
         yield* world.update(home, { status: "completed" });
         yield* finishRun(world, task.workThreadId ?? assert.fail("no work thread"), DONE_RESULT);
-        yield* Ref.set(world.disposeReturn, dropped);
+        if (returnState === "late-cancel") yield* services.tasks.cancel({ taskId: task.id });
+        yield* Ref.set(world.disposeReturn, returnState === "dropped");
         yield* services.tasks.reconcile;
-        assert.lengthOf(yield* world.commandsMatching("bot-task.result.deliver"), 1);
-        return dropped ? [task.id] : [];
+        assert.equal((yield* services.tasks.get(task.id)).status, "completed");
+        // Cancel revokes the opted-in return, so the result asks for the early check instead.
+        assert.lengthOf(
+          yield* world.commandsMatching("bot-task.result.deliver"),
+          returnState === "late-cancel" ? 0 : 1,
+        );
+        return returnState === "delivered" ? [] : [task.id];
       }),
   })),
   {

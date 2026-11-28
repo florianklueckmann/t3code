@@ -23,6 +23,7 @@ import {
 } from "../sourceControl/threadPullRequests.ts";
 import {
   ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
+  BOT_TASK_CANCEL_COMMAND_PREFIX,
   type ChatAttachment,
   CommandId,
   type GuestMessageId,
@@ -58,6 +59,7 @@ import {
   type OrchestrationV2RemoteTaskChild,
   type OrchestrationV2ModelSwitch,
   type OrchestrationV2Run,
+  type OrchestrationV2StopReach,
   type OrchestrationV2RunAttempt,
   type OrchestrationV2RunRestriction,
   type OrchestrationV2ThreadShell,
@@ -898,6 +900,12 @@ function mayStartSubagentFollowup(
 function isLiveRun(run: OrchestrationV2Run): boolean {
   return run.status === "preparing" || run.status === "starting" || run.status === "running";
 }
+
+/** A Bot task's Stop keeps its claim on the run it reached, whatever later Stops of that run do. */
+const stopAttribution = (commandId: CommandId, reached: OrchestrationV2StopReach) =>
+  commandId.startsWith(BOT_TASK_CANCEL_COMMAND_PREFIX)
+    ? { attributedStop: { commandId, reached } }
+    : {};
 
 function hasLiveRun(projection: Pick<OrchestrationV2ThreadProjection, "runs">): boolean {
   return projection.runs.some(isLiveRun);
@@ -12458,6 +12466,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     readonly now: DateTime.Utc;
   }) {
     const emitEvent = emit(input.events, input.command);
+    const emittedBefore = (yield* Ref.get(input.events)).length;
     const runOrdinals = new Map(input.projection.runs.map((run) => [run.id, run.ordinal]));
     const childThreadIds = new Set<ThreadId>();
     const liveness = new Map<string, boolean>();
@@ -12560,12 +12569,50 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         },
       });
     }
+    // Only work this or the provider ended after the Stop; work that finished first keeps its result.
+    const run = input.projection.runs.find((it) => it.ordinal === input.throughRunOrdinal);
+    const request = run && (yield* runInterruptRequest(input.command, input.events, run.id));
+    if (run === undefined || request === undefined || request.backgroundStoppedAt) return;
+    const ended =
+      (yield* Ref.get(input.events)).length > emittedBefore ||
+      (yield* projectionStore
+        .getThreadRecords(input.command.threadId, ["turnItems"], {
+          turnItemTypes: ["command_execution", "dynamic_tool", "subagent"],
+          turnItemRunIds: [run.id],
+          turnItemStatuses: ["interrupted"],
+        })
+        .pipe(mapDispatchError(input.command))).turnItems.some(
+        (item) =>
+          item.completedAt !== null &&
+          DateTime.isGreaterThanOrEqualTo(item.completedAt, request.startedAt ?? request.updatedAt),
+      );
+    const outcome = { backgroundStoppedAt: input.now };
+    if (ended)
+      yield* rewriteRunInterruptRequest(input.command, input.events, request, outcome, input.now);
   });
 
-  const runInterruptReason = Effect.fnUntraced(function* (
+  const rewriteRunInterruptRequest = (
+    command: Parameters<typeof runInterruptRequest>[0],
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    request: Extract<OrchestrationV2TurnItem, { readonly type: "run_interrupt_request" }>,
+    changes: Partial<typeof request>,
+    now: DateTime.Utc,
+  ) =>
+    emit(
+      events,
+      command,
+    )({
+      type: "turn-item.updated",
+      threadId: command.threadId,
+      ...(request.runId === null ? {} : { runId: request.runId }),
+      occurredAt: now,
+      payload: { ...request, ...changes, updatedAt: now },
+    });
+
+  const runInterruptRequest = Effect.fnUntraced(function* (
     command: Extract<
       OrchestrationV2ServerCommand,
-      { readonly type: "run.interrupt" | "thread.background-work.settle" }
+      { readonly type: "run.interrupt" | "thread.background-work.settle" | "thread.stop" }
     >,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
     runId: RunId,
@@ -12577,14 +12624,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const pending = (yield* Ref.get(events))
       .flatMap((event) => (event.type === "turn-item.updated" ? [event.payload] : []))
       .findLast(isRequest);
-    if (pending !== undefined) return pending.message;
+    if (pending !== undefined) return pending;
     const { turnItems } = yield* projectionStore
       .getThreadRecords(command.threadId, ["turnItems"], {
         turnItemTypes: ["run_interrupt_request"],
         turnItemRunIds: [runId],
       })
       .pipe(mapDispatchError(command));
-    return turnItems.find(isRequest)?.message;
+    return turnItems.find(isRequest);
   });
 
   // A successful Stop may have no terminal event to ingest: the session or
@@ -12752,7 +12799,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           reason:
             (input.command.type === "thread.background-work.settle"
               ? input.command.reason
-              : undefined) ?? (yield* runInterruptReason(input.command, input.events, run.id)),
+              : undefined) ??
+            (yield* runInterruptRequest(input.command, input.events, run.id))?.message,
           completedAt: input.now,
         }),
       });
@@ -12800,10 +12848,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     readonly events: Ref.Ref<Array<OrchestrationV2DomainEvent>>;
     readonly thread: OrchestrationV2AppThread;
     readonly run: OrchestrationV2Run;
+    /** Work the Stop reached but could not interrupt; otherwise a fence against late tool calls. */
+    readonly unanswered?: boolean;
     readonly now: DateTime.Utc;
   }) {
     const { command, events, thread, run, now } = input;
     if (run.rootNodeId === null || run.providerThreadId === null) return;
+    const reached = input.unanswered !== true ? "nothing" : isLiveRun(run) ? "run" : "background";
+    const claim = stopAttribution(command.commandId, reached);
     const pendingItems = (yield* Ref.get(events)).flatMap((event) =>
       event.type === "turn-item.updated" ? [event.payload] : [],
     );
@@ -12811,6 +12863,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       pendingItems.some((item) => item.runId === run.id && item.type === "run_interrupt_request") ||
       (yield* stopReachedRun(command, thread.id, run.id))
     ) {
+      // A Bot task's Stop still claims a run an earlier Stop fenced.
+      const existing =
+        "attributedStop" in claim && (yield* runInterruptRequest(command, events, run.id));
+      if (existing && existing.attributedStop === undefined)
+        yield* rewriteRunInterruptRequest(command, events, existing, claim, now);
       return;
     }
     yield* emit(
@@ -12840,6 +12897,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         updatedAt: now,
         type: "run_interrupt_request",
         message: command.reason ?? RunExecutionService.USER_STOP_REASON,
+        ...claim,
+        ...(input.unanswered === true ? { unresponsiveAt: now } : {}),
       },
     });
   });
@@ -13440,6 +13499,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           });
 
     const emitEvent = emit(events, command);
+    const earlier = yield* runInterruptRequest(command, events, run.id);
     const interruptRequestItem: OrchestrationV2TurnItem = {
       id: idAllocator.derive.runSignalTurnItem({
         runId: run.id,
@@ -13460,6 +13520,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       updatedAt: now,
       type: "run_interrupt_request",
       message: command.reason ?? RunExecutionService.USER_STOP_REASON,
+      // A later Stop keeps the Bot task's claim on the run and the background work it ended.
+      ...(earlier?.attributedStop === undefined ? {} : { attributedStop: earlier.attributedStop }),
+      ...stopAttribution(command.commandId, isLiveRun(run) ? "run" : "background"),
+      ...(earlier?.backgroundStoppedAt === undefined
+        ? {}
+        : { backgroundStoppedAt: earlier.backgroundStoppedAt }),
     };
 
     const otherProviderInterrupts: Array<PendingOrchestrationEffectV2> = [];
@@ -14082,7 +14148,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     if (target !== undefined) reached.set(target.id, target);
     if (executed !== null && !hasLiveRun({ runs: [executed] })) reached.set(executed.id, executed);
     for (const run of reached.values()) {
-      yield* markStoppedRun({ command, events, thread: projection.thread, run, now });
+      const unanswered = run.id === target?.id;
+      yield* markStoppedRun({ command, events, thread: projection.thread, run, now, unanswered });
     }
     // Record and item are written together, so an active record without a live item lost its end.
     const staleNative = (target === undefined ? projection.subagents : []).filter(

@@ -146,7 +146,10 @@ ended, not that its answer proves the goal was achieved; a direct task's result
 is checked, see [Results that wait for you](#results-that-wait-for-you). Older
 tasks may have no saved result.
 Cards also show tasks that are still working, waiting for your answer, failed,
-were interrupted or cancelled, or were skipped. **Hide** removes a finished card
+were interrupted or cancelled, or were skipped. **Cancel** stops the task's work, including
+background work its run left running; a result that finished before the stop arrived stays
+completed. If the agent does not respond to the stop, the card says so, and pressing **Cancel**
+again force stops it. **Hide** removes a finished card
 from the conversation on this device only, and **Show hidden** brings it back;
 the task and its result stay in **Settings → Bots**.
 

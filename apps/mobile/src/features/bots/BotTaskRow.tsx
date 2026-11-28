@@ -99,8 +99,8 @@ export function BotTaskRow(props: {
           {branchLabel}
         </Text>
       )}
-      {/* A queued task's detail says what it waits for. */}
-      {(props.showDetail || task.status === "accepted") && task.detail ? (
+      {/* An open task's detail says what it waits for, or that its stop got no response. */}
+      {(props.showDetail || isBotTaskOpen(task)) && task.detail ? (
         <Text className="text-xs text-foreground-muted" numberOfLines={2}>
           {task.detail}
         </Text>

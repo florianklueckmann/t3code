@@ -35,6 +35,7 @@ import TaskLimit from "./Migrations/030_BotTaskLimit.ts";
 import HomeUpdates from "./Migrations/031_BotHomeUpdates.ts";
 import WorktreeSlots from "./Migrations/032_BotWorktreeSlots.ts";
 import DeletedBotHomes from "./Migrations/033_DeletedBotHomes.ts";
+import TaskStopUnanswered from "./Migrations/034_BotTaskStopUnanswered.ts";
 
 const routines = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -91,6 +92,7 @@ const entries = [
   [31, "BotHomeUpdates", HomeUpdates],
   [32, "BotWorktreeSlots", WorktreeSlots],
   [33, "DeletedBotHomes", DeletedBotHomes],
+  [34, "BotTaskStopUnanswered", TaskStopUnanswered],
 ] as const;
 const run = Migrator.make({});
 export const runMigrations = Effect.fn("BotDatabase.runMigrations")(function* () {
