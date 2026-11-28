@@ -113,6 +113,7 @@ export class BotService extends Context.Service<
     readonly scopeOfThread: (
       threadId: ThreadId,
     ) => Effect.Effect<BotTurnContext.BotTurnScope | "inactive" | undefined, BotError>;
+    readonly writeOwnerOfThread: (threadId: ThreadId) => Effect.Effect<BotId | undefined, BotError>;
     /** Records a standing instruction or proposes an inferred lesson, as the policy allows. */
     readonly recordLearning: (input: BotLearning.RecordLearningInput) => Effect.Effect<
       {
@@ -1231,6 +1232,13 @@ const make = Effect.gen(function* () {
     removeHome,
     resolveProject,
     scopeOfThread,
+    writeOwnerOfThread: Effect.fn("BotService.writeOwnerOfThread")(function* (threadId) {
+      const access = yield* turnContext
+        .mcpAccessForThreadId(threadId)
+        .pipe(Effect.mapError(storeError()));
+      if (access._tag === "refused") return yield* new BotError({ message: access.message });
+      return access._tag === "bot" ? access.botId : undefined;
+    }),
     recordLearning,
     decideLearning,
     retireLearning,
