@@ -223,6 +223,7 @@ describe("resolveUserMessagePresentation", () => {
       [`bot-home-check:${home}:2026-11-24T21:40:00.000Z`, "Home check"],
       [`bot-home-check-early:${home}:2026-11-24T10:14:00.000Z`, "Early Home check"],
       [`bot-maintenance:note:${home}:7`, "Note refresh"],
+      ["bot-task-update:bot-task:1:completed:run-1", "Task update"],
     ] as const) {
       const text = "Daily Home check: decide whether anything here needs the user.";
       expect(

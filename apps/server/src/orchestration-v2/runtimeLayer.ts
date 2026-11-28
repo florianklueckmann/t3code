@@ -6,6 +6,7 @@ import * as BotProjectGuard from "../bots/BotProjectGuard.ts";
 import * as BotContinuation from "../bots/BotContinuation.ts";
 import * as BotAttention from "../bots/BotAttention.ts";
 import * as BotHomeCheck from "../bots/BotHomeCheck.ts";
+import * as BotHomeUpdates from "../bots/BotHomeUpdates.ts";
 import * as BotFailureDiagnosis from "../bots/BotFailureDiagnosis.ts";
 import * as BotMaintenance from "../bots/BotMaintenance.ts";
 import * as BotExecutionConstraint from "../bots/BotExecutionConstraint.ts";
@@ -474,6 +475,9 @@ export const layerProduction = Layer.mergeAll(
     ),
   ),
   BotHomeCheck.layer.pipe(
+    Layer.provide(Layer.merge(layerThreadManagementProvided, layerBotTaskProvided)),
+  ),
+  BotHomeUpdates.layer.pipe(
     Layer.provide(Layer.merge(layerThreadManagementProvided, layerBotTaskProvided)),
   ),
   BotFailureDiagnosis.layer,

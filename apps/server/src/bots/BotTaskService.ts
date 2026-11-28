@@ -74,6 +74,7 @@ const LIST_LIMIT = 50;
 /** Posts kept per watch; occasions older than these are long past. */
 const WATCH_POSTS_KEPT = 50;
 export const BOT_TASK_NOTIFY_COMMAND_PREFIX = "bot-task-notify:";
+const HOME_REMOVED = "Stopped because the Bot's Home was removed.";
 
 interface BotTaskRow {
   readonly task_id: string;
@@ -879,12 +880,17 @@ const make = Effect.gen(function* () {
       );
   });
 
-  /** The turn running in the Bot's Home, when `requestedIn` names that Home; it is what asked. */
+  /**
+   * The turn running in the Bot's Home, when `requestedIn` names that Home; it is what asked.
+   * `projectId` is the Home's own project: the hidden one for the Bot's own Home, where a task's
+   * update may already wait behind the turn that is still starting tasks.
+   */
   const readRequestingHomeTurn = Effect.fnUntraced(function* (
     input: { readonly botId: BotId; readonly projectId: ProjectId },
     homeThreadId: string,
     home: OrchestrationV2ThreadShell | null,
     requestedIn: ThreadId | null | undefined,
+    queuedBehind = false,
   ) {
     if (
       requestedIn === undefined ||
@@ -894,9 +900,9 @@ const make = Effect.gen(function* () {
       home.projectId !== input.projectId ||
       home.deletedAt !== null ||
       home.archivedAt !== null ||
-      home.status !== "running" ||
       home.activeRunId === null ||
-      home.activeRunId !== home.latestRunId
+      // A queued run is the latest and gives the shell its status; the active run's own counts.
+      (!queuedBehind && (home.status !== "running" || home.activeRunId !== home.latestRunId))
     )
       return undefined;
     const runId = home.activeRunId;
@@ -917,6 +923,19 @@ const make = Effect.gen(function* () {
     const message = records.messages.find((candidate) => candidate.id === run?.userMessageId);
     return { records, run, message };
   });
+  /** The Bot's own Home, when its turn is what asked; refused once removed, so no task strays. */
+  const requestingBotHome = Effect.fnUntraced(function* (
+    botId: BotId,
+    requestedIn: ThreadId | null | undefined,
+  ) {
+    if (requestedIn == null) return undefined;
+    const home = yield* store.getContextByThread(requestedIn).pipe(Effect.mapError(storageError));
+    if (home?.kind !== "bot" || home.bot_id !== botId) return undefined;
+    if (home.detached_at !== null)
+      return yield* botError("This Bot's Home was removed, so it starts no tasks.", botId)();
+    return home;
+  });
+
   /** An agent acts by hand only inside a Home turn the user began with a typed message. */
   const isUserTurn = (turn: Effect.Success<ReturnType<typeof readRequestingHomeTurn>>) =>
     turn?.run?.status === "running" && isUserHomeInput(turn.message);
@@ -961,23 +980,42 @@ const make = Effect.gen(function* () {
         input.modelSelection ??
         (yield* BotStore.toDetail(context.bot, [], []).pipe(Effect.mapError(storageError)))
           .modelSelection;
-      // A direct request runs in the mode the user gave the Bot's conversation.
-      const home = yield* threads
-        .getThreadShell(ThreadId.make(context.context.home_thread_id))
-        .pipe(Effect.mapError(botError("Failed to read the Bot conversation.", input.botId)));
+      const readHome = (homeThreadId: string) =>
+        threads
+          .getThreadShell(ThreadId.make(homeThreadId))
+          .pipe(Effect.mapError(botError("Failed to read the Bot conversation.", input.botId)));
+      // A direct request runs in the mode the user gave the project's Home, wherever it was asked:
+      // the Bot's own Home may be read-only, its tasks are not.
+      const projectHome = yield* readHome(context.context.home_thread_id);
       // No options: the user's own client asked. Otherwise the thread whose turn asked, if any.
       const requestedIn =
         options === undefined ? undefined : (options.requestedIn ?? options.returnToHomeFrom);
+      // The Bot's own Home starts tasks in its projects; their cards and updates come back to it.
+      const botHome = yield* requestingBotHome(input.botId, requestedIn);
+      const asking =
+        botHome === undefined
+          ? {
+              homeThreadId: context.context.home_thread_id,
+              projectId: input.projectId,
+              home: projectHome,
+            }
+          : {
+              homeThreadId: botHome.home_thread_id,
+              projectId: ProjectId.make(botHome.project_id),
+              home: yield* readHome(botHome.home_thread_id),
+            };
       const homeTurn = yield* readRequestingHomeTurn(
-        input,
-        context.context.home_thread_id,
-        home,
+        { botId: input.botId, projectId: asking.projectId },
+        asking.homeThreadId,
+        asking.home,
         requestedIn,
+        botHome !== undefined,
       );
       const byHand = options === undefined || isUserTurn(homeTurn);
       let returnHomeRunId: string | null = null;
       let returnHomeMessageId: string | null = null;
-      if (options?.returnToHomeFrom !== undefined) {
+      // From the Bot's own Home every result comes back as its own update, so no return is held.
+      if (options?.returnToHomeFrom !== undefined && botHome === undefined) {
         if (options.returnToHomeFrom !== requestedIn || homeTurn === undefined)
           return yield* botError(
             "A result can return only from the Bot's active Home user turn.",
@@ -1004,11 +1042,11 @@ const make = Effect.gen(function* () {
           taskId,
           botId: input.botId,
           projectId: input.projectId,
-          homeThreadId: context.context.home_thread_id,
+          homeThreadId: asking.homeThreadId,
           origin: "direct",
           title: input.title ?? `${context.bot.name}: ${input.prompt.split("\n")[0]?.slice(0, 60)}`,
           prompt: input.prompt,
-          runtimeMode: home?.runtimeMode ?? BOT_ROUTINE_RUNTIME_MODE,
+          runtimeMode: projectHome?.runtimeMode ?? BOT_ROUTINE_RUNTIME_MODE,
           now: yield* nowIso,
         }),
         return_home_run_id: returnHomeRunId,
@@ -1039,6 +1077,8 @@ const make = Effect.gen(function* () {
                   input.botId,
                 )();
             }
+            // A removal that committed since the read above has already swept its tasks.
+            if (botHome !== undefined) yield* requestingBotHome(input.botId, requestedIn);
             yield* insertTask(row);
           }),
         )
@@ -1274,6 +1314,7 @@ const make = Effect.gen(function* () {
         ${summaryRows}
         WHERE (${input.botId ?? null} IS NULL OR t.bot_id = ${input.botId ?? null})
           AND (${input.projectId ?? null} IS NULL OR t.project_id = ${input.projectId ?? null})
+          AND (${input.homeThreadId ?? null} IS NULL OR t.home_thread_id = ${input.homeThreadId ?? null})
           AND ${
             // A quiet watch run is no card anywhere; its own thread still resolves to its task.
             input.workThreadId === undefined
@@ -1380,7 +1421,7 @@ const make = Effect.gen(function* () {
     `.pipe(Effect.mapError(storageError));
     const reason =
       homeThreadId !== null
-        ? "Stopped because the Bot's Home was removed."
+        ? HOME_REMOVED
         : projectId === null
           ? "Stopped because the Bot was archived."
           : "Stopped because the Bot was detached from this project.";
@@ -1697,8 +1738,15 @@ const make = Effect.gen(function* () {
     const acceptance = acceptanceNeedingYou(row);
     if (acceptance === undefined || row.work_thread_id === null || row.result_run_id === null)
       return;
+    // In the note of the Home that started it, the Bot's own Home for its tasks.
+    const home = yield* store
+      .getContextByThread(ThreadId.make(row.home_thread_id))
+      .pipe(Effect.mapError(storageError));
     yield* continuation.addTaskWaiting({
-      scope: { botId: row.bot_id as BotId, projectId: ProjectId.make(row.project_id) },
+      scope: {
+        botId: row.bot_id as BotId,
+        projectId: ProjectId.make(home?.project_id ?? row.project_id),
+      },
       taskId: BotTaskId.make(row.task_id),
       text: Acceptance.waitingText(row.title, acceptance),
       writer: {
@@ -1715,6 +1763,17 @@ const make = Effect.gen(function* () {
       if (context._tag === "inactive" && row.cancel_requested_at === null) {
         // An archive or detach that crashed before stopping its work finishes here.
         return yield* requestCancel(row, `Stopped because ${context.reason}`);
+      }
+      // So does a removal of the Bot's own Home, or a start from it that the removal missed.
+      if (
+        context._tag === "active" &&
+        row.cancel_requested_at === null &&
+        row.home_thread_id !== context.context.home_thread_id &&
+        (yield* store
+          .getContextByThread(ThreadId.make(row.home_thread_id))
+          .pipe(Effect.mapError(storageError)))?.detached_at != null
+      ) {
+        return yield* requestCancel(row, HOME_REMOVED);
       }
       if (row.dispatched_at === null) {
         // A cancel cut short by a restart finishes here, stopping a thread the launch made.

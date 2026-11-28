@@ -211,6 +211,8 @@ const makeTestRelay = Effect.fnUntraced(function* (
     readonly readShell?: (threadId: ThreadId) => Effect.Effect<OrchestrationV2ThreadShell | null>;
     readonly domainEvents?: Stream.Stream<OrchestrationV2DomainEvent>;
     readonly catchUpThreads?: ReadonlyArray<OrchestrationV2ThreadShell>;
+    /** The message that started each run, for record reads. */
+    readonly runMessages?: ReadonlyMap<string, string>;
   } = {},
 ) {
   const values = new Map<string, Uint8Array>(
@@ -281,7 +283,15 @@ const makeTestRelay = Effect.fnUntraced(function* (
     getMessageCount: () => Effect.die("unused message count"),
     getMessagesById: () => Effect.die("unused messages by id"),
     getTurnItem: () => Effect.die("unused turn item read"),
-    getThreadRecords: () => Effect.die("unused record read"),
+    getThreadRecords: (threadId, _fields, filter) =>
+      options.runMessages === undefined
+        ? Effect.die("unused record read")
+        : (Effect.succeed({
+            runs: (filter?.runIds ?? []).flatMap((id) => {
+              const userMessageId = options.runMessages?.get(id);
+              return userMessageId === undefined ? [] : [{ id, threadId, userMessageId }];
+            }),
+          }) as never),
     getThreadProjection: unused,
     getCheckpointContext: unused,
     getThreadSnapshot: unused,
@@ -910,6 +920,35 @@ describe("AgentAwarenessRelay", () => {
           ["running", null],
         );
       }),
+  );
+
+  it.effect.each([
+    {
+      label: "stays quiet when a task update started it",
+      message: "bot-task-update:t:completed:r",
+    },
+    { label: "alerts when the user started it", message: "user-message" },
+  ])("a Bot's own Home turn $label", ({ message }) =>
+    Effect.gen(function* () {
+      const home = ThreadId.make("bot-home:bot:bot-home-bot");
+      const lineage = { rootThreadId: home, parentThreadId: null, relationshipToParent: null };
+      const { relay, currentShell, publications } = yield* makeTestRelay({
+        runMessages: new Map([["home-run", message]]),
+      });
+      yield* Ref.set(currentShell, shell({ id: home, lineage }));
+      yield* relay.publishThread(home);
+      yield* Ref.set(
+        currentShell,
+        shell({ id: home, lineage, status: "completed", latestRunId: RunId.make("home-run") }),
+      );
+      yield* relay.publishThread(home);
+      yield* TestClock.adjust("5 seconds");
+      yield* relay.drain;
+      assert.deepEqual(
+        publications.map((publication) => publication.state?.phase ?? null),
+        ["running", message === "user-message" ? "completed" : null],
+      );
+    }),
   );
 
   it.effect("still publishes a completion when the thread settles during the hold", () =>

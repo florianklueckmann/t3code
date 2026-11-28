@@ -79,6 +79,7 @@ const BOT_HOME_RUN_TITLES = {
   homeCheck: "Home check",
   earlyHomeCheck: "Early Home check",
   noteRefresh: "Note refresh",
+  taskUpdate: "Task update",
 } as const satisfies Record<NonNullable<ReturnType<typeof botHomeRunOf>>, string>;
 
 export function resolveUserMessagePresentation(message: {

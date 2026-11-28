@@ -725,6 +725,8 @@ export const BotTaskListInput = Schema.Struct({
   botId: Schema.optional(BotId),
   projectId: Schema.optional(ProjectId),
   workThreadId: Schema.optional(ThreadId),
+  /** The cards of one Home: the tasks it started, across projects for the Bot's own Home. */
+  homeThreadId: Schema.optional(ThreadId),
 });
 export type BotTaskListInput = typeof BotTaskListInput.Type;
 
