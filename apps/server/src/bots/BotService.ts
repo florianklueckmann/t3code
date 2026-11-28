@@ -213,6 +213,11 @@ const make = Effect.gen(function* () {
   // Names the Bot whose learning committed, so a Home's notices reread only for their own Bot.
   const learningChanges = yield* PubSub.unbounded<BotId>();
 
+  const homeLocks = yield* KeyedLock.make<BotId>();
+  const withHomeLock = <A, E, R>(
+    effect: Effect.Effect<A, E, R>,
+    input: { readonly botId: BotId },
+  ) => homeLocks.withLock(input.botId, effect);
   const syncLocks = yield* KeyedLock.make<ThreadId>();
 
   const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
@@ -592,6 +597,7 @@ const make = Effect.gen(function* () {
       yield* syncThreads(input.botId, attached);
       return yield* readDetail(input.botId);
     },
+    withHomeLock,
   );
 
   // Orders grant saves with changes to the Calendar (this Mac) selection, which validate against it.
@@ -715,49 +721,46 @@ const make = Effect.gen(function* () {
     return yield* attachContext({ ...input, kind: "project" });
   });
 
-  const openHome: BotService["Service"]["openHome"] = Effect.fn("BotService.openHome")(
-    function* (input) {
-      yield* requireActiveBot(input.botId);
-      const { projectId } = yield* homeFolders
-        .ensureProject(input.botId)
-        .pipe(Effect.mapError((cause) => botError(cause.message, input.botId)(cause)));
-      if (input.access !== undefined) {
-        const [home] = yield* store
-          .listHomes(input.botId)
+  const openHome: BotService["Service"]["openHome"] = Effect.fn("BotService.openHome")(function* (
+    input,
+  ) {
+    yield* requireActiveBot(input.botId);
+    const { projectId } = yield* homeFolders
+      .ensureProject(input.botId)
+      .pipe(Effect.mapError((cause) => botError(cause.message, input.botId)(cause)));
+    if (input.access !== undefined) {
+      const [home] = yield* store
+        .listHomes(input.botId)
+        .pipe(Effect.mapError(storeError(input.botId)));
+      if (home !== undefined) {
+        // Changing the access of an existing Home must not reopen one another client removed.
+        const changed = yield* store
+          .setOpenHomeAccess(input.botId, input.access)
           .pipe(Effect.mapError(storeError(input.botId)));
-        if (home !== undefined) {
-          // Changing the access of an existing Home must not reopen one another client removed.
-          const changed = yield* store
-            .setOpenHomeAccess(input.botId, input.access)
-            .pipe(Effect.mapError(storeError(input.botId)));
-          if (!changed) {
-            return yield* botError(
-              "This Bot's own Home was removed. Reopen it before changing its access.",
-              input.botId,
-            )();
-          }
-          yield* notifyChanged;
-          return yield* readDetail(input.botId);
+        if (!changed) {
+          return yield* botError(
+            "This Bot's own Home was removed. Reopen it before changing its access.",
+            input.botId,
+          )();
         }
-        yield* store
-          .setHomeAccess(input.botId, input.access)
-          .pipe(Effect.mapError(storeError(input.botId)));
+        yield* notifyChanged;
+        return yield* readDetail(input.botId);
       }
-      return yield* attachContext({
-        botId: input.botId,
-        projectId,
-        kind: "bot",
-        refuseReattach: input.access !== undefined,
-      });
-    },
-  );
+      yield* store
+        .setHomeAccess(input.botId, input.access)
+        .pipe(Effect.mapError(storeError(input.botId)));
+    }
+    return yield* attachContext({
+      botId: input.botId,
+      projectId,
+      kind: "bot",
+    });
+  }, withHomeLock);
 
   /** Attaches a project Home or the Bot-level Home, or reattaches a detached one. */
   const attachContext = Effect.fn("BotService.attachContext")(function* (
     input: BotAttachProjectInput & {
       readonly kind: BotStore.BotContextKind;
-      /** Set when opening with an access: a Home removed meanwhile stays removed. */
-      readonly refuseReattach?: boolean;
     },
   ) {
     const result = yield* guard.withProjectLock(
@@ -824,12 +827,6 @@ const make = Effect.gen(function* () {
           return undefined;
         }
         const reattach = existing.detached_at !== null;
-        if (reattach && input.refuseReattach === true) {
-          return yield* botError(
-            "This Bot's own Home was removed. Reopen it before changing its access.",
-            input.botId,
-          )();
-        }
         const next: BotStore.BotContextRow = {
           ...existing,
           guidance: input.guidance ?? existing.guidance,
@@ -949,6 +946,7 @@ const make = Effect.gen(function* () {
         }),
       );
     },
+    withHomeLock,
   );
 
   /** Detaches a Home, runs `stop` for the work it owns and archives its thread. */

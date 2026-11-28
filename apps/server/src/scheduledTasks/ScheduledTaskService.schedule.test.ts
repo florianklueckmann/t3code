@@ -1,6 +1,6 @@
 import * as BotDatabase from "../bots/persistence/BotDatabase.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { ThreadId } from "@t3tools/contracts";
+import { ProjectId, ThreadId } from "@t3tools/contracts";
 import * as Ref from "effect/Ref";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -31,7 +31,7 @@ import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 
 const decodeUpsertInput = Schema.decodeUnknownEffect(ScheduledTaskUpsertInput);
 
-it.effect("rejects a stale form save after deletion while preserving explicit-id creates", () =>
+it.effect("refuses saves to hidden Homes and edits to deleted tasks", () =>
   Effect.gen(function* () {
     const layerDependencies = Layer.mergeAll(
       NodeCrypto.layer,
@@ -59,7 +59,14 @@ it.effect("rejects a stale form save after deletion while preserving explicit-id
         runtimeMode: "full-access",
         interactionMode: "default",
       });
+      const hidden = { ...input, projectId: ProjectId.make("bot-home-companion") };
+      const refused = yield* service.upsert(hidden).pipe(Effect.flip);
+      expect(refused.message).toContain("which runs no scheduled tasks");
+      expect((yield* service.list()).tasks).toEqual([]);
       const created = yield* service.upsert(input);
+      const move = yield* service.upsert({ ...hidden, requireExisting: true }).pipe(Effect.flip);
+      expect(move.message).toBe(refused.message);
+      expect((yield* service.list()).tasks[0]?.projectId).toBe(input.projectId);
       const edit = yield* decodeUpsertInput({ ...input, requireExisting: true, title: "Edited" });
       expect((yield* service.upsert(edit)).task.title).toBe("Edited");
       yield* service.delete({ id: created.task.id });

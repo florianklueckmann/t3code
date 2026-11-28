@@ -24,6 +24,9 @@ import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
+import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
@@ -71,8 +74,7 @@ const makeThreadWorld = Effect.gen(function* () {
   const commands = yield* Ref.make<ReadonlyArray<string>>([]);
   const failNext = yield* Ref.make<string | null>(null);
   const launches = yield* Ref.make<ReadonlyArray<ThreadLaunchService.ThreadLaunchInput>>([]);
-  /** Stops the server right after the next launch created its thread. */
-  const crashAfterLaunch = yield* Ref.make(false);
+  const afterNextLaunch = yield* Ref.make(Effect.void);
 
   const setThread = (threadId: ThreadId, update: (thread: FakeThread) => FakeThread) =>
     Ref.update(threads, (current) => {
@@ -130,14 +132,13 @@ const makeThreadWorld = Effect.gen(function* () {
                 model: input.modelSelection.model,
               }),
         );
-        if (yield* Ref.getAndSet(crashAfterLaunch, false)) {
-          return yield* Effect.die("injected crash after the launch");
-        }
+        const afterLaunch = yield* Ref.getAndSet(afterNextLaunch, Effect.void);
+        yield* afterLaunch;
         return { threadId, resumed: false } as never;
       }),
     }),
   );
-  return { threads, commands, failNext, launches, crashAfterLaunch, threadLayer };
+  return { threads, commands, failNext, launches, afterNextLaunch, threadLayer };
 });
 
 const layerSupport = Layer.mergeAll(
@@ -557,6 +558,78 @@ it.effect(
     }).pipe(Effect.provide(layerDatabase)),
 );
 
+it.effect("a remove during an open leaves the Home detached and its thread archived", () =>
+  Effect.gen(function* () {
+    const world = yield* makeThreadWorld;
+    yield* withServices(world.threadLayer, ({ bots, guard }) =>
+      Effect.gen(function* () {
+        yield* createCampaignBot(bots);
+        const accessRead = yield* Deferred.make<void>();
+        const resume = yield* Deferred.make<void>();
+        const clock = yield* Clock.Clock;
+        // Queue two first opens before either can create the binding.
+        const [first, opening] = yield* guard.withProjectLock(
+          homeProject,
+          Effect.gen(function* () {
+            const first = yield* bots
+              .openHome({ botId })
+              .pipe(Effect.forkChild({ startImmediately: true }));
+            const opening = yield* bots.openHome({ botId, access: "full" }).pipe(
+              Effect.provideService(Clock.Clock, {
+                ...clock,
+                // Attach reads the binding before asking for its update timestamp.
+                currentTimeMillis: Deferred.succeed(accessRead, undefined).pipe(
+                  Effect.andThen(Deferred.await(resume)),
+                  Effect.andThen(clock.currentTimeMillis),
+                ),
+              }),
+              Effect.ensuring(Deferred.succeed(accessRead, undefined)),
+              Effect.forkChild({ startImmediately: true }),
+            );
+            return [first, opening] as const;
+          }),
+        );
+        const home = (yield* Fiber.join(first)).home ?? assert.fail();
+        yield* Deferred.await(accessRead);
+        const removing = yield* bots
+          .removeHome({ botId })
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Deferred.succeed(resume, undefined);
+        yield* Fiber.join(opening);
+        yield* Fiber.join(removing);
+        assert.isNotNull((yield* bots.get({ botId })).home?.detachedAt);
+        assert.isTrue((yield* Ref.get(world.threads)).get(home.homeThreadId)?.archived);
+      }),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect("archiving during the first Home launch archives the new thread", () =>
+  Effect.gen(function* () {
+    const world = yield* makeThreadWorld;
+    const launched = yield* Deferred.make<void>();
+    const resume = yield* Deferred.make<void>();
+    yield* Ref.set(
+      world.afterNextLaunch,
+      Deferred.succeed(launched, undefined).pipe(Effect.andThen(Deferred.await(resume))),
+    );
+    yield* withServices(world.threadLayer, ({ bots }) =>
+      Effect.gen(function* () {
+        yield* createCampaignBot(bots);
+        const opening = yield* Effect.forkChild(bots.openHome({ botId }));
+        yield* Deferred.await(launched);
+        const archiving = yield* bots
+          .setArchived({ botId, archived: true })
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Deferred.succeed(resume, undefined);
+        const home = (yield* Fiber.join(opening)).home ?? assert.fail();
+        yield* Fiber.join(archiving);
+        assert.isTrue((yield* Ref.get(world.threads)).get(home.homeThreadId)?.archived);
+      }),
+    );
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
 it.effect("adopts the Home thread a crash left before its row on the next open", () =>
   Effect.gen(function* () {
     yield* seedProjects;
@@ -564,7 +637,7 @@ it.effect("adopts the Home thread a crash left before its row on the next open",
     yield* withServices(world.threadLayer, ({ bots }) =>
       Effect.gen(function* () {
         yield* createCampaignBot(bots);
-        yield* Ref.set(world.crashAfterLaunch, true);
+        yield* Ref.set(world.afterNextLaunch, Effect.die("injected crash after the launch"));
         yield* bots.openHome({ botId }).pipe(Effect.exit);
         assert.isNull((yield* bots.get({ botId })).home);
       }),
