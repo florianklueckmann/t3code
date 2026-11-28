@@ -286,14 +286,17 @@ function homeTaskStatus(
   const acceptance = Option.getOrUndefined(decodeAcceptance(row.acceptance_json));
   if (acceptance?.state !== "needs_you") return row.status;
   const questions = acceptance.report?.openQuestions ?? [];
-  const reasons = [
-    ...questions.map((question) => `Open question: ${question}`),
-    ...acceptance.missing,
-  ]
+  const questionText = questions
+    .map((question) => `Open question: ${question}`)
     .join(" ")
     .replace(/\s+/g, " ")
     .trim();
-  return `needs you · ${reasons.slice(0, QUESTION_CHARS) || "Review the result."}${questions.length ? reply : ""}`;
+  const reasons = [questionText, ...acceptance.missing].join(" ").replace(/\s+/g, " ").trim();
+  const more =
+    questions.length > 1 && questionText.length > QUESTION_CHARS
+      ? ` · ${questions.length} open questions. Read them in the work thread.`
+      : "";
+  return `needs you · ${reasons.slice(0, QUESTION_CHARS) || "Review the result."}${more}${questions.length ? reply : ""}`;
 }
 
 const earlierConversationSection = [

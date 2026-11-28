@@ -199,7 +199,6 @@ export const taskBranchName = (row: Pick<BotTaskRow, "task_id" | "title">) => {
  */
 export function deriveTaskStatus(input: {
   readonly cancelRequested: boolean;
-  readonly stopReachedRun?: boolean;
   readonly shell: Pick<
     OrchestrationV2ThreadShell,
     "status" | "pendingRuntimeRequest" | "pendingBackgroundTasks" | "deletedAt"
@@ -222,7 +221,6 @@ export function deriveTaskStatus(input: {
     case "waiting":
       return "waiting";
     case "completed":
-      if (input.stopReachedRun) return "cancelled";
       return (shell.pendingBackgroundTasks?.length ?? 0) > 0 ? "running" : "completed";
     // A server restart also ends runs as cancelled, so only a stop someone asked for counts.
     case "interrupted":
@@ -576,9 +574,6 @@ const make = Effect.gen(function* () {
     return { modelSelection: detail.modelSelection };
   });
 
-  const stopCommandId = (taskId: string, runId: RunId) =>
-    CommandId.make(`bot-task-cancel:${taskId}:${runId}`);
-
   /**
    * Stops the work thread's run. The id is keyed to that run, so a repeat replays once the stop
    * took effect, and a stop sent before the launch admitted its run cannot stand in for it.
@@ -590,16 +585,11 @@ const make = Effect.gen(function* () {
     const shell = yield* threads
       .getThreadShell(ThreadId.make(workThreadId))
       .pipe(Effect.mapError(botError("Failed to read the Bot task's work thread.")));
-    if (
-      shell === null ||
-      shell.latestRunId === null ||
-      isTerminal(deriveTaskStatus({ shell, cancelRequested: false }))
-    )
-      return;
-    const stopped = yield* threads
+    if (shell === null || shell.latestRunId === null) return;
+    yield* threads
       .dispatch({
         type: "thread.stop",
-        commandId: stopCommandId(row.task_id, shell.latestRunId),
+        commandId: CommandId.make(`bot-task-cancel:${row.task_id}:${shell.latestRunId}`),
         threadId: ThreadId.make(workThreadId),
         reason: row.detail ?? "The Bot task was cancelled.",
       })
@@ -607,18 +597,6 @@ const make = Effect.gen(function* () {
         Effect.mapError((cause) =>
           botError(`Failed to stop the Bot task: ${errorMessage(cause)}`)(cause),
         ),
-      );
-    if (
-      row.return_home_run_id !== null &&
-      stopped.storedEvents.some(
-        ({ event }) =>
-          (event.type === "turn-item.updated" && event.payload.type === "run_interrupt_request") ||
-          (event.type === "run.updated" &&
-            (event.payload.status === "cancelled" || event.payload.status === "interrupted")),
-      )
-    )
-      yield* sql`UPDATE bot_tasks SET return_home_run_id = NULL WHERE task_id = ${row.task_id}`.pipe(
-        Effect.mapError(storageError),
       );
   });
 
@@ -1428,7 +1406,7 @@ const make = Effect.gen(function* () {
       // What it waited for is moot. A launch that recorded itself meanwhile settles by its thread.
       yield* sql`
         UPDATE bot_tasks
-        SET status = 'cancelled', return_home_run_id = NULL, completed_at = ${now}, notified_at = ${now}, updated_at = ${now}
+        SET status = 'cancelled', completed_at = ${now}, notified_at = ${now}, updated_at = ${now}
         WHERE task_id = ${row.task_id} AND completed_at IS NULL AND dispatched_at IS NULL
       `.pipe(Effect.mapError(storageError));
     }
@@ -1439,18 +1417,10 @@ const make = Effect.gen(function* () {
     function* (input, requestedIn) {
       const row = yield* readRow(input.taskId);
       if (row === undefined) return yield* botError("Bot task not found.")();
-      if (row.completed_at !== null)
-        yield* sql`UPDATE bot_tasks SET return_home_run_id = NULL WHERE task_id = ${row.task_id}`.pipe(
-          Effect.mapError(storageError),
-        );
-      else {
-        if (row.dispatched_at !== null && row.work_thread_id !== null) {
-          const shell = yield* threads
-            .getThreadShell(ThreadId.make(row.work_thread_id))
-            .pipe(Effect.mapError(botError("Failed to read the Bot task's work thread.")));
-          if (shell?.status === "completed" && !shell.pendingBackgroundTasks?.length)
-            return yield* get(input.taskId);
-        }
+      yield* sql`UPDATE bot_tasks SET return_home_run_id = NULL WHERE task_id = ${row.task_id}`.pipe(
+        Effect.mapError(storageError),
+      );
+      if (row.completed_at === null)
         yield* requestCancel(
           row,
           requestedIn === undefined
@@ -1459,7 +1429,6 @@ const make = Effect.gen(function* () {
               ? "Cancelled by an outside agent."
               : `Cancelled by the agent in thread ${requestedIn}.`,
         );
-      }
       yield* publish(row);
       return yield* get(input.taskId);
     },
@@ -1847,17 +1816,7 @@ const make = Effect.gen(function* () {
       const shell = yield* threads
         .getThreadShell(ThreadId.make(row.work_thread_id))
         .pipe(Effect.mapError(botError("Failed to read the Bot task's work thread.")));
-      // A stop that reached active work writes an interrupt request. A stop of an idle run does not.
-      const stopReachedRun =
-        row.cancel_requested_at !== null &&
-        shell?.status === "completed" &&
-        shell.latestRunId !== null &&
-        (yield* main`
-          SELECT 1 FROM orchestration_events WHERE command_id = ${stopCommandId(row.task_id, shell.latestRunId)}
-            AND event_type = 'turn-item.updated' AND json_extract(payload_json, '$.type') = 'run_interrupt_request' LIMIT 1
-        `.pipe(Effect.mapError(storageError))).length > 0;
       const status = deriveTaskStatus({
-        stopReachedRun,
         cancelRequested: row.cancel_requested_at !== null,
         shell,
       });
@@ -1886,12 +1845,9 @@ const make = Effect.gen(function* () {
                   result_run_id = ${terminal ? (shell?.latestRunId ?? null) : row.result_run_id},
                   completed_at = ${terminal ? now : null},
                   quiet = ${watch?._tag === "quiet" && row.by_hand === 0 ? 1 : 0},
-                  cancel_requested_at = CASE WHEN ${status} = 'completed' THEN NULL ELSE cancel_requested_at END,
-                  detail = CASE WHEN ${status} = 'completed' AND cancel_requested_at IS NOT NULL THEN NULL ELSE detail END,
-                  return_home_run_id = CASE WHEN ${status} = 'cancelled' THEN NULL ELSE return_home_run_id END,
                   acceptance_json = ${acceptance === null ? null : encodeAcceptance(acceptance)},
                   updated_at = ${now}
-              WHERE task_id = ${row.task_id} AND completed_at IS NULL AND cancel_requested_at IS ${row.cancel_requested_at}
+              WHERE task_id = ${row.task_id} AND completed_at IS NULL
               RETURNING task_id
             `;
             if (ended.length === 0 || watch?._tag !== "post" || row.scheduled_task_id === null)

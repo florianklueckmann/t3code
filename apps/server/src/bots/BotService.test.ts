@@ -1115,8 +1115,18 @@ it.effect(
           assert.include(turn, "Keep the task-needs-you heading?");
           assert.notInclude(turn, "Home replied to this update");
           yield* main`UPDATE orchestration_v2_projection_runs SET status = 'completed' WHERE run_id = 'update-run'`;
+          const questions = [
+            "Keep the task-needs-you heading? " + "Long context. ".repeat(25),
+            "Which audience should we use?",
+          ];
+          yield* db`UPDATE bot_tasks SET acceptance_json = json_set(acceptance_json,
+            '$.report.openQuestions', json(${JSON.stringify(questions)})) WHERE task_id = 'task-needs-you'`;
           const refreshed = yield* turnContext.forThread(home);
           if (refreshed._tag !== "active") return assert.fail();
+          assert.include(
+            refreshed.instructionParts.turn,
+            "2 open questions. Read them in the work thread.",
+          );
           assert.include(refreshed.instructionParts.turn, "Home replied to this update");
           assert.include(refreshed.instructionParts.turn, "Keep the task-needs-you heading?");
           assert.include(turn, "Split the changelog work once the format is chosen.");
